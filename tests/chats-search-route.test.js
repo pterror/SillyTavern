@@ -73,30 +73,3 @@ describe('POST /api/chats/search', () => {
         expect((await post('/api/chats/search', { query: 'wande', limit: 50, scan_cursor: 'x' })).data.results).toHaveLength(2);
     });
 });
-
-describe('POST /api/chats/search/messages', () => {
-    test('several words\' cursors carry the idfs page 1 ranked by; weights that don\'t fit the words are an invalid cursor', async () => {
-        const texts = Array.from({ length: 14 }, (_, i) => (i % 2 ? `a dragon and a knight ${i}` : `the knight rode ${i}`));
-        await fixture.seedMessages(user.store, { avatar: 'Bob.png' }, null, texts.map(msg), { session: SESSION });
-        const first = await post('/api/chats/search/messages', { search: 'dragon knight', limit: 3 });
-        expect(first.status).toBe(200);
-        expect(first.data.after).toMatch(/^s[^:]+:\d+:[^:,]+,[^:,]+$/);
-        const ids = [];
-        let page = first;
-        for (let i = 0; i < 10; i++) {
-            ids.push(...page.data.rows.map((/** @type {any} */ r) => r.id));
-            if (!page.data.after) break;
-            expect(page.data.after.split(':')[2]).toBe(first.data.after.split(':')[2]);
-            page = await post('/api/chats/search/messages', { search: 'dragon knight', limit: 3, after: page.data.after });
-            expect(page.status).toBe(200);
-        }
-        expect(new Set(ids).size).toBe(ids.length);
-        expect(ids.length).toBe(7);
-        const [s, doc, weights] = first.data.after.split(':');
-        const wrong = await post('/api/chats/search/messages', { search: 'dragon knight', limit: 3, after: `${s}:${doc}:${weights.split(',')[0]}` });
-        expect(wrong.status).toBe(400);
-        expect(wrong.data.error).toBe('invalid cursor');
-        const one = await post('/api/chats/search/messages', { search: 'knight', limit: 3, after: first.data.after });
-        expect(one.status).toBe(400);
-    });
-});

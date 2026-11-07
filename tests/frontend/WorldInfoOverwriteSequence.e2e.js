@@ -65,7 +65,7 @@ async function createWorldWithEntry(page, worldName) {
         // @ts-ignore
         const headers = stTest.context().getRequestHeaders();
         const data = { entries: { 0: { uid: 0, key: ['old'], content: 'old book' } } };
-        const response = await fetch('/api/worldinfo/edit', { method: 'POST', headers, body: JSON.stringify({ name: worldName, data }) });
+        const response = await fetch('/api/worldinfo/create', { method: 'POST', headers, body: JSON.stringify({ name: worldName, data, unique: false, replace: true }) });
         if (!response.ok) throw new Error(`world create failed: ${response.status}`);
         const { updateWorldInfoList } = await import('./scripts/world-info.js');
         await updateWorldInfoList();

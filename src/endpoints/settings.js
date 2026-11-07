@@ -23,7 +23,6 @@ import { requestStore, storeRoute, userStore } from '../user-stores.js';
 import { listBundles } from '../bundle-store.js';
 import { settingsDocumentOf } from '../settings-documents.js';
 import { openSettingsDocument } from '../settings-document.js';
-import { bundleRef, unitOfPath } from '../settings-model/settings-compat.js';
 
 const ENABLE_ACCOUNTS = !!getConfigValue('enableUserAccounts', false, 'boolean');
 const ENABLE_REQUEST_COMPRESSION = !!getConfigValue('performance.requestCompression.enabled', false, 'boolean');
@@ -336,62 +335,6 @@ router.post('/save-partial', async function (request, response) {
     } catch (err) {
         console.error(err);
         response.send(err);
-    }
-});
-
-router.post('/level', async function (request, response) {
-    try {
-        const { directories } = request.user;
-        const document = settingsDocumentOf(directories);
-        const { holder, set = {}, unset = [], select = {} } = request.body ?? {};
-        if (!document) return response.status(409).send({ error: 'the settings aren\'t the settings model\'s' });
-        if (!holder || (holder.type !== 'character' && holder.type !== 'group') || typeof holder.id !== 'string' || !holder.id) {
-            return response.status(400).send({ error: 'holder must be { type: \'character\' | \'group\', id }' });
-        }
-        /** @type {{ bundles: Record<string, string | null>, set: Record<string, unknown>, delete: string[] }} */
-        const change = { bundles: {}, set: {}, delete: [] };
-        const fieldOf = (/** @type {string} */ path) => {
-            const unit = unitOfPath(path.split('.'));
-            return unit.kind === 'field' && unit.field.includes('/') && unit.path === path ? unit.field : null;
-        };
-        for (const [path, value] of Object.entries(set)) {
-            const field = fieldOf(path);
-            if (!field) return response.status(400).send({ error: `${path} isn't a bundle's field` });
-            change.set[field] = value;
-        }
-        for (const path of Array.isArray(unset) ? unset : []) {
-            const field = fieldOf(String(path));
-            if (!field) return response.status(400).send({ error: `${path} isn't a bundle's field` });
-            change.delete.push(field);
-        }
-        for (const [path, name] of Object.entries(select)) {
-            const unit = unitOfPath(path.split('.'));
-            if (unit.kind !== 'selection') return response.status(400).send({ error: `${path} isn't a selection` });
-            change.bundles[unit.group] = typeof name === 'string' && name ? bundleRef(unit.group, name) : null;
-        }
-        await document.writeLevel(`${holder.type}:${holder.id}`, change);
-        const context = holder.type === 'group' ? { groupId: holder.id } : { avatar: holder.id };
-        const settings = document.settingsFor(context);
-        response.send({ result: 'ok', settings, settingsHash: pageSettingsHash(settings) });
-    } catch (err) {
-        console.error('Could not change a level\'s settings', err);
-        response.status(500).send({ error: true });
-    }
-});
-
-router.post('/for-context', function (request, response) {
-    const { directories } = request.user;
-    const document = settingsDocumentOf(directories);
-    const context = contextOf(request.body);
-    if (!document) {
-        const settings = readAllSettings(directories);
-        return response.send({ settings, sources: {}, settingsHash: pageSettingsHash(settings) });
-    }
-    try {
-        const { settings, sources } = document.view(context, rangeOf(request.body));
-        response.send({ settings, sources, settingsHash: pageSettingsHash(settings) });
-    } catch (err) {
-        response.status(400).send({ error: String(/** @type {Error} */ (err).message) });
     }
 });
 

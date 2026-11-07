@@ -3,7 +3,6 @@ import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '.
 import { LINKS, storedLinks } from './character-links.js';
 import { TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
-import { cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
 
 const ENTRY_KEYS = Object.freeze([
     'uid', 'key', 'keysecondary', 'comment', 'content', 'constant', 'vectorized', 'selective', 'selectiveLogic',
@@ -1017,52 +1016,6 @@ export class WorldInfoEngine {
         const [id] = await this.lib.ids(TYPE.ownedBook, [`${owner}:${slot}`]);
         if (id === null) return undefined;
         return this.assemble(await this.stored(id, false), false);
-    }
-
-    /**
-     * @param {object} p
-     * @param {string} [p.name]
-     * @param {bigint} [p.character]
-     * @param {string} p.search
-     * @param {number} p.limit
-     * @param {string} [p.cursor]
-     * @returns {Promise<'missing' | { entries: { uid: string, score: number }[], total: number, totalExact: boolean, cursor?: string }>}
-     */
-    async search({ name, character, search, limit, cursor }) {
-        let book = null;
-        if (character !== undefined) {
-            [book] = await this.lib.ids(TYPE.ownedBook, [`${character}:${SLOT.characterBook}`]);
-        } else if (name !== undefined) {
-            const found = await this.find(name);
-            book = found?.defined ? found.id : null;
-        }
-        if (book === null) return 'missing';
-        const clauses = searchClauses(search);
-        if (clauses.length === 0) return { entries: [], total: 0, totalExact: true };
-        const m = typeof cursor === 'string' ? /^s([^:]+):(\d+)(?::([^:]*))?$/.exec(cursor) : null;
-        const weights = m?.[3] === undefined ? undefined : cursorWeights(m[3]);
-        const after = m && Number.isFinite(Number(m[1])) && weights !== null
-            ? { score: Number(m[1]), doc: BigInt(m[2]), ...(weights ? { weights } : {}) }
-            : undefined;
-        const read = (/** @type {object | undefined} */ from) => this.store.search({ scope: { book }, clauses, limit, ...(from ? { after: from } : {}) });
-        let found;
-        try {
-            found = await read(after);
-        } catch (err) {
-            if (!after || !/^invalid cursor/.test(String(/** @type {any} */ (err)?.message))) throw err;
-            found = await read(undefined);
-        }
-        const entities = await this.lib.entities(found.hits.map((/** @type {any} */ h) => h.doc));
-        const entries = found.hits.flatMap((/** @type {any} */ h, /** @type {number} */ i) => {
-            const e = entities[i];
-            return e ? [{ uid: e.key.slice(e.key.indexOf(':') + 1), score: h.score }] : [];
-        });
-        return {
-            entries,
-            total: found.total,
-            totalExact: found.totalExact,
-            ...(found.next ? { cursor: `s${found.next.score}:${found.next.doc}${cursorWeightsOf(found.next)}` } : {}),
-        };
     }
 
     /**

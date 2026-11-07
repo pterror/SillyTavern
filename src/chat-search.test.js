@@ -24,7 +24,7 @@ const three = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000a3' 
 const msg = (/** @type {boolean} */ isUser, /** @type {string} */ mes) => ({ name: isUser ? 'You' : 'Cara', is_user: isUser, is_system: false, mes, extra: {} });
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
-    test(`${kind}: the chat list, its search, message search and names`, async () => {
+    test(`${kind}: the chat list, its search and names`, async () => {
         const store = await engine.Store.open(path.join(root, kind));
         const chats = await ChatEngine.open(store, people);
         const t = cara.id;
@@ -72,30 +72,9 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const rest = await chats.searchChatList({ tree: t, search: 'hello', session: one.session, limit: 1, after: first.next });
         assert.deepEqual([...first.rows, ...rest.rows].map(r => r.name), ['Morning visit', 'Evening walk']);
 
-        const messages = async (/** @type {string} */ search, p = {}) => (await chats.searchMessages({ tree: t, search, limit: 10, ...p }));
-        const hello = await messages('hello');
-        assert.deepEqual(hello.rows.map(r => [r.id, r.snippet, r.depth]), [[greeting, 'Hello there!', 1n]]);
-        assert.equal(hello.partial, undefined);
-        assert.deepEqual((await messages('visit')).rows.map(r => [r.id, r.score]), [[u2, null]], 'a part of a word, by the scan');
-        assert.deepEqual((await messages('VISIT')).rows.map(r => r.id), [u2]);
-        assert.deepEqual((await messages('visiting')).rows.map(r => [r.id, r.score === null]), [[u2, false]], 'whole words aren\'t scanned twice');
-        assert.deepEqual((await messages('hello visit')).rows, []);
-        const capped = await messages('visit', { scanBytes: 0 });
-        assert.equal(capped.partial, true);
-        const all = capped.rows.map(r => r.id);
-        let cursor = capped.scanCursor;
-        for (let i = 0; cursor && i < 20; i++) {
-            const next = await messages('visit', { scanBytes: 0, scanCursor: cursor });
-            all.push(...next.rows.map(r => r.id));
-            cursor = next.scanCursor;
-        }
-        assert.equal(cursor, undefined);
-        assert.deepEqual(all, [u2]);
-
         await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: u2, content: msg(true, 'Just wandering.') }], actor: one });
         assert.deepEqual(await found('wandering'), ['Morning visit']);
         assert.deepEqual(await found('visiting'), []);
-        assert.deepEqual((await messages('wander')).rows.map(r => r.id), [u2]);
 
         assert.deepEqual(await found('wande'), ['Morning visit'], 'a part of a word, by the scan');
         assert.deepEqual(await found('WANDE'), ['Morning visit']);
@@ -106,7 +85,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await found('"just wande"'), ['Morning visit'], 'a closed phrase without its quotes');
         assert.deepEqual(await found('"just wande'), ['Morning visit'], 'an open phrase without its quote');
         assert.deepEqual(await found('-wande'), ['Morning visit'], 'a leading dash dropped');
-        assert.deepEqual((await messages('-wande')).rows.map(r => r.id), [u2], 'messages: a leading dash dropped');
         assert.deepEqual(await found('wandering'), ['Morning visit']);
         assert.deepEqual(await found('walk'), ['Evening walk'], 'a name match');
         const mixed = await names({ search: 'o', session: one.session });

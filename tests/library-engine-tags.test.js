@@ -125,8 +125,6 @@ const both = {
     delete: async (/** @type {string} */ id, /** @type {string | null} */ into) => [await metadataDb.deleteTagDefinition(directories, id, into), await library.tags.delete(id, into)],
     assign: async (/** @type {string} */ key, /** @type {string} */ tag) => [await metadataDb.assignEntityTagReporting(directories, key, tag), await library.tags.assign(key, tag)],
     unassign: async (/** @type {string} */ key, /** @type {string} */ tag) => [await metadataDb.unassignEntityTag(directories, key, tag), await library.tags.unassign(key, tag)],
-    copy: async (/** @type {string} */ from, /** @type {string} */ to) => [await metadataDb.copyEntityTags(directories, from, to), await library.tags.copy(from, to)],
-    move: async (/** @type {string} */ from, /** @type {string} */ to) => [await metadataDb.moveEntityTags(directories, from, to), await library.tags.move(from, to)],
 };
 
 async function settle() {
@@ -283,10 +281,16 @@ describe('tags on the engine against the old store', () => {
         expect(await both.edit('nobody', { name: 'x' })).toEqual([{ refused: [{ id: 'nobody', reason: 'missing' }] }, { refused: [{ id: 'nobody', reason: 'missing' }] }]);
         await both.unassign(keys[2], tagIds[3]);
         await both.unassign(keys[2], 'nobody');
-        expect(await both.copy(keys[3], keys[4])).toEqual(['ok', 'ok']);
-        expect(await both.copy('nobody.png', keys[4])).toEqual(['not_found', 'not_found']);
-        const [movedOld, movedEng] = await both.move(keys[5], keys[6]);
-        expect({ ...movedEng, moved: [...movedEng.moved].sort() }).toEqual({ ...movedOld, moved: [...movedOld.moved].sort() });
+        expect(await metadataDb.copyEntityTags(directories, keys[3], keys[4])).toBe('ok');
+        for (const tag of (await library.tags.tagIdsFor([keys[3]]))[keys[3]]) await library.tags.assign(keys[4], tag);
+        expect(await metadataDb.copyEntityTags(directories, 'nobody.png', keys[4])).toBe('not_found');
+        const movedOld = await metadataDb.moveEntityTags(directories, keys[5], keys[6]);
+        const moving = (await library.tags.tagIdsFor([keys[5]]))[keys[5]];
+        for (const tag of moving) {
+            await library.tags.assign(keys[6], tag);
+            await library.tags.unassign(keys[5], tag);
+        }
+        expect([...moving].sort()).toEqual([...movedOld.moved].sort());
 
         const [x, y, z, w] = tagIds.slice(10, 14);
         const deletes = [[x, y], [y, z], [w, null], [x, z], [z, z], [tagIds[15], w]];

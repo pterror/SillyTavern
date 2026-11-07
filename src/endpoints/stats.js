@@ -140,22 +140,3 @@ router.post('/totals', async function (request, response) {
 router.post('/recreate', function (_request, response) {
     return response.sendStatus(200);
 });
-
-router.post('/update', function (request, response) {
-    if (!request.body) return response.sendStatus(400);
-    return response.sendStatus(200);
-});
-
-router.post('/increment', async function (request, response) {
-    const { avatar, deltas } = request.body ?? {};
-    if (typeof avatar !== 'string' || !avatar || typeof deltas !== 'object' || deltas === null) {
-        return response.sendStatus(400);
-    }
-    try {
-        const stats = await statsFor(request, [avatar]);
-        return response.send(stats[avatar] ?? upstreamShape(NO_STATS));
-    } catch (error) {
-        console.error('Could not read the stats:', error);
-        return response.sendStatus(500);
-    }
-});

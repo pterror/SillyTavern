@@ -692,44 +692,6 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
-     * @param {string} from
-     * @param {string} to
-     * @returns {Promise<'ok' | 'not_found'>}
-     */
-    async copy(from, to) {
-        if (tagEntityTypeOf(from) === null || tagEntityTypeOf(to) === null) return 'not_found';
-        const [fromId] = await this.entityIds([from]);
-        if (fromId === null) return 'not_found';
-        const [tags] = await this.store.libraryTagIds([fromId]);
-        return this.withEntities([to], async ([entity]) => {
-            if (!entity) return 'not_found';
-            const records = this.addRecords(entity, tags);
-            if (records.length > 0) await this.store.commit(records);
-            return 'ok';
-        });
-    }
-
-    /**
-     * @param {string} from
-     * @param {string} to
-     * @returns {Promise<{ result: 'ok' | 'not_found', moved: string[] }>}
-     */
-    async move(from, to) {
-        if (tagEntityTypeOf(from) === null || from === to) return { result: 'ok', moved: [] };
-        return this.withEntities([from, to], async ([source, target]) => {
-            if (!source || source.tags.length === 0) return { result: 'ok', moved: [] };
-            if (!target) return { result: 'not_found', moved: [] };
-            const [tags] = await this.store.libraryTagIds([source.id]);
-            await this.store.commit([
-                ...this.addRecords(target, tags),
-                ...source.tags.map(tag => ({ kind: 'tagAssign', entity: source.id, tag, assigned: false })),
-            ]);
-            const moved = await this.tagKeys(source.tags);
-            return { result: 'ok', moved: /** @type {string[]} */ (moved.filter(k => k !== null)) };
-        });
-    }
-
-    /**
      * @returns {Promise<Queued[]>}
      */
     async queue() {

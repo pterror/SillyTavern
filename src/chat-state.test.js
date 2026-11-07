@@ -62,14 +62,14 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const gain = [{ key: 'gold', variable: true, value: 1 }, { key: 'scene', value: 'road' }];
         const append = (changes, actor = tabA, sendKeys = []) => chats.appendMessages({ tree: t, treeSpeaker: cara, after: at, contents: [reply], changes: [changes], sendKeys, regenerated: true, actor });
         const stateAt = async id => (await chats.stateAt({ tree: t, at: id })).state;
-        await chats.changeState({ tree: t, at, ops: [{ key: 'scene', value: 'road' }], actor: tabA });
+        await chats.mergeMetadata({ tree: t, at, set: { scene: 'road' }, unset: [], actor: tabA });
 
         const first = await append(gain, tabA, ['k1']);
         const [r1] = first.node_ids;
         assert.deepEqual(await stateAt(r1), { scene: 'road', variables: { gold: 1 } });
         assert.deepEqual(await stateAt(at), { scene: 'road' });
 
-        await chats.changeState({ tree: t, at: r1, ops: [{ key: 'mood', value: 'glad' }], actor: tabA });
+        await chats.mergeMetadata({ tree: t, at: r1, set: { mood: 'glad' }, unset: [], actor: tabA });
         const head = await chats.store.chatRead('nextIds', {});
         assert.deepEqual((await append(gain, tabB)).node_ids, [r1]);
         assert.equal((await chats.store.chatRead('nextIds', {})).change, head.change);

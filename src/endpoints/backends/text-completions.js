@@ -13,7 +13,7 @@ import {
 import { forEachBodyText, forwardFetchResponse, trimV1, getConfigValue, pickKeys } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
-import { pipeLlamaCppCompactStream, getLlamaCppStreamMeta, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeStoredReplyFrame, encodeIndexFrame, encodeReasoningFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
+import { pipeLlamaCppCompactStream, createBackpressureWriter, createGenerationRecord, createResumableWriter, detachFromResponse, handleGenerationResume, encodeContent, encodeStoredReplyFrame, encodeIndexFrame, encodeReasoningFrame, encodeProbabilitiesFrame, encodeControlFrame, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 import { resolveTextGenBackend } from '../../textgen-backend-resolve.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerAnswer, tokenizerIdentity } from '../../tokenizer-resolve.js';
@@ -789,16 +789,6 @@ router.post('/generate', withGenerationStop(async function (request, response) {
     }
 }));
 
-router.get('/generate/meta/:id', function (request, response) {
-    const meta = getLlamaCppStreamMeta(request.params.id);
-
-    if (!meta) {
-        return response.sendStatus(404);
-    }
-
-    return response.json(meta);
-});
-
 router.get('/generate/resume/:id', handleGenerationResume);
 
 router.post('/generate/stop/:id', handleGenerationStop);
@@ -829,129 +819,6 @@ ollama.post('/download', async function (request, response) {
 
         console.debug('Ollama pull response:', await fetchResponse.json());
         return response.send({ ok: true });
-    } catch (error) {
-        console.error(error);
-        return response.sendStatus(500);
-    }
-});
-
-ollama.post('/caption-image', async function (request, response) {
-    try {
-        if (!request.body.server_url || !request.body.model) {
-            return response.sendStatus(400);
-        }
-
-        console.debug('Ollama caption request:', request.body);
-        const baseUrl = trimV1(request.body.server_url);
-
-        const fetchResponse = await fetchOutgoing(`${baseUrl}/api/generate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: request.body.model,
-                prompt: request.body.prompt,
-                images: [request.body.image],
-                stream: false,
-            }),
-        });
-
-        if (!fetchResponse.ok) {
-            const errorText = await fetchResponse.text();
-            console.error('Ollama caption error:', fetchResponse.status, fetchResponse.statusText, errorText);
-            return response.status(500).send({ error: true });
-        }
-
-        /** @type {any} */
-        const data = await fetchResponse.json();
-        console.debug('Ollama caption response:', data);
-
-        const caption = data?.response || '';
-
-        if (!caption) {
-            console.error('Ollama caption is empty.');
-            return response.status(500).send({ error: true });
-        }
-
-        return response.send({ caption });
-    } catch (error) {
-        console.error(error);
-        return response.sendStatus(500);
-    }
-});
-
-const llamacpp = express.Router();
-
-llamacpp.post('/props', async function (request, response) {
-    try {
-        if (!request.body.server_url) {
-            return response.sendStatus(400);
-        }
-
-        console.debug('LlamaCpp props request:', request.body);
-        const baseUrl = trimV1(request.body.server_url);
-
-        const fetchResponse = await fetchOutgoing(`${baseUrl}/props`, {
-            method: 'GET',
-        });
-
-        if (!fetchResponse.ok) {
-            console.error('LlamaCpp props error:', fetchResponse.status, fetchResponse.statusText);
-            return response.status(500).send({ error: true });
-        }
-
-        const data = await fetchResponse.json();
-        console.debug('LlamaCpp props response:', data);
-
-        return response.send(data);
-    } catch (error) {
-        console.error(error);
-        return response.sendStatus(500);
-    }
-});
-
-llamacpp.post('/slots', async function (request, response) {
-    try {
-        if (!request.body.server_url) {
-            return response.sendStatus(400);
-        }
-        if (!/^(erase|info|restore|save)$/.test(request.body.action)) {
-            return response.sendStatus(400);
-        }
-
-        console.debug('LlamaCpp slots request:', request.body);
-        const baseUrl = trimV1(request.body.server_url);
-
-        let fetchResponse;
-        if (request.body.action === 'info') {
-            fetchResponse = await fetchOutgoing(`${baseUrl}/slots`, {
-                method: 'GET',
-            });
-        } else {
-            if (!/^\d+$/.test(request.body.id_slot)) {
-                return response.sendStatus(400);
-            }
-            if (request.body.action !== 'erase' && !request.body.filename) {
-                return response.sendStatus(400);
-            }
-
-            fetchResponse = await fetchOutgoing(`${baseUrl}/slots/${request.body.id_slot}?action=${request.body.action}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    filename: request.body.action !== 'erase' ? `${request.body.filename}` : undefined,
-                }),
-            });
-        }
-
-        if (!fetchResponse.ok) {
-            console.error('LlamaCpp slots error:', fetchResponse.status, fetchResponse.statusText);
-            return response.status(500).send({ error: true });
-        }
-
-        const data = await fetchResponse.json();
-        console.debug('LlamaCpp slots response:', data);
-
-        return response.send(data);
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
@@ -1004,5 +871,4 @@ tabby.post('/download', async function (request, response) {
 });
 
 router.use('/ollama', ollama);
-router.use('/llamacpp', llamacpp);
 router.use('/tabby', tabby);

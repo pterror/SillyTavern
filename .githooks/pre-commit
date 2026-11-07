@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Blocks commits that introduce dangling import/export references (Cannot find name / no exported
-# member / declared but not exported), new circular-import growth, and exports of public/ that nothing in the app or
-# its tests imports (scripts/public-exports.mjs).
+# member / declared but not exported), new circular-import growth, exports of public/ that nothing in the app or
+# its tests imports (scripts/public-exports.mjs), and server routes nothing in the app calls (scripts/server-routes.mjs).
 # It also blocks any eslint failure in src/ and engine/ (bare fetch() included), and any lint, type, format or test
 # failure in packages/ (the new code).
 #
@@ -133,6 +133,12 @@ fi
 # repository, and upstream's extensions are not supported.
 if ! exports_output="$(node scripts/public-exports.mjs . 2>&1)"; then
     echo "pre-commit: blocked -- $exports_output" >&2
+    exit 1
+fi
+
+# Every server route is called by the app: a route nothing here calls is served for code outside this repository.
+if ! routes_output="$(node scripts/server-routes.mjs . 2>&1)"; then
+    echo "pre-commit: blocked -- $routes_output" >&2
     exit 1
 fi
 

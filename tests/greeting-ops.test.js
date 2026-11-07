@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../src/greeting-ops.js';
+import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefaultByHash } from '../src/greeting-ops.js';
 
 const h = hashGreetingText;
 const modelOf = (greetings, defaultIndex = 0) => ({ greetings, defaultIndex });
@@ -291,13 +291,8 @@ describe('opUnsetDefaultByHash', () => {
 });
 
 describe('an op whose outcome is already in place succeeds', () => {
-    test('unset with no default any more, by position or by hash', () => {
-        expect(opUnsetDefault(modelOf(['a', 'b'], null), 0)).toEqual({ ok: true, model: modelOf(['a', 'b'], null) });
+    test('unset with no default any more', () => {
         expect(opUnsetDefaultByHash(modelOf(['a', 'b'], null), h('b'))).toEqual({ ok: true, model: modelOf(['a', 'b'], null) });
-    });
-
-    test('unset by position still refuses when another greeting is the default', () => {
-        expect(opUnsetDefault(modelOf(['a', 'b'], 1), 0)).toEqual({ ok: false, reason: 'default greeting changed since it was loaded' });
     });
 
     test('set default, when copies of the text make the greeting ambiguous but the default is one of them', () => {

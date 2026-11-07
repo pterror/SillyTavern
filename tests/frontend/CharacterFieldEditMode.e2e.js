@@ -154,7 +154,7 @@ function recordSaveRequests(page) {
     page.on('request', (request) => {
         if (request.method() !== 'POST') return;
         const path = new URL(request.url()).pathname;
-        if (path === '/api/characters/merge-attributes' || path === '/api/characters/edit-attribute' || path.startsWith('/api/characters/greetings/')) {
+        if (path === '/api/characters/merge-attributes' || path.startsWith('/api/characters/greetings/')) {
             paths.push(path);
         }
     });

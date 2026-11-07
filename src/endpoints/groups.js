@@ -9,7 +9,7 @@ import { sync as writeFileAtomicSync, default as writeFileAtomic } from 'write-f
 import { color, tryParse } from '../util.js';
 import { forbiddenRegExp } from '../middleware/validateFileName.js';
 import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav } from '../../public/scripts/hash-utils.js';
-import { isValidGroupId, normalizeGroupId, normalizeGroupRecord, storedGroup } from '../group-id.js';
+import { normalizeGroupId, normalizeGroupRecord, storedGroup } from '../group-id.js';
 import { isChatHeaderEntry } from '../chat-header.js';
 import { withGroupFilesLock } from '../group-lock.js';
 import { requestStore, userStore } from '../user-stores.js';
@@ -380,25 +380,6 @@ router.post('/create', async (request, response) => {
     }
 });
 
-router.post('/edit', validateGroupIdBody, async (request, response) => {
-    const id = request.body.id;
-    const { lib } = await requestStore(request);
-    if (!isValidGroupId(id) && (await lib.ids(TYPE.group, [id]))[0] === null) {
-        return response.sendStatus(400);
-    }
-    warnOnGroupMetadata(request.body);
-    try {
-        await lib.writeGroup(storedGroup({ ...request.body }));
-        if (Object.hasOwn(request.body, 'chat_id')) {
-            await moveToChatNamed(request, response, { group: id }, request.body.chat_id);
-        }
-    } catch (error) {
-        return sendGroupSaveFailed(response, request.body.id, error);
-    }
-
-    return response.send({ ok: true });
-});
-
 const GROUP_PARTIAL_ALLOWED_FIELDS = new Set([
     'name', 'members', 'disabled_members', 'chat_id', 'chats',
     'generation_mode', 'generation_mode_join_prefix', 'generation_mode_join_suffix',
@@ -472,23 +453,6 @@ router.post('/members', validateGroupIdBody, async (request, response) => {
         return sendGroupSaveFailed(response, id, error);
     }
     return response.send(answer);
-});
-
-router.post('/new-chat', validateGroupIdBody, async (request, response) => {
-    const { id } = request.body;
-    try {
-        const store = await requestStore(request);
-        const [tree] = await store.people.trees([{ group: id }]);
-        if (tree === null || tree === undefined) {
-            return response.sendStatus(404);
-        }
-        const session = await requestSession(store.chats, request, tree);
-        await store.chats.startChat({ tree, actor: session.actor(), group: true });
-        session.answer(response, { moved: true });
-        return response.send(await groupChats(store, request, tree, session));
-    } catch (error) {
-        return sendGroupSaveFailed(response, id, error);
-    }
 });
 
 router.post('/delete', validateGroupIdBody, async (request, response) => {

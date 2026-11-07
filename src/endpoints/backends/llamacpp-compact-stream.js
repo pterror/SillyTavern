@@ -153,44 +153,6 @@ export function encodeEvent(data, lastIndex) {
     return { bytes: parts.length ? Buffer.concat(parts) : Buffer.alloc(0), index: nextIndex };
 }
 
-const META_KEYS = ['prompt', 'generation_settings', 'timings', 'tokens_cached', 'model', 'truncated', 'stopping_word', 'has_new_line'];
-const META_CACHE_MAX = 50;
-const META_TTL_MS = 10 * 60 * 1000;
-
-/** @type {Map<string, {data: any, storedAt: number}>} */
-const metaCache = new Map();
-
-function stashMeta(id, data) {
-    const now = Date.now();
-
-    for (const [key, entry] of metaCache) {
-        if (now - entry.storedAt > META_TTL_MS) {
-            metaCache.delete(key);
-        }
-    }
-
-    while (metaCache.size >= META_CACHE_MAX) {
-        const oldestKey = metaCache.keys().next().value;
-        if (oldestKey === undefined) break;
-        metaCache.delete(oldestKey);
-    }
-
-    metaCache.set(id, { data, storedAt: now });
-}
-
-/** @returns {any | null} */
-export function getLlamaCppStreamMeta(id) {
-    const entry = metaCache.get(id);
-    if (!entry) return null;
-
-    if (Date.now() - entry.storedAt > META_TTL_MS) {
-        metaCache.delete(id);
-        return null;
-    }
-
-    return entry.data;
-}
-
 const GENERATION_BUFFER_MAX_BYTES = 2 * 1024 * 1024;
 const GENERATION_CACHE_MAX = 50;
 const GENERATION_TTL_MS = 10 * 60 * 1000;
@@ -520,7 +482,6 @@ export async function pipeLlamaCppCompactStream(upstreamResponse, response, pers
             writer.write(bytes);
 
             if (data.stop) {
-                stashMeta(id, Object.fromEntries(META_KEYS.map(key => [key, data[key]])));
                 finish();
             }
         }

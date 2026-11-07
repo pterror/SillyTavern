@@ -234,14 +234,8 @@ describe('every card-sending route sends both fav fields as the column boolean',
         /** @type {[string, any][]} */
         const sent = [];
 
-        let searched;
-        const deadline = Date.now() + 10000;
-        do {
-            searched = await (await postJson('/api/characters/all', { search: 'zorkmid' })).json();
-            if (searched.items?.length > 0) break;
-            await new Promise(resolve => setTimeout(resolve, 100));
-        } while (Date.now() < deadline);
-        sent.push(['/all search', searched.items.find(c => c.avatar === avatar)]);
+        const searched = await (await postJson('/api/characters/query', { filter: { search: 'zorkmid' }, page: 1, pageSize: 10 })).json();
+        sent.push(['/query search', searched.rows.find(c => c.avatar === avatar)]);
 
         sent.push(['/batch', (await (await postJson('/api/characters/batch', { avatars: [avatar] })).json())[0]]);
         sent.push(['/batch fields', (await (await postJson('/api/characters/batch', { avatars: [avatar], fields: ['fav', 'data'] })).json())[0]]);

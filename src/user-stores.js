@@ -199,18 +199,6 @@ export function requestStore(request) {
 }
 
 /**
- * @param {UserStore} store
- * @param {{ avatar_url?: unknown, group_id?: unknown }} body
- * @returns {Promise<bigint | null>}
- */
-export async function treeOf(store, body) {
-    const owner = typeof body?.avatar_url === 'string' ? { avatar: body.avatar_url } : typeof body?.group_id === 'string' ? { group: body.group_id } : null;
-    if (owner === null) return null;
-    const [tree] = await store.people.trees([owner]);
-    return tree ?? null;
-}
-
-/**
  * @param {string} what
  * @param {(request: any, response: any) => Promise<unknown>} handler
  */

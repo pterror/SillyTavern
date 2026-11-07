@@ -354,11 +354,7 @@ describe('a message\'s avatar', () => {
             actor: { user: 'u', session: (await import('../src/chat-engine.js')).newSessionKey() },
         });
         expect(imported.ok).toBe(true);
-        const raw = async () => {
-            const all = [];
-            for await (const batch of user.store.chats.treeMessages(/** @type {bigint} */ (tree), 64)) all.push(...batch);
-            return [...(await user.store.chats.stored(all)).values()];
-        };
+        const raw = async () => [...(await user.store.chats.stored(await user.store.chats.messageIds(imported.node_ids))).values()];
         const readBack = async () => {
             const [stored] = await raw();
             const [message] = await user.store.chats.decoded([stored]);

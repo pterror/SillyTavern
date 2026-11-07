@@ -110,8 +110,6 @@ describe('world-info history', () => {
         expect(again.uid).toBe('2');
         expect((await read())[2]).toEqual({ ...was, uid: 2 });
         expect(await books.restore('b', id, ALICE)).toBe('no entry');
-        const found = /** @type {any} */ (await books.search({ name: 'b', search: 'knight', limit: 10 }));
-        expect(found.entries.map((/** @type {any} */ e) => e.uid)).toEqual(['2']);
     });
 
     test('a revert is a new change, and the entry index follows a displayIndex set back', async () => {

@@ -160,13 +160,12 @@ describe('user stores', () => {
         expect(await marks(/** @type {bigint} */ (alice))).toBe(aliceMarks);
         const [bob] = await s.people.trees([{ avatar: 'Bob.png' }]);
         const bobTree = /** @type {bigint} */ (bob);
-        const atRoot = await s.chats.changeState({ tree: bobTree, at: null, ops: [{ key: 'root note', value: 'x' }], actor: { user: 'u' } });
-        expect(atRoot.ok).toBe(true);
+        const rootChange = String((await s.chats.store.chatRead('nextIds', {})).change);
+        expect((await s.chats.mergeMetadata({ tree: bobTree, at: null, set: { 'root note': 'x' }, unset: [], actor: { user: 'u' } })).ok).toBe(true);
         const gone = await s.chats.deleteTree({ tree: bobTree, actor: { user: 'u' } });
         expect(gone.ok).toBe(true);
         expect(gone.drops?.bookmarks.length).toBe(1);
-        const rootIds = atRoot.ok ? atRoot.changes : [];
-        expect(gone.drops?.changes.filter(c => c.node_id === null).map(c => c.id)).toEqual(expect.arrayContaining(rootIds));
+        expect(gone.drops?.changes.filter(c => c.node_id === null).map(c => c.id)).toContain(rootChange);
         expect((await s.chats.stateAt({ tree: bobTree, at: null })).state).toEqual({});
         await s.lib.deleteEntity(0, 'Bob.png');
         expect((await s.lib.ids(6, ['Bob']))[0]).toBeNull();

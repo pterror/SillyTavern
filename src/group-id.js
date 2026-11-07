@@ -17,14 +17,6 @@ export function normalizeGroupId(value) {
 }
 
 /**
- * @param {unknown} value
- * @returns {boolean}
- */
-export function isValidGroupId(value) {
-    return normalizeGroupId(value) !== null;
-}
-
-/**
  * @template T
  * @param {T} group
  * @returns {T}

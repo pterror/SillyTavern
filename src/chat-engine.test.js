@@ -174,22 +174,18 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.mergeMetadata({ tree: t, at: nb, set: { variables: {} }, unset: [], actor });
         assert.deepEqual(await chats.metadata(t, (await chats.messageIds([nb]))[0]), { variables: {} });
 
-        const atGreeting = await chats.changeState({ tree: t, at: ng, ops: [{ key: 'hp', variable: true, value: 10 }, { key: 'scene', value: 'inn' }], actor });
-        assert.equal(atGreeting.changes.length, 2);
-        const below = await chats.changeState({ tree: t, at: new1.node_ids[0], ops: [{ key: 'hp', variable: true, value: 9 }, { key: 'scene', value: 'inn' }, { key: 'integrity', value: 'x' }], actor, author: AUTHOR.script, ref: '/setvar' });
-        assert.equal(below.changes.length, 1, 'a key left as it is, and a derived key, record nothing');
+        await chats.mergeMetadata({ tree: t, at: ng, set: { scene: 'inn' }, unset: [], variables: { set: { hp: 10 } }, actor });
+        const head = await store.chatRead('nextIds', {});
+        await chats.mergeMetadata({ tree: t, at: new1.node_ids[0], set: { scene: 'inn', integrity: 'x' }, unset: [], actor, author: AUTHOR.script });
+        assert.deepEqual(await store.chatRead('nextIds', {}), head, 'a key left as it is, and a derived key, record nothing');
+        await chats.mergeMetadata({ tree: t, at: new1.node_ids[0], set: {}, unset: [], variables: { set: { hp: 9 } }, actor, author: AUTHOR.script });
         const read = await chats.stateAt({ tree: t, at: new1.node_ids[0] });
         assert.deepEqual(read.state, { variables: { hp: 9 }, scene: 'inn' });
         assert.deepEqual(await chats.stateAt({ tree: t, at: new1.node_ids[0], ifHash: read.hash }), { unchanged: true });
-        const revert = await chats.revertChange({ change: below.changes[0], actor });
-        assert.deepEqual((await chats.stateAt({ tree: t, at: new1.node_ids[0] })).state, { variables: { hp: 10 }, scene: 'inn' });
-        await chats.revertChange({ change: revert.change, actor });
-        assert.deepEqual((await chats.stateAt({ tree: t, at: new1.node_ids[0] })).state, read.state);
         assert.deepEqual((await chats.stateAt({ tree: t, at: ng })).state, { variables: { hp: 10 }, scene: 'inn' });
-        assert.deepEqual(await chats.revertChange({ change: '999999', actor }), { ok: false, reason: 'unknown change' });
-        assert.deepEqual(await chats.changeState({ tree: t, at: 'no such message', ops: [], actor }), { ok: false, reason: 'unknown node' });
-        await chats.changeState({ tree: t, at: ng, ops: [{ key: 'hp', variable: true }, { key: 'scene' }], actor });
-        await chats.changeState({ tree: t, at: new1.node_ids[0], ops: [{ key: 'hp', variable: true }], actor });
+        assert.deepEqual(await chats.mergeMetadata({ tree: t, at: 'no such message', set: {}, unset: [], actor }), { ok: false, reason: 'unknown chat' });
+        await chats.mergeMetadata({ tree: t, at: ng, set: {}, unset: ['scene'], variables: { unset: ['hp'] }, actor });
+        await chats.mergeMetadata({ tree: t, at: new1.node_ids[0], set: {}, unset: [], variables: { unset: ['hp'] }, actor });
 
         assert.equal((await chats.load({ tree: t, at: nb, session: actor.session })).metadata.integrity, actor.session);
         const history = async () => store.chatRead('history', { session: (await store.chatRead('ids', { space: 1, keys: [actor.session] }))[0], limit: 1000 });
@@ -385,15 +381,14 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 
 oracles.push(await oldStoreOracle('chat-engine/itemization', 'itemization-store.js', () => directories, { files: false }));
 const itemizations = oracles[1].store;
-const cara2 = { id: 4n, name: 'Cara Two', avatar: 'cara2.png' };
 const groupPeople = {
-    speakers: async ids => new Map(ids.flatMap(id => [cara, ivy, cara2].filter(c => c.id === id).map(c => [id, c]))),
-    byAvatar: async avatars => new Map(avatars.flatMap(a => [cara, ivy, cara2].filter(c => c.avatar === a).map(c => [a, c]))),
+    speakers: async ids => new Map(ids.flatMap(id => [cara, ivy].filter(c => c.id === id).map(c => [id, c]))),
+    byAvatar: async avatars => new Map(avatars.flatMap(a => [cara, ivy].filter(c => c.avatar === a).map(c => [a, c]))),
 };
 groupPeople.owners = fakeOwners(groupPeople);
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
-    testAgainstOld(`${kind}: a group's send keys, itemizations and a member's messages answer as the old store's`, async () => {
+    testAgainstOld(`${kind}: a group's send keys and itemizations answer as the old store's`, async () => {
         const owner = `group-${kind}`;
         const store = await engine.Store.open(path.join(root, `engine-group-${kind}`));
         const chats = await ChatEngine.open(store, groupPeople);
@@ -420,36 +415,11 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.equal(await chats.recordItemization({ node_id: 'no such message', entry: entry(2) }), 'no-message');
         assert.deepEqual(mapped(await chats.readItemization({ node_id: newIds[2] })), mapped(await itemizations.readItemization(directories, oldIds[2])));
         assert.equal(await chats.readItemization({ node_id: newIds[0] }), null);
-        assert.deepEqual(mapped(await chats.chatItemizations({ tree: t, at: newIds[2] })), mapped(await itemizations.chatItemizations(directories, owner, oldIds[2])));
-        assert.equal(await chats.updateItemizationFields({ node_id: newIds[2], fields: { total: 99 } }), await itemizations.updateItemizationFields(directories, oldIds[2], { total: 99 }));
-        assert.equal(await chats.updateItemizationFields({ node_id: newIds[2], fields: { total: 99 } }), 'unchanged');
-        assert.equal(await chats.updateItemizationFields({ node_id: newIds[0], fields: { total: 1 } }), 'no-itemization');
-        assert.deepEqual(mapped(await chats.chatItemizations({ tree: t, at: newIds[2] })), mapped(await itemizations.chatItemizations(directories, owner, oldIds[2])));
         assert.equal((await chats.load({ tree: t, at: newIds[2] })).messages[2].extra[tree.ITEMIZED_PROMPT_FLAG], true);
-        assert.equal(await chats.deleteChatItemizations({ tree: t, at: newIds[2] }), await itemizations.deleteChatItemizations(directories, owner, oldIds[2]));
-        assert.deepEqual(mapped(await chats.chatItemizations({ tree: t, at: newIds[2] })), mapped(await itemizations.chatItemizations(directories, owner, oldIds[2])));
-        assert.equal(await chats.chatItemizations({ tree: t + 1n, at: newIds[2] }), null);
-        await chats.recordItemization({ node_id: newIds[1], entry: entry(1) });
-        await chats.recordItemization({ node_id: newIds[2], entry: entry(2) });
         assert.equal(await chats.clearItemizations({ batch: 1, pause: 0 }), 2);
-        assert.deepEqual(await chats.chatItemizations({ tree: t, at: newIds[2] }), []);
-
-        const loaded = async () => normalizedGroup((await chats.load({ tree: t, at: newIds[2] })).messages, mapped);
-        const oldLoaded = async () => normalizedGroup((await tree.loadAtNode(directories, owner, og)).messages, mapped);
-        for (const [from, to, name] of [['cara.png', 'cara2.png', 'Cara Two'], ['ivy.png', 'someone new.png', 'Someone']]) {
-            const n = await chats.renameMemberInMessages({ tree: t, oldAvatar: from, newAvatar: to, newName: name });
-            assert.equal(n, await tree.renameGroupMemberInMessages(directories, owner, from, to, name));
-            assert.deepEqual(await loaded(), await oldLoaded(), `${from} to ${to}`);
-        }
+        assert.equal(await chats.readItemization({ node_id: newIds[1] }), null);
+        assert.equal(await chats.readItemization({ node_id: newIds[2] }), null);
         await store.close();
-    });
-}
-
-function normalizedGroup(messages, mapped) {
-    return mapped(messages).map(m => {
-        if (m.extra) delete m.extra[tree.ITEMIZED_PROMPT_FLAG];
-        delete m.force_avatar_url;
-        return m;
     });
 }
 

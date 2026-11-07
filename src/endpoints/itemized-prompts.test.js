@@ -169,48 +169,14 @@ describe('the flag on loaded messages', () => {
     });
 });
 
-describe('the routes behind upstream\'s exports', () => {
-    test('/chat answers a chat\'s itemizations by position, or its node ids', async () => {
-        const { ids, session } = await makeChat('Whole');
+describe('clearing', () => {
+    test('/clear removes every itemization', async () => {
+        const { ids } = await makeChat('Gone');
+        const other = await makeChat('Also gone');
         await record(ids[2], { rawPrompt: 'two' });
-        await record(ids[4], { rawPrompt: 'four' });
-        const whole = await post('chat', { avatar_url: 'Alice.png', chat: session });
-        assert.deepEqual(whole.body.entries, [
-            { index: 2, node_id: ids[2], entry: { rawPrompt: 'two' } },
-            { index: 4, node_id: ids[4], entry: { rawPrompt: 'four' } },
-        ]);
-        assert.deepEqual((await post('chat', { avatar_url: 'Alice.png', chat: session, ids_only: true })).body.node_ids, ids);
-        assert.equal((await post('chat', { avatar_url: 'Alice.png', chat: 'Nope' })).status, 404);
-        assert.equal((await post('chat', { avatar_url: 'Bob.png', chat: session })).status, 404, 'a chat of another tree');
-        assert.equal((await post('chat', { avatar_url: 'Someone.png', chat: session })).status, 404, 'no such character');
-        assert.equal((await post('chat', { avatar_url: 'Alice.png' })).status, 400);
-    });
-
-    test('/set replaces entries and merges fields, writing only what changed', async () => {
-        const { ids } = await makeChat('Set');
-        await record(ids[2], { rawPrompt: 'old', presetName: 'P' });
-        const first = await post('set', { items: [
-            { node_id: ids[2], fields: { rawPrompt: 'new' } },
-            { node_id: ids[4], entry: { rawPrompt: 'four' } },
-            { node_id: ids[1], fields: { rawPrompt: 'x' } },
-        ] });
-        assert.deepEqual(first.body, { written: [ids[2], ids[4]], unchanged: [], missing: [ids[1]] });
-        assert.deepEqual((await post('message', { node_id: ids[2] })).body.entry, { rawPrompt: 'new', presetName: 'P' });
-        const again = await post('set', { items: [{ node_id: ids[2], fields: { rawPrompt: 'new' } }, { node_id: ids[4], entry: { rawPrompt: 'four' } }] });
-        assert.deepEqual(again.body, { written: [], unchanged: [ids[2], ids[4]], missing: [] });
-        assert.equal((await post('set', { items: [{ node_id: ids[2], entry: {}, fields: {} }] })).status, 400);
-    });
-
-    test('/delete removes a chat\'s itemizations, /clear all of them', async () => {
-        const { ids, session } = await makeChat('Gone');
-        await record(ids[2], { rawPrompt: 'two' });
-        await record(ids[4], { rawPrompt: 'four' });
-        assert.deepEqual((await post('delete', { avatar_url: 'Alice.png', chat: session })).body, { removed: 2 });
-        assert.equal((await post('message', { node_id: ids[2] })).status, 404);
-
-        const other = await makeChat('Kept');
         await record(other.ids[2], { rawPrompt: 'two' });
         assert.equal((await post('clear', {})).status, 200);
+        assert.equal((await post('message', { node_id: ids[2] })).status, 404);
         assert.equal((await post('message', { node_id: other.ids[2] })).status, 404);
     });
 });

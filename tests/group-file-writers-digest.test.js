@@ -69,9 +69,7 @@ async function stored(id) {
 
 describe('a route whose group write fails answers 500 with a message, and the group is unchanged', () => {
     const ROUTES = [
-        ['/api/groups/edit', (id, group) => ({ ...group, name: 'Changed' })],
         ['/api/groups/save-partial', (id) => ({ id, props: { name: 'Changed' } })],
-        ['/api/groups/new-chat', (id) => ({ id })],
         ['/api/chats/group/save', (id) => ({
             id: 'Brand New Chat',
             group_id: id,

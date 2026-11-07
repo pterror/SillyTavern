@@ -1,9 +1,7 @@
-import fs from 'node:fs';
 import express from 'express';
 
 import { delay } from '../../util.js';
-import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } from '../../additional-headers.js';
-import { TEXTGEN_TYPES } from '../../constants.js';
+import { getOverrideHeaders, setAdditionalHeaders } from '../../additional-headers.js';
 import { readSettingsFor, settingsContextOf } from '../../settings-reads.js';
 import { resolveTokenizer, createTokenizerOutcome, sendTokenizerWarnings, tokenizerAnswer, tokenizerIdentity } from '../../tokenizer-resolve.js';
 import { createStoredCounter, writeBack } from '../../token-count-store.js';
@@ -362,97 +360,4 @@ router.post('/status', async function (request, response) {
     rememberRemoteTokenization('kobold', undefined, api_server, koboldCanUseTokenization(result.koboldCppVersion));
 
     response.send(result);
-});
-
-router.post('/transcribe-audio', async function (request, response) {
-    try {
-        const server = request.body.server;
-
-        if (!server) {
-            console.error('Server is not set');
-            return response.sendStatus(400);
-        }
-
-        if (!request.file) {
-            console.error('No audio file found');
-            return response.sendStatus(400);
-        }
-
-        console.debug('Transcribing audio with KoboldCpp', server);
-
-        const fileBase64 = fs.readFileSync(request.file.path).toString('base64');
-        fs.unlinkSync(request.file.path);
-
-        const headers = {};
-        setAdditionalHeadersByType(headers, TEXTGEN_TYPES.KOBOLDCPP, server, request.user.directories);
-
-        const url = new URL(server);
-        url.pathname = '/api/extra/transcribe';
-
-        const result = await fetchOutgoing(url, {
-            method: 'POST',
-            headers: {
-                ...headers,
-            },
-            body: JSON.stringify({
-                prompt: '',
-                audio_data: fileBase64,
-            }),
-        });
-
-        if (!result.ok) {
-            const text = await result.text();
-            console.error('KoboldCpp request failed', result.statusText, text);
-            return response.status(500).send(text);
-        }
-
-        const data = await result.json();
-        console.debug('KoboldCpp transcription response', data);
-        return response.json(data);
-    } catch (error) {
-        console.error('KoboldCpp transcription failed', error);
-        response.status(500).send('Internal server error');
-    }
-});
-
-router.post('/embed', async function (request, response) {
-    try {
-        const { server, items } = request.body;
-
-        if (!server) {
-            console.warn('KoboldCpp URL is not set');
-            return response.sendStatus(400);
-        }
-
-        const headers = {};
-        setAdditionalHeadersByType(headers, TEXTGEN_TYPES.KOBOLDCPP, server, request.user.directories);
-
-        const embeddingsUrl = new URL(server);
-        embeddingsUrl.pathname = '/api/extra/embeddings';
-
-        const embeddingsResult = await fetchOutgoing(embeddingsUrl, {
-            method: 'POST',
-            headers: {
-                ...headers,
-            },
-            body: JSON.stringify({
-                input: items,
-            }),
-        });
-
-        /** @type {any} */
-        const data = await embeddingsResult.json();
-
-        if (!Array.isArray(data?.data)) {
-            console.warn('KoboldCpp API response was not an array');
-            return response.sendStatus(500);
-        }
-
-        const model = data.model || 'unknown';
-        const embeddings = data.data.map(x => Array.isArray(x) ? x[0] : x).sort((a, b) => a.index - b.index).map(x => x.embedding);
-        return response.json({ model, embeddings });
-    } catch (error) {
-        console.error('KoboldCpp embedding failed', error);
-        response.status(500).send('Internal server error');
-    }
 });

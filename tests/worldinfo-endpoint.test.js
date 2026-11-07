@@ -63,6 +63,10 @@ function makeEntry(uid, content) {
     return { uid, key: [`key${uid}`], content, comment: '', disable: false };
 }
 
+async function saveBook(body) {
+    return postJson('/api/worldinfo/create', { ...body, unique: false, replace: true });
+}
+
 async function getBook(name) {
     return (await postJson('/api/worldinfo/get', { name })).json();
 }
@@ -73,30 +77,25 @@ async function bookVersion(name) {
     return (await lib.entities([id]))[0]?.version;
 }
 
-describe('worldinfo /edit and /get', () => {
+describe('a book saved whole, and /get', () => {
     test('a saved book reads back as it was saved, top-level fields and all', async () => {
         const data = { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') }, name: 'Book', extensions: { foo: 'bar' } };
-        expect((await postJson('/api/worldinfo/edit', { name: 'Book', data })).status).toBe(200);
+        expect((await saveBook({ name: 'Book', data })).status).toBe(200);
         expect(await getBook('Book')).toEqual(data);
     });
 
     test('a save that changes nothing writes nothing', async () => {
         const data = { entries: { 0: makeEntry(0, 'Alpha') } };
-        await postJson('/api/worldinfo/edit', { name: 'Same', data });
+        await saveBook({ name: 'Same', data });
         const before = await bookVersion('Same');
-        await postJson('/api/worldinfo/edit', { name: 'Same', data });
+        await saveBook({ name: 'Same', data });
         expect(await bookVersion('Same')).toBe(before);
     });
 
     test('removing an entry removes only it', async () => {
-        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
-        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 1: makeEntry(1, 'Beta') } } });
+        await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
+        await saveBook({ name: 'Book', data: { entries: { 1: makeEntry(1, 'Beta') } } });
         expect(await getBook('Book')).toEqual({ entries: { 1: makeEntry(1, 'Beta') } });
-    });
-
-    test('rejects a book without entries', async () => {
-        expect((await postJson('/api/worldinfo/edit', { name: 'Bad', data: { notEntries: true } })).status).toBe(400);
-        expect((await postJson('/api/worldinfo/edit', { data: { entries: {} } })).status).toBe(400);
     });
 
     test('/get returns the dummy object for a book that does not exist', async () => {
@@ -106,7 +105,7 @@ describe('worldinfo /edit and /get', () => {
 
 describe('worldinfo /get book id', () => {
     test('a book answers its id, which it keeps across a rename; a missing one answers none', async () => {
-        await postJson('/api/worldinfo/edit', { name: 'Named', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
+        await saveBook({ name: 'Named', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
         const first = await postJson('/api/worldinfo/get', { name: 'Named' });
         const id = first.headers.get('X-ST-Book-Id');
         expect(id).toMatch(/^\d+$/);
@@ -120,7 +119,7 @@ describe('worldinfo /get book id', () => {
 describe('readWorldInfoFile (upstream\'s synchronous export)', () => {
     test('reads what /get reads; a missing book is the dummy object or null', async () => {
         const data = { entries: { 0: makeEntry(0, 'Alpha') }, name: 'Sync' };
-        await postJson('/api/worldinfo/edit', { name: 'Sync', data });
+        await saveBook({ name: 'Sync', data });
         expect(worldinfo.readWorldInfoFile(directories, 'Sync', false)).toEqual(await getBook('Sync'));
         expect(worldinfo.readWorldInfoFile(directories, 'Missing', true, { logMissing: false })).toEqual({ entries: {} });
         expect(worldinfo.readWorldInfoFile(directories, 'Missing', false, { logMissing: false })).toBeNull();
@@ -128,10 +127,10 @@ describe('readWorldInfoFile (upstream\'s synchronous export)', () => {
     });
 
     test('before the store is open it opens it on this thread, and that is the store every later read and write uses', async () => {
-        await postJson('/api/worldinfo/edit', { name: 'Before', data: { entries: { 0: makeEntry(0, 'kept') } } });
+        await saveBook({ name: 'Before', data: { entries: { 0: makeEntry(0, 'kept') } } });
         await stores.closeUserStores();
         expect(worldinfo.readWorldInfoFile(directories, 'Before', false).entries['0'].content).toBe('kept');
-        await postJson('/api/worldinfo/edit', { name: 'Before', data: { entries: { 0: makeEntry(0, 'changed') } } });
+        await saveBook({ name: 'Before', data: { entries: { 0: makeEntry(0, 'changed') } } });
         expect(worldinfo.readWorldInfoFile(directories, 'Before', false).entries['0'].content).toBe('changed');
         expect((await getBook('Before')).entries['0'].content).toBe('changed');
     });
@@ -139,7 +138,7 @@ describe('readWorldInfoFile (upstream\'s synchronous export)', () => {
 
 describe('worldinfo /delete', () => {
     test('deletes the book; a missing one fails', async () => {
-        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
+        await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
         expect((await postJson('/api/worldinfo/delete', { name: 'Book' })).status).toBe(200);
         expect(await getBook('Book')).toEqual({ entries: {} });
         const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -161,7 +160,7 @@ describe('worldinfo /import', () => {
     });
 
     test('re-importing over a stored book replaces it', async () => {
-        await postJson('/api/worldinfo/edit', { name: 'Reimported', data: { entries: { 0: makeEntry(0, 'Old'), 1: makeEntry(1, 'Gone') } } });
+        await saveBook({ name: 'Reimported', data: { entries: { 0: makeEntry(0, 'Old'), 1: makeEntry(1, 'Gone') } } });
         const book = { entries: { 0: makeEntry(0, 'Fresh import') } };
         await postJson('/api/worldinfo/import', { importFilename: 'Reimported.json', convertedData: JSON.stringify(book) });
         expect(await getBook('Reimported')).toEqual(book);
@@ -173,25 +172,13 @@ describe('worldinfo /import', () => {
     });
 });
 
-describe('worldinfo /list', () => {
-    test('lists books by file name, with their names and extensions', async () => {
-        await postJson('/api/worldinfo/import', { importFilename: 'ImportedOne.json', convertedData: JSON.stringify({ entries: {} }) });
-        await postJson('/api/worldinfo/edit', { name: 'SavedOne', data: { entries: { 0: makeEntry(0, 'x') }, name: 'Shown Name', extensions: { a: 1 } } });
-        const res = await postJson('/api/worldinfo/list', {});
-        expect(await res.json()).toEqual([
-            { file_id: 'ImportedOne', name: 'ImportedOne', extensions: {} },
-            { file_id: 'SavedOne', name: 'Shown Name', extensions: { a: 1 } },
-        ]);
-    });
-});
-
 describe('worldinfo /entry/transplant', () => {
     async function seedBooks() {
-        await postJson('/api/worldinfo/edit', {
+        await saveBook({
             name: 'Source',
             data: { entries: { 0: makeEntry(0, 'Moved'), 1: makeEntry(1, 'Stays behind') } },
         });
-        await postJson('/api/worldinfo/edit', {
+        await saveBook({
             name: 'Target',
             data: { entries: { 5: { ...makeEntry(5, 'Already there'), displayIndex: 3 } } },
         });
@@ -249,7 +236,7 @@ describe('worldinfo /entry/transplant', () => {
 
 describe('worldinfo /entry/create and /entry/edit', () => {
     test('mints the lowest free uid and reserves it; two calls never collide', async () => {
-        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
+        await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
         const first = await (await postJson('/api/worldinfo/entry/create', { name: 'Book' })).json();
         const second = await (await postJson('/api/worldinfo/entry/create', { name: 'Book' })).json();
         expect(first).toEqual({ ok: true, entry: { uid: 2 } });
@@ -258,7 +245,7 @@ describe('worldinfo /entry/create and /entry/edit', () => {
     });
 
     test('create takes the uid the page asks for while it is free, else the lowest free one', async () => {
-        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
+        await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
         expect(await (await postJson('/api/worldinfo/entry/create', { name: 'Book', uid: 5 })).json()).toEqual({ ok: true, entry: { uid: 5 } });
         expect(await (await postJson('/api/worldinfo/entry/create', { name: 'Book', uid: 5 })).json()).toEqual({ ok: true, entry: { uid: 1 } });
         expect(Object.keys((await getBook('Book')).entries).sort()).toEqual(['0', '1', '5']);
@@ -267,14 +254,14 @@ describe('worldinfo /entry/create and /entry/edit', () => {
     test('create rejects a nonexistent book, a missing name and a uid that is no integer in range', async () => {
         expect((await postJson('/api/worldinfo/entry/create', { name: 'Ghost' })).status).toBe(404);
         expect((await postJson('/api/worldinfo/entry/create', {})).status).toBe(400);
-        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: {} } });
+        await saveBook({ name: 'Book', data: { entries: {} } });
         for (const uid of [-1, 1.5, '3', 1_000_000]) {
             expect((await postJson('/api/worldinfo/entry/create', { name: 'Book', uid })).status).toBe(400);
         }
     });
 
     test('edit writes one entry whole and keeps its uid', async () => {
-        await postJson('/api/worldinfo/edit', { name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
+        await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
         const res = await postJson('/api/worldinfo/entry/edit', { name: 'Book', uid: 1, data: { ...makeEntry(7, 'Changed') } });
         const changed = { ...makeEntry(7, 'Changed'), uid: 1 };
         expect(await res.json()).toEqual({ ok: true, entry: changed });
@@ -301,8 +288,8 @@ describe('worldinfo /create', () => {
         await postJson('/api/worldinfo/create', { name: 'Taken' });
         expect((await (await postJson('/api/worldinfo/create', { name: 'Taken' })).json()).name).toBe('Taken (1)');
         expect((await (await postJson('/api/worldinfo/create', { name: 'Taken' })).json()).name).toBe('Taken (2)');
-        const res = await postJson('/api/worldinfo/list', {});
-        expect((await res.json()).map((/** @type {any} */ b) => b.file_id)).toEqual(['Taken (1)', 'Taken (2)', 'Taken']);
+        const { lib } = await stores.userStore(directories, 'u');
+        expect((await lib.books.list()).map(b => b.file_id)).toEqual(['Taken (1)', 'Taken (2)', 'Taken']);
     });
 
     test('unique:false rejects a taken name, unless replace; creates the exact name when it is free', async () => {
@@ -316,49 +303,6 @@ describe('worldinfo /create', () => {
     test('rejects a non-string name and data without entries', async () => {
         expect((await postJson('/api/worldinfo/create', { name: 42 })).status).toBe(400);
         expect((await postJson('/api/worldinfo/create', { name: 'X', data: { notEntries: 1 } })).status).toBe(400);
-    });
-});
-
-describe('worldinfo /search', () => {
-    test('a world book\'s and a character\'s own book\'s entries, paged by cursor, 50 when no limit is sent', async () => {
-        const entries = {};
-        for (let i = 0; i < 60; i++) entries[i] = makeEntry(i, `dragon ${i}`);
-        await postJson('/api/worldinfo/edit', { name: 'Searched', data: { entries } });
-        const first = await (await postJson('/api/worldinfo/search', { name: 'Searched', search: 'dragon' })).json();
-        expect(first.entries).toHaveLength(50);
-        expect(first.total).toBe(60);
-        const rest = await (await postJson('/api/worldinfo/search', { name: 'Searched', search: 'dragon', limit: 50, cursor: first.cursor })).json();
-        expect(rest.entries).toHaveLength(10);
-        expect(rest.cursor).toBeUndefined();
-        expect(new Set([...first.entries, ...rest.entries].map(e => e.uid)).size).toBe(60);
-        const keyed = await (await postJson('/api/worldinfo/search', { name: 'Searched', search: 'key7', limit: 5 })).json();
-        expect(keyed.entries.map(e => e.uid)).toEqual(['7']);
-
-        const { lib } = await stores.userStore(directories, 'u');
-        const card = { spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'C', character_book: { entries: [{ id: 3, keys: ['wyvern'], secondary_keys: [], comment: '', content: 'scales', extensions: {} }] } } };
-        await lib.writeCard(directories, 'wi-search.png', JSON.stringify(card));
-        const own = await (await postJson('/api/worldinfo/search', { avatar: 'wi-search.png', search: 'wyv' })).json();
-        expect(own.entries.map(e => e.uid)).toEqual(['0']);
-        await lib.deleteEntity(0, 'wi-search.png');
-    });
-
-    test('a missing book or character is 404; a bad body is 400', async () => {
-        expect((await postJson('/api/worldinfo/search', { name: 'Nope', search: 'x' })).status).toBe(404);
-        expect((await postJson('/api/worldinfo/search', { avatar: 'nope.png', search: 'x' })).status).toBe(404);
-        await postJson('/api/worldinfo/create', { name: 'Bad Bodies' });
-        for (const body of [
-            { search: 'x' },
-            { name: 'Bad Bodies', avatar: 'a.png', search: 'x' },
-            { name: 'Bad Bodies' },
-            { name: 'Bad Bodies', search: 'x', limit: 0 },
-            { name: 'Bad Bodies', search: 'x', limit: 501 },
-            { name: 'Bad Bodies', search: 'x', limit: 2.5 },
-            { name: 'Bad Bodies', search: 'x', limit: '5' },
-            { name: 'Bad Bodies', search: 'x', cursor: 5 },
-        ]) {
-            expect((await postJson('/api/worldinfo/search', body)).status).toBe(400);
-        }
-        expect((await postJson('/api/worldinfo/search', { name: 'Bad Bodies', search: 'x', limit: 500 })).status).toBe(200);
     });
 });
 
@@ -387,14 +331,6 @@ describe('worldinfo missing books', () => {
         await postJson('/api/worldinfo/delete', { name: 'Ghost Get' });
         await getBook('Ghost Get');
         expect(printsFor(errors, 'Ghost Get')).toBe(2);
-    });
-
-    test('worldInfoFileExists never prints', async () => {
-        const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
-        expect(await worldinfo.worldInfoFileExists(directories, 'Ghost Quiet')).toBe(false);
-        expect(printsFor(errors, 'Ghost Quiet')).toBe(0);
-        await postJson('/api/worldinfo/create', { name: 'Ghost Quiet' });
-        expect(await worldinfo.worldInfoFileExists(directories, 'Ghost Quiet')).toBe(true);
     });
 });
 

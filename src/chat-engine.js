@@ -4,13 +4,11 @@ import zlib from 'node:zlib';
 
 import { textEdit } from './text-edit.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
-import { resolveAvatars, resolveAvatarsSync, withoutShownAvatar } from './avatar-refs.js';
+import { resolveAvatars, withoutShownAvatar } from './avatar-refs.js';
 import { ITEMIZED_PROMPT_FLAG } from './prompt-itemization.js';
-import { FIELD, NAME_HISTORY, TYPE, renamesOf } from './library-codes.js';
-import { storedValues } from './entity-values.js';
 import { jsonHash } from '../public/scripts/hash-utils.js';
 import { bookKey } from './world-info-keys.js';
-import { cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
+import { searchClauses } from './search-clauses.js';
 import { SPACE, actorIds, idOf } from './actor-ids.js';
 import { humanizedDateTime, humanizedTail } from '../public/scripts/humanized-date.js';
 
@@ -23,21 +21,6 @@ const zstdDecompress = promisify(zlib.zstdDecompress);
 export const SESSION_NAMESPACE = 'b3c3d5a0-6b5e-4f61-9d2e-5a0c1f7e9e21';
 
 export const MODE = Object.freeze({ following: 1, pinned: 2 });
-
-const SNIPPET_CONTEXT = 80;
-
-/**
- * @param {string} text
- * @param {string[]} needles
- */
-function snippetOf(text, needles) {
-    const low = text.toLowerCase();
-    const at = needles.map(n => low.indexOf(n)).filter(i => i >= 0).sort((a, b) => a - b)[0] ?? 0;
-    const from = Math.max(0, at - SNIPPET_CONTEXT);
-    const to = Math.min(text.length, at + SNIPPET_CONTEXT * 2);
-    return `${from > 0 ? '…' : ''}${text.slice(from, to)}${to < text.length ? '…' : ''}`;
-}
-
 
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
 
@@ -1620,46 +1603,6 @@ export class ChatEngine {
     }
 
     /**
-     * @param {{ tree: bigint, actor: Actor, node_ids: string[] }} p
-     * @returns {Promise<{ ok: true, not_on_path: string[], refused: { node_id: string, reason: string }[], copied: Record<string, string>, drops: Drops }>}
-     */
-    async cutNamed({ tree, actor, node_ids }) {
-        const [sid] = await this.store.chatRead('ids', { space: SPACE.session, keys: [String(actor.session)] });
-        const path = sid === null ? null : await this.shownPath(tree, sid);
-        const shown = path ? await this.externalIds(path) : [];
-        const wanted = new Set(node_ids.map(String));
-        const onPath = new Set(shown.filter(id => id !== null && wanted.has(id)));
-        /** @type {[number, number][]} */
-        const runs = [];
-        for (let i = 0; i < shown.length; i++) {
-            if (!onPath.has(/** @type {string} */ (shown[i]))) continue;
-            if (runs.length && runs[runs.length - 1][1] === i - 1) runs[runs.length - 1][1] = i;
-            else runs.push([i, i]);
-        }
-        /** @type {Drops} */
-        const drops = { bookmarks: [], changes: [] };
-        /** @type {{ node_id: string, reason: string }[]} */
-        const refused = [];
-        /** @type {Record<string, string>} */
-        const copied = {};
-        for (const [first, last] of runs.reverse()) {
-            const answer = await this.cutFromPath({ tree, actor, first: /** @type {string} */ (shown[first]), last: /** @type {string} */ (shown[last]), confirm: 'any' });
-            if (!answer.ok) {
-                refused.push({ node_id: /** @type {string} */ (shown[first]), reason: answer.reason });
-                continue;
-            }
-            if (answer.drops) {
-                drops.bookmarks.push(...answer.drops.bookmarks);
-                drops.changes.push(...answer.drops.changes);
-            }
-            const now = answer.copied ?? {};
-            for (const [from, to] of Object.entries(copied)) if (now[to] !== undefined) copied[from] = now[to];
-            for (const [from, to] of Object.entries(now)) if (!Object.values(copied).includes(from)) copied[from] = to;
-        }
-        return { ok: true, not_on_path: [...wanted].filter(id => !onPath.has(id)), refused, copied, drops };
-    }
-
-    /**
      * @param {EditRequest & { first: string, last: string }} p
      */
     cutEverywhere(p) {
@@ -1910,22 +1853,6 @@ export class ChatEngine {
     }
 
     /**
-     * @param {string} id
-     * @returns {Promise<bigint | null>}
-     */
-    async treeOfChatId(id) {
-        const rows = await this.store.chatRead('chatsNamed', { name: id, limit: 64 });
-        const owners = await this.people.owners([...new Set(rows.map((/** @type {any} */ r) => r.tree))]);
-        const groups = [...owners].filter(([, o]) => o.group).map(([tree]) => tree);
-        if (groups.length === 1) return groups[0];
-        if (groups.length > 1) return null;
-        const sid = await this.sessionId(id);
-        if (sid === null) return null;
-        const [s] = await this.store.chatRead('sessions', { ids: [sid] });
-        return s?.tree ?? null;
-    }
-
-    /**
      * @param {bigint} tree
      * @param {bigint | null} parent
      */
@@ -1948,82 +1875,6 @@ export class ChatEngine {
         };
     }
 
-
-    /**
-     * @param {object} p
-     * @param {bigint} p.tree
-     * @param {string | null} p.at
-     * @param {{ key: string, variable?: boolean, value?: unknown }[]} p.ops
-     * @param {Actor} p.actor
-     * @param {number} [p.author]
-     * @param {string | null} [p.ref]
-     * @returns {Promise<{ ok: true, changes: string[] } | { ok: false, reason: string }>}
-     */
-    changeState({ tree, at, ops, actor, author = AUTHOR.user, ref = null }) {
-        return this.serialized(tree, async () => {
-            let message = null;
-            if (at !== null) {
-                [message] = await this.messageIds([at]);
-                const s = message === null ? undefined : (await this.stored([message])).get(message);
-                if (!s || s.owner !== tree) return { ok: false, reason: 'unknown node' };
-            }
-            const state = await this.shownState(await this.store.chatRead('state', { tree, ...(message === null ? {} : { at: message }) }));
-            const now = new Map(state.map(e => [`${e.variable ? 'v' : 'k'}\u0000${e.field}`, e.json]));
-            const lorebooks = (Array.isArray(ops) ? ops : []).filter(op => op?.key === WORLD_INFO && !op.variable).map(op => op.value);
-            return this.withWorldLinks(lorebooks, async link => {
-                const records = [];
-                const { user, session } = await this.actorIds(actor, records);
-                const where = message === null ? { tree } : { message };
-                const time = this.now();
-                const ids = [];
-                for (const op of ops) {
-                    if (typeof op?.key !== 'string' || (!op.variable && DERIVED_METADATA.has(op.key))) continue;
-                    const json = op.value === undefined ? undefined : JSON.stringify(op.value);
-                    const k = `${op.variable ? 'v' : 'k'}\u0000${op.key}`;
-                    if (now.get(k) === json) continue;
-                    now.set(k, json);
-                    const id = this.next.change++;
-                    /** @type {Record<string, unknown>} */
-                    const r = { kind: 'stateChange', id, ...where, time, author: author | (op.variable ? VARIABLE : 0), key: op.key, user };
-                    if (ref !== null) r.ref = ref;
-                    if (session !== null) r.session = session;
-                    if (json !== undefined) r.value = !op.variable && op.key === WORLD_INFO ? await link(json, records) : json;
-                    records.push(r);
-                    ids.push(String(id));
-                }
-                await this.claimConversation(records, tree, actor, { user, session });
-                if (ids.length) await this.store.commit(records);
-                return { ok: true, changes: ids };
-            });
-        });
-    }
-
-    /**
-     * @param {object} p
-     * @param {string} p.change
-     * @param {Actor} p.actor
-     * @param {number} [p.author]
-     * @param {string | null} [p.ref]
-     * @returns {Promise<{ ok: true, change: string } | { ok: false, reason: string }>}
-     */
-    async revertChange({ change, actor, author = AUTHOR.user, ref = null }) {
-        if (!DECIMAL.test(change)) return { ok: false, reason: 'unknown change' };
-        const records = [];
-        const { user, session } = await this.actorIds(actor, records);
-        const id = this.next.change++;
-        /** @type {Record<string, unknown>} */
-        const r = { kind: 'stateRevert', id, reverts: BigInt(change), time: this.now(), author, user };
-        if (ref !== null) r.ref = ref;
-        if (session !== null) r.session = session;
-        records.push(r);
-        try {
-            await this.store.commit(records);
-        } catch (e) {
-            if (String(e?.message ?? e).includes('no change')) return { ok: false, reason: 'unknown change' };
-            throw e;
-        }
-        return { ok: true, change: String(id) };
-    }
 
     /**
      * @param {Record<string, any>} record
@@ -2209,56 +2060,6 @@ export class ChatEngine {
         return wanted.filter((_, i) => found[i] !== null);
     }
 
-    /**
-     * @param {bigint} tree
-     * @param {number} size
-     * @returns {AsyncGenerator<bigint[]>}
-     */
-    async* treeMessages(tree, size) {
-        /** @type {{ parent: bigint | null, after?: bigint }[]} */
-        const stack = [{ parent: null }];
-        while (stack.length) {
-            const top = stack[stack.length - 1];
-            const page = await this.store.chatRead('children', { tree, ...(top.parent === null ? {} : { parent: top.parent }), ...(top.after === undefined ? {} : { after: top.after }), limit: size });
-            if (page.more) top.after = page.ids[page.ids.length - 1];
-            else stack.pop();
-            if (!page.ids.length) continue;
-            yield page.ids;
-            for (const id of page.ids) stack.push({ parent: id });
-        }
-    }
-
-    /**
-     * @param {object} p
-     * @param {bigint} p.tree
-     * @param {string} p.oldAvatar
-     * @param {string} p.newAvatar
-     * @param {string} p.newName
-     * @returns {Promise<number>}
-     */
-    renameMemberInMessages({ tree, oldAvatar, newAvatar, newName }) {
-        return this.serialized(tree, async () => {
-            const oldEncoded = encodeURIComponent(oldAvatar);
-            const newEncoded = encodeURIComponent(newAvatar);
-            let updated = 0;
-            for await (const ids of this.treeMessages(tree, 256)) {
-                const stored = await this.stored(ids);
-                const list = ids.map(id => stored.get(id));
-                const decoded = await this.decoded(list);
-                const records = [];
-                for (const [i, msg] of decoded.entries()) {
-                    if (msg?.original_avatar !== oldAvatar) continue;
-                    const next = { ...msg, name: newName, original_avatar: newAvatar };
-                    if (typeof next.force_avatar === 'string') next.force_avatar = next.force_avatar.replace(oldEncoded, newEncoded);
-                    records.push(...this.editRecords(list[i], next, await this.speakerFor(next, null)));
-                    updated++;
-                }
-                if (records.length) await this.store.commit(records);
-            }
-            return updated;
-        });
-    }
-
 
     /**
      * @param {object} p
@@ -2326,28 +2127,6 @@ export class ChatEngine {
     /**
      * @param {object} p
      * @param {string} p.node_id
-     * @param {Record<string, unknown>} p.fields
-     * @returns {Promise<'written' | 'unchanged' | 'no-itemization'>}
-     */
-    async updateItemizationFields({ node_id, fields }) {
-        const [id] = await this.messageIds([node_id]);
-        const s = id === null ? undefined : (await this.stored([id])).get(id);
-        if (!s) return 'no-itemization';
-        return this.serialized(s.owner, async () => {
-            const now = await this.store.chatRead('itemization', { message: id });
-            if (!now) return 'no-itemization';
-            const merged = { ...JSON.parse((await zstdDecompress(now.data)).toString('utf8')), ...fields };
-            delete merged.mesId;
-            const data = await zstdCompress(Buffer.from(JSON.stringify(merged)));
-            if (Buffer.compare(Buffer.from(now.data), data) === 0) return 'unchanged';
-            await this.store.commit([{ kind: 'itemization', message: id, raw: Boolean(merged.rawPrompt), data }]);
-            return 'written';
-        });
-    }
-
-    /**
-     * @param {object} p
-     * @param {string} p.node_id
      * @returns {Promise<{ entry: Record<string, unknown>, previous_node_id: string | null } | null>}
      */
     async readItemization({ node_id }) {
@@ -2363,42 +2142,6 @@ export class ChatEngine {
             entry: JSON.parse((await zstdDecompress(found.data)).toString('utf8')),
             previous_node_id: previous === undefined ? null : this.externalId(stored.get(previous)),
         };
-    }
-
-    /**
-     * @param {object} p
-     * @param {bigint} p.tree
-     * @param {string | null} p.at
-     * @returns {Promise<{ index: number, node_id: string, entry: Record<string, unknown> }[] | null>}
-     */
-    async chatItemizations({ tree, at }) {
-        const ids = await this.pathIds(tree, at);
-        if (!ids) return null;
-        const stored = await this.stored(ids);
-        const out = [];
-        for (const [index, id] of ids.entries()) {
-            if (!stored.get(id)?.itemized) continue;
-            const found = await this.store.chatRead('itemization', { message: id });
-            out.push({ index, node_id: this.externalId(stored.get(id)), entry: JSON.parse((await zstdDecompress(found.data)).toString('utf8')) });
-        }
-        return out;
-    }
-
-    /**
-     * @param {object} p
-     * @param {bigint} p.tree
-     * @param {string | null} p.at
-     * @returns {Promise<number | null>}
-     */
-    deleteChatItemizations({ tree, at }) {
-        return this.serialized(tree, async () => {
-            const ids = await this.pathIds(tree, at);
-            if (!ids) return null;
-            const stored = await this.stored(ids);
-            const records = ids.filter(id => stored.get(id)?.itemized).map(message => ({ kind: 'itemization', message, raw: false }));
-            if (records.length) await this.store.commit(records);
-            return records.length;
-        });
     }
 
     /**
@@ -2576,48 +2319,6 @@ export class ChatEngine {
             exact: page.exact && page.scan === undefined,
             ...(page.next === undefined ? {} : { next: listCursor(page.next) }),
             ...(page.scan === undefined ? {} : { scanCursor: `m${page.scan}` }),
-        };
-    }
-
-    /**
-     * @param {object} p
-     * @param {bigint} p.tree
-     * @param {string} p.search
-     * @param {number} p.limit
-     * @param {string} [p.after]
-     * @param {string} [p.scanCursor]
-     * @param {number} [p.scanBytes]
-     */
-    async searchMessages({ tree, search, limit, after, scanCursor, scanBytes }) {
-        const clauses = searchClauses(search);
-        const afterAt = after === undefined ? null : /^s([^:]+):(\d+)(?::([^:]*))?$/.exec(after);
-        const weights = afterAt?.[3] === undefined ? undefined : cursorWeights(afterAt[3]);
-        if (after !== undefined && (!afterAt || weights === null)) throw new Error('invalid cursor');
-        if (scanCursor !== undefined && !/^m\d+$/.test(scanCursor)) throw new Error('invalid scan cursor');
-        const found = await this.store.chatSearchMessages({
-            tree, clauses, limit,
-            ...(afterAt ? { after: { score: Number(afterAt[1]), doc: BigInt(afterAt[2]), ...(weights ? { weights } : {}) } } : {}),
-            ...(scanCursor === undefined ? {} : { scanBelow: BigInt(scanCursor.slice(1)) }),
-            ...(scanBytes === undefined ? {} : { scanBytes }),
-        });
-        const ids = [...found.hits.map(h => h.message), ...found.scanned];
-        const stored = await this.stored(ids);
-        const decoded = new Map((await this.decoded(ids.map(id => stored.get(id)).filter(Boolean))).map((d, i) => [ids.filter(id => stored.get(id))[i], d]));
-        const depths = new Map((ids.length ? await this.store.chatRead('messages', { ids }) : []).filter(Boolean).map(m => [m.id, m.depth]));
-        const needles = clauses.filter(c => !c.negate).map(c => c.text.toLowerCase()).filter(t => t.trim());
-        const row = (/** @type {bigint} */ id, /** @type {number | null} */ score) => {
-            const m = stored.get(id);
-            const d = decoded.get(id);
-            if (!m || !d) return null;
-            return { id: this.externalId(m), score, name: d.name ?? null, is_user: !!d.is_user, time: m.time, depth: depths.get(id) ?? null, snippet: snippetOf(String(d.mes ?? ''), needles) };
-        };
-        return {
-            rows: [...found.hits.map(h => row(h.message, h.score)), ...found.scanned.map(id => row(id, null))].filter(Boolean),
-            more: found.more,
-            ...(found.next ? { after: `s${found.next.score}:${found.next.doc}${cursorWeightsOf(found.next)}` } : {}),
-            total: found.total,
-            totalExact: found.totalExact,
-            ...(found.scan === undefined ? {} : { partial: true, scanCursor: `m${found.scan}` }),
         };
     }
 
@@ -2854,168 +2555,6 @@ export class ChatEngine {
         }
         return { messages, metadata: await this.metadata(tree, atId, session), node_id: atId === null ? null : this.externalId(/** @type {any} */ (stored.get(atId))) };
     }
-}
-
-/**
- * @param {any} store
- * @param {bigint} tree
- * @param {string} name
- * @returns {{ bookmark: bigint } | { session: bigint | null, derived?: true } | null}
- */
-export function resolveChatNameSync(store, tree, name) {
-    const [state] = store.chatReadSync('keyStates', { space: SPACE.session, keys: [name] });
-    if (state !== null && state !== 'gone') return { session: state.id };
-    const rows = store.chatReadSync('chatsNamed', { name, limit: 64 }).filter((/** @type {any} */ r) => r.tree === tree);
-    if (rows.length > 1) return null;
-    if (rows.length === 1) return rows[0].bookmark !== null ? { bookmark: rows[0].bookmark } : { session: rows[0].session, derived: true };
-    const sessions = store.chatReadSync('sessionsNamed', { name });
-    return sessions.length === 1 ? { session: sessions[0] } : null;
-}
-
-/**
- * @param {any} store
- * @param {string} id
- * @returns {bigint | null}
- */
-export function treeOfChatIdSync(store, id) {
-    const trees = [...new Set(store.chatReadSync('chatsNamed', { name: id, limit: 64 }).map((/** @type {any} */ r) => r.tree))];
-    const entities = trees.length ? store.libraryEntitiesSync(trees, { fields: [], lists: [] }) : [];
-    const groups = trees.filter((_, i) => entities[i]?.type === TYPE.group);
-    if (groups.length === 1) return groups[0];
-    if (groups.length > 1) return null;
-    const [state] = store.chatReadSync('keyStates', { space: SPACE.session, keys: [id] });
-    if (state === null || state === 'gone') return null;
-    const [s] = store.chatReadSync('sessions', { ids: [state.id] });
-    return s?.tree ?? null;
-}
-
-/**
- * @param {any} store
- * @param {{ tree: bigint, at: string | null, session?: string | null, full?: boolean }} p
- * @returns {{ messages: Record<string, any>[], metadata: Record<string, unknown>, node_id: string | null } | null}
- */
-export function loadSync(store, { tree, at, session = null, full = false }) {
-    const read = (/** @type {string} */ op, /** @type {object} */ args) => store.chatReadSync(op, args);
-    /** @param {bigint[]} list */
-    const storedOf = list => {
-        const unique = [...new Set(list)];
-        const found = unique.length ? read('messages', { ids: unique }) : [];
-        return new Map(found.filter(Boolean).map((/** @type {any} */ m) => [m.id, m]));
-    };
-    const externalId = (/** @type {{ id: bigint, oldKey: string | null }} */ s) => s.oldKey ?? String(s.id);
-    let atId = null;
-    if (at !== null) {
-        const [mapped] = read('ids', { space: SPACE.message, keys: [at] });
-        atId = mapped;
-        if (atId === null) return null;
-    }
-    /** @type {bigint[]} */
-    const ids = atId === null ? [] : read('path', { tree, at: atId });
-    const stored = storedOf(ids);
-    /** @type {Map<string, bigint[]>} */
-    const siblings = new Map();
-    for (const id of ids) {
-        const s = stored.get(id);
-        const key = String(s.parent);
-        if (siblings.has(key)) continue;
-        const parent = s.parent === null ? undefined : stored.get(s.parent);
-        if (parent?.replies === 1) {
-            siblings.set(key, [id]);
-            continue;
-        }
-        /** @type {bigint[]} */
-        const replies = [];
-        let after;
-        for (;;) {
-            const page = read('children', { tree, ...(s.parent === null ? {} : { parent: s.parent }), ...(after === undefined ? {} : { after }), limit: 500 });
-            replies.push(...page.ids);
-            if (!page.more) break;
-            after = page.ids[page.ids.length - 1];
-        }
-        siblings.set(key, replies);
-    }
-    const sent = new Set(ids);
-    for (const id of ids) {
-        const sibs = /** @type {bigint[]} */ (siblings.get(String(stored.get(id).parent)));
-        const [from, to] = alternativeWindow(sibs.length, sibs.indexOf(id), full);
-        for (let k = from; k < to; k++) sent.add(sibs[k]);
-    }
-    const allIds = [...sent];
-    const all = new Map([...stored, ...storedOf(allIds.filter(id => !stored.has(id)))]);
-    const speakerIds = new Set();
-    for (const id of allIds) {
-        const s = all.get(id);
-        if (s.speaker !== null) speakerIds.add(s.speaker);
-        const over = s.values.find((/** @type {any} */ v) => v.field === META.speaker);
-        const overId = over ? JSON.parse(over.json) : null;
-        if (overId !== null) speakerIds.add(BigInt(overId));
-    }
-    const speakerList = [...speakerIds];
-    const entities = speakerList.length ? store.libraryEntitiesSync(speakerList, { fields: [FIELD.name], lists: [NAME_HISTORY] }) : [];
-    /** @type {Map<bigint, import('./chat-codec.js').Speaker>} */
-    const speakers = new Map();
-    entities.forEach((/** @type {any} */ e, /** @type {number} */ i) => {
-        if (!e || e.type !== TYPE.character) return;
-        const name = e.values.find((/** @type {any} */ v) => v.field === FIELD.name);
-        const history = storedValues(e).lists.get(NAME_HISTORY);
-        speakers.set(speakerList[i], { id: e.id, name: name === undefined ? '' : name.text !== undefined ? name.text : JSON.parse(name.json), avatar: e.key, ...(history === undefined ? {} : { renames: renamesOf(history) }) });
-    });
-    const decodedList = resolveAvatarsSync(store, allIds.map(id => JSON.parse(decodeMessage(all.get(id), sid => speakers.get(sid) ?? null))));
-    const decoded = new Map(allIds.map((id, i) => [id, decodedList[i]]));
-    const bookmarkIds = [...new Set(ids.flatMap(id => all.get(id).branches))];
-    const bookmarks = bookmarkIds.length ? read('bookmarks', { ids: bookmarkIds }) : [];
-    const labels = new Map(bookmarkIds.map((/** @type {bigint} */ b, /** @type {number} */ i) => [b, bookmarks[i]?.name]).filter(([, name]) => name));
-    const messages = [];
-    for (const id of ids) {
-        const s = all.get(id);
-        const msg = { ...decoded.get(id) };
-        msg.node_id = externalId(s);
-        const sibs = /** @type {bigint[]} */ (siblings.get(String(s.parent)));
-        if (sibs.length > 1) {
-            const [from, to] = alternativeWindow(sibs.length, sibs.indexOf(id), full);
-            const inWindow = (/** @type {number} */ k) => k >= from && k < to;
-            msg.swipes = sibs.map((x, k) => (inWindow(k) ? decoded.get(x).mes ?? '' : null));
-            msg.swipe_info = sibs.map((x, k) => {
-                if (!inWindow(k)) return null;
-                const o = decoded.get(x);
-                const extra = { ...(o.extra && typeof o.extra === 'object' && !Array.isArray(o.extra) ? o.extra : {}) };
-                if (all.get(x).itemized) extra[ITEMIZED_PROMPT_FLAG] = true;
-                return { send_date: o.send_date, extra, name: o.name, is_user: !!o.is_user, node_id: externalId(all.get(x)) };
-            });
-            msg.swipe_id = sibs.indexOf(id);
-        }
-        const made = s.branches.filter((/** @type {bigint} */ b) => labels.has(b)).map((/** @type {bigint} */ b) => labels.get(b));
-        if (made.length) {
-            if (!msg.extra || typeof msg.extra !== 'object') msg.extra = {};
-            msg.extra.bookmark_link = made[made.length - 1];
-            msg.extra.branches = made;
-        }
-        if (s.itemized) msg.extra = { ...(msg.extra && typeof msg.extra === 'object' ? msg.extra : {}), [ITEMIZED_PROMPT_FLAG]: true };
-        messages.push(msg);
-    }
-    const state = read('state', { tree, ...(atId === null ? {} : { at: atId }) });
-    const isLink = (/** @type {{ variable: boolean, field: string, json: string }} */ e) => !e.variable && e.field === WORLD_INFO && e.json.startsWith(LINK);
-    const links = state.filter(isLink);
-    const resolved = links.length ? store.worldReadSync('resolved', { ids: links.map((/** @type {any} */ e) => BigInt(e.json.slice(1).split(' ')[0])) }) : [];
-    /** @type {Record<string, unknown>} */
-    const metadata = {};
-    let li = 0;
-    for (const raw of state) {
-        let e = raw;
-        if (isLink(raw)) {
-            const [bookId, ...own] = raw.json.slice(1).split(' ');
-            e = { ...raw, json: JSON.stringify(own.length ? JSON.parse(own.join(' ')) : resolved[li]?.key ?? bookId) };
-            li++;
-        }
-        if (e.variable) {
-            if (!metadata.variables || typeof metadata.variables !== 'object') metadata.variables = {};
-            /** @type {Record<string, unknown>} */ (metadata.variables)[e.field] = JSON.parse(e.json);
-        } else if (e.field === 'variables' && e.json === '{}') {
-            if (!metadata.variables || typeof metadata.variables !== 'object') metadata.variables = {};
-        } else metadata[e.field] = JSON.parse(e.json);
-    }
-    if (session !== null) metadata.integrity = session;
-    return { messages, metadata, node_id: atId === null ? null : externalId(/** @type {any} */ (stored.get(atId))) };
 }
 
 /**

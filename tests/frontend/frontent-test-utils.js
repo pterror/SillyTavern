@@ -50,7 +50,39 @@ export const testSetup = {
     isLoginPage: async ({ page }) => {
         return await page.locator('body.login').count() > 0;
     },
+
+    /**
+     * On a fresh account: answers the first-run dialog, then waits as awaitST does.
+     * @param {Object} params
+     * @param {import('@playwright/test').Page} params.page
+     */
+    awaitFreshST: async ({ page }) => {
+        await page.goto('/');
+        await page.locator('dialog[open] .onboarding').waitFor();
+        await page.locator('dialog[open] .popup-button-ok').click();
+        await expect.poll(() => page.evaluate(async () => {
+            // @ts-ignore
+            const response = await fetch('/api/settings/get', { method: 'POST', headers: stTest.context().getRequestHeaders(), body: '{}' });
+            return JSON.parse((await response.json()).settings).firstRun;
+        })).toBe(false);
+        await testSetup.awaitST({ page });
+    },
 };
+
+/**
+ * Waits until the chat `chat` of the character `avatar` holds `count` messages.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @param {string} chat
+ * @param {number} count
+ */
+export async function awaitChatMessages(page, avatar, chat, count) {
+    await expect.poll(() => page.evaluate(async ({ avatar, chat }) => {
+        // @ts-ignore
+        const response = await fetch('/api/chats/open', { method: 'POST', headers: stTest.context().getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar, chat }) });
+        return response.ok ? (await response.json()).messages.length : 0;
+    }, { avatar, chat }), { timeout: 30000 }).toBe(count);
+}
 
 /**
  * @param {import('@playwright/test').Page} page

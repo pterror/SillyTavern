@@ -57,9 +57,7 @@ async function seedChain() {
     counter += 1;
     const avatar = `owner-${counter}.png`;
     await user.store.lib.writeCard(user.directories, avatar, JSON.stringify({ name: 'Char', data: { name: 'Char' } }));
-    const chatData = [{ chat_metadata: {} }, makeMessage('m0'), makeMessage('m1'), makeMessage('m2')];
-    const saved = await postJson('/api/chats/save', { avatar_url: avatar, file_name: 'chat', chat: chatData });
-    expect(saved.status).toBe(200);
+    await fixture.namedChat(user.store, { avatar }, 'chat', [makeMessage('m0'), makeMessage('m1'), makeMessage('m2')], { session: tab });
     return { avatar, ids: (await shown(avatar)).map(m => m.node_id) };
 }
 

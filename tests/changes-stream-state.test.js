@@ -95,10 +95,10 @@ test('another session\'s change to the chat a tab is at is pushed with the state
         expect(await chats.pointer(session)).toEqual({ tree, at });
 
         const isState = (/** @type {any} */ f) => f?.type === 'state';
-        await chats.changeState({ tree, at, ops: [{ key: 'hp', variable: true, value: 3 }], actor: { user: 'u', session } });
+        await chats.mergeMetadata({ tree, at, set: {}, unset: [], variables: { set: { hp: 3 } }, actor: { user: 'u', session } });
         expect(await frameArrives(stream.frames, isState, 1000)).toBe(false);
 
-        await chats.changeState({ tree, at, ops: [{ key: 'scene', value: 'inn' }], actor: { user: 'u', session: '0190a1b2-0000-7000-8000-0000000000ab' } });
+        await chats.mergeMetadata({ tree, at, set: { scene: 'inn' }, unset: [], actor: { user: 'u', session: '0190a1b2-0000-7000-8000-0000000000ab' } });
         expect(await frameArrives(stream.frames, isState)).toBe(true);
         const pushed = stream.frames.find(isState);
         expect(pushed.tree).toEqual({ avatar: 'Alice.png' });
@@ -107,7 +107,7 @@ test('another session\'s change to the chat a tab is at is pushed with the state
 
         stream.frames.length = 0;
         const [otherTree] = await people.trees([{ avatar: 'Bob.png' }]);
-        await chats.changeState({ tree: otherTree, at: null, ops: [{ key: 'scene', value: 'road' }], actor: { user: 'u', session: '0190a1b2-0000-7000-8000-0000000000ab' } });
+        await chats.mergeMetadata({ tree: otherTree, at: null, set: { scene: 'road' }, unset: [], actor: { user: 'u', session: '0190a1b2-0000-7000-8000-0000000000ab' } });
         expect(await frameArrives(stream.frames, isState, 1000)).toBe(false);
     } finally {
         stream.close();

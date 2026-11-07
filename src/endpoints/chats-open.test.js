@@ -19,7 +19,7 @@ const { router: avatarsRouter } = await import('./avatars.js');
 const { writeAllSettings, readSettingsAtPaths } = await import('../settings-store.js');
 const { newSessionKey, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
-const { convertedUser, writeLibraryCard, seedMessages, sessionPath, treeOf } = await import('../../tests/converted-user.fixture.js');
+const { convertedUser, writeLibraryCard, seedMessages, sessionPath, treeOf, namedChat } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-open-test-');
 const { directories } = user;
@@ -72,9 +72,13 @@ const conversationOf = (/** @type {string | null} */ character, /** @type {strin
  */
 async function saveWholeChat(owner, name, chat) {
     const tab = newSessionKey();
-    const res = await fetch(`${base}/api/chats/${owner.group ? 'group/save' : 'save'}`, {
+    if (!owner.group) {
+        await namedChat(user.store, owner, name, chat.slice(1), { session: tab, metadata: chat[0].chat_metadata });
+        return tab;
+    }
+    const res = await fetch(`${base}/api/chats/group/save`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: tab },
-        body: JSON.stringify(owner.group ? { id: name, group_id: owner.group, chat } : { avatar_url: owner.avatar, file_name: name, chat }),
+        body: JSON.stringify({ id: name, group_id: owner.group, chat }),
     });
     assert.equal(res.status, 200, `saving ${name}`);
     return tab;

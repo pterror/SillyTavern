@@ -55,18 +55,10 @@ async function seedCharacter(avatar, description = 'd') {
 }
 
 describe('no route hands out the whole library', () => {
-    test('/manifest is gone', async () => {
+    test('/manifest and /all are gone', async () => {
         await seedCharacter('Alice.png');
         expect((await postJson('/api/characters/manifest', {})).status).toBe(404);
-    });
-
-    test('/all answers only a search, never every character', async () => {
-        await seedCharacter('Alice.png');
-        for (const body of [{}, { search: '' }, { search: '   ' }]) {
-            const response = await postJson('/api/characters/all', body);
-            expect(response.status).toBe(400);
-            expect((await response.json()).reason).toBe('search-required');
-        }
+        expect((await postJson('/api/characters/all', {})).status).toBe(404);
     });
 });
 
@@ -87,7 +79,7 @@ describe('POST /api/characters/batch', () => {
         expect(response.status).toBe(400);
     });
 
-    test('leaves out an avatar no character has (a file in characters/ is not a character), as /all does', async () => {
+    test('leaves out an avatar no character has (a file in characters/ is not a character)', async () => {
         await seedCharacter('Alice.png');
         fs.writeFileSync(path.join(user.directories.characters, 'Broken.png'), 'not a real character card');
 

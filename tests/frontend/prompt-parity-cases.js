@@ -195,7 +195,7 @@ export async function createLorebook(book) {
             preventRecursion: false, addMemo: true, displayIndex: uid, ...entry,
         };
     });
-    const response = await fetch('/api/worldinfo/edit', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ name: book.name, data: { entries } }) });
+    const response = await fetch('/api/worldinfo/create', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ name: book.name, data: { entries }, unique: false, replace: true }) });
     if (!response.ok) throw new Error(`lorebook not saved: ${response.status}`);
 }
 

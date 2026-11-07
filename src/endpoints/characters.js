@@ -33,7 +33,7 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { savedViewsEvents } from '../saved-views.js';
 import { getAtPath, getStringHash, normalizeFav, setAtPath } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
-import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opMove, opSetDefault, opUnsetDefault, opUnsetDefaultByHash } from '../greeting-ops.js';
+import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opSetDefault } from '../greeting-ops.js';
 import { withSearchTiming } from '../search-timing.js';
 import { requestStore, userStore } from '../user-stores.js';
 import { FIELD, HASH, TYPE } from '../library-engine.js';
@@ -893,53 +893,6 @@ router.post('/edit-avatar', validateAvatarUrlMiddleware, async function (request
     }
 });
 
-/**
- * Handle a POST request to edit a character attribute.
- *
- * This function reads the character data from a file, updates the specified attribute,
- * and writes the updated data back to the file.
- *
- * @param {Object} request - The HTTP request object.
- * @param {Object} response - The HTTP response object.
- * @returns {void}
- */
-router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (request, response) {
-    if (!request.body) {
-        console.warn('Error: no response body detected');
-        return response.status(400).send('Error: no response body detected');
-    }
-
-    if (request.body.ch_name === '' || request.body.ch_name === undefined || request.body.ch_name === '.') {
-        console.warn('Error: invalid name.');
-        return response.status(400).send('Error: invalid name.');
-    }
-
-    if (request.body.field === 'json_data') {
-        console.warn('Error: cannot edit json_data field.');
-        return response.status(400).send('Error: cannot edit json_data field.');
-    }
-
-    try {
-        const charJSON = await readCardContent(request.user.directories, request.body.avatar_url);
-        if (typeof charJSON !== 'string') throw new Error('Failed to read character file');
-
-        const char = JSON.parse(charJSON);
-        //check if the field exists
-        if (char[request.body.field] === undefined && char.data[request.body.field] === undefined) {
-            console.warn('Error: invalid field.');
-            response.status(400).send('Error: invalid field.');
-            return;
-        }
-        char[request.body.field] = request.body.value;
-        char.data[request.body.field] = request.body.value;
-        await writeCharacter(request, request.body.avatar_url, JSON.stringify(char));
-        return response.sendStatus(200);
-    } catch (err) {
-        console.error('An error occurred, character edit invalidated.', err);
-        return sendWriteFailure(response, err);
-    }
-});
-
 const UNSET_SENTINEL = '__@@UNSET@@__';
 
 /** Maximum number of characters processed in parallel during bulk merge */
@@ -1331,30 +1284,6 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
     }
 });
 
-router.post('/greetings/move', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const avatar = String(request.body.avatar_url || '');
-        const sourcePosition = Number(request.body.source_position);
-        const expectedHash = Number(request.body.expected_hash);
-        const side = request.body.side;
-        const targetPosition = Number(request.body.target_position);
-        const targetExpectedHash = Number(request.body.target_expected_hash);
-        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
-        if (!Number.isInteger(sourcePosition)) return response.status(400).send({ ok: false, reason: 'source_position must be an integer' });
-        if (!Number.isInteger(targetPosition)) return response.status(400).send({ ok: false, reason: 'target_position must be an integer' });
-        if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
-        if (!Number.isFinite(targetExpectedHash)) return response.status(400).send({ ok: false, reason: 'target_expected_hash is required' });
-        if (side !== 'before' && side !== 'after') return response.status(400).send({ ok: false, reason: 'side must be "before" or "after"' });
-        if (targetPosition === sourcePosition) return response.status(400).send({ ok: false, reason: 'target_position must differ from source_position' });
-
-        const result = await applyGreetingOperation(request.user.directories, avatar, model => opMove(model, sourcePosition, expectedHash, side, targetPosition, targetExpectedHash));
-        return sendGreetingOpResult(response, result);
-    } catch (error) {
-        console.error('Error moving greeting:', error);
-        return response.status(500).send({ ok: false, reason: 'internal error' });
-    }
-});
-
 router.post('/greetings/default/set', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
@@ -1368,36 +1297,6 @@ router.post('/greetings/default/set', validateAvatarUrlMiddleware, async functio
         return sendGreetingOpResult(response, result);
     } catch (error) {
         console.error('Error setting default greeting:', error);
-        return response.status(500).send({ ok: false, reason: 'internal error' });
-    }
-});
-
-router.post('/greetings/default/unset', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const avatar = String(request.body.avatar_url || '');
-        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
-        if (request.body.expected_default_hash !== undefined) {
-            if (request.body.expected_default_position !== undefined) {
-                return response.status(400).send({ ok: false, reason: 'expected_default_hash and expected_default_position can\'t both be given' });
-            }
-            const expectedDefaultHash = Number(request.body.expected_default_hash);
-            if (!Number.isFinite(expectedDefaultHash)) {
-                return response.status(400).send({ ok: false, reason: 'expected_default_hash must be a number' });
-            }
-            const byHash = await applyGreetingOperation(request.user.directories, avatar, model => opUnsetDefaultByHash(model, expectedDefaultHash));
-            return sendGreetingOpResult(response, byHash);
-        }
-        const rawExpectedDefault = request.body.expected_default_position;
-        const expectedDefaultPosition = rawExpectedDefault === null ? null : Number(rawExpectedDefault);
-        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
-        if (expectedDefaultPosition !== null && !Number.isInteger(expectedDefaultPosition)) {
-            return response.status(400).send({ ok: false, reason: 'expected_default_position is required (an integer, or null)' });
-        }
-
-        const result = await applyGreetingOperation(request.user.directories, avatar, model => opUnsetDefault(model, expectedDefaultPosition));
-        return sendGreetingOpResult(response, result);
-    } catch (error) {
-        console.error('Error unsetting default greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
     }
 });
@@ -1584,39 +1483,6 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
     return result.dropped ? response.send({ dropped: result.dropped }) : response.sendStatus(200);
 });
 
-const DEFAULT_PAGE_LIMIT = 500;
-
-router.post('/all', async function (request, response) {
-    try {
-        const { offset, limit, search, includeGroups, fav } = request.body ?? {};
-
-        if (typeof search !== 'string' || search.trim() === '') {
-            return response.status(400).send({ error: true, reason: 'search-required', message: 'The character list is read a page at a time through /api/characters/query; /all only searches.' });
-        }
-
-        const numericOffset = Number.isFinite(Number(offset)) ? Number(offset) : 0;
-        const numericLimit = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.min(Math.trunc(Number(limit)), MAX_QUERY_PAGE_SIZE) : DEFAULT_PAGE_LIMIT;
-        const store = await requestStore(request);
-        const page = await store.lib.query({
-            search: String(search), sortField: 'search', offset: numericOffset, limit: numericLimit,
-            includeGroups: includeGroups === true, ...(fav === true ? { fav: true } : {}),
-            wantRows: false, wantHashes: true, wantTotal: true,
-        });
-        const rows = /** @type {{ id: string, isGroup: boolean }[]} */ (page.hashRows);
-        const characters = await characterObjects(request, rows.filter(r => !r.isGroup).map(r => r.id), { shallow: useShallowCharacters });
-        const byAvatar = new Map(characters.filter(Boolean).map(c => [(c).avatar, c]));
-        const groups = new Map((await groupObjects(request, rows.filter(r => r.isGroup).map(r => r.id))).filter(Boolean).map(g => [(g).id, g]));
-        const items = rows.map(r => (r.isGroup ? { type: 'group', item: groups.get(r.id) } : { type: 'character', item: byAvatar.get(r.id) })).filter(x => x.item);
-        const total = Number(page.total ?? items.length);
-        const payload = includeGroups ? { items, total } : { items: items.map(x => x.item), total };
-        return response.send(payload);
-    } catch (err) {
-        console.error(err);
-        const isRangeError = err instanceof RangeError;
-        response.status(500).send({ overflow: isRangeError, error: true });
-    }
-});
-
 const RESCAN_BATCH = 100;
 
 /**
@@ -1775,15 +1641,6 @@ export async function stopDroppedWatches() {
     droppedWatches.clear();
     await Promise.all(all.map(watch => watch.close()));
 }
-
-router.post('/metadata/rescan', async function (request, response) {
-    try {
-        return response.send(await rescanCharacters(request.user.directories));
-    } catch (err) {
-        console.error('[characters/metadata/rescan] Rescan failed:', err);
-        return response.status(500).send({ error: true });
-    }
-});
 
 router.post('/metadata/batch-import/begin', async function (request, response) {
     try {
@@ -2048,10 +1905,6 @@ async function handleQuery(request, response) {
 }
 
 router.post('/query', (request, response) => withSearchTiming(response, () => handleQuery(request, response)));
-
-router.post('/search-index/rebuild', function (_request, response) {
-    return response.send({ ok: true });
-});
 
 router.post('/exists', async function (request, response) {
     try {
@@ -2336,7 +2189,7 @@ router.get('/changes/stream', async function (request, response) {
 const SESSION_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TAB_TOKEN = /^[0-9A-Za-z_-]{8,64}$/;
 const ALTERNATIVE_CHANGES = new Set(['messageAppend', 'messageParent', 'subtreeDelete', 'textEdit', 'textValue', 'jsonValue', 'valueDelete', 'openingChoice', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
-const CHAT_MOVES = new Set(['stateChange', 'stateRevert', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
+const CHAT_MOVES = new Set(['stateChange', 'pointerMove', 'pointerRoot', 'historyStep', 'currentChat']);
 const SESSION_KINDS = new Set(['pointerMove', 'pointerRoot', 'historyStep', 'sessionFork', 'messageAppend', 'currentChat']);
 
 /**
@@ -2382,7 +2235,7 @@ async function tabStreamSession(request, store, send) {
     let statePushed = null;
     let stateChain = Promise.resolve();
     const pushState = async (/** @type {any[]} */ records) => {
-        const changes = records.filter(r => r.kind === 'stateChange' || r.kind === 'stateRevert');
+        const changes = records.filter(r => r.kind === 'stateChange');
         if (!changes.length) return;
         sid ??= await chats.sessionId(session);
         const theirs = changes.filter(r => r.session !== sid);

@@ -11,7 +11,6 @@ import { resolveCharacterWorldLink } from '../../public/scripts/character-world-
 import { engineStoreHere, requestStore, storeRoute, userStore } from '../user-stores.js';
 import { MAX_UID, bookExistsHere, readBookHere } from '../world-info-engine.js';
 import { bookKey } from '../world-info-keys.js';
-import { TYPE } from '../library-codes.js';
 import { sessionHeaderOf } from '../request-session.js';
 
 /**
@@ -45,18 +44,6 @@ function reportMissing(directories, worldInfoName) {
  */
 function foundAgain(directories, worldInfoName) {
     reportedMisses.delete(`${path.resolve(directories.root)}\0${bookKey(worldInfoName)}`);
-}
-
-/**
- * @param {import('../users.js').UserDirectoryList} directories
- * @param {string} worldInfoName
- * @returns {Promise<boolean>}
- */
-export async function worldInfoFileExists(directories, worldInfoName) {
-    if (!worldInfoName) {
-        return false;
-    }
-    return (await userStore(directories)).lib.books.exists(worldInfoName);
 }
 
 /**
@@ -122,11 +109,6 @@ export async function readWorldInfo(directories, worldInfoName, allowDummy, { lo
 }
 
 export const router = express.Router();
-
-router.post('/list', storeRoute('reading the World Info list', async (request, response) => {
-    const { lib } = await requestStore(request);
-    return response.send(await lib.books.list());
-}));
 
 router.post('/get', storeRoute('reading a World Info book', async (request, response) => {
     if (!request.body?.name) {
@@ -380,29 +362,6 @@ router.post('/rename', storeRoute('renaming a World Info book', async (request, 
     });
 }));
 
-router.post('/edit', storeRoute('saving a World Info book', async (request, response) => {
-    if (!request.body) {
-        return response.sendStatus(400);
-    }
-
-    if (!request.body.name) {
-        return response.status(400).send('World file must have a name');
-    }
-
-    try {
-        if (!('entries' in request.body.data)) {
-            throw new Error('World info must contain an entries list');
-        }
-    } catch (err) {
-        return response.status(400).send('Is not a valid world info file');
-    }
-
-    const { lib } = await requestStore(request);
-    await lib.books.write(request.body.name, request.body.data, actorOf(request));
-
-    return response.send({ ok: true });
-}));
-
 router.post('/entry/transplant', storeRoute('moving a World Info entry', async (request, response) => {
     const { source_name, target_name, uid, delete_original } = request.body ?? {};
 
@@ -479,39 +438,4 @@ router.post('/entry/edit', storeRoute('saving a World Info entry', async (reques
         return response.status(404).send({ error: `Entry uid '${String(uid)}' not found in lorebook '${name}'` });
     }
     return response.send({ ok: true, entry: result.entry });
-}));
-
-const DEFAULT_SEARCH_PAGE_SIZE = 50;
-const MAX_SEARCH_PAGE_SIZE = 500;
-
-router.post('/search', storeRoute('searching a World Info book', async (request, response) => {
-    const { name, avatar, search, limit, cursor } = request.body ?? {};
-    if ((typeof name === 'string') === (typeof avatar === 'string') || (name ?? avatar) === '') {
-        return response.status(400).send({ error: 'one of name or avatar is required' });
-    }
-    if (typeof search !== 'string') {
-        return response.status(400).send({ error: 'search must be a string' });
-    }
-    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > MAX_SEARCH_PAGE_SIZE)) {
-        return response.status(400).send({ error: `limit must be an integer from 1 to ${MAX_SEARCH_PAGE_SIZE}` });
-    }
-    if (cursor !== undefined && cursor !== null && typeof cursor !== 'string') {
-        return response.status(400).send({ error: 'cursor must be a string' });
-    }
-    const { lib } = await requestStore(request);
-    let character;
-    if (typeof avatar === 'string') {
-        [character] = await lib.ids(TYPE.character, [avatar]);
-        if (character === null) return response.status(404).send({ error: `Character '${avatar}' not found` });
-    }
-    const found = await lib.books.search({
-        ...(character !== undefined ? { character } : { name }),
-        search,
-        limit: limit ?? DEFAULT_SEARCH_PAGE_SIZE,
-        ...(typeof cursor === 'string' ? { cursor } : {}),
-    });
-    if (found === 'missing') {
-        return response.status(404).send({ error: `Lorebook '${name ?? avatar}' not found` });
-    }
-    return response.send(found);
 }));

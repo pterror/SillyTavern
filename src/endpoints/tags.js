@@ -406,44 +406,6 @@ router.post('/unassign', async (request, response) => {
     }
 });
 
-router.post('/copy', async (request, response) => {
-    try {
-        const { from, to } = request.body ?? {};
-        if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) {
-            return response.status(400).send({ error: 'from and to are required non-empty strings' });
-        }
-
-        const result = await (await requestStore(request)).lib.tags.copy(from, to);
-        if (result === 'not_found') {
-            return response.status(404).send({ error: 'Character or group not found' });
-        }
-
-        response.send({ result: 'ok' });
-    } catch (err) {
-        console.error('Could not copy tags', err);
-        response.sendStatus(500);
-    }
-});
-
-router.post('/rename-key', async (request, response) => {
-    try {
-        const { from, to } = request.body ?? {};
-        if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) {
-            return response.status(400).send({ error: 'from and to are required non-empty strings' });
-        }
-
-        const answer = await (await requestStore(request)).lib.tags.move(from, to);
-        if (answer.result === 'not_found') {
-            return response.status(404).send({ error: 'Character or group not found' });
-        }
-
-        response.send(answer);
-    } catch (err) {
-        console.error('Could not move tags', err);
-        response.sendStatus(500);
-    }
-});
-
 router.post('/restore', async (request, response) => {
     try {
         const { tags, tagMap, overwrite } = request.body ?? {};

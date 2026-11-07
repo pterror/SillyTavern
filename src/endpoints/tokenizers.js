@@ -854,40 +854,6 @@ export async function computeUpstreamLogitBias(biasPresetEntries, requestModel) 
 }
 
 /**
- * @param {string} baseUrl
- * @param {string} text
- * @returns {Promise<{count: number, ids: number[]}|{error: true}>}
- */
-export async function encodeViaKoboldAPI(baseUrl, text) {
-    try {
-        const args = {
-            method: 'POST',
-            body: JSON.stringify({ 'prompt': text }),
-            headers: { 'Content-Type': 'application/json' },
-        };
-
-        let url = String(baseUrl).replace(/\/$/, '');
-        url += '/extra/tokencount';
-
-        const result = await fetchOutgoing(url, args);
-
-        if (!result.ok) {
-            console.warn(`API returned error: ${result.status} ${result.statusText}`);
-            return { error: true };
-        }
-
-        /** @type {any} */
-        const data = await result.json();
-        const count = data.value;
-        const ids = data.ids ?? [];
-        return { count, ids };
-    } catch (error) {
-        console.error(error);
-        return { error: true };
-    }
-}
-
-/**
  * @param {{id?: string, text?: string, value?: number}[]} logitBiasPreset
  * @param {{encode?: (text: string) => Promise<number[]|null>}} [tokenizerOptions]
  * @param {string[]} [dropped]
@@ -1464,26 +1430,6 @@ router.post('/openai/decode', async function (req, res) {
     }
 });
 
-router.post('/openai/count', async function (req, res) {
-    if (!req.body) return res.sendStatus(400);
-
-    const resolved = await resolveOpenAIRouteRequest(req);
-    if (!resolved) return res.sendStatus(400);
-    const num_tokens = await countChatCompletionMessages(resolved, req.body, undefined, req.user?.directories);
-    return res.send({ 'token_count': num_tokens });
-});
-
-router.post('/remote/kobold/count', async function (request, response) {
-    if (!request.body) {
-        return response.sendStatus(400);
-    }
-    const text = String(request.body.text) || '';
-    const baseUrl = String(request.body.url);
-
-    const result = await encodeViaKoboldAPI(baseUrl, text);
-    return response.send(result);
-});
-
 /**
  * @param {import('express').Request} request
  * @param {string} text
@@ -1577,45 +1523,6 @@ export async function encodeViaTextgenAPI(request, text, baseUrl, model, apiType
         return { error: true };
     }
 }
-
-const TEXTGEN_ENCODE_TYPES = [
-    TEXTGEN_TYPES.TABBY,
-    TEXTGEN_TYPES.KOBOLDCPP,
-    TEXTGEN_TYPES.LLAMACPP,
-    TEXTGEN_TYPES.VLLM,
-    TEXTGEN_TYPES.APHRODITE,
-    TEXTGEN_TYPES.OOBA,
-];
-
-router.post('/remote/textgenerationwebui/encode', async function (request, response) {
-    if (!request.body) {
-        return response.sendStatus(400);
-    }
-    const text = String(request.body.text) || '';
-    const baseUrl = String(request.body.url);
-    const model = String(request.body.model) || '';
-
-    const apiType = request.body.api_type;
-    if (!TEXTGEN_ENCODE_TYPES.includes(apiType)) {
-        return response.sendStatus(400);
-    }
-
-    const result = await encodeViaTextgenAPI(request, text, baseUrl, model, apiType);
-    return response.send(result);
-});
-
-router.post('/remote/textgenerationwebui/encode-batch', async function (request, response) {
-    if (!request.body || !Array.isArray(request.body.texts)) {
-        return response.sendStatus(400);
-    }
-    const texts = request.body.texts.map(t => String(t ?? ''));
-    const baseUrl = String(request.body.url);
-    const model = String(request.body.model) || '';
-    const apiType = request.body.api_type;
-
-    const results = await Promise.all(texts.map(text => encodeViaTextgenAPI(request, text, baseUrl, model, apiType)));
-    return response.send({ results });
-});
 
 /**
  * @param {{id: number, model?: string}} tokenizer

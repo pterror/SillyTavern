@@ -106,14 +106,6 @@ describe('metadata edits on a PNG-less character stay DB-only', () => {
         expect(await hasImageFile('Alice.png')).toBe(false);
     });
 
-    test('/edit-attribute', async () => {
-        await createPngLessAlice();
-        const res = await post('edit-attribute', { avatar_url: 'Alice.png', ch_name: 'Alice', field: 'description', value: 'ATTR' });
-        expect(res.status).toBe(200);
-        expect((await storedCard('Alice.png')).data.description).toBe('ATTR');
-        expect(await hasImageFile('Alice.png')).toBe(false);
-    });
-
     test('a greeting op', async () => {
         await createPngLessAlice();
         const res = await post('greetings/add', { avatar_url: 'Alice.png', position: 0, expected_length: 0, text: 'Hello there' });

@@ -47,8 +47,10 @@ function installInBrowser(browser) {
 
 export const test = base.extend({
     freshAccount: [false, { scope: 'worker', option: true }],
+    /** @type {[Record<string, string | Buffer> | null, any]} */
+    upstreamFiles: [null, { scope: 'worker', option: true }],
 
-    stServer: [async ({ freshAccount }, use) => {
+    stServer: [async ({ freshAccount, upstreamFiles }, use) => {
         const runRoot = process.env.ST_E2E_RUN_ROOT;
         if (!runRoot) {
             throw new Error('ST_E2E_RUN_ROOT must be set (by playwright.config.js)');
@@ -57,6 +59,14 @@ export const test = base.extend({
         const dataRoot = fs.mkdtempSync(path.join(runRoot, 'worker-'));
         if (!freshAccount) {
             fs.cpSync(seedRoot, dataRoot, { recursive: true, preserveTimestamps: true });
+        }
+        if (upstreamFiles) {
+            if (!freshAccount) throw new Error('upstreamFiles are imported only by a store made at the start: use them with freshAccount');
+            for (const [file, content] of Object.entries(upstreamFiles)) {
+                const at = path.join(dataRoot, 'default-user', file);
+                fs.mkdirSync(path.dirname(at), { recursive: true });
+                fs.writeFileSync(at, content);
+            }
         }
 
         const server = await startServer(dataRoot);

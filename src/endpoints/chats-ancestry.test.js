@@ -14,8 +14,7 @@ setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
 const { router: chatsRouter } = await import('./chats.js');
 const { newSessionKey } = await import('../chat-engine.js');
-const { SESSION_HEADER } = await import('../request-session.js');
-const { convertedUser, writeLibraryCard, sessionPath } = await import('../../tests/converted-user.fixture.js');
+const { convertedUser, writeLibraryCard, seedMessages, treeOf } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-ancestry-test-');
 const { directories } = user;
@@ -59,30 +58,21 @@ async function postJson(app, urlPath, body, headers = {}) {
 const app = buildTestApp();
 
 const tab = newSessionKey();
-const saved = await postJson(app, '/api/chats/save', {
-    ch_name: 'Alice',
-    file_name: 'Main Chat',
-    avatar_url: 'alice.png',
-    chat: [
-        { chat_metadata: {}, user_name: 'unused', character_name: 'unused' },
-        { name: 'User', is_user: true, is_system: false, mes: 'hi', send_date: 'x', extra: {} },
-        { name: 'Bot', is_user: false, is_system: false, mes: 'hello', send_date: 'x', extra: {} },
-    ],
-}, { [SESSION_HEADER]: tab });
-assert.equal(saved.status, 200);
-
-const loaded = { messages: await sessionPath(user.store, { avatar: 'alice.png' }, tab) };
-assert.ok(loaded, 'the saved chat must exist in the tree');
-const leafId = loaded.messages[loaded.messages.length - 1].node_id;
+const owner = { avatar: 'alice.png' };
+const [, leafId] = await seedMessages(user.store, owner, null, [
+    { name: 'User', is_user: true, is_system: false, mes: 'hi', send_date: 'x', extra: {} },
+    { name: 'Bot', is_user: false, is_system: false, mes: 'hello', send_date: 'x', extra: {} },
+], { session: tab });
+const bookmark = await user.store.chats.createBookmark({ tree: await treeOf(user.store, owner), node_id: leafId, name: 'Main Chat', actor: { user: 'u', session: tab } });
+assert.equal(bookmark.ok, true);
 
 test('POST /api/chats/ancestry: a message\'s bookmark_link is the bookmark made at it', async () => {
     const { status, data } = await postJson(app, '/api/chats/ancestry', { node_id: leafId });
 
     assert.equal(status, 200);
     assert.deepEqual(data.messages.map(m => m.mes), ['hi', 'hello']);
-    assert.equal(saved.data.file_name, 'Main Chat');
     assert.equal(data.messages[0].extra?.bookmark_link, undefined);
-    assert.equal(data.messages[1].extra?.bookmark_link, saved.data.file_name);
+    assert.equal(data.messages[1].extra?.bookmark_link, 'Main Chat');
 });
 
 test('POST /api/chats/ancestry answers the same with a chat_name', async () => {

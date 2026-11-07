@@ -199,38 +199,22 @@ test.describe('tag assignments changed in another tab', () => {
         }
     });
 
-    test('a restore, a copy and a key rename made elsewhere reach the characters and groups held here', async ({ page, browser }) => {
+    test('a restore made elsewhere reaches the characters and groups held here', async ({ page, browser }) => {
         const { other, close } = await openOtherTab(browser);
         try {
             const tagId = 'tag-assign-other-tabs-bulk';
             const a = await createCharacter(other, 'TagAssignOtherTabsBulkA');
-            const b = await createCharacter(other, 'TagAssignOtherTabsBulkB');
-            const c = await createCharacter(other, 'TagAssignOtherTabsBulkC');
             const g1 = await createGroup(other, 'TagAssignOtherTabsBulkG1', [a]);
-            const g2 = await createGroup(other, 'TagAssignOtherTabsBulkG2', [a]);
-            const g3 = await createGroup(other, 'TagAssignOtherTabsBulkG3', [a]);
             await createTag(other, tagId);
 
             await loadApp(page);
-            await holdCharacters(page, [a, b, c]);
-            await holdGroups(page, [g1, g2, g3]);
+            await holdCharacters(page, [a]);
+            await holdGroups(page, [g1]);
             expect(await listDrawerOpen(page)).toBe(false);
 
             await api(other, '/api/tags/restore', { tags: [], tagMap: { [a]: [tagId], [g1]: [tagId] }, overwrite: false });
             await expect.poll(() => heldTagIds(page, a), { timeout: 15000 }).toEqual([tagId]);
             await expect.poll(() => heldTagIds(page, g1), { timeout: 15000 }).toEqual([tagId]);
-
-            await api(other, '/api/tags/copy', { from: a, to: b });
-            await api(other, '/api/tags/copy', { from: g1, to: g2 });
-            await expect.poll(() => heldTagIds(page, b), { timeout: 15000 }).toEqual([tagId]);
-            await expect.poll(() => heldTagIds(page, g2), { timeout: 15000 }).toEqual([tagId]);
-
-            await api(other, '/api/tags/rename-key', { from: b, to: c });
-            await api(other, '/api/tags/rename-key', { from: g2, to: g3 });
-            await expect.poll(() => heldTagIds(page, c), { timeout: 15000 }).toEqual([tagId]);
-            await expect.poll(() => heldTagIds(page, b), { timeout: 15000 }).toEqual([]);
-            await expect.poll(() => heldTagIds(page, g3), { timeout: 15000 }).toEqual([tagId]);
-            await expect.poll(() => heldTagIds(page, g2), { timeout: 15000 }).toEqual([]);
         } finally {
             await close();
         }

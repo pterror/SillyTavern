@@ -1114,20 +1114,6 @@ describe('POST /api/characters/query - a tag filter with only excluded tags', ()
     });
 });
 
-describe('POST /api/characters/search-index/rebuild', () => {
-    test('answers success and does nothing: the search index is always current', async () => {
-        await seedCharacterWithFile('Rebuildable.png');
-
-        const response = await postJson('/api/characters/search-index/rebuild', {});
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ ok: true });
-
-        const searchResponse = await postJson('/api/characters/query', { filter: { search: 'Rebuildable' }, page: 1, pageSize: 10 });
-        const searchBody = await searchResponse.json();
-        expect(searchBody.rows.map(r => r.avatar)).toEqual(['Rebuildable.png']);
-    });
-});
-
 describe('POST /api/characters/query - cursors', () => {
     test('a cursor made for another sort is a 400 invalid-cursor', async () => {
         for (const name of ['A.png', 'B.png', 'C.png']) await seedCharacter(name);

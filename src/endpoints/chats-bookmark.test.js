@@ -15,7 +15,7 @@ setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 const { router: chatsRouter } = await import('./chats.js');
 const { newSessionKey } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
-const { convertedUser, writeLibraryCard, sessionPath, treeOf } = await import('../../tests/converted-user.fixture.js');
+const { convertedUser, writeLibraryCard, sessionPath, treeOf, namedChat, chatNamed } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-bookmark-test-');
 const { directories } = user;
@@ -81,15 +81,11 @@ async function bookmarkAt(owner, nodeId, name) {
 
 async function chatWith(avatar, name) {
     const tab = newSessionKey();
-    await postJson('/api/chats/save', {
-        avatar_url: avatar, file_name: name,
-        chat: [
-            { chat_metadata: { note_prompt: 'Keep it short.' } },
-            { name: 'Dee', is_user: false, mes: 'One.', send_date: 'x', extra: {} },
-            { name: 'User', is_user: true, mes: 'Two.', send_date: 'x', extra: {} },
-            { name: 'Dee', is_user: false, mes: 'Three.', send_date: 'x', extra: {} },
-        ],
-    }, { [SESSION_HEADER]: tab });
+    await namedChat(user.store, { avatar }, name, [
+        { name: 'Dee', is_user: false, mes: 'One.', send_date: 'x', extra: {} },
+        { name: 'User', is_user: true, mes: 'Two.', send_date: 'x', extra: {} },
+        { name: 'Dee', is_user: false, mes: 'Three.', send_date: 'x', extra: {} },
+    ], { session: tab, metadata: { note_prompt: 'Keep it short.' } });
     return Object.assign(await sessionPath(user.store, { avatar }, tab), { tab });
 }
 
@@ -180,21 +176,21 @@ test('a chat is named by its name, once in its tree; a message id or an old `b<i
     const avatar = 'hal.png';
     await writeCharacter(avatar, 'Hal');
     const messages = await chatWith(avatar, 'Main');
-    const get = name => postJson('/api/chats/get', { avatar_url: avatar, file_name: `${name}.jsonl` });
+    const shown = async name => (await chatNamed(user.store, { avatar }, name, newSessionKey()))?.map(m => m.mes);
     const one = (await postJson('/api/chats/bookmark', { avatar_url: avatar, node_id: messages[1].node_id, label: 'Twice' })).data;
     const two = await postJson('/api/chats/bookmark', { avatar_url: avatar, node_id: messages[2].node_id, label: 'Twice' });
     assert.deepEqual([two.status, two.data], [409, { ok: false, reason: 'name taken' }]);
     assert.equal(one.id, 'Twice');
-    assert.deepEqual((await get('Twice')).data.slice(1).map(m => m.mes), ['One.', 'Two.']);
-    assert.equal((await get(messages[1].node_id)).status, 404);
+    assert.deepEqual(await shown('Twice'), ['One.', 'Two.']);
+    assert.equal(await shown(messages[1].node_id), undefined);
     const [b] = (await user.store.chats.bookmarks({ tree: await treeOf(user.store, { avatar }), limit: 500 })).rows.filter(r => r.name === 'Twice');
-    assert.equal((await get(`b${b.id}`)).status, 404);
+    assert.equal(await shown(`b${b.id}`), undefined);
 
     assert.equal((await postJson('/api/chats/rename', { avatar_url: avatar, original_file: 'Twice.jsonl', renamed_file: 'Main.jsonl' })).status, 400);
     const renamed = await postJson('/api/chats/rename', { avatar_url: avatar, original_file: 'Twice.jsonl', renamed_file: 'Once.jsonl' });
     assert.deepEqual(renamed.data, { ok: true, sanitizedFileName: 'Once', label: 'Once' });
-    assert.deepEqual((await get('Once')).data.slice(1).map(m => m.mes), ['One.', 'Two.']);
-    assert.equal((await get('Twice')).status, 404);
+    assert.deepEqual(await shown('Once'), ['One.', 'Two.']);
+    assert.equal(await shown('Twice'), undefined);
 });
 
 test('a greeting shown without a row is stored and bookmarked in one request', async () => {

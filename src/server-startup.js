@@ -14,7 +14,6 @@ import { router as itemizedPromptsRouter } from './endpoints/itemized-prompts.js
 import { router as macrosRouter } from './endpoints/macros.js';
 import { router as avatarsRouter } from './endpoints/avatars.js';
 import { router as themesRouter } from './endpoints/themes.js';
-import { router as anthropicRouter } from './endpoints/anthropic.js';
 import { router as tokenizersRouter } from './endpoints/tokenizers.js';
 import { router as currentTokenizersRouter } from './endpoints/tokenizers-current.js';
 import { router as presetsRouter } from './endpoints/presets.js';
@@ -33,8 +32,6 @@ import { router as tagsRouter } from './endpoints/tags.js';
 import { router as viewsRouter } from './endpoints/views.js';
 import { ui, uiUser, rememberModelLists, SETTINGS_VIEWS } from './ui-wiring.js';
 import { router as hordeRouter } from './endpoints/horde.js';
-import { router as upstreamImportRouter } from './endpoints/upstream-import.js';
-import { router as stateRouter } from './endpoints/state.js';
 import { router as openRouterRouter } from './endpoints/openrouter.js';
 import { router as nanogptRouter } from './endpoints/nanogpt.js';
 import { router as chatCompletionsRouter } from './endpoints/backends/chat-completions.js';
@@ -69,7 +66,6 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/macros', macrosRouter);
     app.use('/api/avatars', avatarsRouter);
     app.use('/api/themes', themesRouter);
-    app.use('/api/anthropic', anthropicRouter);
     app.use('/api/tokenizers', tokenizersRouter);
     app.use('/api/tokenizers', currentTokenizersRouter);
     app.use('/api/presets', presetsRouter);
@@ -83,7 +79,7 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/worldinfo', worldInfoRouter);
     app.use('/api/stats', statsRouter);
     const OLD_WRITES = [
-        [/^\/api\/settings\/(save|save-partial|level)$/, SETTINGS_VIEWS],
+        [/^\/api\/settings\/(save|save-partial)$/, SETTINGS_VIEWS],
     ];
     app.use((request, response, next) => {
         const views = request.method === 'POST' && request.user ? OLD_WRITES.find(([route]) => route.test(request.path))?.[1] : undefined;
@@ -100,8 +96,6 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/tags', tagsRouter);
     app.use('/api/views', viewsRouter);
     app.use('/api/horde', hordeRouter);
-    app.use('/api/upstream-import', upstreamImportRouter);
-    app.use('/api/state', stateRouter);
     app.use('/api/backends/text-completions', textCompletionsRouter);
     app.use('/api/generation', generationRouter);
     app.use('/api/openrouter', openRouterRouter);

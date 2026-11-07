@@ -108,6 +108,38 @@ export async function chatContextOf(store, owner, session) {
 /**
  * @param {import('../src/user-stores.js').UserStore} store
  * @param {{ avatar?: string, group?: string }} owner
+ * @param {string} name
+ * @param {Record<string, any>[]} messages
+ * @param {{ session: string, metadata?: Record<string, unknown> }} o
+ * @returns {Promise<string[]>}
+ */
+export async function namedChat(store, owner, name, messages, { session, metadata = {} }) {
+    const chat = await chatContextOf(store, owner, session);
+    const actor = chat.session.actor();
+    const imported = await store.chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages, metadata, actor });
+    if (!imported.ok) throw new Error(imported.reason);
+    await store.chats.goTo({ tree: chat.tree, node_id: imported.node_ids[imported.node_ids.length - 1] ?? null, actor });
+    return imported.node_ids;
+}
+
+/**
+ * @param {import('../src/user-stores.js').UserStore} store
+ * @param {{ avatar?: string, group?: string }} owner
+ * @param {string} name
+ * @param {string} session
+ * @returns {Promise<Record<string, any>[] | undefined>}
+ */
+export async function chatNamed(store, owner, name, session) {
+    const { chatNamePosition } = await import('../src/chat-request.js');
+    const chat = await chatContextOf(store, owner, session);
+    const at = await chatNamePosition(chat, name);
+    if (at === undefined) return undefined;
+    return at === null ? [] : (await store.chats.load({ tree: chat.tree, at, session }))?.messages ?? [];
+}
+
+/**
+ * @param {import('../src/user-stores.js').UserStore} store
+ * @param {{ avatar?: string, group?: string }} owner
  * @param {string} session
  * @returns {Promise<Record<string, any>[]>}
  */

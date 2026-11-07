@@ -150,14 +150,6 @@ describe('an id not ending in .png is always a group', () => {
         expect((await post('/api/tags/for', { ids: ['legacy-group'] })).body).toEqual({ 'legacy-group': [] });
     });
 
-    test('copy from a legacy non-digit group to a digit group', async () => {
-        await seedGroup('legacy-group');
-        await seedGroup('1001');
-        expect((await post('/api/tags/assign', { id: 'legacy-group', tagId: 'a' })).status).toBe(200);
-        expect((await post('/api/tags/copy', { from: 'legacy-group', to: '1001' })).status).toBe(200);
-        expect((await post('/api/tags/for', { ids: ['legacy-group', '1001'] })).body).toEqual({ 'legacy-group': ['a'], 1001: ['a'] });
-    });
-
     test('a character row whose id doesn\'t end in .png is not assignable or readable as a character', async () => {
         await seedCharacter('NoExtension');
         expect((await post('/api/tags/assign', { id: 'NoExtension', tagId: 'tag1' })).status).toBe(404);

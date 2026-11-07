@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
@@ -15,18 +14,11 @@ const { router: chatsRouter } = await import('./chats.js');
 const { router: groupsRouter } = await import('./groups.js');
 const { newSessionKey } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
-const { convertedUser, writeLibraryCard, treeOf } = await import('../../tests/converted-user.fixture.js');
-const { write: writeCard } = await import('../character-card-parser.js');
+const { convertedUser, treeOf } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-save-test-');
 const { directories } = user;
 globalThis.DATA_ROOT = user.dataRoot;
-
-const baseImage = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'img', 'ai4.png'));
-for (const [avatar, name] of [['alice.png', 'Alice'], ['bob.png', 'Bob']]) {
-    const cardJson = JSON.stringify({ name, spec: 'chara_card_v2', data: { name } });
-    await writeLibraryCard(user, avatar, cardJson, writeCard(baseImage, cardJson));
-}
 
 /**
  * @param {{ avatar?: string, group?: string }} owner
@@ -89,74 +81,6 @@ function userMsg(text) {
 function charMsg(text, extra = {}) {
     return { name: 'Bot', is_user: false, is_system: false, mes: text, send_date: 'x', extra };
 }
-
-test('POST /api/chats/save with unique:true makes a bookmark labelled as asked, answered by its name (its chat id), and mints integrity', async () => {
-    const app = buildTestApp();
-    const tab = newSessionKey();
-    const { status, data } = await postJson(app, '/api/chats/save', {
-        ch_name: 'Alice',
-        file_name: 'Fresh Chat',
-        avatar_url: 'alice.png',
-        chat: [chatHeader(), userMsg('hi'), charMsg('hello')],
-        unique: true,
-    }, tab);
-
-    assert.equal(status, 200);
-    assert.equal(data.ok, true);
-    assert.equal(data.file_name, 'Fresh Chat');
-    assert.equal(typeof data.integrity, 'string');
-    assert.ok(data.integrity.length > 0);
-    assert.ok((await bookmarkNames({ avatar: 'alice.png' })).includes('Fresh Chat'));
-
-    const result = await chatNamed({ avatar: 'alice.png' }, data.file_name, tab);
-    assert.ok(result, 'branch must exist in the tree');
-    assert.equal(result.metadata.integrity, data.integrity);
-});
-
-test('POST /api/chats/save with unique:true makes a new bookmark when a chat has the label, without touching that one', async () => {
-    const app = buildTestApp();
-    const tab1 = newSessionKey();
-    const tab2 = newSessionKey();
-    const first = await postJson(app, '/api/chats/save', {
-        ch_name: 'Bob',
-        file_name: 'Main Chat',
-        avatar_url: 'bob.png',
-        chat: [chatHeader({ integrity: 'ignored' }), userMsg('untouched')],
-    }, tab1);
-    assert.equal(first.data.file_name, 'Main Chat');
-
-    const { status, data } = await postJson(app, '/api/chats/save', {
-        ch_name: 'Bob',
-        file_name: 'Main Chat',
-        avatar_url: 'bob.png',
-        chat: [chatHeader(), userMsg('branch point'), charMsg('branch reply')],
-        unique: true,
-    }, tab2);
-
-    assert.equal(status, 200);
-    assert.equal(data.ok, true);
-    assert.equal(data.file_name, 'Main Chat (2)');
-
-    const original = await chatNamed({ avatar: 'bob.png' }, first.data.file_name, tab1);
-    assert.equal(original.messages.length, 1, 'the original branch must be untouched by the collision save');
-    assert.equal((await chatNamed({ avatar: 'bob.png' }, 'Main Chat', tab1)).messages.length, 1);
-
-    const branch = await chatNamed({ avatar: 'bob.png' }, data.file_name, tab2);
-    assert.ok(branch);
-    assert.equal(branch.metadata.integrity, data.integrity);
-    assert.equal(branch.messages.length, 2);
-
-    const second = await postJson(app, '/api/chats/save', {
-        ch_name: 'Bob',
-        file_name: 'Main Chat',
-        avatar_url: 'bob.png',
-        chat: [chatHeader(), userMsg('another branch')],
-        unique: true,
-    }, newSessionKey());
-    assert.ok(![first.data.file_name, data.file_name].includes(second.data.file_name));
-    assert.equal(second.data.file_name, 'Main Chat (3)');
-    assert.deepEqual(await bookmarkNames({ avatar: 'bob.png' }), ['Main Chat', 'Main Chat (2)', 'Main Chat (3)']);
-});
 
 /**
  * @param {string} id
@@ -245,7 +169,7 @@ test('POST /api/chats/group/save with an already-registered id does not rewrite 
     assert.equal(await stored(), before);
 });
 
-test('a whole save to a bookmark\'s name edits what it names by id and its metadata; it appends, deletes and moves nothing, and answers what it left out', async () => {
+test('a whole save to a bookmark\'s name edits what it names by id and its metadata, adds what it names by no id after it; it deletes and moves nothing, and answers what it left out', async () => {
     const app = buildTestApp();
     const [tab] = await writeGroupFixture('group-6', ['Moving Chat']);
     const save = (chat, from) => postJson(app, '/api/chats/group/save', { id: 'Moving Chat', group_id: 'group-6', chat }, from);
@@ -255,15 +179,15 @@ test('a whole save to a bookmark\'s name edits what it names by id and its metad
     const saved = await save([chatHeader({ note_prompt: 'kept' }), { ...seed, mes: 'seed, edited' }, charMsg('more')], other);
     assert.equal(saved.status, 200);
     assert.equal(saved.data.chat_id, 'Moving Chat');
-    assert.deepEqual(saved.data.not_saved, [{ index: 1, reason: 'no id' }]);
+    assert.equal(saved.data.not_saved, undefined);
     const shown = await chatNamed({ group: 'group-6' }, 'Moving Chat', tab);
-    assert.deepEqual(shown.messages.map(m => m.mes), ['seed, edited']);
+    assert.deepEqual(shown.messages.map(m => m.mes), ['seed, edited', 'more']);
     assert.equal(shown.messages[0].node_id, seed.node_id);
     assert.equal(shown.metadata.note_prompt, 'kept');
 
     const without = await save([chatHeader({ note_prompt: 'kept' })], other);
-    assert.deepEqual(without.data.not_deleted, [seed.node_id]);
-    assert.deepEqual((await chatNamed({ group: 'group-6' }, 'Moving Chat', tab)).messages.map(m => m.mes), ['seed, edited']);
+    assert.deepEqual(without.data.not_deleted, shown.messages.map(m => m.node_id));
+    assert.deepEqual((await chatNamed({ group: 'group-6' }, 'Moving Chat', tab)).messages.map(m => m.mes), ['seed, edited', 'more']);
     assert.deepEqual(await bookmarkNames({ group: 'group-6' }), ['Moving Chat']);
 });
 

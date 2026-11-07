@@ -85,18 +85,6 @@ export async function resolveAvatars(store, messages) {
 }
 
 /**
- * @param {any} store
- * @param {Record<string, any>[]} messages
- */
-export function resolveAvatarsSync(store, messages) {
-    const refs = refsIn(messages);
-    if (refs.size === 0) return messages;
-    const ids = store.libraryIdsSync([...refs.values()].map(r => [r.type, r.key]));
-    const present = ids.filter((/** @type {bigint | null} */ id) => id !== null);
-    return apply(messages, refs, ids, present.length ? store.libraryEntitiesSync(present, NONE) : []);
-}
-
-/**
  * @param {Record<string, any>} message
  * @returns {Record<string, any>}
  */

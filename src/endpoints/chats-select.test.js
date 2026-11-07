@@ -15,7 +15,7 @@ const { router: chatsRouter } = await import('./chats.js');
 const { newSessionKey } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
 const { write: writeCard } = await import('../character-card-parser.js');
-const { convertedUser, writeLibraryCard, sessionPath } = await import('../../tests/converted-user.fixture.js');
+const { convertedUser, writeLibraryCard, sessionPath, namedChat } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-select-test-');
 const { directories } = user;
@@ -89,16 +89,11 @@ test('a group chat\'s greetings are stored in a row under the chat\'s name, with
 
 test('with_ancestry answers the path down to the selected message and the conversation below it', async () => {
     const tab = newSessionKey();
-    const saved = await postJson('/api/chats/save', {
-        avatar_url: 'cara.png', file_name: 'Main',
-        chat: [
-            { chat_metadata: {} },
-            { name: 'Cara', is_user: false, mes: 'One.', send_date: 'x', extra: {} },
-            { name: 'User', is_user: true, mes: 'Two.', send_date: 'x', extra: {} },
-            { name: 'Cara', is_user: false, mes: 'Three.', send_date: 'x', extra: {} },
-        ],
-    }, tab);
-    assert.equal(saved.status, 200);
+    await namedChat(user.store, { avatar: 'cara.png' }, 'Main', [
+        { name: 'Cara', is_user: false, mes: 'One.', send_date: 'x', extra: {} },
+        { name: 'User', is_user: true, mes: 'Two.', send_date: 'x', extra: {} },
+        { name: 'Cara', is_user: false, mes: 'Three.', send_date: 'x', extra: {} },
+    ], { session: tab });
     const messages = await sessionPath(user.store, { avatar: 'cara.png' }, tab);
     const { status, data } = await postJson('/api/chats/message/select', {
         avatar_url: 'cara.png', node_id: messages[1].node_id, activate: true, with_ancestry: true,

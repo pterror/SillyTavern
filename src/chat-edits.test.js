@@ -96,11 +96,12 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await send('g', ['u1', 'b1', 'u2']);
         const pinned = await chats.createBookmark({ tree: t, node_id: id.b1, name: 'Pinned', mode: MODE.pinned, actor: a });
         await chats.createBookmark({ tree: t, node_id: id.u2, name: 'Following', actor: a });
-        const change = await chats.changeState({ tree: t, at: id.b1, ops: [{ key: 'hp', variable: true, value: 3 }], actor: a });
+        const change = String((await chats.store.chatRead('nextIds', {})).change);
+        await chats.mergeMetadata({ tree: t, at: id.b1, set: { scene: 'inn' }, unset: [], actor: a });
         const preview = await chats.deleteSubtree({ tree: t, node_id: id.b1, actor: a, preview: true });
         const drops = {
             bookmarks: [{ id: String(/** @type {any} */ (pinned).bookmark), name: 'Pinned', node_id: id.b1 }],
-            changes: [{ id: change.ok ? change.changes[0] : '', key: 'hp', variable: true, node_id: id.b1 }],
+            changes: [{ id: change, key: 'scene', variable: false, node_id: id.b1 }],
         };
         assert.deepEqual(preview, { ok: true, preview: true, drops });
         assert.deepEqual(await chats.deleteSubtree({ tree: t, node_id: id.b1, actor: a }), { ok: false, reason: 'confirm', drops });
@@ -120,9 +121,8 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await send('g', ['u1', 'b1', 'u2', 'b2', 'u3']);
         await chats.select({ tree: t, node_id: id.b2, actor: b });
         await send('b2', ['u3x'], b);
-        await chats.changeState({ tree: t, at: id.b2, ops: [{ key: 'hp', variable: true, value: 5 }], actor: a });
-        const gone = await chats.changeState({ tree: t, at: id.b2, ops: [{ key: 'mood', value: 'calm' }], actor: a });
-        await chats.revertChange({ change: gone.ok ? gone.changes[0] : '', actor: a });
+        await chats.mergeMetadata({ tree: t, at: id.b2, set: { mood: 'calm' }, unset: [], variables: { set: { hp: 5 } }, actor: a });
+        await chats.mergeMetadata({ tree: t, at: id.b2, set: {}, unset: ['mood'], actor: a });
         const stateBefore = (await chats.stateAt({ tree: t, at: id.u3 }))?.state;
 
         const cut = /** @type {any} */ (await chats.cutFromPath({ tree: t, first: id.b1, last: id.u2, actor: a }));
@@ -249,7 +249,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: b.session }), { session: b.session });
         assert.deepEqual(await chats.resolveChatName({ tree: t, name: 'Evening' }), { session: b.session });
         assert.equal(await chats.resolveChatName({ tree: t, name: 'Dusk' }), null);
-        assert.equal(await chats.treeOfChatId('Morning'), null);
         await store.commit([{ kind: 'positionName', id: first.bookmark, name: 'Noon' }]);
         assert.equal(await chats.resolveChatName({ tree: t, name: 'Noon' }), null);
         await store.close();

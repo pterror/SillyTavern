@@ -238,13 +238,12 @@ describe('no false hit: a changed group field changes the server digest, and the
     const FIELDS = [
         'name', 'members', 'allow_self_responses', 'activation_strategy', 'generation_mode', 'disabled_members',
         'fav', 'chat_id', 'chats', 'auto_mode_delay', 'generation_mode_join_prefix', 'generation_mode_join_suffix',
-        'extra_field',
     ];
 
     test('FIELDS covers every field of a created group except id', async () => {
         const created = await createGroup({});
         const [batched] = await postJson('/api/groups/batch', { ids: [created.id] });
-        expect(Object.keys(batched).filter(k => k !== 'id' && k !== 'tag_ids' && k !== 'member_thumbnails' && k !== 'avatar_thumbnail').sort()).toEqual(FIELDS.filter(f => f !== 'extra_field').sort());
+        expect(Object.keys(batched).filter(k => k !== 'id' && k !== 'tag_ids' && k !== 'member_thumbnails' && k !== 'avatar_thumbnail').sort()).toEqual([...FIELDS].sort());
         expect(batched.member_thumbnails).toEqual({ 'a.png': null, 'b.png': null });
         expect(batched.avatar_thumbnail).toBeNull();
     });
@@ -272,7 +271,7 @@ describe('no false hit: a changed group field changes the server digest, and the
 
         const [file] = await postJson('/api/groups/batch', { ids: [created.id] });
         const edited = { ...file, [field]: changedValue(file[field]) };
-        expect(await postJson('/api/groups/edit', edited)).toEqual({ ok: true });
+        expect(await postJson('/api/groups/save-partial', { id: created.id, props: { [field]: edited[field] } })).toEqual({ ok: true });
 
         const stored = field !== 'chat_id' && field !== 'chats';
         const after = (await serverGroupHashes()).get(created.id);

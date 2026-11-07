@@ -17,7 +17,7 @@ chat: `s<UUID>.<tree>` and `b<id>` are gone.
 
 Names are unique in their scope, bookmarks and conversations together:
 - a character's tree;
-- all groups' trees together (a group route may send a chat id with no group id, as upstream's do).
+- all groups' trees together.
 
 ## When a conversation's name is fixed
 
@@ -33,14 +33,14 @@ changes the name not yet stored.
 
 | Who | Sends | Server does | Answers |
 |---|---|---|---|
-| any route | a chat id | finds the bookmark or conversation of that name in the tree (a group route with no group id: among all groups' chats) | that chat, or not found |
+| any route | a chat id, with its character or group | finds the bookmark or conversation of that name in that tree | that chat, or not found |
 | a page asking for its chat id (`getCurrentChatId()`, `characters[].chat`, `group.chat_id`) | its session | the current bookmark's label, else the conversation's name (stored, else worked out) | the name |
 | saving a conversation as a bookmark | an optional label | label given: refused if taken; none: the conversation's name, the next free millisecond if taken | the bookmark's name |
 | renaming a chat | old name, new name | refused if the new name is taken in the scope; a bookmark's label, or the conversation's stored name | the new name |
 | the first write in a tree | the write | stores the conversation's name with it, when the session has no current bookmark there and none is stored | as before |
 
 The engine keeps, per (session, tree), the stored name, and per name the trees holding it (bookmarks and
-conversations both), which is how a name alone finds its tree.
+conversations both).
 
 ## The cutover
 

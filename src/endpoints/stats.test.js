@@ -98,16 +98,6 @@ async function run() {
     }
 
     {
-        const inc = await postJson(app, '/api/stats/increment', { avatar: 'rex.png', deltas: { user_msg_count: 50 }, wordCount: { is_user: true, text: 'a b c d e f' } });
-        assert.equal(inc.status, 200);
-        assert.equal(inc.data.user_msg_count, 2);
-        const upd = await postJson(app, '/api/stats/update', { 'rex.png': { user_msg_count: 999 } });
-        assert.equal(upd.status, 200);
-        const after = await postJson(app, '/api/stats/get', { avatars: ['rex.png'] });
-        assert.equal(after.data['rex.png'].user_msg_count, 2);
-    }
-
-    {
         fs.writeFileSync(path.join(root, 'stats.json'), '{"old":1}');
         keepOldStatsFile(root);
         assert.equal(fs.readFileSync(path.join(root, STATS_BACKUP_FILE), 'utf8'), '{"old":1}');

@@ -130,23 +130,6 @@ async function hashModeGroupFavHashes() {
     return new Map(rows.filter(r => r.isGroup).map(r => [r.id, r.favHash]));
 }
 
-/**
- * @param {object} body
- * @param {(body: any) => boolean} check
- */
-async function pollSearch(body, check) {
-    let result;
-    const deadline = Date.now() + 10000;
-    do {
-        const response = await postJson('/api/characters/all', body);
-        expect(response.status).toBe(200);
-        result = await response.json();
-        if (check(result)) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
-    } while (Date.now() < deadline);
-    return result;
-}
-
 describe('group writers store the normalized fav, and the digest of it is the same', () => {
     test.each(FAV_CASES)('writeGroup: %s', async (_label, value, expected) => {
         await user.store.lib.writeGroup(withFav({ id: 'g1', name: 'G', members: [] }, value));
@@ -159,14 +142,6 @@ describe('group writers store the normalized fav, and the digest of it is the sa
         expect(response.status).toBe(200);
         const created = await response.json();
         expect(created.fav).toBe(expected);
-        expect(await columnAndDigest(created.id)).toEqual(columnAndDigestFor(expected));
-        expect((await readGroupJson(created.id)).fav).toBe(expected);
-    });
-
-    test.each(FAV_CASES)('POST /api/groups/edit: %s', async (_label, value, expected) => {
-        const created = await (await postJson('/api/groups/create', { name: 'Edited', fav: !expected })).json();
-        const response = await postJson('/api/groups/edit', withFav({ id: created.id, name: 'Edited', members: [], chats: [] }, value));
-        expect(response.status).toBe(200);
         expect(await columnAndDigest(created.id)).toEqual(columnAndDigestFor(expected));
         expect((await readGroupJson(created.id)).fav).toBe(expected);
     });
@@ -200,8 +175,8 @@ describe('group routes send the normalized boolean, and the client hash of what 
         const query = await (await postJson('/api/characters/query', { filter: { includeGroups: true }, sort: { field: 'name', order: 'asc' }, page: 1, pageSize: 10 })).json();
         sent.push(['/api/characters/query rows', query.rows.find(r => r.type === 'group').item]);
 
-        const search = await pollSearch({ search: 'zorkmid', includeGroups: true }, body => body.items?.length > 0);
-        sent.push(['/api/characters/all search', search.items.find(r => r.type === 'group').item]);
+        const search = await (await postJson('/api/characters/query', { filter: { search: 'zorkmid', includeGroups: true }, page: 1, pageSize: 10 })).json();
+        sent.push(['/api/characters/query search', search.rows.find(r => r.type === 'group').item]);
 
         for (const [route, record] of sent) {
             expect([route, record.fav]).toEqual([route, expected]);

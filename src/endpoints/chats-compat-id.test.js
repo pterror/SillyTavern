@@ -16,7 +16,7 @@ const { router: chatsRouter } = await import('./chats.js');
 const { newSessionKey, MODE, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
 const { buildDraftStorageKey } = await import('../../public/scripts/chat-draft.js');
-const { convertedUser, writeLibraryCard, treeOf } = await import('../../tests/converted-user.fixture.js');
+const { convertedUser, writeLibraryCard, treeOf, seedMessages, chatNamed } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-compat-id-test-');
 const { directories } = user;
@@ -64,11 +64,7 @@ const conversationOf = (/** @type {string} */ name, /** @type {string} */ tab) =
 
 const openedId = async (/** @type {string} */ avatar, /** @type {string} */ tab) => (await postJson('/api/chats/open', { avatar_url: avatar }, tab)).data.chat;
 
-async function saveAs(/** @type {string} */ avatar, /** @type {string} */ tab, /** @type {string} */ id, /** @type {any[]} */ messages) {
-    const saved = await postJson('/api/chats/save', { avatar_url: avatar, file_name: id, chat: [{ chat_metadata: {} }, ...messages], force: true }, tab);
-    assert.equal(saved.status, 200);
-    return saved.data;
-}
+const shown = async (/** @type {string} */ avatar, /** @type {string} */ name, /** @type {string} */ tab) => (await chatNamed(user.store, { avatar }, name, tab))?.map(m => m.mes);
 
 test('two characters in one tab have different ids, each gets its own back, and per-chat data keyed by them never crosses', async () => {
     await writeCharacter('ann.png', 'Ann');
@@ -77,7 +73,7 @@ test('two characters in one tab have different ids, each gets its own back, and 
 
     const ann = await openedId('ann.png', tab);
     assert.equal(ann, conversationOf('Ann', tab));
-    await saveAs('ann.png', tab, ann, [message(false, 'Hi.'), message(true, 'Hello Ann.')]);
+    await seedMessages(user.store, { avatar: 'ann.png' }, null, [message(false, 'Hi.'), message(true, 'Hello Ann.')], { session: tab });
     /** @type {Map<string, string>} */
     const perChat = new Map([[ann, 'Ann\'s memories']]);
 
@@ -91,10 +87,8 @@ test('two characters in one tab have different ids, each gets its own back, and 
     assert.equal(annAgain, ann);
     assert.equal(perChat.get(annAgain), 'Ann\'s memories');
     assert.equal(perChat.get(await openedId('ben.png', tab)), 'Ben\'s memories');
-    const annChat = await postJson('/api/chats/get', { avatar_url: 'ann.png', file_name: ann }, tab);
-    assert.deepEqual(annChat.data.slice(1).map(m => m.mes), ['Hi.', 'Hello Ann.']);
-    const benChat = await postJson('/api/chats/get', { avatar_url: 'ben.png', file_name: ben }, tab);
-    assert.deepEqual(benChat.data.slice(1).map(m => m.mes), []);
+    assert.deepEqual(await shown('ann.png', ann, tab), ['Hi.', 'Hello Ann.']);
+    assert.deepEqual(await shown('ben.png', ben, tab), []);
 
     const other = newSessionKey();
     assert.notEqual(await openedId('ann.png', other), ann);
@@ -105,15 +99,14 @@ test('the id stays through appends and bookmarks made at the pointer; opening a 
     const tab = newSessionKey();
     const id = await openedId('cal.png', tab);
     const draftKey = buildDraftStorageKey({ type: 'character', id: 'cal.png', chatId: id });
-    const saved = await saveAs('cal.png', tab, id, [message(false, 'Hi.'), message(true, 'One.')]);
-    assert.equal(saved.file_name, id, 'a save answers the conversation\'s id, unchanged');
-    const last = saved.assigned_node_ids.at(-1).node_id;
+    const last = (await seedMessages(user.store, { avatar: 'cal.png' }, null, [message(false, 'Hi.'), message(true, 'One.')], { session: tab })).at(-1);
+    assert.equal(await openedId('cal.png', tab), id);
 
     const made = await postJson('/api/chats/bookmark', { avatar_url: 'cal.png', node_id: last, label: 'Here' }, tab);
     assert.equal(made.status, 200);
     assert.equal(await openedId('cal.png', tab), id);
 
-    await saveAs('cal.png', tab, id, [message(false, 'Hi.'), message(true, 'One.'), message(false, 'Two.')]);
+    await seedMessages(user.store, { avatar: 'cal.png' }, last, [message(false, 'Two.')], { session: tab });
     assert.equal(await openedId('cal.png', tab), id);
     assert.equal(buildDraftStorageKey({ type: 'character', id: 'cal.png', chatId: await openedId('cal.png', tab) }), draftKey);
 
@@ -129,8 +122,8 @@ test('a reply on a pinned current bookmark keeps the id and the draft; the bookm
     await writeCharacter('dot.png', 'Dot');
     const tab = newSessionKey();
     const own = await openedId('dot.png', tab);
-    const saved = await saveAs('dot.png', tab, own, [message(false, 'Hi.'), message(true, 'One.')]);
-    const pinnedAt = saved.assigned_node_ids.at(-1).node_id;
+    assert.match(own, /^Dot - /);
+    const pinnedAt = (await seedMessages(user.store, { avatar: 'dot.png' }, null, [message(false, 'Hi.'), message(true, 'One.')], { session: tab })).at(-1);
     const made = await postJson('/api/chats/bookmark', { avatar_url: 'dot.png', node_id: pinnedAt, label: 'Pinned', open: true }, tab);
     const id = made.data.opened.chat;
     assert.equal(id, made.data.id);
@@ -143,8 +136,8 @@ test('a reply on a pinned current bookmark keeps the id and the draft; the bookm
     assert.equal(replied.status, 200);
     assert.equal(await openedId('dot.png', tab), id);
     assert.equal(buildDraftStorageKey({ type: 'character', id: 'dot.png', chatId: await openedId('dot.png', tab) }), draftKey);
-    assert.deepEqual((await postJson('/api/chats/get', { avatar_url: 'dot.png', file_name: id }, tab)).data.slice(1).map(m => m.mes), ['Hi.', 'One.', 'Two.']);
-    assert.deepEqual((await postJson('/api/chats/get', { avatar_url: 'dot.png', file_name: id }, newSessionKey())).data.slice(1).map(m => m.mes), ['Hi.', 'One.']);
+    assert.deepEqual(await shown('dot.png', id, tab), ['Hi.', 'One.', 'Two.']);
+    assert.deepEqual(await shown('dot.png', id, newSessionKey()), ['Hi.', 'One.']);
 });
 
 test('a conversation\'s name resolves to its session\'s conversation in its tree: opening another tab\'s moves this tab there, never taking it over', async () => {
@@ -152,15 +145,15 @@ test('a conversation\'s name resolves to its session\'s conversation in its tree
     const first = newSessionKey();
     const second = newSessionKey();
     const firstId = await openedId('eva.png', first);
-    await saveAs('eva.png', first, firstId, [message(false, 'Hi.'), message(true, 'From the first tab.')]);
-    assert.deepEqual((await postJson('/api/chats/get', { avatar_url: 'eva.png', file_name: first }, second)).data.slice(1).map(m => m.mes), ['Hi.', 'From the first tab.']);
+    await seedMessages(user.store, { avatar: 'eva.png' }, null, [message(false, 'Hi.'), message(true, 'From the first tab.')], { session: first });
+    assert.deepEqual(await shown('eva.png', first, second), ['Hi.', 'From the first tab.']);
 
     const opened = await postJson('/api/chats/open', { avatar_url: 'eva.png', chat: firstId, make_current: true }, second);
     assert.deepEqual(opened.data.messages.map(m => m.mes), ['Hi.', 'From the first tab.']);
     assert.match(opened.data.chat, /^Eva - \d{4}-/);
     assert.notEqual(opened.data.chat, firstId);
     const tree = await treeOf(user.store, { avatar: 'eva.png' });
-    assert.equal((await postJson('/api/chats/get', { avatar_url: 'eva.png', file_name: `s${first}.${tree}` }, second)).status, 404);
+    assert.equal(await shown('eva.png', `s${first}.${tree}`, second), undefined);
 });
 
 after(async () => {

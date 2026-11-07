@@ -12,7 +12,6 @@ import {
     encodeProbabilitiesFrame,
     encodeEvent,
     pipeLlamaCppCompactStream,
-    getLlamaCppStreamMeta,
 } from '../src/endpoints/backends/llamacpp-compact-stream.js';
 
 import { CompactStreamDecoder } from '../public/scripts/llamacpp-compact-stream.js';
@@ -434,7 +433,7 @@ function fakeUpstream(sseEvents, rawChunkSize = 64) {
 }
 
 describe('pipeLlamaCppCompactStream - integration over a fake upstream + fake response', () => {
-    test('decodes to the expected final text, and stashes retrievable meta on stop', async () => {
+    test('decodes to the expected final text', async () => {
         const sseEvents = [
             { index: 0, content: 'Hello ' },
             { index: 0, content: 'world', completion_probabilities: [{ tok_str: 'world', prob: 0.8 }] },
@@ -445,18 +444,12 @@ describe('pipeLlamaCppCompactStream - integration over a fake upstream + fake re
 
         expect(res.ended).toBe(true);
         expect(res.headers['X-ST-Stream-Format']).toBe('compact-v1');
-        const genId = res.headers['X-Generation-Id'];
-        expect(genId).toBeTruthy();
+        expect(res.headers['X-Generation-Id']).toBeTruthy();
 
         const allBytes = Buffer.concat(res.writes.filter(Boolean));
         const events = decodeInChunks(allBytes, [allBytes.length || 1]);
         const { text } = replay(events);
         expect(text).toBe('Hello world');
-
-        const meta = getLlamaCppStreamMeta(genId);
-        expect(meta.prompt).toBe('the prompt');
-        expect(meta.model).toBe('test-model');
-        expect(meta.timings).toEqual({ a: 1 });
     });
 
     test('backpressure: pending writes coalesce while draining and nothing is lost or duplicated', async () => {

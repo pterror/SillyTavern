@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -19,7 +18,7 @@ import { readUserSettings } from '../settings-reads.js';
 import { cardToGreetingsModel } from '../greeting-list.js';
 import { applyPageWrites } from '../page-writes.js';
 import { storedMessagesOf } from '../stored-messages.js';
-import { engineStoreHere, requestStore } from '../user-stores.js';
+import { requestStore } from '../user-stores.js';
 import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, openChatNamed, ownOf } from '../chat-request.js';
 import { groupObjects } from './groups.js';
 import { wholeCharacter } from './characters.js';
@@ -27,9 +26,8 @@ import { chatOpenParts } from '../chat-open-parts.js';
 import { SESSION_GONE_HEADER, sessionHeaderOf } from '../request-session.js';
 import { ui, uiUser } from '../ui-wiring.js';
 import { pageSettingsHash } from '../settings-hash.js';
-import { loadSync, resolveChatNameSync, storedForm, treeOfChatIdSync } from '../chat-engine.js';
+import { storedForm } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
-import { USER_DIRECTORY_TEMPLATE } from '../constants.js';
 
 /**
  * @param {unknown} error
@@ -40,49 +38,6 @@ function hasErrorCode(error) {
 }
 
 export const CHAT_BACKUPS_PREFIX = 'chat_';
-
-/**
- * Builds a stable filename key for a chat's backups (upstream's): non-ASCII characters become underscores, so a
- * short hash of the raw name keeps such names' keys distinct while ASCII names stay unchanged.
- * @param {string} name The name of the chat.
- * @returns {string} Sanitized filename key for the backup files.
- */
-export function getBackupKey(name) {
-    const sanitized = sanitize(name).replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    if (/[^\x20-\x7E]/.test(name)) {
-        const hash = crypto.createHash('sha256').update(name).digest('hex').slice(0, 8);
-        return `${sanitized}_${hash}`;
-    }
-    return sanitized;
-}
-
-/**
- * The chat an upstream chat file path names: `<user>/chats/<avatar stem>/<name>.jsonl` (a character's) or
- * `<user>/group chats/<name>.jsonl` (a group's), with the user's directories; null for any other path.
- * @param {string} filePath
- * @returns {{ directories: any, avatar: string | null, name: string } | null}
- */
-function chatFileOf(filePath) {
-    const full = path.resolve(filePath);
-    const name = chatName(path.basename(full));
-    const parent = path.dirname(full);
-    /** @type {string} */
-    let root;
-    /** @type {string | null} */
-    let avatar = null;
-    if (path.basename(parent) === USER_DIRECTORY_TEMPLATE.groupChats) {
-        root = path.dirname(parent);
-    } else if (path.basename(path.dirname(parent)) === USER_DIRECTORY_TEMPLATE.chats) {
-        root = path.dirname(path.dirname(parent));
-        avatar = `${path.basename(parent)}.png`;
-    } else {
-        return null;
-    }
-    /** @type {any} */
-    const directories = { root };
-    for (const [k, v] of Object.entries(USER_DIRECTORY_TEMPLATE)) directories[k] = path.join(root, /** @type {string} */ (v));
-    return { directories, avatar, name };
-}
 
 /**
  * Gets a preview message from a chat message string.
@@ -569,7 +524,7 @@ export function compatChatEdits(messages) {
 }
 
 /**
- * Stores a whole chat array (upstream's `/save` and `/group/save`, and `trySaveChat()`) at the chat `name` names, as
+ * Stores a whole chat array (upstream's `/group/save`) at the chat `name` names, as
  * node-addressed changes: the messages and alternatives it names by id are edited where they differ
  * (`compatChatEdits()`), a message with no id is stored where the array has it (`placeNewMessages()`), and its
  * header's `chat_metadata` is the state at the chat's last message (keys and variables it lacks removed), as
@@ -580,7 +535,7 @@ export function compatChatEdits(messages) {
  * with `unique`: a branch made beside the chat); the request's own conversation, empty, is stored and the session put
  * at its end. No name: the request's own conversation. A header
  * whose `integrity` isn't the request's session is refused unless `force` (a chat the save makes isn't checked).
- * Answers what `/save` sends: `file_name` the compat chat id of the chat saved.
+ * Answers `file_name`, the compat chat id of the chat saved.
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {import('../chat-request.js').ChatContext} chat
@@ -720,134 +675,6 @@ async function placeNewMessages(chat, messages, actor) {
     }
     return { moved, notSaved };
 }
-
-/**
- * @param {Array} chatData
- * @param {string} filePath
- * @param {boolean} skipIntegrityCheck
- * @param {string} handle
- * @param {string} [_cardName]
- * @param {string} [_backupDirectory]
- */
-export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, _cardName, _backupDirectory) {
-    const file = chatFileOf(filePath);
-    if (!file) throw new Error(`Not a chat file path: "${filePath}"`);
-    /** @type {any} */
-    const request = { user: { directories: file.directories, profile: { handle } }, body: { force: skipIntegrityCheck === true }, headers: {}, get: () => undefined };
-    const chat = file.avatar !== null ? await chatContext(request, { avatar: file.avatar }) : await groupChatOf(request, file.name);
-    if (!chat) throw new Error(`No chat to save at "${filePath}"`);
-    /** @type {any} */
-    const response = { setHeader() {}, headersSent: false };
-    const { status, body } = await saveCompatChat(request, response, chat, file.name, chatData);
-    if (status === 400 && body.error === 'integrity') {
-        throw new Error(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatData[0]?.chat_metadata?.integrity}".`);
-    }
-    if (status !== 200) throw new Error(`The chat at "${filePath}" could not be saved: ${body.error}`);
-}
-
-router.post('/save', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const chatData = request.body.chat;
-        if (!Array.isArray(chatData)) {
-            return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
-        }
-        const chat = await chatOf(request, { avatar_url: request.body.avatar_url });
-        if (!chat) return response.status(404).send({ error: 'not_found' });
-        const { status, body } = await saveCompatChat(request, response, chat, chatName(request.body.file_name), chatData);
-        return response.status(status).send(body);
-    } catch (error) {
-        console.error(error);
-        return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
-    }
-});
-
-/**
- * A chat as upstream's `/get` answers it: `[header, ...messages]`, the header's `chat_metadata` the state at its
- * position (with the request's session's `integrity`).
- * @param {import('../chat-request.js').ChatContext} chat
- * @param {string | null} at
- */
-async function chatArray(chat, at) {
-    const loaded = await chat.store.chats.load({ tree: chat.tree, at, session: chat.session.reader().session });
-    if (!loaded) return null;
-    return [{ chat_metadata: { ...loaded.metadata }, user_name: 'unused', character_name: 'unused' }, ...loaded.messages];
-}
-
-/**
- * @param {any} store
- * @param {bigint} tree
- * @param {string} name
- * @returns {string | null | undefined}
- */
-function chatNamePositionSync(store, tree, name) {
-    const outside = (/** @type {bigint | null} */ at) => {
-        if (at === null) return null;
-        const [m] = store.chatReadSync('messages', { ids: [at] });
-        return m?.oldKey ?? String(at);
-    };
-    const found = resolveChatNameSync(store, tree, name);
-    if (found === null) return undefined;
-    if ('bookmark' in found) {
-        const [b] = store.chatReadSync('bookmarks', { ids: [found.bookmark] });
-        return b ? outside(b.at) : undefined;
-    }
-    const where = found.session === null ? null : store.chatReadSync('sessionInTree', { session: found.session, tree });
-    if (!where && 'derived' in found) return outside(store.chatReadSync('landing', { tree, ...(found.session === null ? {} : { session: found.session }) }));
-    return where ? outside(where.at) : undefined;
-}
-
-/**
- * @param {any} store
- * @param {string} name
- * @returns {bigint | null}
- */
-function groupTreeOfChatSync(store, name) {
-    const tree = treeOfChatIdSync(store, name);
-    if (tree === null) return null;
-    const [e] = store.libraryEntitiesSync([tree], { fields: [], lists: [] });
-    return e?.type === TYPE.group ? tree : null;
-}
-
-/**
- * Upstream's read of a chat file, on the engine (synchronous, as upstream's): the chat the path names
- * (`chatFileOf()`) as `/get` answers it, `[header, ...messages]`; [] when it names no chat.
- * @param {string} chatFilePath The full chat file path.
- * @returns {Array}
- */
-export function getChatData(chatFilePath) {
-    const file = chatFileOf(chatFilePath);
-    const missing = () => {
-        console.warn(`File not found: ${chatFilePath}. The chat does not exist or is empty.`);
-        return [];
-    };
-    if (!file) return missing();
-    const store = engineStoreHere(file.directories);
-    /** @type {bigint | null | undefined} */
-    let tree;
-    if (file.avatar !== null) [tree] = store.libraryIdsSync([[TYPE.character, file.avatar]]);
-    else tree = groupTreeOfChatSync(store, file.name);
-    if (tree === null || tree === undefined) return missing();
-    const at = chatNamePositionSync(store, tree, file.name);
-    if (at === undefined) return missing();
-    const loaded = loadSync(store, { tree, at, full: true });
-    if (!loaded) return missing();
-    return [{ chat_metadata: { ...loaded.metadata }, user_name: 'unused', character_name: 'unused' }, ...loaded.messages];
-}
-
-router.post('/get', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const name = chatName(request.body.file_name);
-        if (!name) return response.send({});
-        const chat = await chatOf(request, { avatar_url: request.body.avatar_url });
-        const at = chat ? await chatNamePosition(chat, name) : undefined;
-        const answer = chat && at !== undefined ? await chatArray(chat, at) : null;
-        if (!answer) return response.status(404).send({ error: 'not_found' });
-        return response.send(answer);
-    } catch (error) {
-        console.error(error);
-        return response.send({});
-    }
-});
 
 /**
  * @param {import('express').Request} request
@@ -1048,24 +875,9 @@ router.post('/bookmark-name', validateAvatarUrlMiddleware, async function (reque
 
 /**
  * @param {import('express').Request} request
- * @param {string} name
- * @returns {Promise<string | null>}
  */
-async function groupOfChat(request, name) {
-    const store = await requestStore(request);
-    const tree = await store.chats.treeOfChatId(name);
-    if (tree === null) return null;
-    const [key] = await store.lib.store.libraryKeys([tree]);
-    return key?.type === TYPE.group ? key.key : null;
-}
-
-/**
- * @param {import('express').Request} request
- * @param {string} name
- */
-async function groupChatOf(request, name) {
-    const groupId = request.body.group_id ? String(request.body.group_id) : await groupOfChat(request, name);
-    return groupId === null ? null : chatContext(request, { group: groupId });
+async function groupChatOf(request) {
+    return request.body.group_id ? chatContext(request, { group: String(request.body.group_id) }) : null;
 }
 
 router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
@@ -1075,7 +887,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         }
         const oldName = chatName(request.body.original_file);
         const newName = chatName(request.body.renamed_file);
-        const chat = request.body.is_group ? await groupChatOf(request, oldName) : await chatOf(request, { avatar_url: request.body.avatar_url });
+        const chat = request.body.is_group ? await groupChatOf(request) : await chatOf(request, { avatar_url: request.body.avatar_url });
         if (!chat) return response.status(400).send({ error: true });
         const { chats } = chat.store;
         const found = await chats.resolveChatName({ tree: chat.tree, name: oldName, own: ownOf(chat) });
@@ -1162,44 +974,6 @@ router.post('/new', validateAvatarUrlMiddleware, async function (request, respon
         return response.send({ ok: true, deleted, chat: await compatChatIdOf(chat) });
     } catch (error) {
         console.error('Error starting a new chat:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-router.post('/fork', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const { node_id, branch_name } = request.body;
-        if (!node_id || !branch_name) {
-            return response.sendStatus(400);
-        }
-        const chat = await chatOf(request);
-        if (!chat) return response.sendStatus(400);
-        const made = await chat.store.chats.createBookmark({ tree: chat.tree, node_id: String(node_id), name: String(branch_name), suggested: true, actor: chat.session.actor() });
-        if (made.ok) {
-            const id = await chat.store.chats.bookmarkChatId(chat.tree, made.bookmark);
-            await openChatNamed(chat, id);
-            chat.session.answer(response, { moved: true });
-            return response.send({ ok: true, id, name: made.name, chat: id });
-        }
-        return response.status(400).send({ error: 'Fork failed — message node not found.' });
-    } catch (error) {
-        console.error('Error creating fork:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
-router.post('/tree/rename-group-member', async function (request, response) {
-    try {
-        const { group_id, old_avatar, new_avatar, new_name } = request.body;
-        if (!group_id || !old_avatar || !new_avatar || !new_name) {
-            return response.sendStatus(400);
-        }
-        const chat = await chatContext(request, { group: String(group_id) });
-        if (!chat) return response.sendStatus(404);
-        const updated = await chat.store.chats.renameMemberInMessages({ tree: chat.tree, oldAvatar: String(old_avatar), newAvatar: String(new_avatar), newName: String(new_name) });
-        return response.send({ ok: true, updated });
-    } catch (error) {
-        console.error('Error renaming group member in messages:', error);
         return response.status(500).send({ error: true });
     }
 });
@@ -1431,21 +1205,6 @@ router.post('/message/cut', validateAvatarUrlMiddleware, async function (request
     }
 });
 
-router.post('/message/cut-many', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const nodeIds = Array.isArray(request.body.node_ids) ? request.body.node_ids.filter(id => typeof id === 'string' && id !== '') : null;
-        if (!nodeIds) return response.status(400).send({ error: 'node_ids is required' });
-        const chat = await chatOf(request);
-        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
-        const result = await chat.store.chats.cutNamed({ tree: chat.tree, actor: chat.session.actor(), node_ids: nodeIds });
-        chat.session.answer(response, { moved: true });
-        return response.send(result);
-    } catch (error) {
-        console.error('Error cutting messages:', error);
-        return response.status(500).send({ error: true });
-    }
-});
-
 router.post('/message/alternative/delete', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const node = String(request.body.node_id || '');
@@ -1528,7 +1287,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
     const name = chatName(request.body.file);
     const exportfilename = request.body.exportfilename;
     try {
-        const chat = request.body.is_group ? await groupChatOf(request, name) : await chatOf(request, { avatar_url: request.body.avatar_url });
+        const chat = request.body.is_group ? await groupChatOf(request) : await chatOf(request, { avatar_url: request.body.avatar_url });
         const at = chat ? await chatNamePosition(chat, name) : undefined;
         const loaded = chat && at !== undefined ? await chat.store.chats.load({ tree: chat.tree, at, full: true }) : null;
         if (!loaded) {
@@ -1672,78 +1431,13 @@ router.post('/import', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
-router.post('/group/get', async (request, response) => {
-    try {
-        if (!request.body || !request.body.id) {
-            return response.sendStatus(400);
-        }
-        const name = chatName(request.body.id);
-        const chat = await groupChatOf(request, name);
-        const at = chat ? await chatNamePosition(chat, name) : undefined;
-        const answer = chat && at !== undefined ? await chatArray(chat, at) : null;
-        return response.send(answer ?? []);
-    } catch (error) {
-        console.error(error);
-        return response.send([]);
-    }
-});
-
-/**
- * @param {Record<string, any>} r
- * @param {boolean} withMetadata
- */
-function pickerRow(r, withMetadata) {
-    return {
-        node_id: r.at,
-        file_id: r.file_id,
-        file_name: `${r.file_id}.jsonl`,
-        label: r.label,
-        file_size: formatBytes(0),
-        chat_items: r.message_count,
-        mes: r.last_mes || '[No messages]',
-        last_mes: r.last_activity,
-        chat_metadata: withMetadata ? r.chat_metadata : undefined,
-    };
-}
-
-router.post('/group/branches', async (request, response) => {
-    try {
-        if (!request.body || !request.body.group_id) {
-            return response.sendStatus(400);
-        }
-        const chat = await chatContext(request, { group: String(request.body.group_id) });
-        if (!chat) return response.send([]);
-        const withMetadata = !!request.body.metadata;
-        return response.send((await chatListOf(chat, { withMetadata })).map(r => pickerRow(r, withMetadata)));
-    } catch (error) {
-        console.error('Error listing group branches:', error);
-        return response.status(500).send([]);
-    }
-});
-
-router.post('/group/info', async (request, response) => {
-    try {
-        if (!request.body || !request.body.id) {
-            return response.sendStatus(400);
-        }
-        const name = chatName(request.body.id);
-        const chat = await groupChatOf(request, name);
-        const row = chat ? (await chatListOf(chat)).find(r => r.file_id === name) : undefined;
-        if (!row) return response.send({ match: false });
-        return response.send({ match: true, ...pickerRow(row, false), mes: row.last_mes || '[The chat is empty]' });
-    } catch (error) {
-        console.error(error);
-        return response.sendStatus(500);
-    }
-});
-
 router.post('/group/delete', async (request, response) => {
     try {
         if (!request.body || !request.body.id) {
             return response.sendStatus(400);
         }
         const name = chatName(request.body.id);
-        const chat = await groupChatOf(request, name);
+        const chat = await groupChatOf(request);
         if (!chat || !await deleteChatNamed(request, response, chat, name)) {
             console.error('The group chat was not deleted.');
             return response.sendStatus(400);
@@ -1786,7 +1480,7 @@ router.post('/group/save', async function (request, response) {
         }
         assignMissingGenIds(chatData);
         const name = chatName(request.body.id);
-        const chat = await groupChatOf(request, name);
+        const chat = await groupChatOf(request);
         if (!chat) {
             console.error(`Refusing to save group chat "${name}": no group claims it.`);
             return response.status(400).send({ error: 'unknown_group' });
@@ -1868,35 +1562,6 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         return response.send(results);
     } catch (error) {
         console.error('Chat search error:', error);
-        return response.status(500).json({ error: 'Search failed' });
-    }
-});
-
-const MESSAGE_SEARCH_PAGE_MAX = 200;
-
-router.post('/search/messages', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const { search, after, scan_cursor: scanCursor } = request.body ?? {};
-        if (typeof search !== 'string') return response.status(400).send({ error: 'search is required' });
-        const limit = request.body.limit ?? 50;
-        if (!Number.isInteger(limit) || limit < 1 || limit > MESSAGE_SEARCH_PAGE_MAX) {
-            return response.status(400).send({ error: `limit must be an integer from 1 to ${MESSAGE_SEARCH_PAGE_MAX}` });
-        }
-        const chat = await chatOf(request);
-        if (!chat) return response.status(404).send({ error: 'unknown chat' });
-        try {
-            const found = await chat.store.chats.searchMessages({
-                tree: chat.tree, search, limit,
-                ...(typeof after === 'string' ? { after } : {}),
-                ...(typeof scanCursor === 'string' ? { scanCursor } : {}),
-            });
-            return response.type('json').send(JSON.stringify(found, (_key, value) => (typeof value === 'bigint' ? Number(value) : value)));
-        } catch (err) {
-            if (/invalid (scan )?cursor/.test(String(/** @type {any} */ (err)?.message))) return response.status(400).send({ error: 'invalid cursor' });
-            throw err;
-        }
-    } catch (error) {
-        console.error('Message search error:', error);
         return response.status(500).json({ error: 'Search failed' });
     }
 });

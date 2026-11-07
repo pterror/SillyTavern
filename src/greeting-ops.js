@@ -169,14 +169,3 @@ export function opUnsetDefaultByHash(model, expectedDefaultHash) {
     }
     return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: null } };
 }
-
-/**
- * @param {import('./greeting-list.js').GreetingsModel} model
- * @param {number|null} expectedDefaultPosition
- */
-export function opUnsetDefault(model, expectedDefaultPosition) {
-    if (model.defaultIndex !== null && model.defaultIndex !== expectedDefaultPosition) {
-        return { ok: false, reason: 'default greeting changed since it was loaded' };
-    }
-    return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: null } };
-}

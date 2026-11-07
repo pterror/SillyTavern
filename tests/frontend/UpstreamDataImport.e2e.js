@@ -2,60 +2,34 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, awaitChatMessages } from './frontent-test-utils.js';
+import { write as writeCard } from '../../src/character-card-parser.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-/**
- * @param {import('@playwright/test').Page} page
- * @param {string} name
- */
-function createCharacter(page, name) {
-    return page.evaluate(async (name) => {
-        // @ts-ignore
-        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
-        const form = new FormData();
-        form.set('ch_name', name);
-        form.set('first_mes', 'Hello there.');
-        const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
-        if (!response.ok) throw new Error(`create failed: ${response.status}`);
-        return response.text();
-    }, name);
-}
+const NAME = 'Upstreamer';
+const card = JSON.stringify({ name: NAME, first_mes: 'Hello there.', spec: 'chara_card_v2', spec_version: '2.0', data: { name: NAME, first_mes: 'Hello there.', extensions: {} } });
 
-/** @param {import('@playwright/test').Page} page */
-function runImport(page) {
-    return page.evaluate(async () => {
-        // @ts-ignore
-        const response = await fetch('/api/upstream-import', { method: 'POST', headers: stTest.context().getRequestHeaders(), body: '{}' });
-        if (!response.ok) throw new Error(`import failed: ${response.status}`);
-        return response.json();
-    });
-}
+test.use({
+    freshAccount: true,
+    upstreamFiles: {
+        [`characters/${NAME}.png`]: writeCard(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'public', 'img', 'ai4.png')), card),
+        [`chats/${NAME}/Upstream chat.jsonl`]: [
+            { user_name: 'User', character_name: NAME, chat_metadata: {} },
+            { name: NAME, is_user: false, mes: 'From upstream.', send_date: 'x', extra: {} },
+            { name: 'User', is_user: true, mes: 'Hi.', send_date: 'x', extra: {} },
+            { name: NAME, is_user: false, mes: 'Swipe two.', send_date: 'x', extra: {}, swipe_id: 1, swipes: ['Swipe one.', 'Swipe two.', 'Swipe three.'], swipe_info: [{ extra: {} }, { extra: {} }, { extra: {} }] },
+        ].map(l => JSON.stringify(l)).join('\n'),
+    },
+});
 
 test.describe('the upstream data import', () => {
-    test('an upstream chat file opens by its name with its swipes, once', async ({ page, stServer }) => {
-        await testSetup.awaitST({ page });
-        await page.evaluate(() => new Promise(resolve => {
-            const { eventSource, eventTypes } = window['stTest'].context();
-            eventSource.once(eventTypes.APP_READY, resolve);
-        }));
-        const name = `Upstreamer${Date.now()}`;
-        const avatar = await createCharacter(page, name);
-        const folder = path.join(stServer.dataRoot, 'default-user', 'chats', path.parse(avatar).name);
-        fs.mkdirSync(folder, { recursive: true });
-        fs.writeFileSync(path.join(folder, 'Upstream chat.jsonl'), [
-            { user_name: 'User', character_name: name, chat_metadata: {} },
-            { name, is_user: false, mes: 'From upstream.', send_date: 'x', extra: {} },
-            { name: 'User', is_user: true, mes: 'Hi.', send_date: 'x', extra: {} },
-            { name, is_user: false, mes: 'Swipe two.', send_date: 'x', extra: {}, swipe_id: 1, swipes: ['Swipe one.', 'Swipe two.', 'Swipe three.'], swipe_info: [{ extra: {} }, { extra: {} }, { extra: {} }] },
-        ].map(l => JSON.stringify(l)).join('\n'));
-
-        const first = await runImport(page);
-        expect(first.imported.chats).toBe(1);
-        expect(first.notImported).toEqual([]);
+    test('an upstream chat file is imported when the store is made, and opens by its name with its swipes', async ({ page }) => {
+        await testSetup.awaitFreshST({ page });
+        const avatar = `${NAME}.png`;
+        await awaitChatMessages(page, avatar, 'Upstream chat', 3);
 
         await openCharacterManagementDrawer(page);
         await page.evaluate(async (avatar) => {
@@ -72,9 +46,5 @@ test.describe('the upstream data import', () => {
             return { mes: chat.map(m => m.mes), swipes: chat[chat.length - 1].swipes, swipeId: chat[chat.length - 1].swipe_id };
         });
         expect(shown).toEqual({ mes: ['From upstream.', 'Hi.', 'Swipe two.'], swipes: ['Swipe one.', 'Swipe two.', 'Swipe three.'], swipeId: 1 });
-
-        const again = await runImport(page);
-        expect(again.imported.chats).toBe(0);
-        expect(again.present.some(p => p.file.endsWith('/Upstream chat.jsonl'))).toBe(true);
     });
 });

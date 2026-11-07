@@ -17,7 +17,7 @@ const { router: charactersRouter } = await import('./characters.js');
 const { router: groupsRouter } = await import('./groups.js');
 const { newSessionKey, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
-const { convertedUser, writeLibraryCard, sessionPath, treeOf } = await import('../../tests/converted-user.fixture.js');
+const { convertedUser, writeLibraryCard, sessionPath, treeOf, namedChat } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-delete-new-test-');
 const { directories } = user;
@@ -63,18 +63,14 @@ async function writeCharacter(avatar, name) {
 
 /**
  * @param {string} avatar
- * @returns {Promise<{ Old: string, Newer: string, ids: { Old: string, Newer: string } }>}
+ * @returns {Promise<{ Old: string, Newer: string }>}
  */
 async function twoChats(avatar) {
     /** @type {any} */
-    const tabs = { ids: {} };
+    const tabs = {};
     for (const [name, mes] of [['Old', 'A.'], ['Newer', 'B.']]) {
         tabs[name] = newSessionKey();
-        const saved = await postJson('/api/chats/save', {
-            avatar_url: avatar, file_name: name,
-            chat: [{ chat_metadata: {} }, { name: 'Ida', is_user: false, mes, send_date: 'x', extra: {} }],
-        }, { [SESSION_HEADER]: tabs[name] });
-        tabs.ids[name] = saved.data.file_name;
+        await namedChat(user.store, { avatar }, name, [{ name: 'Ida', is_user: false, mes, send_date: 'x', extra: {} }], { session: tabs[name] });
         await new Promise(resolve => setTimeout(resolve, 5));
     }
     return tabs;
@@ -182,10 +178,10 @@ test('deleting the bookmark a group\'s tab is at leaves the tab there, listed as
 test('deleting characters with their chats names the chats deleted', async () => {
     const avatar = 'max.png';
     await writeCharacter(avatar, 'Max');
-    const { ids } = await twoChats(avatar);
+    await twoChats(avatar);
     const { status, data } = await postJson('/api/characters/delete', { avatar_urls: [avatar], delete_chats: true });
     assert.equal(status, 200);
-    assert.deepEqual(data.results[0].chats.sort(), [ids.Newer, ids.Old].sort());
+    assert.deepEqual(data.results[0].chats.sort(), ['Newer', 'Old']);
 });
 
 after(async () => {

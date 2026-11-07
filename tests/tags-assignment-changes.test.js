@@ -151,32 +151,16 @@ describe('POST /api/tags/assignment-changes', () => {
         expect(page.seq).toBe(page.endSeq);
     });
 
-    test('restore, copy and rename-key list the characters and groups they wrote', async () => {
+    test('restore lists the characters and groups it wrote', async () => {
         await createTags(['a', 'b']);
         await seedCharacter('Alice.png');
-        await seedCharacter('Bob.png');
-        await seedCharacter('Cara.png');
         await seedGroup('1001');
-        await seedGroup('1002');
-        await seedGroup('1003');
 
-        let since = await cursors();
+        const since = await cursors();
         const restore = await post('/api/tags/restore', { tags: [], tagMap: { 'Alice.png': ['a'], 1001: ['b'] }, overwrite: false });
         expect(restore.status).toBe(200);
-        let page = await changes(since);
+        const page = await changes(since);
         expect(page.ids.sort()).toEqual(['1001', 'Alice.png']);
-
-        since = next(page);
-        expect((await post('/api/tags/copy', { from: 'Alice.png', to: 'Bob.png' })).status).toBe(200);
-        expect((await post('/api/tags/copy', { from: '1001', to: '1002' })).status).toBe(200);
-        page = await changes(since);
-        expect(page.ids.sort()).toEqual(['1002', 'Bob.png']);
-
-        since = next(page);
-        expect((await post('/api/tags/rename-key', { from: 'Bob.png', to: 'Cara.png' })).status).toBe(200);
-        expect((await post('/api/tags/rename-key', { from: '1002', to: '1003' })).status).toBe(200);
-        page = await changes(since);
-        expect(page.ids.sort()).toEqual(['1002', '1003', 'Bob.png', 'Cara.png']);
     });
 
     test('pages at 500 entities, each listed once at its last change, and the cursors reach the end', async () => {

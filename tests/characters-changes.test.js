@@ -166,7 +166,13 @@ describe('POST /api/characters/changes', () => {
         const buffer = cardParser.write(baseImage, JSON.stringify(card));
         await fs.promises.writeFile(path.join(directories.characters, 'Legacy.png'), buffer);
 
-        expect((await postJson('/api/characters/metadata/rescan', {})).status).toBe(200);
+        const { watchDroppedCharacters } = await import('../src/endpoints/characters.js');
+        const watch = watchDroppedCharacters(directories);
+        try {
+            await watch.first;
+        } finally {
+            await watch.close();
+        }
 
         const response = await postJson('/api/characters/changes', { sinceSeq: 0 });
         const body = await response.json();

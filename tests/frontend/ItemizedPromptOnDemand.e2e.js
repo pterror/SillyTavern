@@ -6,12 +6,6 @@ if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
 }
 
-/** @param {string} rawPrompt */
-const itemization = (rawPrompt) => ({
-    api: 'textgenerationwebui', preset: null, sampler_config: {}, tokenizer: null, max_context: 4096, padding: 0,
-    rawPrompt, messages_count: 1, examples_count: 0, total: 4, parts: [{ part: 'story_string', tokens: 1 }, { part: 'chat_history', tokens: 3 }],
-});
-
 /**
  * @param {import('@playwright/test').Page} page
  * @param {() => Promise<void>} run
@@ -32,66 +26,6 @@ async function itemizationRequestsDuring(page, run) {
     }
     return seen;
 }
-
-test('opening a chat reads no itemization; the Prompt view fetches its message\'s, and the previous one on asking', async ({ page }) => {
-    await testSetup.awaitST({ page });
-    await openCharacterManagementDrawer(page);
-    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-
-    const { avatar, ids } = await page.evaluate(async ({ name, first, second }) => {
-        // @ts-ignore
-        const context = stTest.context();
-        const form = new FormData();
-        form.set('ch_name', name);
-        form.set('first_mes', 'Welcome in.');
-        const created = await fetch('/api/characters/create', { method: 'POST', headers: context.getRequestHeaders({ omitContentType: true }), body: form });
-        const avatar = await created.text();
-        await context.getCharacters();
-        const { selectCharacterByAvatar, sendMessageAsUser } = await import('/script.js');
-        await selectCharacterByAvatar(avatar);
-        await sendMessageAsUser('A question.', '');
-        const userNode = context.chat[1].node_id;
-        const appended = await (await fetch('/api/chats/message/append', {
-            method: 'POST', headers: context.getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, after_node_id: userNode, messages: [{ name, is_user: false, mes: 'An answer.', send_date: Date.now(), extra: {} }] }),
-        })).json();
-        const ids = [context.chat[0].node_id, userNode, appended.node_ids[0]];
-        const set = await fetch('/api/itemized-prompts/set', {
-            method: 'POST', headers: context.getRequestHeaders(),
-            body: JSON.stringify({ items: [{ node_id: ids[0], entry: first }, { node_id: ids[2], entry: second }] }),
-        });
-        if (!set.ok) throw new Error(`set failed: ${set.status}`);
-        return { avatar, ids };
-    }, { name: `Itemized-${stamp}`, first: itemization('First prompt.'), second: itemization('Second prompt.') });
-
-    await page.reload();
-    await testSetup.awaitST({ page });
-    const atOpen = await itemizationRequestsDuring(page, async () => {
-        await page.evaluate(async (avatar) => {
-            // @ts-ignore
-            await stTest.context().getCharacters();
-            const { selectCharacterByAvatar } = await import('/script.js');
-            await selectCharacterByAvatar(avatar);
-        }, avatar);
-        await expect(page.locator('#chat .mes')).toHaveCount(3);
-    });
-    expect(atOpen).toEqual([]);
-    await expect(page.locator('#chat .mes[mesid="0"] .mes_prompt')).not.toHaveCSS('display', 'none');
-    await expect(page.locator('#chat .mes[mesid="1"] .mes_prompt')).toHaveCSS('display', 'none');
-    await expect(page.locator('#chat .mes[mesid="2"] .mes_prompt')).not.toHaveCSS('display', 'none');
-
-    const atView = await itemizationRequestsDuring(page, async () => {
-        await page.locator('#chat .mes[mesid="2"] .mes_prompt').dispatchEvent('pointerup');
-        await expect(page.locator('#diffPrevPrompt')).toBeVisible();
-    });
-    expect(atView).toEqual([`/api/itemized-prompts/message ${JSON.stringify({ node_id: ids[2] })}`]);
-
-    const atDiff = await itemizationRequestsDuring(page, async () => {
-        await page.locator('#diffPrevPrompt').click();
-        await expect(page.locator('#rawPromptWrapper')).toContainText('Second');
-    });
-    expect(atDiff).toEqual([`/api/itemized-prompts/message ${JSON.stringify({ node_id: ids[0] })}`]);
-});
 
 const MODEL = 'itemized-model';
 const REPLY = 'The tide turns at noon.';
@@ -152,6 +86,69 @@ async function connectLlamaCpp(page, url) {
     await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
     await page.locator('#API-status-top').click();
 }
+
+test('opening a chat reads no itemization; the Prompt view fetches its message\'s, and the previous one on asking', async ({ page }) => {
+    test.setTimeout(90000);
+    const mock = await startLlamaCpp();
+    try {
+        await testSetup.awaitST({ page });
+        await openCharacterManagementDrawer(page);
+        const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        const avatar = await page.evaluate(async (name) => {
+            // @ts-ignore
+            const context = stTest.context();
+            const form = new FormData();
+            form.set('ch_name', name);
+            form.set('first_mes', 'Welcome in.');
+            const created = await fetch('/api/characters/create', { method: 'POST', headers: context.getRequestHeaders({ omitContentType: true }), body: form });
+            const avatar = await created.text();
+            await context.getCharacters();
+            const { selectCharacterByAvatar } = await import('/script.js');
+            await selectCharacterByAvatar(avatar);
+            return avatar;
+        }, `Itemized-${stamp}`);
+        await connectLlamaCpp(page, mock.url);
+        await page.waitForTimeout(2500);
+        for (const [question, reply] of [[`First question ${stamp}`, 2], [`Second question ${stamp}`, 4]]) {
+            await chatBox(page).fill(question);
+            await page.locator('#send_but').click();
+            await expect(page.locator(`#chat .mes[mesid="${reply}"] .mes_text`)).toContainText(REPLY, { timeout: 30000 });
+            await expect(page.locator('#send_but')).toBeVisible({ timeout: 15000 });
+        }
+        // @ts-ignore
+        const ids = await page.evaluate(() => stTest.context().chat.map(m => m.node_id));
+
+        await page.reload();
+        await testSetup.awaitST({ page });
+        const atOpen = await itemizationRequestsDuring(page, async () => {
+            await page.evaluate(async (avatar) => {
+                // @ts-ignore
+                await stTest.context().getCharacters();
+                const { selectCharacterByAvatar } = await import('/script.js');
+                await selectCharacterByAvatar(avatar);
+            }, avatar);
+            await expect(page.locator('#chat .mes')).toHaveCount(5);
+        });
+        expect(atOpen).toEqual([]);
+        await expect(page.locator('#chat .mes[mesid="1"] .mes_prompt')).toHaveCSS('display', 'none');
+        await expect(page.locator('#chat .mes[mesid="2"] .mes_prompt')).not.toHaveCSS('display', 'none');
+        await expect(page.locator('#chat .mes[mesid="4"] .mes_prompt')).not.toHaveCSS('display', 'none');
+
+        const atView = await itemizationRequestsDuring(page, async () => {
+            await page.locator('#chat .mes[mesid="4"] .mes_prompt').dispatchEvent('pointerup');
+            await expect(page.locator('#diffPrevPrompt')).toBeVisible();
+        });
+        expect(atView).toEqual([`/api/itemized-prompts/message ${JSON.stringify({ node_id: ids[4] })}`]);
+
+        const atDiff = await itemizationRequestsDuring(page, async () => {
+            await page.locator('#diffPrevPrompt').click();
+            await expect(page.locator('#rawPromptWrapper')).toContainText('Second question');
+        });
+        expect(atDiff).toEqual([`/api/itemized-prompts/message ${JSON.stringify({ node_id: ids[2] })}`]);
+    } finally {
+        await mock.close();
+    }
+});
 
 for (const streaming of [true, false]) {
     test(`a generated reply (${streaming ? 'streaming' : 'not streaming'}) is stored with its itemization, and shows its Prompt button at once and after a reload`, async ({ page }) => {

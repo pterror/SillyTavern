@@ -118,7 +118,7 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
         expect(tab).not.toBe(deletedId);
         expect((await readGroupFile(group.id)).chats).not.toContain(deletedId);
 
-        const newChat = await postOk('/api/groups/new-chat', { id: group.id });
+        const newChat = await postOk('/api/chats/new', { group_id: group.id });
         expect(newChat.chat_id).toMatch(/^\d{4}-\d{2}-\d{2}@\d{2}h\d{2}m\d{2}s\d{3}ms$/);
         expect(newChat.chat_id).not.toBe(deletedId);
         expect(newChat.chats).toEqual([newChat.chat_id]);
@@ -134,9 +134,9 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
         expect((await deleteChat(group.id, other)).status).toBe(200);
         expect((await readGroupFile(group.id))).toMatchObject({ chats: [group.chat_id], chat_id: group.chat_id });
 
-        const newChat = await postOk('/api/groups/new-chat', { id: group.id });
+        const newChat = await postOk('/api/chats/new', { group_id: group.id });
         expect(newChat.chat_id).not.toBe(group.chat_id);
-        expect(newChat).toEqual({ chat_id: newChat.chat_id, chats: [newChat.chat_id] });
+        expect(newChat).toMatchObject({ chat_id: newChat.chat_id, chats: [newChat.chat_id] });
         expect((await readGroupFile(group.id)).chats).toEqual([newChat.chat_id]);
     });
 
@@ -161,7 +161,7 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
         const [deleted, partial, newChat] = await Promise.all([
             deleteChat(group.id, other),
             post('/api/groups/save-partial', { id: group.id, props: { fav: true } }),
-            post('/api/groups/new-chat', { id: group.id }),
+            post('/api/chats/new', { group_id: group.id }),
         ]);
         expect([deleted.status, partial.status, newChat.status]).toEqual([200, 200, 200]);
 
@@ -184,7 +184,7 @@ describe('/api/chats/group/delete removes the id from the group\'s chats', () =>
         expect(result.body).toEqual({ ok: true, chats: [group.chat_id], chat_id: group.chat_id });
         expect((await readGroupFile(group.id)).chats).toEqual([group.chat_id]);
 
-        const newChat = await postOk('/api/groups/new-chat', { id: group.id });
+        const newChat = await postOk('/api/chats/new', { group_id: group.id });
         expect(newChat.chats).not.toContain(emptyId);
         expect((await readGroupFile(group.id)).chats).toEqual([newChat.chat_id]);
     });

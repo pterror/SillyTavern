@@ -44,7 +44,12 @@ async function itemizationsOf(owner, name) {
     const [b] = await store.lib.store.chatRead('bookmarksNamed', { tree, name });
     const [row] = await store.lib.store.chatRead('bookmarks', { ids: [BigInt(b)] });
     const at = row.at === null ? null : (await store.chats.externalIds([row.at]))[0];
-    return (await store.chats.chatItemizations({ tree, at })).map(e => [e.index, e.entry.rawPrompt]);
+    const found = [];
+    for (const [index, message] of ((await store.chats.load({ tree, at }))?.messages ?? []).entries()) {
+        const read = await store.chats.readItemization({ node_id: message.node_id });
+        if (read) found.push([index, read.entry.rawPrompt]);
+    }
+    return found;
 }
 
 test('setup: upstream chats imported, with the map', async () => {
