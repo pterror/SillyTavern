@@ -215,24 +215,25 @@ test('a character opened by a page that does not hold it answers the whole card 
 
 test('an open answers each part the page asked for, the same as the part\'s own route would, and no other', async () => {
     await writeCharacter('Parts.png', 'Parts', 'Hello, {{user}}.', { description: 'I am {{char}}.', alternateGreetings: ['Second\r\ngreeting.'] });
+    writeAllSettings(directories, { username: 'Tester', main_api: 'textgenerationwebui', power_user: { tokenizer: 1 }, textgenerationwebui_settings: { type: 'ooba', server_urls: { ooba: '' } } });
     const tokenizer = { api: 'textgenerationwebui', type: 'ooba', url: '', model: '', tokenizerSetting: 1 };
 
-    const opened = await open({ avatar_url: 'Parts.png', parts: { card_token_counts: { tokenizer, macro_facts: {} }, personas: {}, unknown: {} } });
+    const opened = await open({ avatar_url: 'Parts.png', parts: { card_token_counts: { macro_facts: {} }, personas: {}, unknown: {} } });
     assert.equal(opened.status, 200);
     const { parts } = opened.body;
     assert.deepEqual(Object.keys(parts).sort(), ['card_token_counts', 'personas']);
 
     const texts = ['Parts', 'I am Parts.', '', '', '', '', '', '', 'Hello, Tester.', 'Second\ngreeting.'];
     const counted = await answerOf('/api/tokenizers/current/count', 'POST', { state: tokenizer, texts, padding: 0 });
-    assert.deepEqual(parts.card_token_counts.counts, counted.counts);
-    assert.deepEqual(parts.card_token_counts.state, tokenizer);
+    assert.deepEqual(parts.card_token_counts.counts, counted.counts, 'counted with the connection the settings choose');
     assert.equal(parts.card_token_counts.avatar, 'Parts.png');
     assert.deepEqual(parts.card_token_counts.tokenizer, counted.tokenizer);
 
     assert.deepEqual(parts.personas, await answerOf('/api/avatars/get', 'POST'));
 
     await user.store.lib.writeGroup({ id: 'g3', name: 'Trio', members: ['Parts.png', 'Rex.png'], disabled_members: [] });
-    const group = await open({ group_id: 'g3', parts: { card_token_counts: { tokenizer }, personas: {} } });
+    const group = await open({ group_id: 'g3', parts: { card_token_counts: {}, personas: {} } });
     assert.deepEqual(Object.keys(group.body.parts), ['personas'], 'a group\'s open has no card to count');
     assert.deepEqual((await open({ avatar_url: 'Parts.png' })).body.parts, {});
+    writeAllSettings(directories, { username: 'Tester' });
 });

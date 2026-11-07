@@ -24,6 +24,9 @@ import { listBundles } from '../bundle-store.js';
 import { settingsDocumentOf } from '../settings-documents.js';
 import { openSettingsDocument } from '../settings-document.js';
 import { shownTextCounts } from '../shown-text-counts.js';
+import { cardTokenCounts } from '../card-token-counts.js';
+import { readSettingsFor } from '../settings-reads.js';
+import { wholeCharacter } from './characters.js';
 
 const ENABLE_ACCOUNTS = !!getConfigValue('enableUserAccounts', false, 'boolean');
 const ENABLE_REQUEST_COMPRESSION = !!getConfigValue('performance.requestCompression.enabled', false, 'boolean');
@@ -251,12 +254,16 @@ function checkSettingsConflict(request, directories) {
 /**
  * The counts of the texts the page shows a count beside, as the saved settings make them.
  * @param {import('express').Request} request
- * @returns {Promise<{ shown_counts?: import('../shown-text-counts.js').ShownTextCounts }>}
+ * @returns {Promise<{ shown_counts?: import('../shown-text-counts.js').ShownTextCounts, card_token_counts?: object }>}
  */
 async function shownCountsOf(request) {
     try {
-        const counts = await shownTextCounts(request.user.directories, savedIn(request)?.context ?? {});
-        return counts ? { shown_counts: counts } : {};
+        const context = savedIn(request)?.context ?? {};
+        const counts = await shownTextCounts(request.user.directories, context);
+        const { active_character: avatar } = readSettingsFor(request.user.directories, context, ['active_character']);
+        const card = typeof avatar === 'string' && avatar ? await wholeCharacter(request, avatar) : null;
+        const cardCounts = card ? await cardTokenCounts(request, { avatar, card }) : null;
+        return { ...(counts ? { shown_counts: counts } : {}), ...(cardCounts ? { card_token_counts: cardCounts } : {}) };
     } catch (error) {
         console.error('Could not count the shown texts:', error);
         return {};

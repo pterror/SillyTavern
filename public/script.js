@@ -6,7 +6,7 @@ import {
     Popper,
 } from './lib.js';
 
-import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown } from './scripts/RossAscends-mods.js';
+import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown, takeCardCounts } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, setCharacterId, holdCharacter, keepHeldCharacters } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
@@ -629,6 +629,8 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
             });
 
             let savedHash;
+            /** @type {any} */
+            let savedCounts = null;
 
             if (fetchResult.status === 409) {
                 let errorData;
@@ -670,11 +672,13 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                 try {
                     const payload = await fetchResult.json();
                     savedHash = payload?.hashes?.[mapping.v2];
+                    savedCounts = payload?.card_token_counts ?? null;
                 } catch { /* no body, or not JSON - the fallback below covers it */ }
             }
 
             await getOneCharacter(avatar);
             const character = charactersStore.get(avatar);
+            takeCardCounts(savedCounts);
 
             chain.hash = Number.isFinite(savedHash) ? savedHash : hashCharacterFieldValue(character, mapping.v2);
             if (_loadedCharacterFieldHashesAvatar === avatar) {
@@ -6381,6 +6385,7 @@ async function performSave({ full }) {
                 knownServerSettingsHash = partialSaveResponse.settingsHash;
             }
             takeShownCounts(partialSaveResponse.shown_counts);
+            takeCardCounts(partialSaveResponse.card_token_counts);
             await eventSource.emit(event_types.SETTINGS_UPDATED);
         } catch (error) {
             console.error('Error saving settings:', error);
@@ -6421,6 +6426,7 @@ async function performSave({ full }) {
                 knownServerSettingsHash = saveResponse.settingsHash;
             }
             takeShownCounts(saveResponse.shown_counts);
+            takeCardCounts(saveResponse.card_token_counts);
             await eventSource.emit(event_types.SETTINGS_UPDATED);
         } catch (error) {
             console.error('Error saving settings:', error);
@@ -8115,6 +8121,7 @@ async function postGreetingOp(opName, body) {
         let payload = null;
         try { payload = await response.json(); } catch { /* no body, or not JSON */ }
         if (response.ok && payload?.ok) {
+            takeCardCounts(payload.card_token_counts);
             return { ok: true, greetings: payload.greetings, hashes: payload.hashes, defaultPosition: payload.default_position, position: payload.position };
         }
         return { ok: false, status: response.status, reason: payload?.reason };

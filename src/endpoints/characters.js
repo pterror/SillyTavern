@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { cardTokenCounts } from '../card-token-counts.js';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import { Buffer } from 'node:buffer';
@@ -1004,6 +1005,21 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
  * @param {import("express").Response} response - The HTTP response object
  * @returns {void}
  */
+/**
+ * The saved card's texts counted as the character editor shows them.
+ * @param {import('express').Request} request
+ * @param {string} avatar
+ */
+async function savedCardCounts(request, avatar) {
+    try {
+        const card = await wholeCharacter(request, avatar);
+        return card ? await cardTokenCounts(request, { avatar, card }) : null;
+    } catch (error) {
+        console.error('Could not count the saved card:', error);
+        return null;
+    }
+}
+
 router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async function (request, response) {
     try {
         if (request.file && typeof request.body.payload === 'string') {
@@ -1101,11 +1117,8 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         }
 
         if (result.ok) {
-            if (result.hashes) {
-                response.status(200).json({ hashes: result.hashes });
-            } else {
-                response.sendStatus(200);
-            }
+            const counts = await savedCardCounts(request, update.avatar);
+            response.status(200).json({ ...(result.hashes ? { hashes: result.hashes } : {}), ...(counts ? { card_token_counts: counts } : {}) });
         } else if (result.error === 'conflict' && result.conflictingFields) {
             response.status(409).json({ error: 'conflict', conflictingFields: result.conflictingFields });
         } else if (result.error === 'greeting-fields-forbidden') {
@@ -1202,15 +1215,17 @@ async function runGreetingOperation(directories, avatar, op) {
  * On success, echoes back the post-op greeting list, its hash-per-position list and the default position, so a caller can
  * show the list as stored (other sessions' changes included) and chain further operations without re-fetching the card,
  * and the positions the op acted on: `position` for edit, delete, set-default and an appending add, `source_position` and
- * `target_position` for move.
+ * `target_position` for move, with the card's texts counted as the character editor shows them.
+ * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {Awaited<ReturnType<typeof applyGreetingOperation>>} result
  */
-function sendGreetingOpResult(response, result) {
+async function sendGreetingOpResult(request, response, result) {
     if (!result.ok) {
         return response.status(result.status ?? 409).send({ ok: false, reason: result.reason });
     }
-    const body = { ok: true, greetings: result.greetings, hashes: result.hashes, default_position: result.defaultPosition };
+    const counts = await savedCardCounts(request, String(request.body.avatar_url || ''));
+    const body = { ok: true, greetings: result.greetings, hashes: result.hashes, default_position: result.defaultPosition, ...(counts ? { card_token_counts: counts } : {}) };
     if (result.position !== undefined) body.position = result.position;
     if (result.sourcePosition !== undefined) body.source_position = result.sourcePosition;
     if (result.targetPosition !== undefined) body.target_position = result.targetPosition;
@@ -1229,7 +1244,7 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
                 return response.status(400).send({ ok: false, reason: 'append takes no position or expected_length' });
             }
             const appended = await applyGreetingOperation(request.user.directories, avatar, model => opAppend(model, text));
-            return sendGreetingOpResult(response, appended);
+            return await sendGreetingOpResult(request, response, appended);
         }
         const position = Number(request.body.position);
         const expectedLength = Number(request.body.expected_length);
@@ -1237,7 +1252,7 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
         if (!Number.isInteger(expectedLength)) return response.status(400).send({ ok: false, reason: 'expected_length is required' });
 
         const result = await applyGreetingOperation(request.user.directories, avatar, model => opAdd(model, position, expectedLength, text));
-        return sendGreetingOpResult(response, result);
+        return await sendGreetingOpResult(request, response, result);
     } catch (error) {
         console.error('Error adding greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
@@ -1257,7 +1272,7 @@ router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (requ
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
 
         const result = await applyGreetingOperation(request.user.directories, avatar, model => opEdit(model, position, expectedHash, text));
-        return sendGreetingOpResult(response, result);
+        return await sendGreetingOpResult(request, response, result);
     } catch (error) {
         console.error('Error editing greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
@@ -1274,7 +1289,7 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
 
         const result = await applyGreetingOperation(request.user.directories, avatar, model => opDelete(model, position, expectedHash));
-        return sendGreetingOpResult(response, result);
+        return await sendGreetingOpResult(request, response, result);
     } catch (error) {
         console.error('Error deleting greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
@@ -1291,7 +1306,7 @@ router.post('/greetings/default/set', validateAvatarUrlMiddleware, async functio
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
 
         const result = await applyGreetingOperation(request.user.directories, avatar, model => opSetDefault(model, position, expectedHash));
-        return sendGreetingOpResult(response, result);
+        return await sendGreetingOpResult(request, response, result);
     } catch (error) {
         console.error('Error setting default greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });

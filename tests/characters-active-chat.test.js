@@ -167,14 +167,14 @@ describe('/merge-attributes carves chat out the same way, and never writes it in
 
 describe('/merge-attributes issues fresh per-field hashes instead of making the caller compute its own', () => {
 
-    test('omitting _loadedFieldHashes entirely keeps the old, no-hashes response shape (opt-in, not a breaking change)', async () => {
+    test('omitting _loadedFieldHashes entirely answers with no hashes', async () => {
         expect((await create({ ch_name: 'Alice', description: 'desc', file_name: 'Alice' })).status).toBe(200);
 
         const mergeResponse = await mergeAttributes({ avatar: 'Alice.png', description: 'no hashes requested' });
         expect(mergeResponse.status).toBe(200);
 
-        const text = await mergeResponse.text();
-        expect(text).toBe('OK');
+        const body = await mergeResponse.json();
+        expect(body.hashes).toBeUndefined();
     });
 
     test('a successful save with _loadedFieldHashes gets back a `hashes` object with a fresh hash for every field it sent', async () => {

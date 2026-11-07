@@ -1,6 +1,5 @@
 import { handleFieldEditKey } from './character-field-editor.js';
-import { macrosIn, withMacroValues } from './safe-macros.js';
-import { MacroValues, currentPageMacroFacts } from './macro-values.js';
+import { currentPageMacroFacts } from './macro-values.js';
 import { askOnChatOpen, chatOpenPart } from './chat-open-parts.js';
 import { cardTokenTexts } from './card-token-texts.js';
 import { getFocusedField } from './live-editor/registry.js';
@@ -13,7 +12,6 @@ import {
     buildAvatarList,
     selectCharacterByAvatar,
     menu_type,
-    openChatMacroScope,
     requestTextareaSend,
     doNavbarIconClick,
     restoreDrawerOrder,
@@ -42,7 +40,6 @@ import {
 import { debounce, getStringHash, isValidUrl } from './utils.js';
 import { drawerStackChanged } from './drawer-stack.js';
 import { chat_completion_sources, oai_settings, POLLINATIONS_ENDPOINT } from './chat-completion-settings.js';
-import { getRememberedTokenizerAnswer, getTokenCountsWithTokenizer, getTokenizerState, takeCountAnswer } from './tokenizers.js';
 import { renderCountBasis } from './tokenizer-notices.js';
 import { textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer } from './textgen-settings.js';
 import { debounce_timeout, SWIPE_SOURCE } from './constants.js';
@@ -70,7 +67,6 @@ var SelectedCharacterTab = document.getElementById('rm_button_selected_ch');
 
 var connection_made = false;
 var retry_delay = 500;
-let counterNonce = Date.now();
 let editorCountPending = false;
 
 const observerConfig = { childList: true, subtree: true };
@@ -216,30 +212,44 @@ export function onCharacterEditorMaybeShown() {
     }
 }
 
-askOnChatOpen('card_token_counts', owner => (owner.type === 'character' ? { tokenizer: getTokenizerState(), macro_facts: currentPageMacroFacts() } : undefined));
+askOnChatOpen('card_token_counts', owner => (owner.type === 'character' ? { macro_facts: currentPageMacroFacts() } : undefined));
+
+/** @type {{ avatar: string, counts: number[], tokenizer: any } | null} */
+let savedCardCounts = null;
 
 /**
- * @returns {{ part: any, counts: Map<string, number> } | null}
+ * Takes the counts of a card's texts the server answered a save of it with.
+ * @param {{ avatar?: string, counts?: number[], tokenizer?: any }|null|undefined} counts
  */
-function openedCardCounts() {
+export function takeCardCounts(counts) {
+    if (!counts || typeof counts.avatar !== 'string' || !Array.isArray(counts.counts)) return;
+    savedCardCounts = { avatar: counts.avatar, counts: counts.counts, tokenizer: counts.tokenizer ?? null };
+    countCharTokensWhenShown();
+}
+
+/**
+ * The counts the server last gave for the card in the editor, by the text they count.
+ * @returns {{ tokenizer: any, counts: Map<string, number> } | null}
+ */
+function knownCardCounts() {
     if (menu_type === 'create') return null;
     const avatar = String($('#avatar_url_pole').val() ?? '');
-    const part = chatOpenPart('card_token_counts', getCurrentChatId());
-    if (!part || part.avatar !== avatar || JSON.stringify(part.state) !== JSON.stringify(getTokenizerState())) return null;
+    const opened = chatOpenPart('card_token_counts', getCurrentChatId());
+    const part = savedCardCounts?.avatar === avatar ? savedCardCounts : (opened?.avatar === avatar ? opened : null);
+    if (!part) return null;
     const card = charactersStore.get(avatar);
     if (!card) return null;
     const texts = cardTokenTexts(card, cardToGreetingsModel(card).greetings);
     if (!Array.isArray(part.counts) || texts.length !== part.counts.length) return null;
-    return { part, counts: new Map(texts.map((text, i) => [text, Number(part.counts[i])])) };
+    return { tokenizer: part.tokenizer ?? null, counts: new Map(texts.map((text, i) => [text, Number(part.counts[i])])) };
 }
 
 export async function RA_CountCharTokens() {
     editorCountPending = false;
-    counterNonce = Date.now();
-    const counterNonceLocal = counterNonce;
     let total_tokens = 0;
     let permanent_tokens = 0;
-    let totalAnswer = getRememberedTokenizerAnswer();
+    const known = knownCardCounts();
+    const totalAnswer = known?.tokenizer ?? null;
 
     const tokenCounters = document.querySelectorAll('[data-token-counter]');
 
@@ -258,7 +268,7 @@ export async function RA_CountCharTokens() {
         if (!value) {
             input.data('last-value-hash', '');
             counter.text(0);
-            renderCountBasis(counter, getRememberedTokenizerAnswer());
+            renderCountBasis(counter, totalAnswer);
             counter.closest('.inline-drawer').toggleClass('token-count-zero', true);
             counter.closest('small').toggle(false);
             continue;
@@ -289,34 +299,8 @@ export async function RA_CountCharTokens() {
         p.input.data('last-value-hash', p.valueHash);
     };
 
-    const opened = pending.length > 0 ? openedCardCounts() : null;
-    if (opened) {
-        const unknown = pending.filter(p => !opened.counts.has(p.value));
-        if (unknown.length < pending.length) {
-            takeCountAnswer(opened.part.state, opened.part);
-            totalAnswer = opened.part.tokenizer;
-            for (const p of pending) {
-                if (opened.counts.has(p.value)) showCount(p, /** @type {number} */ (opened.counts.get(p.value)), opened.part.tokenizer);
-            }
-        }
-        pending.splice(0, pending.length, ...unknown);
-    }
-
-    if (pending.length > 0) {
-        const values = new MacroValues(() => ({ ...openChatMacroScope(), avatar_url: String($('#avatar_url_pole').val() ?? '') }));
-        if (menu_type !== 'create') await values.wantMacros(pending.flatMap(p => macrosIn(p.value)));
-        if (counterNonceLocal !== counterNonce) {
-            return;
-        }
-        const toCount = pending.map(p => (menu_type === 'create' ? p.value : withMacroValues(p.value, values.valueOf)));
-        const { counts: counted, answer } = await getTokenCountsWithTokenizer(toCount);
-        totalAnswer = answer;
-
-        if (counterNonceLocal !== counterNonce) {
-            return;
-        }
-
-        pending.forEach((p, i) => showCount(p, counted[i], answer));
+    for (const p of pending) {
+        if (known?.counts.has(p.value)) showCount(p, /** @type {number} */ (known.counts.get(p.value)), totalAnswer);
     }
 
     const tokenLimit = Math.max(((main_api !== 'openai' ? max_context : oai_settings.openai_max_context) / 2), 1024);
