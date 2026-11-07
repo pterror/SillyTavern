@@ -75,7 +75,7 @@ async function bookmarksOf(owner) {
     const out = [];
     for (let after; ;) {
         const page = await user.store.chats.bookmarks({ tree, after, limit: 500 });
-        for (const b of page.rows) out.push({ id: `b${b.id}`, name: b.name, messages: (await user.store.chats.load({ tree, at: b.at }))?.messages ?? [] });
+        for (const b of page.rows) out.push({ id: await user.store.chats.bookmarkChatId(tree, b.id), name: b.name, messages: (await user.store.chats.load({ tree, at: b.at }))?.messages ?? [] });
         if (!page.more) return out;
         after = page.rows[page.rows.length - 1].id;
     }
