@@ -1,26 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, test } from '@jest/globals';
+import { jsFiles } from '../scripts/public-exports.mjs';
 
 const root = path.resolve(process.cwd(), '..');
-const SKIPPED_DIRECTORIES = new Set(['node_modules', 'lib', '.git', 'data', 'dist', 'backups', '.claude', 'test-results']);
-
-/**
- * @param {string} dir
- * @param {string[]} [out]
- * @returns {string[]}
- */
-function jsFiles(dir, out = []) {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-            if (!SKIPPED_DIRECTORIES.has(entry.name)) jsFiles(path.join(dir, entry.name), out);
-        } else if (/\.m?js$/.test(entry.name)) {
-            out.push(path.join(dir, entry.name));
-        }
-    }
-    return out;
-}
-
 const eventsSource = fs.readFileSync(path.join(root, 'public/scripts/events.js'), 'utf8');
 const declaration = eventsSource.slice(eventsSource.indexOf('export const event_types = {'), eventsSource.indexOf('};', eventsSource.indexOf('export const event_types = {')));
 const declared = new Set([...declaration.matchAll(/^\s+([A-Z][A-Z0-9_]*):/gm)].map(match => match[1]));

@@ -131,7 +131,7 @@ fi
 
 # public/ exports only what the app or its tests import: an export nothing here imports exists for code outside this
 # repository, and upstream's extensions are not supported.
-if ! exports_output="$(node scripts/public-exports.mjs . 2>&1)"; then
+if ! exports_output="$(GIT_DIR="$(git -C "$toplevel" rev-parse --absolute-git-dir)" GIT_INDEX_FILE="$snapshot/.git-index" GIT_WORK_TREE="$snap_tree" node scripts/public-exports.mjs . 2>&1)"; then
     echo "pre-commit: blocked -- $exports_output" >&2
     exit 1
 fi

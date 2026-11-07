@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -11,20 +12,17 @@ const KEPT = new Set(['public/scripts/char-data.js\tdefault']);
 const SKIPPED_DIRECTORIES = new Set(['node_modules', 'lib', '.git', 'data', 'dist', 'backups', '.claude']);
 
 /**
+ * The .js and .mjs files git tracks under `dir`, so what isn't the repository's (an installed extension) isn't read.
  * @param {string} dir
- * @param {string[]} [out]
  * @returns {string[]}
  */
-function jsFiles(dir, out = []) {
-    if (!fs.existsSync(dir)) return out;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-            if (!SKIPPED_DIRECTORIES.has(entry.name)) jsFiles(path.join(dir, entry.name), out);
-        } else if (/\.m?js$/.test(entry.name)) {
-            out.push(path.join(dir, entry.name));
-        }
-    }
-    return out;
+export function jsFiles(dir) {
+    if (!fs.existsSync(dir)) return [];
+    const listed = execFileSync('git', ['ls-files', '-z', '--', '.'], { cwd: dir, encoding: 'utf8', maxBuffer: 1 << 28 });
+    return listed.split('\0')
+        .filter(file => /\.m?js$/.test(file) && !path.dirname(file).split('/').some(part => SKIPPED_DIRECTORIES.has(part)))
+        .map(file => path.join(dir, file))
+        .filter(file => fs.existsSync(file));
 }
 
 /**
