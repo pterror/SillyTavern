@@ -188,7 +188,7 @@ import {
     getInstructStoppingSequences,
 } from './scripts/instruct-mode.js';
 import { initLocales, t } from './scripts/i18n.js';
-import { getMessageTokenCounts, getTokenCount, initTokenizers } from './scripts/tokenizers.js';
+import { getMessageTokenCounts, initTokenizers } from './scripts/tokenizers.js';
 import {
     user_avatar,
     getUserAvatars,
@@ -3430,7 +3430,6 @@ export class StreamingProcessor {
             await this.reasoningHandler.process(messageId, mesChanged, this.promptReasoning);
             processedText = chat[messageId].mes;
 
-            if (isFinal) countShownMessage(messageId);
 
             if ((this.type == 'swipe' || this.type === 'continue') && Array.isArray(chat[messageId].swipes)) {
                 const newSwipes = [...chat[messageId].swipes];
@@ -3891,19 +3890,10 @@ export function shouldAutoContinue(messageChunk, isImpersonate, api) {
     }
 
     if (messageChunk.trim().length > USABLE_LENGTH && chat.length) {
-        const lastMessage = chat[chat.length - 1];
-        // eslint-disable-next-line no-restricted-syntax -- counted on the page from before the ban: to move to the server (thin-client step 10, unfinished)
-        const messageLength = getTokenCount(lastMessage.mes);
-        const shouldAutoContinue = messageLength < power_user.auto_continue.target_length;
-
-        if (shouldAutoContinue) {
-            return true;
-        } else {
-            return false;
-        }
-    } else {
-        return false;
+        const messageLength = chat[chat.length - 1].extra?.text_token_count;
+        return typeof messageLength === 'number' && messageLength < power_user.auto_continue.target_length;
     }
+    return false;
 }
 
 /**

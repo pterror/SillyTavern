@@ -256,6 +256,7 @@ async function buildRawActionHordePayload(request, response) {
         ? {
             chat, anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
             itemization: startItemizing(built.itemize),
+            countText: built.countText, countedWith: built.countedWith,
             finish: await readReplyFinishSettings(directories, { mainApi: 'koboldhorde', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2 }),
         }
         : null;

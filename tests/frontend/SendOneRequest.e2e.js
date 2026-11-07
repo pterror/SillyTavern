@@ -120,9 +120,11 @@ test.describe('sending a message', () => {
                     const context = stTest.context();
                     const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
                     const stored = (await response.json()).messages[2];
-                    return { page: JSON.parse(JSON.stringify(context.chat[2].extra)), stored: stored.extra };
+                    const { token_count: _counted, text_token_count: _textCounted, ...held } = context.chat[2].extra;
+                    return { page: JSON.parse(JSON.stringify(held)), stored: stored.extra, counted: typeof _counted === 'number' };
                 }, avatar);
                 expect(shown.page).toEqual(shown.stored);
+                expect(shown.counted).toBe(true);
             } finally {
                 await mock.close();
             }

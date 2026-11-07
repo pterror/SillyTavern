@@ -665,6 +665,18 @@ export async function getMessageTokenCounts(texts, { recount = false } = {}) {
 }
 
 /**
+ * A message's count the server answered an action with, so the message counter needs no request for it.
+ * @param {string} text The message's text as the counter counts it.
+ * @param {number} count
+ * @param {CurrentTokenizer|null|undefined} tokenizer The tokenizer it was counted with.
+ */
+export function takeMessageCount(text, count, tokenizer) {
+    if (!tokenizer || typeof tokenizer !== 'object' || typeof tokenizer.key !== 'string' || tokenizer.basis === 'failed') return;
+    if (!rememberTokenizer(JSON.stringify(getTokenizerState()), tokenizer)) return;
+    countCache.set(isOpenAiApi() ? `${tokenizer.key}-${getStringHash(JSON.stringify({ content: text }))}` : `${tokenizer.key}-${getStringHash(text)}+0`, count);
+}
+
+/**
  * Same as getTokenCountsAsyncBatch(), and also names the tokenizer these counts came from.
  * @param {string[]} strings Strings to tokenize, in order
  * @param {number} [padding=0] Padding tokens added to each non-empty result

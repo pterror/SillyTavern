@@ -33,6 +33,7 @@ import { sendGeneration, wholeReplyOf } from './generation-request.js';
 import { getRequestHeaders } from './request-headers.js';
 import { world_info_overflow_alert } from './world-info.js';
 import { pageMacroFacts } from './macros/engine/MacroEnvBuilder.js';
+import { takeMessageCount } from './tokenizers.js';
 
 /** @type {StreamingProcessor|null} */
 export let streamingProcessor = null;
@@ -240,7 +241,7 @@ window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
 
 /**
  * @param {number} mesId
- * @param {{mes: string, extra?: Record<string, any>}|null|undefined} stored
+ * @param {{mes: string, extra?: Record<string, any>, counted_with?: any}|null|undefined} stored
  * @param {{received?: boolean}} [options]
  * @returns {ChatMessage|null}
  */
@@ -264,6 +265,9 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
         updates.swipe_info = swipeInfo;
     }
     const updated = updateMessage(mesId, updates);
+    if (typeof storedExtra.token_count === 'number') {
+        takeMessageCount((typeof storedExtra.reasoning === 'string' ? storedExtra.reasoning : '') + stored.mes, storedExtra.token_count, stored.counted_with);
+    }
     if (received) markServerFinishedReply(mesId);
     const activations = storedExtra.activations;
     if (received && world_info_overflow_alert && activations?.cut?.some(c => c.why === 'budget')) {

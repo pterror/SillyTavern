@@ -221,6 +221,26 @@ async function generateServer(t, reply) {
     };
 }
 
+test('a stored reply comes with its counts, as the message counter and auto-continue take them', async (t) => {
+    const avatar = `pw-counts-${randomUUID()}.png`;
+    await writeCharacter(avatar, 'Rex');
+    const generate = await generateServer(t, 'At dawn we ride.');
+    const answer = await generate.post({
+        owner_id: avatar, character_avatar: avatar, type: 'normal', stream: false, node_id: null,
+        opening: { refs: ['o'], messages: [{ name: 'Rex', is_user: false, mes: 'Hi.', extra: {} }] },
+        user_message: { name: 'Tester', is_user: true, mes: 'When?', extra: {} }, user_message_ref: 'u',
+    });
+    const reply = await answer.json();
+
+    assert.equal(answer.status, 200, JSON.stringify(reply));
+    const { extra, counted_with: countedWith } = reply.assistant_message;
+    assert.ok(Number.isInteger(extra.token_count) && extra.token_count > 0, JSON.stringify(extra));
+    assert.ok(Number.isInteger(extra.text_token_count) && extra.text_token_count > 0, JSON.stringify(extra));
+    assert.equal(typeof countedWith?.key, 'string', 'the answer names the tokenizer the counts are in');
+    const stored = (await pathTo({ avatar }, reply.assistant_node_id)).messages.at(-1);
+    assert.equal(stored.extra.token_count, undefined, 'the counts aren\'t stored with the message');
+});
+
 test('a reply to given text needs no chat, no character and no session', async (t) => {
     const generate = await generateServer(t, 'Hello back.');
     const answer = await generate.raw({ prompt: 'Say hello.', response_length: 12 });

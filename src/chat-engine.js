@@ -192,7 +192,7 @@ export function storedForm(msg) {
     for (const k of ['node_id', 'swipes', 'swipe_id', 'swipe_info', 'swipe_speaker_default']) delete clone[k];
     if (clone.extra && typeof clone.extra === 'object') {
         clone.extra = { ...clone.extra };
-        for (const k of ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count']) delete clone.extra[k];
+        for (const k of ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count', 'text_token_count']) delete clone.extra[k];
     }
     return JSON.parse(JSON.stringify(clone));
 }

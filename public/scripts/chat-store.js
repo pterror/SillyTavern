@@ -703,7 +703,7 @@ function _messageContent(msg, text = msg.mes) {
     return content;
 }
 
-const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count'];
+const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count', 'text_token_count'];
 
 /**
  * @param {unknown} extra

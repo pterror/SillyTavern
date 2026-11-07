@@ -2604,6 +2604,8 @@ export async function buildRawActionChatCompletionRequest(directories, {
 
     return {
         params: generate_data, prompt: messages, promptManagerParts, settings, anchorNodeId, anchorContent, name1: orchestratorInput.macroContext.name1, name2: orchestratorInput.name2, enabledClientToolNames, enabledStealthClientToolNames, warnings, tokenCountRows, itemize,
+        countText: (/** @type {string} */ text) => orchestratorInput.tokenHandler.countTokenAsyncFn([{ content: text }]),
+        countedWith: orchestratorInput.countedWith,
         activations: orchestratorInput.activations,
         macroVariables: macroVariableChanges(orchestratorInput.macroContext.chatMetadata, orchestratorInput.macroContext.globalVariables, orchestratorInput.variablesBefore),
     };
@@ -3192,6 +3194,7 @@ export const generateChatCompletion = withGenerationStop(async function (request
                     warnings,
                     generationStop: response.locals.generationStop,
                     itemization: startItemizing(built.itemize),
+                    countText: built.countText, countedWith: built.countedWith,
                     finish: await readReplyFinishSettings(directories, {
                         mainApi: 'openai', source: built.settings.chat_completion_source, model: built.params?.model ?? null,
                         avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,

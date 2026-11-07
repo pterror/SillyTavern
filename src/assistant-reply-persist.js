@@ -78,7 +78,7 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
     return result;
 }
 
-/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra']}} StoredReply */
+/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra'] & { token_count?: number, text_token_count?: number }, counted_with?: object|null}} StoredReply */
 
 /**
  * @param {object} body
@@ -87,7 +87,7 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
 export function attachStoredReply(body, persisted) {
     if (!persisted || !body || typeof body !== 'object') return;
     body.assistant_node_id = persisted.node_id;
-    body.assistant_message = { mes: persisted.mes, extra: persisted.extra };
+    body.assistant_message = { mes: persisted.mes, extra: persisted.extra, counted_with: persisted.counted_with ?? null };
 }
 
 /**
@@ -184,7 +184,25 @@ async function persistReply(pending, generatedText) {
     }
     if (!result || 'error' in result) return result;
     const shown = await pending.chat.store.chats.shownMessage(pending.chat.tree, result.node_id);
-    return shown ? { node_id: result.node_id, mes: shown.mes, extra: shown.extra ?? {} } : result;
+    return withReplyCounts(pending, shown ? { node_id: result.node_id, mes: shown.mes, extra: shown.extra ?? {} } : result);
+}
+
+/**
+ * The stored reply as the page is answered with it: with its counts, as the message counter and auto-continue take them.
+ * @param {{ countText?: (text: string) => Promise<number>, countedWith?: () => object|null }} pending
+ * @param {StoredReply} reply
+ * @returns {Promise<StoredReply>}
+ */
+async function withReplyCounts(pending, reply) {
+    if (typeof pending.countText !== 'function') return reply;
+    try {
+        const reasoning = typeof reply.extra?.reasoning === 'string' ? reply.extra.reasoning : '';
+        const [tokenCount, textTokenCount] = await Promise.all([pending.countText(reasoning + reply.mes), pending.countText(reply.mes)]);
+        return { ...reply, extra: { ...reply.extra, token_count: tokenCount, text_token_count: textTokenCount }, counted_with: pending.countedWith?.() ?? null };
+    } catch (error) {
+        console.warn('Could not count the stored reply:', error);
+        return reply;
+    }
 }
 
 /**

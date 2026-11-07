@@ -253,6 +253,7 @@ export async function buildRawActionNovelRequest(directories, {
         warnings: tokenizer.warnings(assembled.droppedEntries),
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
         itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizer.answer() }),
+        countText: tokenizer.countTokens, countedWith: tokenizer.answer,
     };
 }
 
@@ -368,6 +369,7 @@ export const generateNovel = withGenerationStop(async function (req, res) {
                 sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,
                 warnings, generationStop: res.locals.generationStop,
                 itemization: startItemizing(built.itemize),
+                countText: built.countText, countedWith: built.countedWith,
                 finish: await readReplyFinishSettings(req.user.directories, {
                     mainApi: 'novel', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
                     model: built.params?.model ?? null,
