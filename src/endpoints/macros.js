@@ -1,4 +1,5 @@
 import express from 'express';
+import { requireSessionHeader } from '../request-session.js';
 
 import { chatContext, loadChatHistory } from '../chat-request.js';
 import { getCharacterCardFields } from '../character-card-fields.js';
@@ -12,6 +13,7 @@ import { storeRoute } from '../user-stores.js';
 import { isSafeMacro, macrosIn, withMacroValues } from '../../public/scripts/safe-macros.js';
 
 export const router = express.Router();
+router.use(requireSessionHeader);
 
 const MAX_MACROS = 1000;
 const MAX_MACRO_LENGTH = 100_000;

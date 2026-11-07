@@ -14,10 +14,11 @@ import { isChatHeaderEntry } from '../chat-header.js';
 import { withGroupFilesLock } from '../group-lock.js';
 import { requestStore, userStore } from '../user-stores.js';
 import { TYPE } from '../library-engine.js';
-import { requestSession } from '../request-session.js';
+import { requestSession, requireSessionHeader } from '../request-session.js';
 import { droppedOf, moveToChatNamed } from '../chat-request.js';
 
 export const router = express.Router();
+router.use(requireSessionHeader);
 
 /**
  * @param {unknown} value

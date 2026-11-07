@@ -221,7 +221,7 @@ test('POST /api/chats/group/save without unique still rejects an id no group cla
     const { status, data } = await postJson(app, '/api/chats/group/save', {
         id: 'orphan-chat',
         chat: [chatHeader(), userMsg('hi')],
-    });
+    }, newSessionKey());
 
     assert.equal(status, 400);
     assert.equal(data.error, 'unknown_group');
@@ -235,7 +235,7 @@ test('POST /api/chats/group/save with an empty chat array is a no-op success, no
         id: 'empty-chat',
         group_id: 'group-5',
         chat: [],
-    });
+    }, newSessionKey());
 
     assert.equal(status, 200);
     assert.equal(data.ok, true);
@@ -243,6 +243,16 @@ test('POST /api/chats/group/save with an empty chat array is a no-op success, no
     assert.equal(data.integrity, undefined);
     const branches = await bookmarkNames({ group: 'group-5' });
     assert.equal(branches.length, 0, 'nothing should have been saved to the tree');
+});
+
+test('a save without the session header is refused with 400 before anything is read or written', async () => {
+    const app = buildTestApp();
+    await writeGroupFixture('group-7', []);
+    const { status, data } = await postJson(app, '/api/chats/group/save', { id: 'no-session', group_id: 'group-7', chat: [chatHeader(), userMsg('hi')] });
+
+    assert.equal(status, 400);
+    assert.equal(data.error, 'The request has no X-ST-Session header');
+    assert.equal((await bookmarkNames({ group: 'group-7' })).length, 0);
 });
 
 after(() => user.close());

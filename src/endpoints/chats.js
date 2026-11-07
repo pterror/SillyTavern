@@ -23,7 +23,7 @@ import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, openChatNamed
 import { groupObjects } from './groups.js';
 import { wholeCharacter } from './characters.js';
 import { chatOpenParts } from '../chat-open-parts.js';
-import { SESSION_GONE_HEADER, sessionHeaderOf } from '../request-session.js';
+import { SESSION_GONE_HEADER, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
 import { ui, uiUser } from '../ui-wiring.js';
 import { pageSettingsHash } from '../settings-hash.js';
 import { storedForm } from '../chat-engine.js';
@@ -439,6 +439,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
 
 
 export const router = express.Router();
+router.use(requireSessionHeader);
 
 /**
  * @param {import('express').Request} request

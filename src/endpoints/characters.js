@@ -41,7 +41,7 @@ import { convertedFileKey } from '../library-codes.js';
 import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, linkWithAvatar, writeWithAvatar } from '../character-avatars.js';
 import { writeUserImage } from '../image-entities.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, moveToChatNamed } from '../chat-request.js';
-import { requestSession } from '../request-session.js';
+import { requestSession, requireSessionHeader } from '../request-session.js';
 import { ALTERNATIVES_VIEWS, ui, uiUser } from '../ui-wiring.js';
 
 import { groupDigests, groupObjects } from './groups.js';
@@ -1448,7 +1448,7 @@ async function deleteOneCharacter(request, avatarUrl, deleteChats) {
     return { ok: true, chats, dropped };
 }
 
-router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
+router.post('/delete', requireSessionHeader, validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body) {
         return response.sendStatus(400);
     }
@@ -2338,7 +2338,7 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
 
 const CHATS_PAGE = 500;
 
-router.post('/chats', validateAvatarUrlMiddleware, async function (request, response) {
+router.post('/chats', requireSessionHeader, validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!request.body) return response.sendStatus(400);
         const store = await requestStore(request);
@@ -2445,7 +2445,7 @@ export async function importCharacterFileHeadless(filePath, format, directories,
     return fileName ? { fileName } : null;
 }
 
-router.post('/import', async function (request, response) {
+router.post('/import', requireSessionHeader, async function (request, response) {
     if (!request.body || !request.file) return response.sendStatus(400);
 
     const uploadPath = path.join(request.file.destination, request.file.filename);
@@ -2954,7 +2954,7 @@ async function applyBulkAction(request, action, avatar, options) {
     return { ok: false, error: 'unknown action' };
 }
 
-router.post('/bulk/run', async function (request, response) {
+router.post('/bulk/run', requireSessionHeader, async function (request, response) {
     const { action, options, watch } = request.body ?? {};
     if (typeof action !== 'string' || !BULK_ACTIONS.has(action)) {
         return response.status(400).send({ error: true, reason: 'invalid-action' });

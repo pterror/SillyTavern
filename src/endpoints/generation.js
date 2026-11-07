@@ -1,4 +1,5 @@
 import express from 'express';
+import { requireSessionHeader } from '../request-session.js';
 import { generationEntryOf, handleGenerationStop } from '../generation-stop.js';
 import { retryPersistReply } from '../assistant-reply-persist.js';
 import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
@@ -85,14 +86,14 @@ function generationTarget(request, response) {
     return { avatar, groupId, api };
 }
 
-router.post('/generate', async function (request, response) {
+router.post('/generate', requireSessionHeader, async function (request, response) {
     const target = generationTarget(request, response);
     if (!target) return;
     request.body.owner_id = target.groupId ?? target.avatar;
     return GENERATORS[target.api](request, response);
 });
 
-router.post('/prompt', async function (request, response) {
+router.post('/prompt', requireSessionHeader, async function (request, response) {
     const target = generationTarget(request, response);
     if (!target) return;
     const { avatar, groupId, api } = target;
@@ -134,7 +135,7 @@ router.post('/store/:id', async function (request, response) {
     return response.json(result);
 });
 
-router.post('/raw', async function (request, response) {
+router.post('/raw', requireSessionHeader, async function (request, response) {
     const target = generationTarget(request, response);
     if (!target) return;
     const { avatar, groupId, api } = target;

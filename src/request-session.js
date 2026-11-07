@@ -21,6 +21,16 @@ export class SessionHeaderMissing extends Error {
     }
 }
 
+/**
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ */
+export function requireSessionHeader(req, res, next) {
+    if (sessionHeaderOf(req) === undefined) return res.status(400).send({ error: new SessionHeaderMissing().message });
+    next();
+}
+
 export class RequestSession {
     /**
      * @param {string} header
