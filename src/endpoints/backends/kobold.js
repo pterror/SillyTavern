@@ -8,6 +8,7 @@ import { createStoredCounter, writeBack } from '../../token-count-store.js';
 import { fetchKoboldStatus, koboldCanUseTokenization, koboldFlagsFor, koboldFlagsOf, lookupBackendModel, rememberKoboldFlags, rememberRemoteTokenization } from '../../backend-status.js';
 import { readTextCompletionConnection, resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { createTextCompletionParameters } from '../../text-completion-parameters.js';
+import { tokenizerStateFor } from '../../connection-counts.js';
 import { buildTextCompletionPrompt } from '../../prompt/text-prompt.js';
 import { startItemizing } from '../../prompt-itemization.js';
 import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
@@ -125,13 +126,9 @@ export async function buildRawActionKoboldRequest(directories, {
  * @param {object} [params.tokenizerOptions]
  */
 export async function koboldTokenizer(directories, { request, settingsContext, isHorde = false, tokenizerOptions = {} }) {
-    const {
-        power_user: powerUser = {}, kai_settings: koboldSettings = {}, horde_settings: hordeSettings = {},
-    } = readSettingsFor(directories, settingsContext, ['power_user', 'kai_settings', 'horde_settings']);
+    const { kai_settings: koboldSettings = {} } = readSettingsFor(directories, settingsContext, ['kai_settings']);
     const url = koboldSettings.api_server ?? '';
-    const tokenizerState = isHorde
-        ? { api: 'koboldhorde', hordeModels: Array.isArray(hordeSettings.models) ? hordeSettings.models : [], tokenizerSetting: powerUser.tokenizer }
-        : { api: 'kobold', url, model: '', tokenizerSetting: powerUser.tokenizer };
+    const tokenizerState = /** @type {import('../../tokenizer-resolve.js').TokenizerState} */ (tokenizerStateFor(directories, settingsContext, isHorde ? 'koboldhorde' : 'kobold'));
     const koboldFlags = isHorde ? {} : await koboldFlagsFor(url);
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
     const identity = await tokenizerIdentity(resolvedTokenizer);

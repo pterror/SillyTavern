@@ -23,6 +23,7 @@ import { fetchTextgenStatus, lookupBackendModel, rememberRemoteTokenization } fr
 import { rememberOpenRouterModels } from '../../openrouter-models.js';
 import { readTextCompletionConnection, resolveTextCompletionGenerationInput } from '../../text-completion-generation-input.js';
 import { createTextCompletionParameters } from '../../text-completion-parameters.js';
+import { tokenizerStateFor } from '../../connection-counts.js';
 import { buildTextCompletionPrompt } from '../../prompt/text-prompt.js';
 import { startItemizing } from '../../prompt-itemization.js';
 import { generateTurnOf, textCompletionQuietInput } from '../../page-writes.js';
@@ -503,11 +504,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
  * @param {object} [params.tokenizerOptions]
  */
 export async function textgenTokenizer(directories, { request, backend, settingsContext, tokenizerOptions = {} }) {
-    const { power_user: powerUser = {} } = readSettingsFor(directories, settingsContext, ['power_user']);
-    const tokenizerState = {
-        api: 'textgenerationwebui', type: backend.type, url: backend.serverUrl, model: backend.model ?? '',
-        tokenizerSetting: powerUser.tokenizer,
-    };
+    const tokenizerState = /** @type {import('../../tokenizer-resolve.js').TokenizerState} */ (tokenizerStateFor(directories, settingsContext, 'textgenerationwebui'));
     const llamaCppProps = createLlamaCppPropsCheck({ reuse: false });
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories, llamaCppProps });
     const identity = await tokenizerIdentity(resolvedTokenizer, { textgenApiType: backend.type, llamaCppProps: llamaCppProps.props });

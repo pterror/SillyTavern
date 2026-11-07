@@ -3,7 +3,7 @@ import { requireSessionHeader } from '../request-session.js';
 
 import { chatContext, loadChatHistory } from '../chat-request.js';
 import { getCharacterCardFields } from '../character-card-fields.js';
-import { getChatCompletionModel } from '../chat-completion-generation-input.js';
+import { getChatCompletionModel } from '../chat-completion-model.js';
 import { apiTokenLimits, generationMacroFacts, readPageMacroFacts } from '../macro-facts.js';
 import { resolveSpeakers } from '../macro-scope.js';
 import { substituteParams } from '../macro-substitution.js';

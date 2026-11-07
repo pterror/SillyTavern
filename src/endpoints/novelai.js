@@ -7,6 +7,7 @@ import { createStoredCounter, writeBack } from '../token-count-store.js';
 import { tokenizers } from '../tokenizer-ids.js';
 import { readTextCompletionConnection, resolveTextCompletionGenerationInput } from '../text-completion-generation-input.js';
 import { createTextCompletionParameters } from '../text-completion-parameters.js';
+import { tokenizerStateFor } from '../connection-counts.js';
 import { buildTextCompletionPrompt } from '../prompt/text-prompt.js';
 import { startItemizing } from '../prompt-itemization.js';
 import { generateTurnOf, textCompletionQuietInput } from '../page-writes.js';
@@ -266,8 +267,7 @@ export async function buildRawActionNovelRequest(directories, {
  * @param {object} [params.tokenizerOptions]
  */
 export async function novelTokenizer(directories, { request, settingsContext, tokenizerOptions = {} }) {
-    const { nai_settings: naiSettings = {}, power_user: powerUser = {} } = readSettingsFor(directories, settingsContext, ['nai_settings', 'power_user']);
-    const tokenizerState = { api: 'novel', model: naiSettings.model_novel ?? '', tokenizerSetting: powerUser.tokenizer };
+    const tokenizerState = /** @type {import('../tokenizer-resolve.js').TokenizerState} */ (tokenizerStateFor(directories, settingsContext, 'novel'));
     const resolvedTokenizer = await resolveTokenizer(tokenizerState, { directories });
     const identity = await tokenizerIdentity(resolvedTokenizer);
     const tokenizerOutcome = createTokenizerOutcome();
