@@ -42,13 +42,17 @@ names its kind, so renaming a kind renames it everywhere at once. Two kinds may 
 Any shape is allowed: an entry can be related to several entries by the same kind, and loops are allowed. References in
 text are one more relation, **mentions**, derived from the text and never stored by hand.
 
-A relation is stored on the entry it starts from, in its extension data: its kind, the target entry, the entry's
-position in that target's group, and whether it is **weak**. The position is a fractional order key, so moving an entry
-within a group writes only that entry. A weak relation draws the entry in the target's region like any other member,
-but doesn't keep it off the top level (below, Grouping inside a cell); it is how a loop is drawn: in "A in B, B in A"
-with nothing else holding either, one of the two is weak, and the loop opens from it.
+A relation is stored on the entry it starts from (its source), in its extension data: its kind, the target entry, its
+position among the relations of that kind targeting that entry, and whether it is **weak**. The position is a
+fractional order key, so reordering writes only the entry it moves. A weak relation draws the entry in the target's
+region like any other, but doesn't keep it off the top level (below, Grouping inside a cell); it is how a loop is drawn:
+in "A in B, B in A" with nothing else holding either, one of the two is weak, and the loop opens from it.
 
-Deleting an entry removes every relation that points to it, so no relation ever names a missing entry.
+Deleting an entry removes every relation that targets it, of every kind, and its own relations go with it. A large
+delete takes effect at once; the relations targeting the entry are removed a chunk at a time, and until an entry's
+relation is removed it still shows in the deleted entry's place under that kind, so nothing disappears. Restoring the
+entry undoes all of it. Merging one kind into another turns every relation of the first into the second, a chunk at a
+time, then removes the first; meanwhile the first can't be picked for a new relation.
 
 Kind names are the author's words, so the app never builds sentences from them. A relation is shown as
 "kind: target" ("in: The Lantern House"), what points at an entry as "kind → entry" ("owes → Ilse Varro"),
@@ -115,11 +119,14 @@ Inside the overview and inside every cell of a board or grid, entries are groupe
   doesn't fit stops at the last whole line, ending in an ellipsis; never a fade ("wait why fade", owner,
   2026-11-03T04:18:04). How much text a card shows is whatever reads sensibly at its size. It doesn't follow the character card's layout ("there is zero
   fucking reason for lorebook ui to mirror character card ui", owner, 2026-11-03T04:21:19).
-- An entry with members is a **region**, headed by the entry's own card with its member count, and holding its
-  members' cards. A member with members of its own is a region nested inside, headed the same way.
-- A region shows its first members in that group's order, filling whole rows of the page's columns, then a
-  **"+N more"** tile in the last cell that opens the region's entry, which lists every member.
-- An entry in several groups appears in each, as the same entry.
+- An entry that relations of the grouping kind target is a **region**, headed by the entry's own card with how many
+  relations of that kind target it, and holding the cards of the entries those relations start from. Such an entry
+  that is itself targeted is a region nested inside, headed the same way.
+- A region shows the first of those entries in their relations' order, filling whole rows of the page's columns, then
+  a **"+N more"** tile in the last cell, N being how many more relations of the grouping kind target the region's
+  entry; it opens the region's entry, which lists them all.
+- An entry whose relations of the grouping kind target several entries appears in each of their regions, as the same
+  entry.
 - Drawing stops where it would repeat: an entry met again inside its own region is drawn as its card, without opening
   its region again.
 - The top of a cell is its entries with no strong relation of the grouping kind.
@@ -148,15 +155,17 @@ Inside the overview and inside every cell of a board or grid, entries are groupe
 
 Everything works at 10 billion entries with no cost per entry. The page holds only what it shows.
 
-- **Members of a group** come from an index per (relation, target), in the group's order. A region reads its first few.
+- **A region's entries** come from an index of relations per (kind, target), in their positions' order. A region
+  reads its first few.
 - **The top of a cell** comes from a count per kind, on the world's order, of the entries that have a strong relation
   of that kind; the top is its complement. It is kept as relations are written: an entry joins the top when its last
   strong relation of that kind is removed or made weak and leaves it when it gains one. Changing the grouping relation is one lookup, never a scan. The same index answers filters of the form
   "has no relation of this kind".
-- **"+N more"** comes from a count per (relation, target) kept on each write, never counted on read.
+- **"+N more"** comes from a count of relations per (kind, target) kept on each write, never counted on read.
 - **Cells** of a board or grid are intersections of filters. Their cards are read a page at a time from the indexes.
   Their counts cannot be kept on write, so a cell's count is read up to a cap and shown as "1,000+" beyond it.
-- **At any depth** is answered by walking down from the target through the member index, keeping a visited set, so
+- **At any depth** is answered by walking down from the target through the index of relations by target, keeping a
+  visited set, so
   its cost grows with the results, not with the world, and cycles end the walk.
 - **Rows** are read a page at a time in the view's order, from that order's index.
 - **Selections** are a filter plus exceptions, so selecting and acting on millions of entries costs the same as on a
