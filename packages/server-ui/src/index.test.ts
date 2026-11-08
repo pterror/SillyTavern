@@ -50,7 +50,7 @@ const area = defineArea({
         'count.refuse': async () => ({ refused: 'not now' }),
         'parts.touch': async () => ({ changed: ['parts'] }),
         'both.touch': async () => ({ changed: ['slow', 'parts'] }),
-        'count.show': async () => ({ changed: [], opens: ['count'] }),
+        'count.show': async () => ({ changed: [], opensViews: ['count'] }),
         'count.fail': async ({ user }) => {
             counts.set(user.handle, (counts.get(user.handle) ?? 0) + 100);
             throw new Error('failed after writing');

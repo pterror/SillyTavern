@@ -15,7 +15,7 @@ export type Upload = { path: string; name: string; type: string; size: number };
 
 export type ActionContext = ViewContext & { upload: Upload | null };
 
-export type ActionResult = { changed: string[]; opens?: string[] } | { refused: string; changed?: string[] };
+export type ActionResult = { changed: string[]; opensViews?: string[] } | { refused: string; changed?: string[] };
 
 type Handlers<S extends ActionSchemas> = {
     [T in keyof S]: (context: ActionContext, payload: v.InferOutput<S[T]>) => Promise<ActionResult>;
@@ -272,12 +272,12 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             }
             mayHaveChanged = action.views;
             const result = await action.run({ user, session, chat: tab.chat, upload }, parsed.output);
-            const opens = 'opens' in result ? (result.opens ?? []) : [];
-            for (const key of opens) {
+            const opensViews = 'opensViews' in result ? (result.opensViews ?? []) : [];
+            for (const key of opensViews) {
                 if (!views.has(key)) throw new Error(`The action ${type} opens no view ${key}`);
                 tab.open.add(key);
             }
-            const changed = await spread(user, [...(result.changed ?? []), ...opens], tab);
+            const changed = await spread(user, [...(result.changed ?? []), ...opensViews], tab);
             await answer(
                 'refused' in result
                     ? { ok: false, error: result.refused, views: changed.frames }
