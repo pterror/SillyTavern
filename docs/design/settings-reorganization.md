@@ -1,6 +1,6 @@
 # Settings: what's wrong with the four drawers
 
-Built from inventories of every control in the four settings drawers (staging 069a1e8a4). Each line here names
+Built from inventories of every control in the four settings drawers (staging 2eb5ef058). Each line here names
 real controls; file:line references are in the inventories (kept with the plan).
 
 | Drawer | Controls | Old code involved |
