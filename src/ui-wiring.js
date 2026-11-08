@@ -567,7 +567,7 @@ const worldbuildingPorts = {
     },
     async readRelationKinds(user, book) {
         const lib = await libOf(user);
-        return (await lib.books.relationKinds(BigInt(book))).map(kind => ({ id: String(kind.id), name: kind.name }));
+        return (await lib.books.relationKinds(BigInt(book))).map(kind => ({ id: String(kind.id), name: kind.name, mergingInto: kind.mergingInto === undefined ? null : String(kind.mergingInto) }));
     },
     async createRelationKind({ user }, book, name) {
         const id = await (await libOf(user)).books.createRelationKind(BigInt(book), name);
@@ -578,6 +578,9 @@ const worldbuildingPorts = {
     },
     async deleteRelationKind({ user }, book, kind) {
         return (await libOf(user)).books.deleteRelationKind(BigInt(book), Number(kind));
+    },
+    async mergeRelationKind({ user }, book, kind, into) {
+        return (await libOf(user)).books.mergeRelationKind(BigInt(book), Number(kind), Number(into));
     },
     async changeRelation({ user, session }, book, change, loopCheckLimit) {
         const lib = await libOf(user);

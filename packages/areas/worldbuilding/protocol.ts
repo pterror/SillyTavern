@@ -17,6 +17,7 @@ export type RelationOnCard = {
     targetKey: string;
     target: string | null;
     targetTitle: string | null;
+    targetBeingDeleted: boolean;
     weak: boolean;
 };
 
@@ -30,14 +31,27 @@ export type EntryCell = {
     textCut: boolean;
     keys: string[];
     relations: RelationOnCard[];
-    memberCount: number;
+    groupingKindRelationsTargetingThis: number;
     alreadyOpenAbove: boolean;
     region: RegionCell[];
 };
 
-export type MoreTile = { cell: 'more'; occurrence: string; moreCount: number };
+export type PlaceOfDeletedEntryCell = {
+    cell: 'placeOfDeletedEntry';
+    occurrence: string;
+    entryKey: string;
+    groupingKindRelationsTargetingThis: number;
+    alreadyOpenAbove: boolean;
+    region: RegionCell[];
+};
 
-export type RegionCell = EntryCell | MoreTile;
+export type NotShownTile = {
+    cell: 'notShownTile';
+    occurrence: string;
+    groupingKindRelationsTargetingRegionEntryNotShown: number;
+};
+
+export type RegionCell = EntryCell | PlaceOfDeletedEntryCell | NotShownTile;
 
 export type StepLanding = { occurrence: string; topLevelRank: number };
 
@@ -50,11 +64,11 @@ export type OverviewView = {
     groupBy: string | null;
     topLevelCount: number;
     firstRank: number;
-    entries: (EntryCell & { topLevelRank: number })[];
+    entries: ((EntryCell | PlaceOfDeletedEntryCell) & { topLevelRank: number })[];
     stepLanding: StepLanding | null;
 };
 
-export type RelationKind = { id: string; name: string };
+export type RelationKind = { id: string; name: string; mergingInto: string | null };
 
 export type RelationKindsView = { book: string | null; kinds: RelationKind[] };
 
@@ -131,6 +145,7 @@ export const actions = {
     'worldbuilding.createRelationKind': v.object({ book: entityId, name: kindName }),
     'worldbuilding.renameRelationKind': v.object({ book: entityId, kind: kindId, name: kindName }),
     'worldbuilding.deleteRelationKind': v.object({ book: entityId, kind: kindId }),
+    'worldbuilding.mergeRelationKind': v.object({ book: entityId, kind: kindId, into: kindId }),
     'worldbuilding.addRelation': v.object({ ...relationNamed, ...betweenMembers, weak: v.boolean(), loopCheckLimit }),
     'worldbuilding.moveRelation': v.object({
         ...relationNamed,

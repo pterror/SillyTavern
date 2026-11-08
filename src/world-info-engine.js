@@ -4,6 +4,7 @@ import { LINKS, storedLinks } from './character-links.js';
 import { TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
 import { LOOP_CHECK_VISITS_PER_WRITE } from '@st/worldbuilding/protocol';
+import { WorldbuildingJobs } from './world-info/worldbuilding-jobs.js';
 
 const ENTRY_KEYS = Object.freeze([
     'uid', 'key', 'keysecondary', 'comment', 'content', 'constant', 'vectorized', 'selective', 'selectiveLogic',
@@ -48,6 +49,12 @@ const DISPLAY_INDEX = /** @type {number} */ (ENTRY_CODE.get('displayIndex'));
 /**
  * @typedef {{ entry: string, kind: string, entries: string[] }} UnreachedLoop
  */
+
+/**
+ * @typedef {{ rewrites: { entity: bigint, before: string | null, json: string }[], more: boolean }} RelationRewrites
+ */
+
+export const RELATION_REWRITES_PER_CHANGE = 1000;
 
 /**
  * @typedef {object} Actor
@@ -123,21 +130,52 @@ const ownKeyOfField = (/** @type {string} */ field) => (field.startsWith(KEY_ESC
 const RELATIONS_FIELD = `${EXTENSION_MARK}relations`;
 const RELATION_KINDS = 'relationKinds';
 const RELATION_KIND_FIELD = `${EXTENSION_MARK}relationKind:`;
+const RELATION_KIND_MERGE_FIELD = `${EXTENSION_MARK}relationKindMergingInto:`;
 const relationKindField = (/** @type {number} */ id) => `${RELATION_KIND_FIELD}${id}`;
+const relationKindMergeField = (/** @type {number} */ id) => `${RELATION_KIND_MERGE_FIELD}${id}`;
 const isWholeId = (/** @type {unknown} */ n) => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
 
 /**
+ * @typedef {{ id: number, name: string, mergingInto?: number }} RelationKind
+ */
+
+/**
  * @param {unknown} value
- * @returns {{ id: number, name: string }[] | null}
+ * @returns {RelationKind[] | null}
  */
 function relationKindsOf(value) {
     if (!Array.isArray(value)) return null;
-    const ids = new Set();
+    const ids = new Set(value.map(kind => (isPlainObject(kind) ? kind.id : undefined)));
+    const seen = new Set();
     for (const kind of value) {
-        if (!isPlainObject(kind) || Object.keys(kind).length !== 2 || !isWholeId(kind.id) || typeof kind.name !== 'string' || kind.name === '' || ids.has(kind.id)) return null;
-        ids.add(kind.id);
+        if (!isPlainObject(kind) || !isWholeId(kind.id) || typeof kind.name !== 'string' || kind.name === '' || seen.has(kind.id)) return null;
+        const extra = Object.keys(kind).filter(field => field !== 'id' && field !== 'name');
+        if (extra.some(field => field !== 'mergingInto')) return null;
+        if ('mergingInto' in kind && (!isWholeId(kind.mergingInto) || kind.mergingInto === kind.id || !ids.has(kind.mergingInto))) return null;
+        seen.add(kind.id);
     }
-    return /** @type {{ id: number, name: string }[]} */ (value);
+    return /** @type {RelationKind[]} */ (value);
+}
+
+/**
+ * @param {{ field: number | string, text?: string }[]} values
+ * @returns {RelationKind[]}
+ */
+function relationKindsOfFields(values) {
+    /** @type {Map<number, RelationKind>} */
+    const kinds = new Map();
+    /** @type {Map<number, number>} */
+    const merges = new Map();
+    for (const value of values) {
+        if (typeof value.field !== 'string' || value.text === undefined) continue;
+        if (value.field.startsWith(RELATION_KIND_FIELD)) kinds.set(Number(value.field.slice(RELATION_KIND_FIELD.length)), { id: Number(value.field.slice(RELATION_KIND_FIELD.length)), name: value.text });
+        else if (value.field.startsWith(RELATION_KIND_MERGE_FIELD)) merges.set(Number(value.field.slice(RELATION_KIND_MERGE_FIELD.length)), Number(value.text));
+    }
+    for (const [kind, into] of merges) {
+        const found = kinds.get(kind);
+        if (found) found.mergingInto = into;
+    }
+    return [...kinds.values()].sort((one, other) => one.id - other.id);
 }
 
 /**
@@ -312,7 +350,10 @@ function bookValues(book, defined) {
         if (k === 'originalData' && defined && isEntryList(book[k])) continue;
         const kinds = k === RELATION_KINDS ? relationKindsOf(book[k]) : null;
         if (kinds) {
-            for (const { id, name } of kinds) values.set(relationKindField(id), { text: name });
+            for (const { id, name, mergingInto } of kinds) {
+                values.set(relationKindField(id), { text: name });
+                if (mergingInto !== undefined) values.set(relationKindMergeField(id), { text: String(mergingInto) });
+            }
             continue;
         }
         values.set(ownKeyField(k), put(book[k]));
@@ -338,6 +379,7 @@ export class WorldInfoEngine {
     constructor(lib) {
         this.lib = lib;
         this.store = lib.store;
+        this.jobs = new WorldbuildingJobs(this);
     }
 
     /**
@@ -833,6 +875,8 @@ export class WorldInfoEngine {
             });
             const deletedUids = [];
             const gone = new Set();
+            /** @type {bigint[]} */
+            const jobsToStart = [];
             for (const [i, change] of entryChanges.entries()) {
                 const k = keys[i];
                 const cur = current.get(k);
@@ -872,7 +916,9 @@ export class WorldInfoEngine {
                     const stored = entities[index];
                     if (stored && (gone.has(key) || writes.has(key))) skip.add(stored.id);
                 });
-                pushAll(records, await this.pointerRewrites(book, deleted, skip, stamp));
+                const removal = await this.rewritesRemovingRelationsTargeting(book, deleted, skip, stamp);
+                pushAll(records, removal.records);
+                if (removal.more) jobsToStart.push(book);
             }
             if (writes.size > 0) {
                 const numbers = await this.store.worldRead('numbers', { book });
@@ -891,8 +937,10 @@ export class WorldInfoEngine {
                 }
             }
             const changes = () => records.some(r => /** @type {any} */ (r).kind !== 'keyMap');
+            const started = () => jobsToStart.forEach(id => this.jobs.start(id));
             if (fieldChanges.length === 0 && deletedUids.length === 0) {
                 if (changes()) await this.store.commit(records);
+                started();
                 return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records) };
             }
             const s = { id: book, entity: bookEntity, entries: new Map(), original: null };
@@ -933,6 +981,7 @@ export class WorldInfoEngine {
                 }
             }
             if (changes()) await this.store.commit(records);
+            started();
             return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records) };
         });
     }
@@ -1024,10 +1073,12 @@ export class WorldInfoEngine {
                 ...(entry.displayIndex === null ? [] : [{ kind: 'entryIndex', entry: nid, book: to.id, index: entry.displayIndex }]),
             );
             if (deleteOriginal) {
-                pushAll(records, await this.pointerRewrites(from.id, [String(uid)], new Set([e.id]), stamp));
+                const removal = await this.rewritesRemovingRelationsTargeting(from.id, [String(uid)], new Set([e.id]), stamp);
+                pushAll(records, removal.records);
                 records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
             }
             await this.store.commit(records);
+            if (deleteOriginal) this.jobs.start(from.id);
             return { entry, unreachedLoops: await this.unreachedLoops(from.id, records) };
         });
     }
@@ -1203,6 +1254,7 @@ export class WorldInfoEngine {
                 ...(d.index === null ? [] : [{ kind: 'entryIndex', entry: id, book: found.id, index: d.index }]),
             );
             await this.store.commit(records);
+            this.jobs.start(found.id);
             const [e] = await this.lib.entities([id]);
             return { uid, entry: entryObject(/** @type {import('./entity-values.js').StoredEntity} */ (e), false), unreachedLoops: await this.unreachedLoops(found.id, records, [id]) };
         });
@@ -1262,13 +1314,32 @@ export class WorldInfoEngine {
      * @param {string[]} keys
      * @param {Set<bigint>} skip
      * @param {() => import('./entity-values.js').Stamp} stamp
+     * @returns {Promise<{ records: object[], more: boolean }>}
+     */
+    async rewritesRemovingRelationsTargeting(book, keys, skip, stamp) {
+        /** @type {RelationRewrites} */
+        const chunk = await this.store.worldRead('worldbuildingRelationsWithout', { book, keys, limit: RELATION_REWRITES_PER_CHANGE });
+        return { records: await this.rewriteRecords(chunk.rewrites.filter(rewrite => !skip.has(rewrite.entity)), stamp), more: chunk.more };
+    }
+
+    /**
+     * @param {{ entity: bigint, before: string | null, json: string }[]} rewrites
+     * @param {() => import('./entity-values.js').Stamp} stamp
      * @returns {Promise<object[]>}
      */
-    async pointerRewrites(book, keys, skip, stamp) {
-        /** @type {{ entity: bigint, before: string, json: string }[]} */
-        const rewrites = await this.store.worldRead('worldbuildingRelationsWithout', { book, keys });
+    async rewriteRecords(rewrites, stamp) {
         const writes = historyWrites(stamp);
-        return rewrites.filter(rewrite => !skip.has(rewrite.entity)).flatMap(rewrite => writes.json(rewrite.entity, RELATIONS_FIELD, rewrite.json, rewrite.before));
+        const unmarked = rewrites.filter(rewrite => rewrite.before === null).map(rewrite => rewrite.entity);
+        const marked = new Set();
+        if (unmarked.length > 0) {
+            for (const stored of await this.lib.entities(unmarked)) {
+                if (stored?.values.some(value => value.field === EXTENSIONS)) marked.add(stored.id);
+            }
+        }
+        return rewrites.flatMap(rewrite => [
+            ...(rewrite.before === null && !marked.has(rewrite.entity) ? writes.json(rewrite.entity, EXTENSIONS, '', undefined) : []),
+            ...writes.json(rewrite.entity, RELATIONS_FIELD, rewrite.json, rewrite.before ?? undefined),
+        ]);
     }
 
     /**
@@ -1288,14 +1359,11 @@ export class WorldInfoEngine {
 
     /**
      * @param {bigint} book
-     * @returns {Promise<{ id: number, name: string }[]>}
+     * @returns {Promise<RelationKind[]>}
      */
     async relationKinds(book) {
         const [bookEntity] = await this.lib.entities([book]);
-        const kinds = (bookEntity?.values ?? []).flatMap(value => (typeof value.field === 'string' && value.field.startsWith(RELATION_KIND_FIELD) && value.text !== undefined
-            ? [{ id: Number(value.field.slice(RELATION_KIND_FIELD.length)), name: value.text }]
-            : []));
-        return kinds.sort((one, other) => one.id - other.id);
+        return relationKindsOfFields(bookEntity?.values ?? []);
     }
 
     /**
@@ -1328,15 +1396,88 @@ export class WorldInfoEngine {
     /**
      * @param {bigint} book
      * @param {number} kind
-     * @returns {Promise<'ok' | 'missing' | 'no kind' | 'in use'>}
+     * @returns {Promise<'ok' | 'missing' | 'no kind' | 'in use' | 'being merged'>}
      */
     deleteRelationKind(book, kind) {
         return this.inWorld(book, async () => {
-            if (!(await this.relationKinds(book)).some(existing => existing.id === kind)) return 'no kind';
+            const kinds = await this.relationKinds(book);
+            const found = kinds.find(existing => existing.id === kind);
+            if (!found) return 'no kind';
+            if (found.mergingInto !== undefined || kinds.some(other => other.mergingInto === kind)) return 'being merged';
             if (await this.store.worldRead('worldbuildingRelationKindInUse', { book, kind })) return 'in use';
             await this.store.commit([{ kind: 'valueDelete', entity: book, field: relationKindField(kind) }]);
             return 'ok';
         });
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {number} kind
+     * @param {number} into
+     * @returns {Promise<'ok' | 'missing' | 'no kind' | 'same kind' | 'being merged'>}
+     */
+    mergeRelationKind(book, kind, into) {
+        return this.inWorld(book, async () => {
+            if (kind === into) return 'same kind';
+            const kinds = await this.relationKinds(book);
+            const merged = kinds.find(existing => existing.id === kind);
+            const kept = kinds.find(existing => existing.id === into);
+            if (!merged || !kept) return 'no kind';
+            if (merged.mergingInto !== undefined || kept.mergingInto !== undefined || kinds.some(other => other.mergingInto === kind)) return 'being merged';
+            await this.store.commit([{ kind: 'textValue', entity: book, field: relationKindMergeField(kind), text: String(into) }]);
+            this.jobs.start(book);
+            return 'ok';
+        });
+    }
+
+    /**
+     * @param {bigint} book
+     * @returns {Promise<boolean>} whether there was anything to do
+     */
+    worldbuildingJobStep(book) {
+        return this.inWorld(book, async () => {
+            /** @type {{ deletions: { book: bigint, entity: bigint, key: string }[], restorations: { book: bigint, entity: bigint }[], merges: { book: bigint, kind: number, into: number }[] }} */
+            const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
+            const stamp = await this.stamper(null, []);
+            for (const deletion of pending.deletions.filter(job => job.book === book)) {
+                const removal = await this.rewritesRemovingRelationsTargeting(book, [deletion.key], new Set(), stamp);
+                if (removal.records.length > 0) {
+                    await this.store.commit(removal.records);
+                    return true;
+                }
+            }
+            for (const restoration of pending.restorations.filter(job => job.book === book)) {
+                /** @type {RelationRewrites} */
+                const chunk = await this.store.worldRead('worldbuildingRelationsToRestore', { book, entity: restoration.entity, limit: RELATION_REWRITES_PER_CHANGE });
+                if (chunk.rewrites.length > 0) {
+                    await this.store.commit(await this.rewriteRecords(chunk.rewrites, stamp));
+                    return true;
+                }
+            }
+            for (const merge of pending.merges.filter(job => job.book === book)) {
+                /** @type {RelationRewrites} */
+                const chunk = await this.store.worldRead('worldbuildingKindMergeRewrites', { book, kind: merge.kind, into: merge.into, limit: RELATION_REWRITES_PER_CHANGE });
+                if (chunk.rewrites.length > 0) {
+                    await this.store.commit(await this.rewriteRecords(chunk.rewrites, stamp));
+                    return true;
+                }
+                await this.store.commit([
+                    { kind: 'valueDelete', entity: book, field: relationKindField(merge.kind) },
+                    { kind: 'valueDelete', entity: book, field: relationKindMergeField(merge.kind) },
+                ]);
+                return true;
+            }
+            return false;
+        }).then(done => done === true);
+    }
+
+    /**
+     * @returns {Promise<bigint[]>}
+     */
+    async booksWithWorldbuildingJobs() {
+        /** @type {{ deletions: { book: bigint }[], restorations: { book: bigint }[], merges: { book: bigint }[] }} */
+        const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
+        return [...new Set([...pending.deletions, ...pending.restorations, ...pending.merges].map(job => job.book))];
     }
 
     /**
@@ -1400,8 +1541,6 @@ function assembleBook(s, world) {
     /** @type {Map<string, unknown>} */
     const found = new Map();
     let order;
-    /** @type {{ id: number, name: string }[]} */
-    const kinds = [];
     for (const v of s.entity?.values ?? []) {
         if (v.field === DEFINED) continue;
         if (v.field === ORDER) {
@@ -1409,13 +1548,11 @@ function assembleBook(s, world) {
             continue;
         }
         if (typeof v.field !== 'string') continue;
-        if (v.field.startsWith(RELATION_KIND_FIELD) && v.text !== undefined) {
-            kinds.push({ id: Number(v.field.slice(RELATION_KIND_FIELD.length)), name: v.text });
-            continue;
-        }
+        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD)) && v.text !== undefined) continue;
         found.set(ownKeyOfField(v.field), v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
     }
-    if (kinds.length > 0) found.set(RELATION_KINDS, kinds.sort((a, b) => a.id - b.id));
+    const kinds = relationKindsOfFields(s.entity?.values ?? []);
+    if (kinds.length > 0) found.set(RELATION_KINDS, kinds);
     if (s.original) found.set('originalData', assembleBook(s.original, false));
     const list = [...s.entries.values()].sort((a, b) => a.position - b.position);
     if (world) {

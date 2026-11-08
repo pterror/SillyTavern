@@ -375,6 +375,7 @@ export class LibraryEngine {
 
     async close() {
         await this.tags.stopPass();
+        await this.books.jobs.close();
         return this.store.close();
     }
 

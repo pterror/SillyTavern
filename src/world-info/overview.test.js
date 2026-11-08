@@ -20,11 +20,11 @@ const entry = (uid, displayIndex, relations) => ({
 });
 
 /**
- * @param {{ occurrence: string, region?: any[], cell: string, alreadyOpenAbove?: boolean, moreCount?: number }} item
+ * @param {{ occurrence: string, region?: any[], cell: string, alreadyOpenAbove?: boolean, groupingKindRelationsTargetingRegionEntryNotShown?: number }} item
  * @param {string[]} out
  */
 function outline(item, out) {
-    out.push(item.cell === 'more' ? `${item.occurrence}=${item.moreCount}` : item.alreadyOpenAbove ? `${item.occurrence}!` : item.occurrence);
+    out.push(item.cell === 'notShownTile' ? `${item.occurrence}=${item.groupingKindRelationsTargetingRegionEntryNotShown}` : item.alreadyOpenAbove ? `${item.occurrence}!` : item.occurrence);
     for (const c of item.region ?? []) outline(c, out);
 }
 
@@ -147,8 +147,57 @@ test('deleting an entry removes every relation pointing at it, and restoring one
     assert.deepEqual(read.entries[2].extensions.relations, []);
     const restored = await lib.books.restore('Deletes', third);
     assert.ok(typeof restored === 'object');
+    await lib.books.jobs.settled();
     read = await lib.books.read('Deletes');
     assert.deepEqual(read.entries[3].extensions.relations, [], 'its relation to entry 1, deleted since, is left out');
+    assert.deepEqual(read.entries[2].extensions.relations, [{ kind: OWES, target: 3, position: 'a' }], 'restoring 3 puts back what targeted it');
+
+    const restoredFirst = await lib.books.restore('Deletes', ids.get(1));
+    assert.ok(typeof restoredFirst === 'object');
+    await lib.books.jobs.settled();
+    read = await lib.books.read('Deletes');
+    assert.deepEqual(read.entries[2].extensions.relations.map(r => [r.kind, r.target]).sort(), [[IN, 1], [OWES, 3]]);
+    assert.deepEqual(read.entries[3].extensions.relations, [{ kind: IN, target: 1, position: 'b' }]);
+});
+
+test('deleting an entry that thousands of entries target removes it at once and their relations in chunks; until then they show in its place', async () => {
+    const { RELATION_REWRITES_PER_CHANGE } = await import('../world-info-engine.js');
+    const sources = RELATION_REWRITES_PER_CHANGE + 5;
+    const entries = [entry(1, 0)];
+    for (let uid = 2; uid < sources + 2; uid++) entries.push(entry(uid, uid, [{ kind: IN, target: 1, position: 'a' }]));
+    await lib.books.write('Large', { relationKinds: KINDS, entries: Object.fromEntries(entries.map(e => [e.uid, e])) });
+    const { id: book } = await lib.books.find('Large');
+    const { jsonHash } = await import('../../public/scripts/hash-utils.js');
+    const current = (await lib.books.read('Large')).entries[1];
+    const result = await lib.books.apply('Large', [{ uid: 1, base_hash: jsonHash(current), data: null }], []);
+    assert.ok(result && typeof result === 'object' && result.ok);
+    assert.deepEqual(result.deleted, ['1']);
+    const during = await overview(book, IN);
+    assert.equal(during.entries[0].cell, 'placeOfDeletedEntry');
+    assert.equal(during.entries[0].groupingKindRelationsTargetingThis, 5, 'the first chunk went with the delete itself');
+    assert.equal(during.topLevelCount, RELATION_REWRITES_PER_CHANGE + 1);
+    await lib.books.jobs.settled();
+    const after = await overview(book, IN);
+    assert.equal(after.topLevelCount, sources);
+    assert.ok(after.entries.every(cell => cell.cell === 'entry'));
+});
+
+test('merging a kind into another turns its relations into the other kind, folds twins into one, then removes the kind', async () => {
+    const entries = [
+        entry(1, 0),
+        entry(2, 1, [{ kind: OWES, target: 1, position: 'a', note: 'kept' }]),
+        entry(3, 2, [{ kind: OWES, target: 1, position: 'a' }, { kind: IN, target: 1, position: 'b', weak: true }]),
+    ];
+    await lib.books.write('Merging', { relationKinds: KINDS, entries: Object.fromEntries(entries.map(e => [e.uid, e])) });
+    const { id: book } = await lib.books.find('Merging');
+    assert.equal(await lib.books.mergeRelationKind(book, OWES, OWES), 'same kind');
+    assert.equal(await lib.books.mergeRelationKind(book, OWES, IN), 'ok');
+    assert.equal(await lib.books.mergeRelationKind(book, OWES, IN), 'being merged');
+    await lib.books.jobs.settled();
+    const read = await lib.books.read('Merging');
+    assert.deepEqual(read.relationKinds, [{ id: IN, name: 'in' }]);
+    assert.deepEqual(read.entries[2].extensions.relations, [{ kind: IN, target: 1, position: 'a', note: 'kept' }]);
+    assert.deepEqual(read.entries[3].extensions.relations, [{ kind: IN, target: 1, position: 'b' }]);
 });
 
 test('moving an entry to another world drops its relations there and removes the ones pointing at it here', async () => {

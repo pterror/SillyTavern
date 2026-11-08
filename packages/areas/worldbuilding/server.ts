@@ -48,7 +48,17 @@ export type Ports = {
     readRelationKinds(user: User, book: string): Promise<RelationKind[] | null>;
     createRelationKind(who: Who, book: string, name: string): Promise<string | null>;
     renameRelationKind(who: Who, book: string, kind: string, name: string): Promise<'ok' | 'missing' | 'no kind'>;
-    deleteRelationKind(who: Who, book: string, kind: string): Promise<'ok' | 'missing' | 'no kind' | 'in use'>;
+    deleteRelationKind(
+        who: Who,
+        book: string,
+        kind: string,
+    ): Promise<'ok' | 'missing' | 'no kind' | 'in use' | 'being merged'>;
+    mergeRelationKind(
+        who: Who,
+        book: string,
+        kind: string,
+        into: string,
+    ): Promise<'ok' | 'missing' | 'no kind' | 'same kind' | 'being merged'>;
     changeRelation(
         who: Who,
         book: string,
@@ -73,6 +83,7 @@ const NOTHING_CHANGED: LastChangeView = { createdKind: null, changedRelation: nu
 const NO_WORLD_SHOWN = 'No world is shown.';
 const WORLD_GONE = 'That world no longer exists.';
 const NO_SUCH_KIND = 'This world has no such relation kind.';
+const BEING_MERGED = 'That kind is being merged, or another kind is being merged into it.';
 
 export function rangeAround(rank: number, firstRank: number, endRank: number): { firstRank: number; endRank: number } {
     if (rank >= firstRank && rank < endRank) return { firstRank, endRank };
@@ -211,7 +222,16 @@ export function worldbuildingArea(ports: Ports) {
                 if (done === 'missing') return { refused: WORLD_GONE };
                 if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
                 if (done === 'in use') return { refused: 'Relations of this kind still exist.' };
+                if (done === 'being merged') return { refused: BEING_MERGED };
                 return { changed: [RELATION_KINDS_VIEW] };
+            },
+            'worldbuilding.mergeRelationKind': async (context, { book, kind, into }) => {
+                const done = await ports.mergeRelationKind(who(context), book, kind, into);
+                if (done === 'missing') return { refused: WORLD_GONE };
+                if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
+                if (done === 'same kind') return { refused: 'A kind is merged into another kind.' };
+                if (done === 'being merged') return { refused: BEING_MERGED };
+                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW] };
             },
             'worldbuilding.addRelation': (context, relation) =>
                 relationChanged(context, { change: 'add', ...relation }),

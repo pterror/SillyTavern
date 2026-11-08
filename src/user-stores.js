@@ -122,6 +122,7 @@ async function openStore(root, handle) {
             events.emit('commit', records);
             return done;
         };
+        lib.books.jobs.resume().catch(error => console.error('Resuming worldbuilding jobs failed.', error));
         const people = libraryPeople(lib);
         const chats = await ChatEngine.open(lib.store, people, await lib.nextIds());
         return { lib, chats, people, tokens: new TokenCache(lib.store), handle, events };

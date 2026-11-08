@@ -29,7 +29,7 @@ const card = (occurrence: string, topLevelRank: number): EntryCell & { topLevelR
     textCut: false,
     keys: [],
     relations: [],
-    memberCount: 0,
+    groupingKindRelationsTargetingThis: 0,
     alreadyOpenAbove: false,
     region: [],
     topLevelRank,
@@ -41,7 +41,9 @@ function world(count: number) {
         step: (Grouping & OverviewStep)[];
         changes: { book: string; change: RelationChange; loopCheckLimit: number; session: string }[];
     } = { overview: [], step: [], changes: [] };
-    const kinds = [{ id: '1', name: 'in' }];
+    const kinds: { id: string; name: string; mergingInto: string | null }[] = [
+        { id: '1', name: 'in', mergingInto: null },
+    ];
     const ports: Ports = {
         readOverview: async (_u, q) => {
             asked.overview.push(q);
@@ -74,7 +76,7 @@ function world(count: number) {
         readRelationKinds: async (_u, book) => (book === '1' ? kinds : null),
         createRelationKind: async (_w, book, name) => {
             if (book !== '1') return null;
-            kinds.push({ id: String(kinds.length + 1), name });
+            kinds.push({ id: String(kinds.length + 1), name, mergingInto: null });
             return String(kinds.length);
         },
         renameRelationKind: async (_w, _b, kind, name) => {
@@ -88,6 +90,14 @@ function world(count: number) {
             const at = kinds.findIndex((existing) => existing.id === kind);
             if (at === -1) return 'no kind';
             kinds.splice(at, 1);
+            return 'ok';
+        },
+        mergeRelationKind: async (_w, _b, kind, into) => {
+            if (kind === into) return 'same kind';
+            const merged = kinds.find((existing) => existing.id === kind);
+            if (!merged || !kinds.some((existing) => existing.id === into)) return 'no kind';
+            if (merged.mergingInto !== null) return 'being merged';
+            merged.mergingInto = into;
             return 'ok';
         },
         changeRelation: async ({ session }, book, change, loopCheckLimit) => {
@@ -127,7 +137,7 @@ test('opening a world opens its overview, its kinds and the last change in the s
     expect(w.asked.overview[0]).toMatchObject({ layout: LAYOUT });
     expect(await w.view<RelationKindsView>(RELATION_KINDS_VIEW)).toEqual({
         book: '1',
-        kinds: [{ id: '1', name: 'in' }],
+        kinds: [{ id: '1', name: 'in', mergingInto: null }],
     });
     expect(w.asked.step).toEqual([]);
 });
@@ -198,8 +208,8 @@ test('kind actions name their world: making one says which it made, renaming ans
         unreachedLoops: [],
     });
     expect((await w.view<RelationKindsView>(RELATION_KINDS_VIEW)).kinds).toEqual([
-        { id: '1', name: 'in' },
-        { id: '2', name: 'In' },
+        { id: '1', name: 'in', mergingInto: null },
+        { id: '2', name: 'In', mergingInto: null },
     ]);
     expect(await w.act('worldbuilding.renameRelationKind', { book: '1', kind: '1', name: 'inside' })).toEqual({
         changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW],
@@ -210,8 +220,19 @@ test('kind actions name their world: making one says which it made, renaming ans
     expect(await w.act('worldbuilding.deleteRelationKind', { book: '1', kind: '1' })).toEqual({
         refused: 'Relations of this kind still exist.',
     });
-    expect(await w.act('worldbuilding.deleteRelationKind', { book: '1', kind: '2' })).toEqual({
-        changed: [RELATION_KINDS_VIEW],
+    expect(await w.act('worldbuilding.mergeRelationKind', { book: '1', kind: '2', into: '2' })).toEqual({
+        refused: 'A kind is merged into another kind.',
+    });
+    expect(await w.act('worldbuilding.mergeRelationKind', { book: '1', kind: '2', into: '1' })).toEqual({
+        changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW],
+    });
+    expect((await w.view<RelationKindsView>(RELATION_KINDS_VIEW)).kinds[1]).toEqual({
+        id: '2',
+        name: 'In',
+        mergingInto: '1',
+    });
+    expect(await w.act('worldbuilding.mergeRelationKind', { book: '1', kind: '2', into: '1' })).toEqual({
+        refused: 'That kind is being merged, or another kind is being merged into it.',
     });
 });
 
