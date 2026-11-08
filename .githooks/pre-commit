@@ -10,9 +10,10 @@
 # it out (lib/staged-files.mjs): tsc and eslint get its files through their APIs, and the export and route scripts run
 # as staged (lib/run-staged.mjs) over its files. A file's text is read from the work tree only when it hashes to the
 # staged blob. Importing a workspace package by name (@st/...) reads its staged files. Configs (tsconfig.precommit.json,
-# .eslintrc.cjs, .oxlint-cycle-baseline) are read as staged. oxlint, vp and vitest read only the disk, so they run in
-# the work tree and block the commit when a file they read there isn't what's staged. The hook never writes to the
-# work tree or the real index.
+# .eslintrc.cjs, .oxlint-cycle-baseline) are read as staged. oxlint, vp and vitest read only the disk, so they run
+# where the top of the work tree shows the staged tree: an overlay mount in a namespace of their own, which swaps in the
+# staged version of each file the work tree has otherwise and hides what git doesn't track (lib/staged-tree.sh,
+# in_view). The hook never writes to the work tree or the real index.
 #
 # A commit costs what it changes. The hook keeps the trees that passed every check (with the same node_modules and the
 # same hook), and compares the staged tree with HEAD's if it passed, else with the latest that did: a check runs only
@@ -46,10 +47,12 @@ set -euo pipefail
 
 hook_dir="$(cd "$(dirname "$0")" && pwd)"
 
-if ! command -v node >/dev/null 2>&1; then
-    echo "pre-commit: node not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
-    exit 1
-fi
+for tool in node unshare; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "pre-commit: $tool not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
+        exit 1
+    fi
+done
 
 . "$hook_dir/lib/staged-tree.sh"
 
@@ -164,61 +167,21 @@ check_tsc() {
     fi
 }
 
-# oxlint, vp and vitest read files only from disk, so they run in the work tree, and only when what they read there is
-# what's staged. Prints, NUL-separated, the files matching the patterns that aren't, untracked ones under the
-# directories after --untracked included.
-differing() {
-    local file pattern
-    local -a patterns=() untracked=()
-    while [ $# -gt 0 ] && [ "$1" != --untracked ]; do patterns+=("$1"); shift; done
-    [ "${1:-}" = --untracked ] && shift && untracked=("$@")
-    while IFS= read -r -d '' file; do
-        for pattern in "${patterns[@]}"; do
-            if [[ "$file" == $pattern ]]; then
-                printf '%s\0' "$file"
-                break
-            fi
-        done
-    done < "$run/unstaged"
-    if [ "${#untracked[@]}" -gt 0 ]; then
-        git ls-files --others --exclude-standard -z -- "${untracked[@]}"
-    fi
-}
-
-# Blocks with the files a disk-reading tool would see differently from the staged tree, if any.
-require_staged() {
-    local tool="$1" list
-    shift
-    list="$(differing "$@" | tr '\0' '\n')"
-    if [ -n "$list" ]; then
-        echo "pre-commit: blocked -- $tool reads the work tree, and these files there aren't what's staged:"
-        printf '%s\n' "$list" | head -20 | sed 's/^/  /'
-        echo "Stage them, or make the work tree match what's staged, and commit again."
-        return 1
-    fi
-}
-
 # Blocks commits that grow the circular-import count beyond the checked-in baseline (.oxlint-cycle-baseline, as
 # staged). Circular imports have caused real TDZ crashes here (FILTER_TYPES in tags.js/filters.js, charactersStore in
 # script.js/character-repository.js), invisible to any static check except this one. This is a ratchet, not a full
 # gate: it only blocks the count going UP. If you fix cycles, lower the number in .oxlint-cycle-baseline to lock in
 # the win.
-#
-# oxlint lints the staged code files; files in the work tree that aren't staged (untracked, or deleted from the index)
-# can only add imports to the graph it walks, so the count it reports is never below the staged tree's.
 check_cycles() {
     local baseline count status=0
-    local -a files=()
-    require_staged oxlint "$code" .oxlintrc.json || return 1
     baseline="$(git cat-file blob "$staged:.oxlint-cycle-baseline" 2>/dev/null || echo 0)"
-    mapfile -d '' -t files < <(git ls-tree -r -z --name-only "$staged" | grep -zE '\.(js|mjs|cjs|jsx|ts|tsx|mts|cts)$')
-    "$bin/oxlint" -c .oxlintrc.json -A all -D import/no-cycle --format json "${files[@]}" > "$run/cycles.json" 2> "$run/cycles.err" || status=$?
+    in_view "$bin/oxlint" -c .oxlintrc.json -A all -D import/no-cycle --format json > "$run/cycles.json" 2> "$run/cycles.err" || status=$?
     if [ "$status" -gt 1 ] || ! count="$(node -e '
         const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
         if (!(report.number_of_files > 0) || !Array.isArray(report.diagnostics)) process.exit(1);
         console.log(report.diagnostics.filter(d => d.code === "import(no-cycle)").length);
     ' "$run/cycles.json" 2>/dev/null)"; then
-        echo "pre-commit: blocked -- oxlint exited with status $status without reporting on the staged files:"
+        echo "pre-commit: blocked -- oxlint exited with status $status without reporting on the staged tree:"
         head -c 4000 "$run/cycles.json" "$run/cycles.err"
         return 1
     fi
@@ -267,12 +230,9 @@ check_routes() {
 
 # The new code (packages/) is held to all of it: formatting, every lint rule (the st/* rules included) and strict
 # types with no errors at all, and its tests passing. Unlike the old code, there's no baseline to stay under.
-packages_inputs=('packages/*' vite.config.ts package.json package-lock.json public/lib.js public/live-editor-lib.js '.*' --untracked packages)
-
 check_packages() {
     local output
-    require_staged 'vp check' "${packages_inputs[@]}" || return 1
-    if ! output="$("$bin/vp" check packages 2>&1)"; then
+    if ! output="$(in_view "$bin/vp" check packages 2>&1)"; then
         echo "pre-commit: blocked -- 'vp check packages' failed in the staged tree:"
         printf '%s\n' "$output" | tail -40
         return 1
@@ -281,8 +241,7 @@ check_packages() {
 
 check_tests() {
     local output
-    require_staged 'vp test' "${packages_inputs[@]}" || return 1
-    if ! output="$("$bin/vp" test run 2>&1)"; then
+    if ! output="$(in_view "$bin/vp" test run 2>&1)"; then
         echo "pre-commit: blocked -- the packages' tests failed in the staged tree:"
         printf '%s\n' "$output" | tail -40
         return 1
@@ -303,7 +262,7 @@ measure() {
 }
 
 if [ $((run_cycles + run_packages + run_tests)) -gt 0 ]; then
-    unstaged_files > "$run/unstaged"
+    prepare_view "$staged"
 fi
 
 pids=()
