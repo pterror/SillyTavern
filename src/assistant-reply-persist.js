@@ -1,4 +1,5 @@
 import { storedForm } from './chat-engine.js';
+import { appendUnderStart } from './pending-opening.js';
 import { recordGenerationPersisted } from './generation-stop.js';
 import { finishReply } from './reply-reasoning.js';
 import { storeReplyImages } from './reply-images.js';
@@ -263,6 +264,13 @@ async function storeReply(pending, generatedText) {
     const title = typeof pending.title === 'string' ? pending.title : '';
     const replyContent = { name: name2, is_user: false, mes: finished.mes, title, extra: { ...finished.extra }, send_date: Date.now(), ...times };
 
+    if (isContinue && anchorNodeId === null && chat.opening && anchorContent) {
+        const mes = finished.mes;
+        const extra = { ...(anchorContent.extra && typeof anchorContent.extra === 'object' ? anchorContent.extra : {}), ...finished.extra };
+        const stored = await appendUnderStart(chat, { contents: [], opening: { ...anchorContent, mes, title, extra, ...times } });
+        if (!stored.ok) return { error: String(stored.reason ?? 'the continued message could not be written') };
+        return { node_id: /** @type {string} */ (chat.openedAt), mes, extra: finished.extra };
+    }
     if (isContinue) {
         if (!anchorContent || typeof anchorNodeId !== 'string') {
             console.error('Failed to persist continue edit: no anchor content resolved.');
@@ -281,7 +289,8 @@ async function storeReply(pending, generatedText) {
         return { node_id: anchorNodeId, mes, extra: finished.extra };
     }
     let after = anchorNodeId;
-    if (isSwipe) {
+    if (isSwipe && anchorNodeId === null && chat.opening) chat.opening = null;
+    else if (isSwipe) {
         const replaced = typeof anchorNodeId === 'string' ? await store.chats.messageOf(tree, anchorNodeId) : null;
         if (!replaced) {
             console.error('Failed to persist swipe alternative: the message being replaced is not in the chat.');
@@ -289,9 +298,9 @@ async function storeReply(pending, generatedText) {
         }
         after = replaced.parent === null ? null : (await store.chats.externalIds([replaced.parent]))[0];
     }
-    const appended = await store.chats.appendMessages({
-        tree, treeSpeaker, after, contents: [replyContent], changes: [changes], regenerated: isSwipe, actor: session.actor(),
-    });
+    const appended = after === null
+        ? await appendUnderStart(chat, { contents: [replyContent], changes: [changes], regenerated: isSwipe })
+        : await store.chats.appendMessages({ tree, treeSpeaker, after, contents: [replyContent], changes: [changes], regenerated: isSwipe, actor: session.actor() });
     if (!appended.ok || !appended.node_ids.length) {
         console.error('Failed to persist assistant reply:', appended.reason);
         return { error: String(appended.reason ?? (isSwipe ? 'the new swipe could not be written' : 'the reply could not be written')) };

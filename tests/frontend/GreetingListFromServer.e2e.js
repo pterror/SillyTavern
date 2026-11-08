@@ -350,24 +350,24 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         }), { timeout: 10000 }).toEqual({ mes: g[2], swipe_id: 1, swipes: [g[1], g[2]] });
     });
 
-    test('the shown greeting is gone: the chat shows the opening now at the same index', async ({ page }) => {
+    test('the shown greeting is gone: the chat shows the default greeting', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
         const opening = await chatAfterOtherSession(page, {
-            name: `SlotEmptyNext-${s}`, g, shown: 1, expected: g[2],
+            name: `SlotEmptyNext-${s}`, g, shown: 1, expected: g[0],
             otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]) }),
         });
-        expect(opening).toEqual({ mes: g[2], swipe_id: 1, swipes: [g[0], g[2], g[3]] });
+        expect(opening).toEqual({ mes: g[0], swipe_id: 0, swipes: [g[0], g[2], g[3]] });
     });
 
-    test('the shown greeting was last and is gone: the index is clamped, so the chat shows the last opening', async ({ page }) => {
+    test('the shown greeting was last and is gone: the chat shows the default greeting', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
         const opening = await chatAfterOtherSession(page, {
-            name: `SlotEmptyPrevious-${s}`, g, shown: 3, expected: g[2],
+            name: `SlotEmptyPrevious-${s}`, g, shown: 3, expected: g[0],
             otherSession: avatar => otherSessionOp(page, 'delete', { avatar_url: avatar, position: 3, expected_hash: hashGreetingText(g[3]) }),
         });
-        expect(opening).toEqual({ mes: g[2], swipe_id: 2, swipes: [g[0], g[1], g[2]] });
+        expect(opening).toEqual({ mes: g[0], swipe_id: 0, swipes: [g[0], g[1], g[2]] });
     });
 
     test('the shown greeting now has another opening\'s text: the chat shows that text, the opening once', async ({ page }) => {
@@ -395,7 +395,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(opening).toEqual({ mes: x3, swipe_id: 2, swipes: [g[0], x2, x3, g[4]] });
     });
 
-    test('with more stored openings than the loaded window, a gone last greeting lands on the last opening', async ({ page }) => {
+    test('with more stored openings than the loaded window, a gone greeting shows the default, a stored opening', async ({ page }) => {
         const s = stamp();
         const name = `SlotWindow-${s}`;
         const g = Array.from({ length: 14 }, (_, i) => `Greeting ${i} ${s}`);
@@ -426,13 +426,13 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[13], { timeout: 10000 });
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 13, expected_hash: hashGreetingText(g[13]) });
 
-        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[12], { timeout: 10000 });
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[0], { timeout: 10000 });
         const opening = await page.evaluate(() => {
             // @ts-ignore
             const m = stTest.context().chat[0];
             return { mes: m.mes, swipe_id: m.swipe_id };
         });
-        expect(opening).toEqual({ mes: g[12], swipe_id: 12 });
+        expect(opening).toEqual({ mes: g[0], swipe_id: 0 });
     });
 
     /**

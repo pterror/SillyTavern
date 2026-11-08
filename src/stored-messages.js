@@ -1,3 +1,4 @@
+import { appendUnderStart } from './pending-opening.js';
 import { storedForm } from './chat-engine.js';
 import { sanitizeUserMessageExtra } from './user-message-extra.js';
 
@@ -37,10 +38,11 @@ export function recordStored(response, stored) {
  */
 export async function storeUserMessage(response, { chat, anchorNodeId, message, ref }) {
     const { store, tree, treeSpeaker, session } = chat;
-    const appendResult = await store.chats.appendMessages({
-        tree, treeSpeaker, after: anchorNodeId, contents: [storedForm(/** @type {Record<string, any>} */ (message))],
-        sendKeys: [typeof ref === 'string' ? ref : null], actor: session.actor(),
-    });
+    const contents = [storedForm(/** @type {Record<string, any>} */ (message))];
+    const sendKeys = [typeof ref === 'string' ? ref : null];
+    const appendResult = anchorNodeId === null
+        ? await appendUnderStart(chat, { contents, sendKeys })
+        : await store.chats.appendMessages({ tree, treeSpeaker, after: anchorNodeId, contents, sendKeys, actor: session.actor() });
     const nodeId = appendResult.ok ? appendResult.node_ids?.[appendResult.node_ids.length - 1] ?? null : null;
     if (!nodeId) {
         const reason = appendResult.reason ?? 'no node was stored';

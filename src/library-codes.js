@@ -28,6 +28,7 @@ export const FIELD = Object.freeze({
     modification_date: 20,
     first_mes_item: 21,
     greeting_next_item: 22,
+    greeting_default_epoch: 23,
     allow_global_styles: 30,
     folder_type: 40,
     defined: 41,

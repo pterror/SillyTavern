@@ -331,3 +331,59 @@ test('no node_id is refused once the chat has messages and the session isn\'t at
     const data = await atStart.json();
     assert.deepEqual((await pathTo({ avatar }, data.assistant_node_id)).messages.map(m => m.mes), ['Hi?', 'Again.']);
 });
+
+/**
+ * @returns {{ appends: () => number[], stop: () => void }} how many messages each write appended
+ */
+function watchAppends() {
+    /** @type {object[][]} */
+    const commits = [];
+    const listen = (/** @type {object[]} */ records) => commits.push(records.filter(r => /** @type {any} */ (r).kind === 'messageAppend'));
+    user.store.events.on('commit', listen);
+    return { appends: () => commits.filter(c => c.length > 0).map(c => c.length), stop: () => user.store.events.off('commit', listen) };
+}
+
+test('under a greeting no one has answered, a send stores the greeting with the user message, and the answer carries the tree\'s openings', async (t) => {
+    const avatar = `pw-one-write-${randomUUID()}.png`;
+    await writeCharacter(avatar, 'Rex');
+    const generate = await generateServer(t, 'At dawn.');
+    const watch = watchAppends();
+    const answer = await generate.post({
+        owner_id: avatar, character_avatar: avatar, type: 'normal', stream: false, node_id: null,
+        opening: { refs: ['o'], messages: [{ name: 'Rex', is_user: false, mes: 'Hi.', extra: {} }] },
+        user_message: { name: 'Tester', is_user: true, mes: 'When?', extra: {} }, user_message_ref: 'u',
+    }, { [SESSION_HEADER]: newSessionKey() });
+    watch.stop();
+    const reply = await answer.json();
+    assert.equal(answer.status, 200, JSON.stringify(reply));
+    assert.deepEqual(watch.appends(), [2, 1], 'the greeting and the user message in one write, the reply in the next');
+    const openings = reply.stored.find(s => s.ref === 'openings');
+    assert.equal(openings.avatar, avatar);
+    assert.equal(openings.openings.openings.stored, 1);
+    assert.equal(openings.openings.openings.alternatives[0].node_id, reply.stored.find(s => s.ref === 'o').node_id);
+});
+
+test('under a greeting no one has answered, a reply with nothing sent is stored with the greeting; a quiet one stores nothing', async (t) => {
+    const avatar = `pw-reply-write-${randomUUID()}.png`;
+    await writeCharacter(avatar, 'Rex');
+    const generate = await generateServer(t, 'I speak first.');
+    const opening = { refs: ['o'], messages: [{ name: 'Rex', is_user: false, mes: 'Hi.', extra: {} }] };
+
+    const quiet = await generate.post({
+        owner_id: avatar, character_avatar: avatar, type: 'quiet', stream: false, node_id: null, opening, quiet_prompt: 'One word.',
+    }, { [SESSION_HEADER]: newSessionKey() });
+    assert.equal(quiet.status, 200);
+    const tree = await treeOf(user.store, { avatar });
+    assert.equal((await user.store.chats.openings(tree)).length, 0, 'a quiet generation stores no opening');
+
+    const watch = watchAppends();
+    const answer = await generate.post({
+        owner_id: avatar, character_avatar: avatar, type: 'normal', stream: false, node_id: null, opening,
+    }, { [SESSION_HEADER]: newSessionKey() });
+    watch.stop();
+    const reply = await answer.json();
+    assert.equal(answer.status, 200, JSON.stringify(reply));
+    assert.deepEqual(watch.appends(), [2], 'the greeting and the reply in one write');
+    assert.deepEqual((await pathTo({ avatar }, reply.assistant_node_id)).messages.map(m => m.mes), ['Hi.', 'I speak first.']);
+    assert.ok(reply.stored.some(s => s.ref === 'openings'));
+});

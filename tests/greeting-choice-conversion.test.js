@@ -42,10 +42,10 @@ test('a choice remembered as a place on the card becomes the id of the greeting 
 
     const pModel = await lib.greetingModel('p.png');
     const qModel = await lib.greetingModel('q.png');
-    expect(await chats.cardChoice(ids[0], p)).toBe(pModel.greetings[1].id);
+    expect(await chats.cardChoice(ids[0], p)).toEqual({ id: pModel.greetings[1].id, epoch: 0 });
     expect(pModel.greetings[1].text).toBe('Third');
-    expect(await chats.cardChoice(ids[1], q)).toBe(qModel.greetings[1].id);
-    expect(await chats.cardChoice(ids[2], p)).toBe(pModel.greetings[0].id);
+    expect(await chats.cardChoice(ids[1], q)).toEqual({ id: qModel.greetings[1].id, epoch: 0 });
+    expect(await chats.cardChoice(ids[2], p)).toEqual({ id: pModel.greetings[0].id, epoch: 0 });
     expect(await order()).toEqual(before);
 });
 

@@ -40,7 +40,7 @@ async function write(avatar, greetings, defaultIndex, model) {
 describe('a card\'s greetings in the store', () => {
     test('a new card numbers its greetings in order, the default among them', async () => {
         expect(await write('a.png', ['x', 'y', 'z'], 1)).toEqual({
-            greetings: [{ id: 0, text: 'x' }, { id: 1, text: 'y' }, { id: 2, text: 'z' }], defaultId: 1, nextId: 3,
+            greetings: [{ id: 0, text: 'x' }, { id: 1, text: 'y' }, { id: 2, text: 'z' }], defaultId: 1, nextId: 3, defaultEpoch: 0,
         });
         const [card] = await user.store.lib.cards(['a.png']);
         expect(greetingList.cardToGreetingsModel(card)).toEqual({ greetings: ['x', 'y', 'z'], defaultIndex: 1 });
@@ -51,7 +51,7 @@ describe('a card\'s greetings in the store', () => {
     test('a whole card written again keeps the id of every text it already had', async () => {
         await write('b.png', ['x', 'y', 'z'], 0);
         expect(await write('b.png', ['z', 'new', 'x'], 2)).toEqual({
-            greetings: [{ id: 2, text: 'z' }, { id: 3, text: 'new' }, { id: 0, text: 'x' }], defaultId: 0, nextId: 4,
+            greetings: [{ id: 2, text: 'z' }, { id: 3, text: 'new' }, { id: 0, text: 'x' }], defaultId: 0, nextId: 4, defaultEpoch: 0,
         });
     });
 
@@ -59,9 +59,9 @@ describe('a card\'s greetings in the store', () => {
         const start = await write('c.png', ['x', 'y', 'z'], 0);
         const [x, y, z] = start.greetings;
         const moved = { greetings: [{ ...z, text: 'z edited' }, x, y], defaultId: y.id, nextId: start.nextId };
-        expect(await write('c.png', ['z edited', 'x', 'y'], 2, moved)).toEqual(moved);
+        expect(await write('c.png', ['z edited', 'x', 'y'], 2, moved)).toEqual({ ...moved, defaultEpoch: 1 });
         const without = { greetings: [{ ...z, text: 'z edited' }, x], defaultId: null, nextId: start.nextId };
-        expect(await write('c.png', ['z edited', 'x'], null, without)).toEqual(without);
+        expect(await write('c.png', ['z edited', 'x'], null, without)).toEqual({ ...without, defaultEpoch: 1 });
         const added = await write('c.png', ['z edited', 'x', 'w'], null);
         expect(added.greetings.map(g => g.id)).toEqual([z.id, x.id, start.nextId]);
         const [card] = await user.store.lib.cards(['c.png']);
@@ -81,7 +81,7 @@ describe('a card\'s greetings in the store', () => {
             greetings.splice((round * 3) % (greetings.length + 1), 0, moved);
             const next = { ...model, greetings };
             model = await write('e.png', greetings.map(g => g.text), null, next);
-            expect(model).toEqual(next);
+            expect(model).toEqual({ ...next, defaultEpoch: 0 });
         }
     });
 });

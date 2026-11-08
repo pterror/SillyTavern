@@ -31,8 +31,13 @@ A card file written into the store gets its ids there:
 
 ## Remembered choices
 
-A session at a tree's root remembers the card greeting it shows as that greeting's id + 1; 0 is the card's default. A
-choice whose greeting is gone shows the default. A new chat shows the default.
+A session at a tree's root remembers the card greeting it shows by that greeting's id, or as the card's default. A
+choice holds through any session's adds, edits, moves and deletes of other greetings, and ends when its greeting is
+deleted or the card's default is set or unset: the tree shows the default then. A new chat shows the default.
+
+The card counts its default changes in the value `greeting_default_epoch` (absent while 0); deleting the default
+greeting isn't one. A choice is stored as `epoch × 2³² + id + 1`, 0 being the default, and holds while the card's
+count is the one it was made under.
 
 Choices stored as positions (by code before this change) are converted once by
 `scripts/convert-greeting-choices.mjs`, run with the server stopped: each becomes the id of the greeting at that

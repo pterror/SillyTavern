@@ -119,6 +119,10 @@ export function adoptStored(stored) {
             _globalVariablesListener(entry.global_variables);
             continue;
         }
+        if (entry.openings && typeof entry.avatar === 'string') {
+            void takeOpenings(entry.avatar, entry.openings);
+            continue;
+        }
         if (entry.metadata_not_saved === true) {
             _openingMetadataRefs.delete(entry.ref);
             const state = entry.state && typeof entry.state === 'object' ? entry.state : undefined;
@@ -509,6 +513,7 @@ async function _chatOpPost(path, body, silent = false) {
         if (!silent) _reportChatOpFailure();
         throw error;
     }
+    adoptStored(answer?.stored);
     if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
     return answer;
 }
@@ -542,6 +547,7 @@ async function _chatOpPostAnswering(path, body, answered) {
         _reportChatOpFailure();
         throw error;
     }
+    adoptStored(answer?.stored);
     if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
     return answer;
 }
@@ -650,7 +656,7 @@ export async function chatOpEdit(mesId) {
     if (isProvisionalNodeId(msg?.node_id)) {
         const inGroup = selected_group != null && selected_group !== '';
         const asCard = provisionalNodeId(msg.name, msg.mes);
-        if (!inGroup && (msg.swipe_info ?? []).some(info => info.node_id === asCard)) {
+        if (!inGroup && typeof msg.mes === 'string' && (msg.swipe_info ?? []).some(info => info.node_id === asCard)) {
             await rememberCardOpening(msg.mes);
             return true;
         }
@@ -690,15 +696,9 @@ export async function chatOpStoreComposed(mesId) {
         nodeId = await ensureOpeningRow(0);
         if (nodeId === null) updateMessage(0, { node_id: undefined });
     } else {
-        /** @type {string|null} */
-        let after = null;
-        for (let i = mesId - 1; i >= 0; i--) {
-            if (isProvisionalNodeId(_chatAt(i)?.node_id)) await ensureOpeningRow(i);
-            const id = _chatAt(i)?.node_id;
-            if (isStoredNodeId(id)) { after = id; break; }
-        }
+        const after = appendTarget(mesId);
         if (after === null) return null;
-        const result = await _chatOpPost('/api/chats/message/append', { after_node_id: after, messages: [_messageContent(msg)], send_keys: [null] });
+        const result = await _chatOpPost('/api/chats/message/append', { ...(typeof after === 'string' ? { after_node_id: after } : after), messages: [_messageContent(msg)], send_keys: [null] });
         nodeId = result.node_ids?.[0] ?? null;
         if (isStoredNodeId(nodeId)) updateMessage(mesId, { node_id: nodeId });
     }
@@ -758,20 +758,26 @@ export async function chatOpEditMany(mesIds, silent = false) {
  * @returns {Promise<string[]>}
  */
 export async function chatOpAppend(fromIndex, toIndex = chat.length, { silent = false } = {}) {
-    /** @type {string|null} */
-    let after = null;
-    for (let i = fromIndex - 1; i >= 0; i--) {
-        if (isProvisionalNodeId(_chatAt(i)?.node_id)) await ensureOpeningRow(i);
-        const nodeId = _chatAt(i)?.node_id;
-        if (isStoredNodeId(nodeId)) { after = nodeId; break; }
-    }
-    if (after == null || after === '') return [];
-
-    return (await chatOpAppendAfter(after, fromIndex, toIndex, { silent })).node_ids;
+    const under = appendTarget(fromIndex);
+    if (under === null) return [];
+    return (await chatOpAppendAfter(under, fromIndex, toIndex, { silent })).node_ids;
 }
 
 /**
- * @param {string} after
+ * @param {number} index
+ * @returns {string | NonNullable<ReturnType<typeof openingForRequest>> | null}
+ */
+export function appendTarget(index) {
+    for (let i = index - 1; i >= 0; i--) {
+        const nodeId = _chatAt(i)?.node_id;
+        if (isStoredNodeId(nodeId)) return nodeId;
+        if (isProvisionalNodeId(nodeId)) return openingForRequest(i);
+    }
+    return null;
+}
+
+/**
+ * @param {string | NonNullable<ReturnType<typeof openingForRequest>>} after a stored message, or the unstored opening to store with the messages
  * @param {number} fromIndex
  * @param {number} [toIndex]
  * @param {{ silent?: boolean }} [options]
@@ -781,7 +787,7 @@ export async function chatOpAppendAfter(after, fromIndex, toIndex = chat.length,
     const messages = chat.slice(fromIndex, toIndex);
     const sendKeys = messages.map(message => storeRefOf(message) ?? null);
     const result = await _chatOpPost('/api/chats/message/append', {
-        after_node_id: after,
+        ...(typeof after === 'string' ? { after_node_id: after } : after),
         messages,
         send_keys: sendKeys,
     }, silent);
@@ -807,14 +813,8 @@ export async function chatOpGraft(mesId, { silent = false } = {}) {
     if (!msg) return null;
     if (mesId + 1 >= chat.length) return (await chatOpAppend(mesId, undefined, { silent }))[0] ?? null;
 
-    /** @type {string|null} */
-    let after = null;
-    for (let i = mesId - 1; i >= 0; i--) {
-        if (isProvisionalNodeId(_chatAt(i)?.node_id)) await ensureOpeningRow(i);
-        const nodeId = _chatAt(i)?.node_id;
-        if (isStoredNodeId(nodeId)) { after = nodeId; break; }
-    }
-    if (after == null || after === '') return null;
+    const after = appendTarget(mesId);
+    if (typeof after !== 'string') return null;
 
     const before = _chatAt(mesId + 1)?.node_id;
     if (!isStoredNodeId(before)) return null;

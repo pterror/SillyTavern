@@ -13,7 +13,7 @@ import { getRequestHeaders } from './request-headers.js';
  * @property {typeof import('./node-navigation.js').switchToNode} switchToNode
  * @property {typeof import('./chat-store.js').chatOpAppendAfter} chatOpAppendAfter
  * @property {typeof import('./chat-store.js').chatOpGraft} chatOpGraft
- * @property {typeof import('./chat-store.js').ensureOpeningRow} ensureOpeningRow
+ * @property {typeof import('./chat-store.js').appendTarget} appendTarget
  * @property {typeof import('./chat-store.js').setSendStoredListener} setSendStoredListener
  * @property {typeof import('./chat-store.js').setStoreRef} setStoreRef
  * @property {typeof import('./chat-store.js').storeRefOf} storeRefOf
@@ -303,18 +303,6 @@ function setNoticeText(key, text) {
 }
 
 /**
- * @param {number} index
- * @returns {Promise<string|null>}
- */
-async function storedBefore(index) {
-    for (let i = index - 1; i >= 0; i--) {
-        if (deps.isProvisionalNodeId(chat[i]?.node_id)) await deps.ensureOpeningRow(i);
-        if (deps.isStoredNodeId(chat[i]?.node_id)) return chat[i].node_id;
-    }
-    return null;
-}
-
-/**
  * @param {FailedSend} entry
  * @param {FailedSendMode} mode
  */
@@ -331,8 +319,8 @@ async function saveHere(entry, mode) {
             saved = deps.isStoredNodeId(await deps.chatOpGraft(index, { silent: true }));
             reload = saved;
         } else {
-            const after = await storedBefore(index);
-            if (after) {
+            const after = deps.appendTarget(index);
+            if (after !== null) {
                 const result = await deps.chatOpAppendAfter(after, index, index + 1, { silent: true });
                 saved = deps.isStoredNodeId(result.node_ids[0]);
                 reload = result.already_stored.length > 0;

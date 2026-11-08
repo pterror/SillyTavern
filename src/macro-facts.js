@@ -112,6 +112,11 @@ export function macroVariableChanges(chatMetadata, globalVariables, before) {
 export async function storeMacroVariables(response, chat, at, { chat: chatVariables, global }) {
     if (global) recordStored(response, { ref: 'macro-global-variables', node_id: '', global_variables: global });
     if (!chatVariables) return;
+    if (!at && chat.opening) {
+        chat.opening.variables = chatVariables;
+        return;
+    }
+    at ||= chat.openedAt;
     const actor = chat.session.actor();
     const merged = await chat.store.chats.mergeMetadata({ tree: chat.tree, at: at || null, set: {}, unset: [], variables: chatVariables, actor });
     if (!merged.ok) {

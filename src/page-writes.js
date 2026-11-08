@@ -34,9 +34,10 @@ function pageMessagesOf(value) {
  * @param {import('express').Response} response
  * @param {import('./chat-request.js').ChatContext} chat
  * @param {any} body
- * @returns {Promise<{ nodeId: string|null|undefined }|null>}
+ * @param {{ waitForReply?: boolean }} [options] waitForReply: an opening with nothing sent under it is stored with the reply
+ * @returns {Promise<{ nodeId: string|null|undefined, pushedIds: string[] }|null>}
  */
-export async function applyPageWrites(response, chat, body) {
+export async function applyPageWrites(response, chat, body, { waitForReply = false } = {}) {
     const { store, tree, treeSpeaker, session } = chat;
     /** @type {string|null|undefined} */
     let nodeId = body?.node_id;
@@ -47,14 +48,28 @@ export async function applyPageWrites(response, chat, body) {
     };
 
     const opening = pageMessagesOf(body?.opening);
+    let pushed = pageMessagesOf(body?.page_messages);
+    /** @type {string[]} */
+    let pushedIds = [];
     if (opening && (nodeId === null || nodeId === undefined)) {
-        const made = await store.chats.appendMessages({ tree, treeSpeaker, after: null, contents: opening.messages.map(storedForm), actor: session.actor() });
-        if (!made.ok || made.node_ids.length !== opening.messages.length) return fail(made.reason ?? 'the opening could not be stored');
-        made.node_ids.forEach((id, i) => recordStored(response, { ref: opening.refs[i], node_id: id }));
-        nodeId = made.node_ids[made.node_ids.length - 1];
+        const contents = [...opening.messages, ...(pushed?.messages ?? [])].map(storedForm);
+        const refs = [...opening.refs, ...(pushed?.refs ?? [])];
+        if (!pushed && waitForReply && !body?.page_metadata) {
+            chat.opening = { refs: opening.refs, messages: contents, variables: null, record: stored => recordStored(response, stored) };
+            nodeId = null;
+        } else {
+            const made = await store.chats.appendMessages({
+                tree, treeSpeaker, after: null, contents,
+                sendKeys: [...opening.refs.map(() => null), ...(pushed?.refs ?? []).map(ref => ref || null)], actor: session.actor(),
+            });
+            if (!made.ok || made.node_ids.length !== contents.length) return fail(made.reason ?? 'the opening could not be stored');
+            made.node_ids.forEach((id, i) => recordStored(response, { ref: refs[i], node_id: id }));
+            nodeId = made.node_ids[made.node_ids.length - 1];
+            pushedIds = made.node_ids.slice(opening.messages.length);
+            pushed = null;
+        }
     }
 
-    const pushed = pageMessagesOf(body?.page_messages);
     if (pushed) {
         if (typeof nodeId !== 'string' || nodeId === '') return fail('there is no stored message for them to follow');
         const appended = await store.chats.appendMessages({
@@ -63,6 +78,7 @@ export async function applyPageWrites(response, chat, body) {
         if (!appended.ok || appended.node_ids.length !== pushed.messages.length) return fail(appended.reason ?? 'the messages could not be stored');
         appended.node_ids.forEach((id, i) => recordStored(response, { ref: pushed.refs[i], node_id: id }));
         nodeId = appended.node_ids[appended.node_ids.length - 1];
+        pushedIds = appended.node_ids;
     }
 
     if (body?.page_metadata && typeof body.page_metadata === 'object') {
@@ -83,7 +99,7 @@ export async function applyPageWrites(response, chat, body) {
         recordStored(response, { ref: metadata.ref, node_id: at ?? '', integrity: actor.session });
     }
 
-    return { nodeId };
+    return { nodeId, pushedIds };
 }
 
 /**
@@ -117,7 +133,7 @@ export function responseLengthOf(body) {
  * @returns {Promise<{ nodeId: string|null|undefined, userMessageText: string|undefined, userMessageExtra: object, userMessage: Record<string, any>|null, quiet: QuietPrompt, responseLength: number|undefined, pageFacts: import('./macro-facts.js').PageMacroFacts, pageInjections: import('./prompt/injections.js').PageInjections, skipWorldInfoAndNote: boolean, forceName2: boolean }|null>}
  */
 export async function generateTurnOf(response, chat, body) {
-    const written = await applyPageWrites(response, chat, body);
+    const written = await applyPageWrites(response, chat, body, { waitForReply: true });
     if (!written) return null;
     const sent = sentUserMessageOf(body);
     return {

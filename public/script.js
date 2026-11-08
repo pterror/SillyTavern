@@ -263,7 +263,6 @@ export { messageFormatting };
 import {
     updateMessage,
     updateIn,
-    ensureOpeningRow,
     chatOpEdit,
     chatOpEditMany,
     chatOpAppend,
@@ -280,6 +279,7 @@ import {
     storeRefOf,
     adoptStored,
     chatOpAppendAfter,
+    appendTarget,
     setSendStoredListener,
     openingForRequest,
     setUnstoredExtra,
@@ -1373,7 +1373,7 @@ async function firstLoadInit() {
     initDataMaid();
     initFailedSends({
         addOneMessage, deleteMessage, getCurrentChatContext, redisplayChat, reloadCurrentChat, updateViewMessageIds,
-        switchToNode, chatOpAppendAfter, chatOpGraft, ensureOpeningRow, setSendStoredListener, setStoreRef, storeRefOf,
+        switchToNode, chatOpAppendAfter, chatOpGraft, appendTarget, setSendStoredListener, setStoreRef, storeRefOf,
         isStoredNodeId, isProvisionalNodeId, provisionalNodeId, t,
         confirmDiscard: async (text) => await callGenericPopup(text, POPUP_TYPE.CONFIRM, '', { okButton: t`Discard`, cancelButton: t`Keep it` }) === POPUP_RESULT.AFFIRMATIVE,
     });

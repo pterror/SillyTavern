@@ -1048,9 +1048,20 @@ router.post('/message/edit-batch', validateAvatarUrlMiddleware, async function (
 router.post('/message/append', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const after = String(request.body.after_node_id || '');
-        if (!after) return response.status(400).send({ error: 'after_node_id is required' });
+        if (!after && !request.body.opening) return response.status(400).send({ error: 'after_node_id or opening is required' });
         const chat = await chatOf(request);
         if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        if (!after) {
+            const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
+            const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
+            const written = await applyPageWrites(response, chat, {
+                node_id: null, opening: request.body.opening, page_metadata: request.body.page_metadata,
+                page_messages: messages.length ? { refs: messages.map((_, i) => (typeof sendKeys[i] === 'string' ? sendKeys[i] : '')), messages } : undefined,
+            });
+            if (!written) return;
+            chat.session.answer(response, { moved: true });
+            return response.send({ ok: true, node_ids: written.pushedIds, stored: storedMessagesOf(response) ?? undefined, ...await openingsAnswerOf(request, chat) });
+        }
         const contents = (Array.isArray(request.body.messages) ? request.body.messages : []).map(storedForm);
         const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
         const result = await chat.store.chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents, sendKeys, actor: chat.session.actor() });
@@ -1085,11 +1096,11 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
         if (!Number.isInteger(index) || index < 0) return response.status(400).send({ error: 'index must be a non-negative integer' });
         const chat = await chatOf(request, { avatar_url: avatar });
         if (!chat) return response.status(404).send({ error: 'unknown chat' });
-        const { greetings } = await chat.store.lib.greetingModel(avatar);
+        const { greetings, defaultEpoch } = await chat.store.lib.greetingModel(avatar);
         const text = typeof request.body.text === 'string' ? request.body.text : greetings[index]?.text;
         const chosen = greetings[index]?.text === text ? greetings[index] : greetings.find(g => g.text === text);
         if (!chosen) return response.status(409).send({ error: 'no such greeting' });
-        await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greetingId: chosen.id, actor: chat.session.actor() });
+        await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greetingId: chosen.id, epoch: defaultEpoch, actor: chat.session.actor() });
         chat.session.answer(response, { moved: true });
         return response.send({ ok: true, ...await openingsForPage(chat, avatar) });
     } catch (error) {

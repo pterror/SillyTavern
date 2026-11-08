@@ -1,6 +1,7 @@
 import { SPACE } from './actor-ids.js';
 import { TYPE } from './library-codes.js';
 import { greetingModelOf } from './greeting-items.js';
+import { greetingChoice } from './chat-engine.js';
 
 const PAGE = 500;
 
@@ -14,13 +15,14 @@ const PAGE = 500;
 export async function convertGreetingChoices(lib, handle) {
     const [user] = await lib.store.chatRead('ids', { space: SPACE.user, keys: [handle] });
     if (user === null || user === undefined) return 0;
-    /** @type {Map<bigint, number[] | null>} */
+    /** @type {Map<bigint, { ids: number[], epoch: number } | null>} */
     const greetingsOf = new Map();
     const idsOf = async (/** @type {bigint} */ tree) => {
         if (!greetingsOf.has(tree)) {
             const [key] = await lib.store.libraryKeys([tree]);
             const entity = key && key.type === TYPE.character ? (await lib.entities([tree]))[0] : null;
-            greetingsOf.set(tree, entity ? greetingModelOf(entity).greetings.filter(g => g.text !== '').map(g => g.id) : null);
+            const model = entity ? greetingModelOf(entity) : null;
+            greetingsOf.set(tree, model ? { ids: model.greetings.filter(g => g.text !== '').map(g => g.id), epoch: model.defaultEpoch ?? 0 } : null);
         }
         return greetingsOf.get(tree) ?? null;
     };
@@ -34,10 +36,10 @@ export async function convertGreetingChoices(lib, handle) {
             if (session === null) continue;
             const place = await lib.store.chatRead('openingChoice', { session, tree });
             if (place === null || place === undefined) continue;
-            const ids = await idsOf(tree);
-            if (ids === null) continue;
-            const id = ids.length === 0 ? null : ids[Math.min(Number(place), ids.length - 1)];
-            found.push({ kind: 'openingChoice', session, user, tree, index: id === null ? 0 : id + 1 });
+            const card = await idsOf(tree);
+            if (card === null) continue;
+            const id = card.ids.length === 0 ? null : card.ids[Math.min(Number(place), card.ids.length - 1)];
+            found.push({ kind: 'openingChoice', session, user, tree, index: greetingChoice(id, card.epoch) });
         }
         before = page[page.length - 1].position;
     }

@@ -288,9 +288,20 @@ function alternativeEntry(nodeId, o, itemized) {
  * @typedef {{ ok: true, preview?: true, drops?: Drops, copied?: Record<string, string> } | { ok: false, reason: string, drops?: Drops }} EditAnswer
  */
 
-/** @typedef {{ greetings: Record<string, any>[], ids: number[], defaultId: number | null }} CardGreetings */
+/** @typedef {{ greetings: Record<string, any>[], ids: number[], defaultId: number | null, defaultEpoch: number }} CardGreetings */
 
-const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], defaultId: null });
+const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], defaultId: null, defaultEpoch: 0 });
+
+const EPOCH = 2 ** 32;
+
+/**
+ * @param {number | null} greetingId
+ * @param {number} epoch
+ * @returns {number} the remembered choice as it is stored
+ */
+export function greetingChoice(greetingId, epoch) {
+    return greetingId === null ? 0 : epoch * EPOCH + greetingId + 1;
+}
 
 export class ChatEngine {
     /**
@@ -806,7 +817,8 @@ export class ChatEngine {
             defaultIndex = rows.findIndex(r => r.id === shown);
         } else {
             const chosen = session === null ? null : await this.cardChoice(session, tree);
-            const at = card.ids.indexOf(chosen !== null && card.ids.includes(chosen) ? chosen : card.defaultId ?? -1);
+            const kept = chosen !== null && chosen.epoch === card.defaultEpoch && card.ids.includes(chosen.id);
+            const at = card.ids.indexOf(kept ? /** @type {{ id: number }} */ (chosen).id : card.defaultId ?? -1);
             if (at >= 0) defaultIndex = all.findIndex(o => o.mes === card.greetings[at].mes);
         }
         if (defaultIndex < 0) defaultIndex = 0;
@@ -828,14 +840,16 @@ export class ChatEngine {
     }
 
     /**
-     * Stored as the greeting's id + 1, 0 being the card's default.
+     * Stored as the card's default epoch * 2^32 + the greeting's id + 1, 0 being the card's default; a choice holds
+     * until the card's default changes.
      * @param {bigint} session
      * @param {bigint} tree
-     * @returns {Promise<number | null>} the chosen greeting's id; null for the default
+     * @returns {Promise<{ id: number, epoch: number } | null>} the chosen greeting; null for the default
      */
     async cardChoice(session, tree) {
         const stored = await this.store.chatRead('openingChoice', { session, tree });
-        return stored === null || stored === undefined || Number(stored) === 0 ? null : Number(stored) - 1;
+        const value = stored === null || stored === undefined ? 0 : Number(stored);
+        return value === 0 ? null : { id: (value % EPOCH) - 1, epoch: Math.floor(value / EPOCH) };
     }
 
     /**
@@ -946,7 +960,7 @@ export class ChatEngine {
                 const produced = producedChanges(changes[i], state);
                 const twin = isToolTurn(content) ? null : await this.twinOf(tree, cursor, content, ids, regenerated ? produced : undefined);
                 if (twin !== null) {
-                    if (session !== null) records.push(...this.moveTo(session, user, cursor, twin));
+                    if (session !== null && i === contents.length - 1) records.push(...this.moveTo(session, user, cursor, twin));
                     ids.push(twin);
                     cursor = twin;
                     state = null;
@@ -1224,9 +1238,10 @@ export class ChatEngine {
      * @param {object} p
      * @param {bigint} p.tree
      * @param {number | null} p.greetingId the chosen greeting's id; null for the card's default
+     * @param {number} [p.epoch] the card's default epoch
      * @param {Actor} p.actor
      */
-    chooseCardGreeting({ tree, greetingId, actor }) {
+    chooseCardGreeting({ tree, greetingId, epoch = 0, actor }) {
         return this.serialized(tree, async () => {
             const records = [];
             const { user, session } = await this.actorIds(actor, records);
@@ -1234,9 +1249,9 @@ export class ChatEngine {
             const [now] = await this.store.chatRead('sessions', { ids: [session] });
             const atRoot = !!now && now.tree === tree && now.at === null;
             const chosen = now ? await this.cardChoice(session, tree) : null;
-            if (atRoot && chosen === greetingId) return { ok: true };
+            if (atRoot && (chosen === null ? greetingId === null : chosen.id === greetingId && chosen.epoch === epoch)) return { ok: true };
             if (!atRoot) records.push({ kind: 'pointerRoot', session, user, tree, time: this.now() });
-            records.push({ kind: 'openingChoice', session, user, tree, index: greetingId === null ? 0 : greetingId + 1 });
+            records.push({ kind: 'openingChoice', session, user, tree, index: greetingChoice(greetingId, epoch) });
             await this.claimConversation(records, tree, actor, { user, session });
             await this.store.commit(records);
             return { ok: true };

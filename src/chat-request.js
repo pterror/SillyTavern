@@ -8,6 +8,9 @@ import { requestSession } from './request-session.js';
  * @property {import('./chat-codec.js').Speaker | null} treeSpeaker
  * @property {import('./request-session.js').RequestSession} session
  * @property {import('./chat-engine.js').StateOp[]} [replyChanges]
+ * @property {string | null} avatar the character whose tree it is; null for a group's
+ * @property {import('./pending-opening.js').PendingOpening | null} [opening] the opening the page sent that waits for what goes under it
+ * @property {string} [openedAt] the node that opening was stored as
  */
 
 /**
@@ -25,7 +28,7 @@ export async function chatContext(request, { avatar, group }) {
     const treeSpeaker = groupId !== null || name === null ? null : (await store.people.byAvatar([name])).get(name) ?? null;
     const session = await requestSession(store.chats, request, tree);
     const replyChanges = request.body?.reply_changes;
-    return { store, tree, treeSpeaker, session, ...(Array.isArray(replyChanges) ? { replyChanges } : {}) };
+    return { store, tree, treeSpeaker, session, avatar: groupId === null ? name : null, ...(Array.isArray(replyChanges) ? { replyChanges } : {}) };
 }
 
 /**
@@ -101,6 +104,10 @@ export async function loadChatHistory(chat, { nodeId }) {
     if (nodeId != null) {
         if (!await chats.messageOf(chat.tree, nodeId)) return none;
         at = nodeId;
+    }
+    if (at === undefined && chat.opening) {
+        const root = await chats.load({ tree: chat.tree, at: null });
+        return { chat: chat.opening.messages.map(m => ({ ...m, node_id: null })), metadata: root?.metadata ?? {}, resolvedNodeId: null };
     }
     if (at === undefined && !await rootIsCurrent(chat)) return { ...none, ambiguous: true };
     const loaded = await chats.load({ tree: chat.tree, at: at ?? null });

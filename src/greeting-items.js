@@ -6,7 +6,7 @@ export const GREETING_LIST = 0;
 export const DEFAULT_POSITION_VALUE = 'ext:greeting_default_position';
 
 /** @typedef {{ id: number, text: string }} Greeting */
-/** @typedef {{ greetings: Greeting[], defaultId: number | null, nextId: number }} GreetingModel */
+/** @typedef {{ greetings: Greeting[], defaultId: number | null, nextId: number, defaultEpoch?: number }} GreetingModel */
 
 /**
  * @param {string | undefined} json
@@ -35,7 +35,7 @@ function inOrder(others, first, at) {
  * @returns {GreetingModel}
  */
 export function greetingModelOf(entity) {
-    if (!entity) return { greetings: [], defaultId: null, nextId: 0 };
+    if (!entity) return { greetings: [], defaultId: null, nextId: 0, defaultEpoch: 0 };
     const { values } = storedValues(entity);
     const texts = new Map(entity.values.filter(v => typeof v.field === 'number' && v.field >= 1024).map(v => [v.field, v.text ?? '']));
     const others = entity.items
@@ -46,7 +46,12 @@ export function greetingModelOf(entity) {
     const first = firstText === '' ? null : { id: wholeNumber(values.get(FIELD.first_mes_item)?.json) ?? 0, text: firstText };
     const greetings = inOrder(others, first, wholeNumber(values.get(DEFAULT_POSITION_VALUE)?.json));
     const highest = Math.max(-1, ...greetings.map(g => g.id));
-    return { greetings, defaultId: first?.id ?? null, nextId: Math.max(highest + 1, wholeNumber(values.get(FIELD.greeting_next_item)?.json) ?? 0) };
+    return {
+        greetings,
+        defaultId: first?.id ?? null,
+        nextId: Math.max(highest + 1, wholeNumber(values.get(FIELD.greeting_next_item)?.json) ?? 0),
+        defaultEpoch: wholeNumber(values.get(FIELD.greeting_default_epoch)?.json) ?? 0,
+    };
 }
 
 /**
@@ -76,7 +81,7 @@ export function matchedGreetings(stored, written) {
         if (at >= 0) return { id: unused.splice(at, 1)[0].id, text };
         return { id: nextId++, text };
     });
-    return { greetings, defaultId: written.defaultIndex === null ? null : greetings[written.defaultIndex].id, nextId };
+    return { greetings, defaultId: written.defaultIndex === null ? null : greetings[written.defaultIndex].id, nextId, defaultEpoch: stored.defaultEpoch };
 }
 
 /**
@@ -157,5 +162,9 @@ export function greetingRecords(entity, stored, model) {
     if (model.defaultId !== null && model.defaultId !== 0) values.set(FIELD.first_mes_item, { json: JSON.stringify(model.defaultId) });
     const highest = Math.max(-1, ...model.greetings.map(g => g.id));
     if (model.nextId > highest + 1) values.set(FIELD.greeting_next_item, { json: JSON.stringify(model.nextId) });
+    const was = greetingModelOf(stored);
+    const defaultGone = model.defaultId === null && !model.greetings.some(g => g.id === was.defaultId);
+    const epoch = (was.defaultEpoch ?? 0) + (stored && was.defaultId !== model.defaultId && !defaultGone ? 1 : 0);
+    if (epoch > 0) values.set(FIELD.greeting_default_epoch, { json: JSON.stringify(epoch) });
     return { records, values };
 }

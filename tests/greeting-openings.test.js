@@ -145,6 +145,34 @@ test('a card greeting the session chose stays shown through the session\'s own c
     expect(shownText(gone.body)).toBe('Yo');
 });
 
+test('a card greeting a session chose stays shown through another session\'s adds, moves and deletes, until the card\'s default changes', async () => {
+    const mine = '0190a1b2-0000-7000-8000-0000000000e1';
+    const theirs = { user: user.user.profile.handle, session: '0190a1b2-0000-7000-8000-0000000000e2' };
+    expect((await post('create', { ch_name: 'Shared', first_mes: 'One', file_name: 'Shared' }, mine)).status).toBe(200);
+    await post('greetings/add', { avatar_url: 'Shared.png', append: true, text: 'Two' }, mine);
+    await post('greetings/add', { avatar_url: 'Shared.png', append: true, text: 'Three' }, mine);
+    const { chats, people, lib } = user.store;
+    const { changeGreetings } = await import('../src/endpoints/characters.js');
+    const { hashGreetingText } = await import('../src/greeting-ops.js');
+    const [tree] = await people.trees([{ avatar: 'Shared.png' }]);
+    const before = await lib.greetingModel('Shared.png');
+    await chats.chooseCardGreeting({ tree, greetingId: before.greetings[2].id, epoch: before.defaultEpoch, actor: { user: theirs.user, session: mine } });
+    const elsewhere = (/** @type {any} */ change) => changeGreetings({ directories: user.directories, store: user.store, actor: theirs, avatar: 'Shared.png', change });
+    const mineNow = async () => {
+        const { openingState } = await import('../src/opening-state.js');
+        return shownText(await openingState({ store: user.store, tree, actor: { user: theirs.user, session: mine }, avatar: 'Shared.png' }));
+    };
+
+    await elsewhere({ op: 'add', text: 'Zero', position: 0, expectedLength: 3 });
+    await elsewhere({ op: 'move', position: 3, hash: hashGreetingText('Three'), side: 'before', target: 0, targetHash: hashGreetingText('Zero') });
+    await elsewhere({ op: 'delete', position: 2, hash: hashGreetingText('One') });
+    expect((await lib.greetingModel('Shared.png')).greetings.map(g => g.text)).toEqual(['Three', 'Zero', 'Two']);
+    expect(await mineNow()).toBe('Three');
+
+    await elsewhere({ op: 'default', position: 2, hash: hashGreetingText('Two') });
+    expect(await mineNow()).toBe('Two');
+});
+
 test('a greeting that a stored opening holds is history: changing or deleting the greeting leaves that opening', async () => {
     const session = '0190a1b2-0000-7000-8000-0000000000f1';
     expect((await post('create', { ch_name: 'Teller', first_mes: 'Once', file_name: 'Teller' }, session)).status).toBe(200);

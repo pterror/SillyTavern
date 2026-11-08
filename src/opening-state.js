@@ -24,6 +24,7 @@ export async function readCardGreetings(store, avatar) {
             greetings: shown.map(g => ({ name: speaker, is_user: false, is_system: false, send_date: sendDate, mes: g.text, extra: {} })),
             ids: shown.map(g => g.id),
             defaultId: model.defaultId,
+            defaultEpoch: model.defaultEpoch ?? 0,
             texts: model.greetings.map(g => g.text),
             defaultIndex: defaultIndex < 0 ? null : defaultIndex,
             name: speaker,
@@ -40,7 +41,7 @@ export async function readCardGreetings(store, avatar) {
  * @returns {Promise<CardGreetingsRead>}
  */
 export async function cardGreetingsOf(store, avatar) {
-    return (await readCardGreetings(store, avatar)) ?? { greetings: [], ids: [], defaultId: null, texts: [], defaultIndex: null, name: '' };
+    return (await readCardGreetings(store, avatar)) ?? { greetings: [], ids: [], defaultId: null, defaultEpoch: 0, texts: [], defaultIndex: null, name: '' };
 }
 
 /**
