@@ -180,7 +180,7 @@ function modelApply(book, entryChanges, fieldChanges) {
         // eslint-disable-next-line eqeqeq
         original.entries = original.entries.filter((/** @type {any} */ item) => !deletedUids.some(uid => item?.uid == uid));
     }
-    return json({ ok: true, entries, deleted, fields, conflicts });
+    return json({ ok: true, entries, deleted, fields, conflicts, unreachedLoops: [] });
 }
 
 describe.each(['native', 'wasm'])('%s', (kind) => {
@@ -248,7 +248,7 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
                     const data = { ...current.entries[uid], content: `edited ${step}`, order: step };
                     const entry = json({ ...data, uid: current.entries[uid].uid });
                     current.entries[uid] = entry;
-                    want = { entry };
+                    want = { entry, unreachedLoops: [] };
                     got = json(await books.editEntry(name, uid, data));
                 } else if (op === 2 && uid !== undefined) {
                     const target = model[name === 'A' ? 'B' : 'A'];
@@ -258,7 +258,7 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
                     moved.uid = k;
                     const indexes = Object.values(target.entries).flatMap((/** @type {any} */ e) => (e.displayIndex != null ? [Number(e.displayIndex)] : []));
                     moved.displayIndex = Math.max(-1, ...indexes) + 1;
-                    want = { entry: json(moved) };
+                    want = { entry: json(moved), unreachedLoops: [] };
                     target.entries[k] = json(moved);
                     if (deleteOriginal) delete current.entries[uid];
                     got = await books.transplant({ source: name, target: name === 'A' ? 'B' : 'A', uid, deleteOriginal });
@@ -444,7 +444,7 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
             await books.write('Big', { entries });
             const read = /** @type {any} */ (await books.read('Big'));
             expect(Object.keys(read.entries).length).toBe(12_000);
-            expect(await books.editEntry('Big', 6000, { ...entries[6000], content: 'changed' })).toEqual({ entry: { ...entries[6000], content: 'changed' } });
+            expect(await books.editEntry('Big', 6000, { ...entries[6000], content: 'changed' })).toEqual({ entry: { ...entries[6000], content: 'changed' }, unreachedLoops: [] });
             expect((await books.write('Big', { entries: { ...entries, 6000: { ...entries[6000], content: 'changed' } } })).records).toBe(0);
         }, 300_000);
 

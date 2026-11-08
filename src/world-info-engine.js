@@ -3,6 +3,7 @@ import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '.
 import { LINKS, storedLinks } from './character-links.js';
 import { TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
+import { LOOP_CHECK_VISITS_PER_WRITE } from '@st/worldbuilding/protocol';
 
 const ENTRY_KEYS = Object.freeze([
     'uid', 'key', 'keysecondary', 'comment', 'content', 'constant', 'vectorized', 'selective', 'selectiveLogic',
@@ -43,6 +44,10 @@ const ENTRY_LIST_NAME = new Map([...ENTRY_LIST].map(([k, v]) => [v, k]));
 
 export const MAX_UID = 1_000_000;
 const DISPLAY_INDEX = /** @type {number} */ (ENTRY_CODE.get('displayIndex'));
+
+/**
+ * @typedef {{ entry: string, kind: string, entries: string[] }} UnreachedLoop
+ */
 
 /**
  * @typedef {object} Actor
@@ -561,7 +566,7 @@ export class WorldInfoEngine {
      * @param {string} name
      * @param {Record<string, unknown>} data
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ records: number } | 'card copy'>}
+     * @returns {Promise<{ records: number, unreachedLoops: UnreachedLoop[] } | 'card copy'>}
      */
     write(name, data, actor = null) {
         if (isCardBookCopy(data)) return Promise.resolve('card copy');
@@ -575,7 +580,7 @@ export class WorldInfoEngine {
             const records = await this.bookRecords(id, s, data, { world: true }, await this.stamper(actor, keyed));
             if (found === null) records.unshift({ kind: 'entityCreate', entity: id, type: TYPE.book, key, added: Date.now() });
             if (records.length > 0) await this.store.commit([...keyed, ...records]);
-            return { records: records.length };
+            return { records: records.length, unreachedLoops: await this.unreachedLoops(id, records) };
         });
     }
 
@@ -675,7 +680,7 @@ export class WorldInfoEngine {
      * @param {string} name
      * @param {Record<string, unknown>} data
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ book: bigint, renamed: boolean, moved: bigint[] } | 'missing' | 'taken' | 'card copy'>}
+     * @returns {Promise<{ book: bigint, renamed: boolean, moved: bigint[], unreachedLoops: UnreachedLoop[] } | 'missing' | 'taken' | 'card copy'>}
      */
     replace(existingName, name, data, actor = null) {
         if (isCardBookCopy(data)) return Promise.resolve('card copy');
@@ -698,7 +703,7 @@ export class WorldInfoEngine {
             const keyed = [];
             pushAll(records, await this.bookRecords(found.id, await this.stored(found.id, true), data, { world: true }, await this.stamper(actor, keyed)));
             if (records.length > 0) await this.store.commit([...keyed, ...records]);
-            return { book: found.id, renamed: from !== to, moved };
+            return { book: found.id, renamed: from !== to, moved, unreachedLoops: await this.unreachedLoops(found.id, records) };
         });
     }
 
@@ -792,7 +797,7 @@ export class WorldInfoEngine {
      * @param {{ uid: string | number, base_hash?: number | null, data?: object | null }[]} entryChanges
      * @param {{ key: string, base_hash?: number | null, value?: unknown }[]} fieldChanges
      * @param {Actor | null} [actor]
-     * @returns {Promise<null | 'card copy' | { ok: true, entries: Record<string, object>, deleted: string[], fields: Record<string, unknown>, conflicts: object[] }>}
+     * @returns {Promise<null | 'card copy' | { ok: true, entries: Record<string, object>, deleted: string[], fields: Record<string, unknown>, conflicts: object[], unreachedLoops: UnreachedLoop[] }>}
      */
     apply(name, entryChanges, fieldChanges, actor = null) {
         const key = bookKey(name);
@@ -888,7 +893,7 @@ export class WorldInfoEngine {
             const changes = () => records.some(r => /** @type {any} */ (r).kind !== 'keyMap');
             if (fieldChanges.length === 0 && deletedUids.length === 0) {
                 if (changes()) await this.store.commit(records);
-                return { ok: true, entries: stored, deleted, fields: storedFields, conflicts };
+                return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records) };
             }
             const s = { id: book, entity: bookEntity, entries: new Map(), original: null };
             const [o] = await this.lib.ids(TYPE.ownedBook, [`${book}:${SLOT.originalData}`]);
@@ -928,7 +933,7 @@ export class WorldInfoEngine {
                 }
             }
             if (changes()) await this.store.commit(records);
-            return { ok: true, entries: stored, deleted, fields: storedFields, conflicts };
+            return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records) };
         });
     }
 
@@ -960,7 +965,7 @@ export class WorldInfoEngine {
      * @param {string | number} uid
      * @param {object} data
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ entry: object } | 'missing' | 'no entry'>}
+     * @returns {Promise<{ entry: object, unreachedLoops: UnreachedLoop[] } | 'missing' | 'no entry'>}
      */
     editEntry(name, uid, data, actor = null) {
         const key = bookKey(name);
@@ -978,14 +983,14 @@ export class WorldInfoEngine {
             const index = /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
             if (!Object.is(index, e.entryIndex)) records.push({ kind: 'entryIndex', entry: e.id, book: found.id, ...(index === undefined ? {} : { index }) });
             if (records.length > 0) await this.store.commit([...keyed, ...records]);
-            return { entry };
+            return { entry, unreachedLoops: await this.unreachedLoops(found.id, records) };
         });
     }
 
     /**
      * @param {{ source: string, target: string, uid: string | number, deleteOriginal: boolean }} args
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ entry: object } | 'no source' | 'no target' | 'no entry' | 'full'>}
+     * @returns {Promise<{ entry: object, unreachedLoops: UnreachedLoop[] } | 'no source' | 'no target' | 'no entry' | 'full'>}
      */
     transplant({ source, target, uid, deleteOriginal }, actor = null) {
         return this.lane([bookKey(source), bookKey(target)], async () => {
@@ -1023,7 +1028,7 @@ export class WorldInfoEngine {
                 records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
             }
             await this.store.commit(records);
-            return { entry };
+            return { entry, unreachedLoops: await this.unreachedLoops(from.id, records) };
         });
     }
 
@@ -1165,7 +1170,7 @@ export class WorldInfoEngine {
      * @param {string} name
      * @param {bigint} id
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ uid: string, entry: object } | 'missing' | 'no entry' | 'full'>}
+     * @returns {Promise<{ uid: string, entry: object, unreachedLoops: UnreachedLoop[] } | 'missing' | 'no entry' | 'full'>}
      */
     restore(name, id, actor = null) {
         return this.lane([bookKey(name)], async () => {
@@ -1199,7 +1204,7 @@ export class WorldInfoEngine {
             );
             await this.store.commit(records);
             const [e] = await this.lib.entities([id]);
-            return { uid, entry: entryObject(/** @type {import('./entity-values.js').StoredEntity} */ (e), false) };
+            return { uid, entry: entryObject(/** @type {import('./entity-values.js').StoredEntity} */ (e), false), unreachedLoops: await this.unreachedLoops(found.id, records, [id]) };
         });
     }
 
@@ -1234,6 +1239,22 @@ export class WorldInfoEngine {
             await this.store.commit(records);
             return 'ok';
         });
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {object[]} records
+     * @param {bigint[]} [alsoChanged]
+     * @param {number} [limit]
+     * @returns {Promise<UnreachedLoop[]>}
+     */
+    async unreachedLoops(book, records, alsoChanged = [], limit = LOOP_CHECK_VISITS_PER_WRITE) {
+        const changed = new Set(alsoChanged);
+        for (const record of /** @type {any[]} */ (records)) {
+            if (record.field === RELATIONS_FIELD && typeof record.entity === 'bigint') changed.add(record.entity);
+        }
+        if (changed.size === 0) return [];
+        return this.store.worldRead('worldbuildingUnreachedAmong', { book, entries: [...changed], limit });
     }
 
     /**
@@ -1306,10 +1327,24 @@ export class WorldInfoEngine {
 
     /**
      * @param {bigint} book
+     * @param {number} kind
+     * @returns {Promise<'ok' | 'missing' | 'no kind' | 'in use'>}
+     */
+    deleteRelationKind(book, kind) {
+        return this.inWorld(book, async () => {
+            if (!(await this.relationKinds(book)).some(existing => existing.id === kind)) return 'no kind';
+            if (await this.store.worldRead('worldbuildingRelationKindInUse', { book, kind })) return 'in use';
+            await this.store.commit([{ kind: 'valueDelete', entity: book, field: relationKindField(kind) }]);
+            return 'ok';
+        });
+    }
+
+    /**
+     * @param {bigint} book
      * @param {{ change: 'add' | 'move' | 'remove' | 'setWeak', entry: bigint, kind: number, target: bigint, newTarget?: bigint, after?: bigint | null, before?: bigint | null, weak?: boolean }} edit
      * @param {number} loopCheckLimit
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ refused: string } | { unreached: string[] | null } | 'missing'>}
+     * @returns {Promise<{ refused: string } | { unreachedLoops: UnreachedLoop[] } | 'missing'>}
      */
     changeRelation(book, edit, loopCheckLimit, actor = null) {
         return this.inWorld(book, async () => {
@@ -1325,9 +1360,7 @@ export class WorldInfoEngine {
                 pushAll(records, writes.json(edit.entry, RELATIONS_FIELD, edited.json, edited.before ?? undefined));
                 await this.store.commit(records);
             }
-            /** @type {string[] | null} */
-            const unreached = await this.store.worldRead('worldbuildingUnreached', { book, entry: edit.entry, kind: edit.kind, limit: loopCheckLimit });
-            return { unreached };
+            return { unreachedLoops: await this.unreachedLoops(book, [], [edit.entry], loopCheckLimit) };
         });
     }
 

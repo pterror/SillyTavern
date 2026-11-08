@@ -198,7 +198,7 @@ describe('overwriting a book', () => {
 
         const res = await postJson('/api/worldinfo/create', { name: 'overwritten', replaces: 'Overwritten', data: { entries: { 0: makeEntry(0, 'New') } } });
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, name: 'overwritten', characters_updated: ['keeper.png'], settings: {} });
+        expect(await res.json()).toEqual({ ok: true, name: 'overwritten', characters_updated: ['keeper.png'], unreachedLoops: [], settings: {} });
 
         const after = await lib.books.find('overwritten');
         expect(after?.id).toBe(before?.id);
@@ -214,7 +214,7 @@ describe('overwriting a book', () => {
         await saveBook({ name: 'Same', data: { entries: { 0: makeEntry(0, 'Old') } } });
         const before = await lib.books.find('Same');
         const res = await postJson('/api/worldinfo/create', { name: 'Same', replaces: 'Same', data: { entries: { 0: makeEntry(0, 'New') } } });
-        expect(await res.json()).toEqual({ ok: true, name: 'Same', characters_updated: [], settings: {} });
+        expect(await res.json()).toEqual({ ok: true, name: 'Same', characters_updated: [], unreachedLoops: [], settings: {} });
         expect((await lib.books.find('Same'))?.id).toBe(before?.id);
         expect(Object.values((await getBook('Same')).entries).map((/** @type {any} */ e) => e.content)).toEqual(['New']);
 
@@ -229,7 +229,7 @@ describe('worldinfo /import', () => {
         const book = { entries: { 0: makeEntry(0, 'Imported content') }, name: 'Cool Book', extensions: { foo: 'bar' } };
         const res = await postJson('/api/worldinfo/import', { importFilename: 'Cool Book.json', convertedData: JSON.stringify(book) });
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ name: 'Cool Book' });
+        expect(await res.json()).toEqual({ name: 'Cool Book', unreachedLoops: [] });
         expect(await getBook('Cool Book')).toEqual(book);
     });
 
@@ -354,7 +354,7 @@ describe('worldinfo /entry/create and /entry/edit', () => {
         await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
         const res = await postJson('/api/worldinfo/entry/edit', { name: 'Book', uid: 1, data: { ...makeEntry(7, 'Changed') } });
         const changed = { ...makeEntry(7, 'Changed'), uid: 1 };
-        expect(await res.json()).toEqual({ ok: true, entry: changed });
+        expect(await res.json()).toEqual({ ok: true, entry: changed, unreachedLoops: [] });
         expect(await getBook('Book')).toEqual({ entries: { 0: makeEntry(0, 'Alpha'), 1: changed } });
         expect((await postJson('/api/worldinfo/entry/edit', { name: 'Book', uid: 9, data: {} })).status).toBe(404);
         expect((await postJson('/api/worldinfo/entry/edit', { name: 'Ghost', uid: 0, data: {} })).status).toBe(404);
@@ -365,7 +365,7 @@ describe('worldinfo /entry/create and /entry/edit', () => {
 describe('worldinfo /create', () => {
     test('creates a brand-new, empty book with the given name when it is free', async () => {
         const res = await postJson('/api/worldinfo/create', { name: 'Fresh Book' });
-        expect(await res.json()).toEqual({ ok: true, name: 'Fresh Book' });
+        expect(await res.json()).toEqual({ ok: true, name: 'Fresh Book', unreachedLoops: [] });
         expect((await getBook('Fresh Book')).entries).toEqual({});
     });
 
@@ -479,7 +479,7 @@ describe('lorebook actions', () => {
 
         const before = await bookVersion('Taken');
         const same = await (await postJson('/api/worldinfo/entries/apply', { name: 'Taken', entries: [{ uid: 0, base_hash: jsonHash(makeEntry(0, 'zero')), data: makeEntry(0, 'zero') }] })).json();
-        expect(same).toEqual({ ok: true, entries: {}, deleted: [], fields: {}, conflicts: [] });
+        expect(same).toEqual({ ok: true, entries: {}, deleted: [], fields: {}, conflicts: [], unreachedLoops: [] });
         expect(await bookVersion('Taken')).toBe(before);
     });
 

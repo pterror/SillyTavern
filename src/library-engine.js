@@ -481,7 +481,7 @@ export class LibraryEngine {
      * @param {boolean} [options.fav]
      * @param {{ from: string, pastChats: boolean, at?: number }} [options.renamed]
      * @param {bigint[]} [options.tags]
-     * @returns {Promise<{ id: bigint, records: number }>}
+     * @returns {Promise<{ id: bigint, records: number, unreachedLoops: import('./world-info-engine.js').UnreachedLoop[] }>}
      */
     writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, animatedHash, dateAdded = Date.now(), fav, renamed, tags = [] } = {}) {
         return this.serialized(TYPE.character, avatar, async () => {
@@ -550,7 +550,9 @@ export class LibraryEngine {
             };
             if (linkKey) await this.serialized(TYPE.book, linkKey, commit);
             else await commit();
-            return { id, records: records.length };
+            const [embeddedBook] = this.batches > 0 ? [null] : await this.ids(TYPE.ownedBook, [`${id}:${SLOT.characterBook}`]);
+            const unreachedLoops = embeddedBook === null ? [] : await this.books.unreachedLoops(embeddedBook, records);
+            return { id, records: records.length, unreachedLoops };
         });
     }
 

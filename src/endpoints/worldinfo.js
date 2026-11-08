@@ -153,6 +153,17 @@ function actorOf(request) {
  * @returns {Promise<string | null>}
  */
 export async function importWorldInfoFromRaw(directories, desiredName, fileContents, actor = null) {
+    return (await importWorldInfo(directories, desiredName, fileContents, actor))?.name ?? null;
+}
+
+/**
+ * @param {any} directories
+ * @param {string} desiredName
+ * @param {string} fileContents
+ * @param {import('../world-info-engine.js').Actor | null} [actor]
+ * @returns {Promise<{ name: string, unreachedLoops: import('../world-info-engine.js').UnreachedLoop[] } | null>}
+ */
+async function importWorldInfo(directories, desiredName, fileContents, actor = null) {
     const filename = `${path.parse(sanitize(desiredName)).name}.json`;
 
     const worldContent = JSON.parse(fileContents);
@@ -167,7 +178,7 @@ export async function importWorldInfoFromRaw(directories, desiredName, fileConte
     }
 
     const written = await (await userStore(directories)).lib.books.write(worldName, worldContent, actor);
-    return written === 'card copy' ? null : worldName;
+    return written === 'card copy' ? null : { name: worldName, unreachedLoops: written.unreachedLoops };
 }
 
 /**
@@ -191,6 +202,7 @@ async function sendReplaced(request, response, existingName, name, data) {
         ok: true,
         name: bookKey(name),
         characters_updated: keys.filter(Boolean).map((/** @type {any} */ k) => k.key),
+        unreachedLoops: replaced.unreachedLoops,
         ...settingsAnswer(request, settings),
     });
 }
@@ -223,9 +235,9 @@ router.post('/import', storeRoute('importing a World Info book', async (request,
     }
 
     try {
-        const worldName = await importWorldInfoFromRaw(request.user.directories, filename, fileContents, actorOf(request));
-        if (worldName === null) return response.status(400).send(CARD_COPY);
-        return response.send({ name: worldName });
+        const imported = await importWorldInfo(request.user.directories, filename, fileContents, actorOf(request));
+        if (imported === null) return response.status(400).send(CARD_COPY);
+        return response.send(imported);
     } catch (err) {
         return response.status(400).send(err instanceof Error ? err.message : 'Is not a valid world info file');
     }
@@ -267,11 +279,12 @@ router.post('/create', storeRoute('creating a World Info book', async (request, 
         }
     }
 
-    if (await lib.books.write(finalName, data ?? { entries: {} }, actorOf(request)) === 'card copy') {
+    const written = await lib.books.write(finalName, data ?? { entries: {} }, actorOf(request));
+    if (written === 'card copy') {
         return response.status(400).send({ error: CARD_COPY });
     }
 
-    return response.send({ ok: true, name: finalName });
+    return response.send({ ok: true, name: finalName, unreachedLoops: written.unreachedLoops });
 }));
 
 const isBookField = (/** @type {unknown} */ key) => typeof key === 'string' && key !== '' && key !== 'entries' && key !== 'format';
@@ -327,10 +340,11 @@ router.post('/duplicate', storeRoute('duplicating a World Info book', async (req
     if (await lib.books.exists(newName)) {
         return response.status(409).send({ error: `World Info file '${newName}' already exists` });
     }
-    if (await lib.books.write(newName, book, actorOf(request)) === 'card copy') {
+    const written = await lib.books.write(newName, book, actorOf(request));
+    if (written === 'card copy') {
         return response.status(400).send({ error: CARD_COPY });
     }
-    return response.send({ ok: true, name: newName });
+    return response.send({ ok: true, name: newName, unreachedLoops: written.unreachedLoops });
 }));
 
 router.post('/rename', storeRoute('renaming a World Info book', async (request, response) => {
@@ -393,7 +407,7 @@ router.post('/entry/transplant', storeRoute('moving a World Info entry', async (
     if (result === 'full') {
         return response.status(500).send({ error: `Could not allocate a free uid in target lorebook '${target_name}'` });
     }
-    return response.send({ ok: true, entry: result.entry });
+    return response.send({ ok: true, entry: result.entry, unreachedLoops: result.unreachedLoops });
 }));
 
 router.post('/entry/create', storeRoute('creating a World Info entry', async (request, response) => {
@@ -438,5 +452,5 @@ router.post('/entry/edit', storeRoute('saving a World Info entry', async (reques
     if (result === 'no entry') {
         return response.status(404).send({ error: `Entry uid '${String(uid)}' not found in lorebook '${name}'` });
     }
-    return response.send({ ok: true, entry: result.entry, ...await entryCounts(request, { [String(result.entry?.uid ?? uid)]: result.entry }) });
+    return response.send({ ok: true, entry: result.entry, unreachedLoops: result.unreachedLoops, ...await entryCounts(request, { [String(result.entry?.uid ?? uid)]: result.entry }) });
 }));

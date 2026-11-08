@@ -576,6 +576,9 @@ const worldbuildingPorts = {
     async renameRelationKind({ user }, book, kind, name) {
         return (await libOf(user)).books.renameRelationKind(BigInt(book), Number(kind), name);
     },
+    async deleteRelationKind({ user }, book, kind) {
+        return (await libOf(user)).books.deleteRelationKind(BigInt(book), Number(kind));
+    },
     async changeRelation({ user, session }, book, change, loopCheckLimit) {
         const lib = await libOf(user);
         const edit = {

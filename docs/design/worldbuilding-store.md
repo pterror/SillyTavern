@@ -250,9 +250,9 @@ An occurrence's key is the path of entity ids from its top-level entry (`12/45/7
 `12/45/+`. So:
 
 - **KeysAt** is the range; **Locate** of a top-level key is its rank in the held range, else a step by 0;
-- **the tree per region** is each entry's `children`;
+- **the tree per region** is each entry's `region`;
 - **Step** within what's held is the held entries in pre-order; past it, `stepOverview`;
-- **parent** is the key without its last part; **first child** is the first of the held children, else `stepOverview`;
+- **parent** is the key without its last part; **first child** is the first of the held region's cells, else `stepOverview`;
 - **inside region** `k` is "starts with `k/`".
 
 ## Existing stores

@@ -1,6 +1,15 @@
 import * as v from 'valibot';
 import { expect, test } from 'vite-plus/test';
-import { actions, cardsPerTopLevelEntry, LAST_CHANGE_VIEW, OVERVIEW_VIEW, RELATION_KINDS_VIEW } from './protocol.ts';
+import {
+    actions,
+    cardsPerTopLevelEntry,
+    LAST_CHANGE_VIEW,
+    LOOP_CHECK_VISITS_PER_WRITE,
+    MAX_CARDS_PER_READ,
+    OVERVIEW_VIEW,
+    READ_REFUSAL,
+    RELATION_KINDS_VIEW,
+} from './protocol.ts';
 import type { EntryCell, LastChangeView, OverviewLayout, OverviewView, RelationKindsView } from './protocol.ts';
 import { rangeAround, worldbuildingArea } from './server.ts';
 import type { Grouping, OverviewStep, Ports, RelationChange } from './server.ts';
@@ -30,7 +39,7 @@ function world(count: number) {
     const asked: {
         overview: unknown[];
         step: (Grouping & OverviewStep)[];
-        changes: { change: RelationChange; loopCheckLimit: number; session: string }[];
+        changes: { book: string; change: RelationChange; loopCheckLimit: number; session: string }[];
     } = { overview: [], step: [], changes: [] };
     const kinds = [{ id: '1', name: 'in' }];
     const ports: Ports = {
@@ -69,15 +78,24 @@ function world(count: number) {
             return String(kinds.length);
         },
         renameRelationKind: async (_w, _b, kind, name) => {
-            const k = kinds.find((x) => x.id === kind);
-            if (!k) return 'no kind';
-            k.name = name;
+            const found = kinds.find((existing) => existing.id === kind);
+            if (!found) return 'no kind';
+            found.name = name;
             return 'ok';
         },
-        changeRelation: async ({ session }, _b, change, loopCheckLimit) => {
-            asked.changes.push({ change, loopCheckLimit, session });
+        deleteRelationKind: async (_w, _b, kind) => {
+            if (kind === '1') return 'in use';
+            const at = kinds.findIndex((existing) => existing.id === kind);
+            if (at === -1) return 'no kind';
+            kinds.splice(at, 1);
+            return 'ok';
+        },
+        changeRelation: async ({ session }, book, change, loopCheckLimit) => {
+            asked.changes.push({ book, change, loopCheckLimit, session });
             if (change.target === '999') return { refused: "The target isn't an entry of this world." };
-            return { unreached: change.entry === '7' ? ['7', '8'] : null };
+            return {
+                unreachedLoops: change.entry === '7' ? [{ entry: '7', kind: change.kind, entries: ['7', '8'] }] : [],
+            };
         },
     };
     const area = worldbuildingArea(ports);
@@ -162,43 +180,67 @@ test("a world the store can't read shows nothing", async () => {
     expect(await w.view<RelationKindsView>(RELATION_KINDS_VIEW)).toEqual({ book: null, kinds: [] });
 });
 
-test('making a kind says which one it made; renaming one answers the kinds and the overview again', async () => {
+test('kind actions name their world: making one says which it made, renaming answers the kinds and the overview, an unused one is deleted', async () => {
     const w = world(3);
-    expect(await w.act('worldbuilding.createRelationKind', { name: 'In' })).toEqual({ refused: 'No world is shown.' });
-    await w.act('worldbuilding.openOverview', open);
-    expect(await w.act('worldbuilding.createRelationKind', { name: 'In' })).toEqual({
+    expect(await w.act('worldbuilding.createRelationKind', { book: '2', name: 'In' })).toEqual({
+        refused: 'That world no longer exists.',
+    });
+    expect(await w.act('worldbuilding.showRelationKinds', { book: '1' })).toEqual({
+        changed: [],
+        opensViews: [RELATION_KINDS_VIEW, LAST_CHANGE_VIEW],
+    });
+    expect(await w.act('worldbuilding.createRelationKind', { book: '1', name: 'In' })).toEqual({
         changed: [RELATION_KINDS_VIEW, LAST_CHANGE_VIEW],
     });
-    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({ createdKind: '2', unreachedLoop: null });
+    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
+        createdKind: { book: '1', kind: '2' },
+        changedRelation: null,
+        unreachedLoops: [],
+    });
     expect((await w.view<RelationKindsView>(RELATION_KINDS_VIEW)).kinds).toEqual([
         { id: '1', name: 'in' },
         { id: '2', name: 'In' },
     ]);
-    expect(await w.act('worldbuilding.renameRelationKind', { kind: '1', name: 'inside' })).toEqual({
+    expect(await w.act('worldbuilding.renameRelationKind', { book: '1', kind: '1', name: 'inside' })).toEqual({
         changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW],
     });
-    expect(await w.act('worldbuilding.renameRelationKind', { kind: '9', name: 'x' })).toMatchObject({
+    expect(await w.act('worldbuilding.renameRelationKind', { book: '1', kind: '9', name: 'x' })).toMatchObject({
         refused: 'This world has no such relation kind.',
+    });
+    expect(await w.act('worldbuilding.deleteRelationKind', { book: '1', kind: '1' })).toEqual({
+        refused: 'Relations of this kind still exist.',
+    });
+    expect(await w.act('worldbuilding.deleteRelationKind', { book: '1', kind: '2' })).toEqual({
+        changed: [RELATION_KINDS_VIEW],
     });
 });
 
-test('a relation change passes the session and the loop check limit, and its answer names an unreached loop', async () => {
+test('a relation change names its world, passes the session and the loop check limit, and its answer names unreached loops', async () => {
     const w = world(3);
-    await w.act('worldbuilding.openOverview', open);
-    const add = { entry: '7', kind: '1', target: '8', after: null, before: null, weak: false, loopCheckLimit: 500 };
+    const add = {
+        book: '1',
+        entry: '7',
+        kind: '1',
+        target: '8',
+        after: null,
+        before: null,
+        weak: false,
+        loopCheckLimit: 500,
+    };
     expect(await w.act('worldbuilding.addRelation', add)).toEqual({ changed: [OVERVIEW_VIEW, LAST_CHANGE_VIEW] });
     expect(w.asked.changes[0]).toEqual({
+        book: '1',
         change: { change: 'add', entry: '7', kind: '1', target: '8', after: null, before: null, weak: false },
         loopCheckLimit: 500,
         session: 's',
     });
-    expect((await w.view<LastChangeView>(LAST_CHANGE_VIEW)).unreachedLoop).toEqual({
-        entry: '7',
-        kind: '1',
-        target: '8',
-        entries: ['7', '8'],
+    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
+        createdKind: null,
+        changedRelation: { book: '1', entry: '7', kind: '1', target: '8' },
+        unreachedLoops: [{ entry: '7', kind: '1', entries: ['7', '8'] }],
     });
     await w.act('worldbuilding.setRelationWeak', {
+        book: '1',
         entry: '7',
         kind: '1',
         target: '8',
@@ -206,6 +248,7 @@ test('a relation change passes the session and the loop check limit, and its ans
         loopCheckLimit: 500,
     });
     await w.act('worldbuilding.moveRelation', {
+        book: '1',
         entry: '3',
         kind: '1',
         target: '8',
@@ -215,16 +258,36 @@ test('a relation change passes the session and the loop check limit, and its ans
         loopCheckLimit: 10,
     });
     expect(w.asked.changes.map((c) => c.change.change)).toEqual(['add', 'setWeak', 'move']);
-    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({ createdKind: null, unreachedLoop: null });
+    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
+        createdKind: null,
+        changedRelation: { book: '1', entry: '3', kind: '1', target: '9' },
+        unreachedLoops: [],
+    });
     expect(
-        await w.act('worldbuilding.removeRelation', { entry: '3', kind: '1', target: '999', loopCheckLimit: 10 }),
+        await w.act('worldbuilding.removeRelation', {
+            book: '1',
+            entry: '3',
+            kind: '1',
+            target: '999',
+            loopCheckLimit: 10,
+        }),
     ).toEqual({ refused: "The target isn't an entry of this world." });
 });
 
-test('the schemas bound a read by its range and the cards its layout draws, and take kinds by id', () => {
+test('showing a range or stepping that would draw more than one read may is refused', async () => {
+    const w = world(100_000);
+    const wide = { regionsByNestingLevel: [{ columns: 10, rows: 10 }], cardTextCharacters: 100 };
+    await w.act('worldbuilding.openOverview', { ...open, layout: wide, endRank: 10 });
+    expect(await w.act('worldbuilding.showRange', { firstRank: 0, endRank: 40 })).toEqual({ refused: READ_REFUSAL });
+    expect(await w.act('worldbuilding.showRange', { firstRank: 0, endRank: 39 })).toEqual({ changed: [OVERVIEW_VIEW] });
+    expect(await w.act('worldbuilding.stepOverview', { from: '100', by: 39 })).toEqual({ refused: READ_REFUSAL });
+});
+
+test('the schemas bound a read by the cards it draws, and take worlds and kinds by id', () => {
     const ok = (type: keyof typeof actions, payload: unknown) => v.safeParse(actions[type], payload).success;
     expect(ok('worldbuilding.openOverview', open)).toBe(true);
-    expect(ok('worldbuilding.openOverview', { ...open, endRank: 201 })).toBe(false);
+    expect(ok('worldbuilding.openOverview', { ...open, endRank: Math.floor(MAX_CARDS_PER_READ / 7) })).toBe(true);
+    expect(ok('worldbuilding.openOverview', { ...open, endRank: Math.floor(MAX_CARDS_PER_READ / 7) + 1 })).toBe(false);
     expect(ok('worldbuilding.openOverview', { ...open, groupBy: 'in' })).toBe(false);
     expect(ok('worldbuilding.openOverview', { ...open, around: '12/34/+' })).toBe(true);
     expect(ok('worldbuilding.openOverview', { ...open, around: '12/+/3' })).toBe(false);
@@ -233,12 +296,14 @@ test('the schemas bound a read by its range and the cards its layout draws, and 
             { columns: 4, rows: 2 },
             { columns: 4, rows: 2 },
         ],
-        cardTextCharacters: 100,
+        cardTextCharacters: 100_000,
     };
     expect(cardsPerTopLevelEntry(deep.regionsByNestingLevel)).toBe(1 + 8 + 64);
     expect(ok('worldbuilding.openOverview', { ...open, layout: deep, endRank: 54 })).toBe(true);
     expect(ok('worldbuilding.openOverview', { ...open, layout: deep, endRank: 55 })).toBe(false);
-    expect(ok('worldbuilding.openOverview', { ...open, layout: { ...LAYOUT, cardTextCharacters: 2001 } })).toBe(false);
+    const huge = { regionsByNestingLevel: Array(30).fill({ columns: 1000, rows: 1000 }), cardTextCharacters: 0 };
+    expect(ok('worldbuilding.openOverview', { ...open, layout: huge, endRank: 0 })).toBe(true);
+    expect(ok('worldbuilding.openOverview', { ...open, layout: huge, endRank: 1 })).toBe(false);
     expect(
         ok('worldbuilding.openOverview', {
             ...open,
@@ -250,11 +315,24 @@ test('the schemas bound a read by its range and the cards its layout draws, and 
     expect(ok('worldbuilding.stepOverview', { from: null, to: 'parent' })).toBe(false);
     expect(ok('worldbuilding.stepOverview', { from: '1', to: 'sibling' })).toBe(false);
     expect(ok('worldbuilding.stepOverview', { from: '1', by: 0.5 })).toBe(false);
-    expect(ok('worldbuilding.createRelationKind', { name: '  ' })).toBe(false);
-    const add = { entry: '7', kind: '1', target: '8', after: null, before: null, weak: false, loopCheckLimit: 500 };
+    expect(ok('worldbuilding.createRelationKind', { book: '1', name: '  ' })).toBe(false);
+    expect(ok('worldbuilding.createRelationKind', { name: 'in' })).toBe(false);
+    const add = {
+        book: '1',
+        entry: '7',
+        kind: '1',
+        target: '8',
+        after: null,
+        before: null,
+        weak: false,
+        loopCheckLimit: 500,
+    };
     expect(ok('worldbuilding.addRelation', add)).toBe(true);
     expect(ok('worldbuilding.addRelation', { ...add, kind: 'in' })).toBe(false);
     expect(ok('worldbuilding.addRelation', { ...add, loopCheckLimit: 0 })).toBe(false);
+    expect(ok('worldbuilding.addRelation', { ...add, loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE + 1 })).toBe(false);
+    const { book: _, ...withoutWorld } = add;
+    expect(ok('worldbuilding.addRelation', withoutWorld)).toBe(false);
 });
 
 test('a range follows a rank by keeping its width', () => {

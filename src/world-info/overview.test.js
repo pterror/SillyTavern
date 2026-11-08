@@ -78,14 +78,14 @@ test('relation actions pick a kind by id, place the entry, find a loop nothing a
     const ids = await idsOf(book);
     const [x, y, z] = [1, 2, 3].map(uid => ids.get(uid));
     const add = (entry, target, weak = false) => lib.books.changeRelation(book, { change: 'add', entry, kind, target, after: null, before: null, weak }, 100);
-    assert.deepEqual(await add(x, y), { unreached: null });
-    assert.deepEqual(await add(z, y), { unreached: null });
+    assert.deepEqual(await add(x, y), { unreachedLoops: [] });
+    assert.deepEqual(await add(z, y), { unreachedLoops: [] });
     const loop = await add(y, x);
-    assert.ok(typeof loop === 'object' && 'unreached' in loop && loop.unreached);
-    assert.deepEqual(new Set(loop.unreached), new Set([String(x), String(y)]));
+    assert.ok(typeof loop === 'object' && 'unreachedLoops' in loop);
+    assert.deepEqual(loop.unreachedLoops.map(found => [found.entry, found.kind, new Set(found.entries)]), [[String(y), '1', new Set([String(x), String(y)])]]);
     assert.deepEqual(await add(y, x), { refused: 'The entry already has that relation.' });
     assert.deepEqual(await lib.books.changeRelation(book, { change: 'add', entry: x, kind: 5, target: z, after: null, before: null, weak: false }, 100), { refused: 'This world has no such relation kind.' });
-    assert.deepEqual(await lib.books.changeRelation(book, { change: 'setWeak', entry: y, kind, target: x, weak: true }, 100), { unreached: null });
+    assert.deepEqual(await lib.books.changeRelation(book, { change: 'setWeak', entry: y, kind, target: x, weak: true }, 100), { unreachedLoops: [] });
     const view = await overview(book, kind);
     assert.deepEqual(view.entries.map(e => e.occurrence), [String(y)]);
     const keys = [];
@@ -94,6 +94,32 @@ test('relation actions pick a kind by id, place the entry, find a loop nothing a
     const read = await lib.books.read('Loops');
     assert.deepEqual(read.relationKinds, [{ id: 1, name: 'in' }, { id: 2, name: 'inside' }]);
     assert.deepEqual(read.entries[2].extensions.relations.map(r => [r.kind, r.target, r.weak ?? false]), [[1, 1, true]]);
+    assert.equal(await lib.books.deleteRelationKind(book, kind), 'in use');
+    assert.equal(await lib.books.deleteRelationKind(book, 2), 'ok');
+    assert.equal(await lib.books.deleteRelationKind(book, 2), 'no kind');
+    assert.deepEqual((await lib.books.relationKinds(book)).map(k => k.id), [1]);
+});
+
+test('a write that leaves entries held only by a loop says so in its own answer: an import, and a delete through apply', async () => {
+    const loopOnly = [entry(1, 0, [{ kind: IN, target: 2, position: 'a' }]), entry(2, 1, [{ kind: IN, target: 1, position: 'a' }])];
+    const imported = await lib.books.write('Imported loop', { relationKinds: KINDS, entries: Object.fromEntries(loopOnly.map(e => [e.uid, e])) });
+    assert.ok(typeof imported === 'object');
+    assert.equal(imported.unreachedLoops.length, 1);
+    assert.equal(imported.unreachedLoops[0].entries.length, 2);
+
+    const held = [
+        entry(1, 0, [{ kind: IN, target: 2, position: 'a' }, { kind: IN, target: 3, position: 'a' }]),
+        entry(2, 1, [{ kind: IN, target: 1, position: 'a' }]),
+        entry(3, 2),
+    ];
+    const written = await lib.books.write('Held loop', { relationKinds: KINDS, entries: Object.fromEntries(held.map(e => [e.uid, e])) });
+    assert.ok(typeof written === 'object');
+    assert.deepEqual(written.unreachedLoops, []);
+    const { jsonHash } = await import('../../public/scripts/hash-utils.js');
+    const current = (await lib.books.read('Held loop')).entries[3];
+    const deleted = await lib.books.apply('Held loop', [{ uid: 3, base_hash: jsonHash(current), data: null }], []);
+    assert.ok(deleted && typeof deleted === 'object');
+    assert.equal(deleted.unreachedLoops.length, 1, 'entry 1 lost its relation to 3 and only the loop holds it');
 });
 
 test('deleting an entry removes every relation pointing at it, and restoring one leaves out relations to what is gone since', async () => {

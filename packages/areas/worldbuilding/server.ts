@@ -1,4 +1,13 @@
-import { actions, LAST_CHANGE_VIEW, OVERVIEW_VIEW, RELATION_KINDS_VIEW } from './protocol.ts';
+import {
+    actions,
+    cardsPerTopLevelEntry,
+    LAST_CHANGE_VIEW,
+    MAX_CARDS_PER_READ,
+    OVERVIEW_VIEW,
+    READ_REFUSAL,
+    readFitsTheBudget,
+    RELATION_KINDS_VIEW,
+} from './protocol.ts';
 import type {
     LastChangeView,
     OverviewLayout,
@@ -6,6 +15,7 @@ import type {
     RelationKind,
     RelationKindsView,
     StepLanding,
+    UnreachedLoop,
 } from './protocol.ts';
 import { defineArea } from '@st/server-ui';
 import type { ActionContext, ActionResult, User, ViewContext } from '@st/server-ui';
@@ -30,7 +40,7 @@ export type RelationChange = { entry: string; kind: string; target: string } & (
     | { change: 'setWeak'; weak: boolean }
 );
 
-export type RelationChangeAnswer = { refused: string } | { unreached: string[] | null } | 'missing';
+export type RelationChangeAnswer = { refused: string } | { unreachedLoops: UnreachedLoop[] } | 'missing';
 
 export type Ports = {
     readOverview(user: User, query: ShownOverview): Promise<Omit<OverviewView, 'book' | 'groupBy'> | null>;
@@ -38,6 +48,7 @@ export type Ports = {
     readRelationKinds(user: User, book: string): Promise<RelationKind[] | null>;
     createRelationKind(who: Who, book: string, name: string): Promise<string | null>;
     renameRelationKind(who: Who, book: string, kind: string, name: string): Promise<'ok' | 'missing' | 'no kind'>;
+    deleteRelationKind(who: Who, book: string, kind: string): Promise<'ok' | 'missing' | 'no kind' | 'in use'>;
     changeRelation(
         who: Who,
         book: string,
@@ -57,10 +68,11 @@ const NO_OVERVIEW: OverviewView = {
     stepLanding: null,
 };
 
-const NOTHING_CHANGED: LastChangeView = { createdKind: null, unreachedLoop: null };
+const NOTHING_CHANGED: LastChangeView = { createdKind: null, changedRelation: null, unreachedLoops: [] };
 
 const NO_WORLD_SHOWN = 'No world is shown.';
 const WORLD_GONE = 'That world no longer exists.';
+const NO_SUCH_KIND = 'This world has no such relation kind.';
 
 export function rangeAround(rank: number, firstRank: number, endRank: number): { firstRank: number; endRank: number } {
     if (rank >= firstRank && rank < endRank) return { firstRank, endRank };
@@ -68,12 +80,17 @@ export function rangeAround(rank: number, firstRank: number, endRank: number): {
     return { firstRank: start, endRank: start + (endRank - firstRank) };
 }
 
-type SessionState = { overview: ShownOverview; lastChange: LastChangeView };
+type SessionState = { overview: ShownOverview | null; kindsOfBook: string | null; lastChange: LastChangeView };
+
+const NO_SESSION_STATE: SessionState = { overview: null, kindsOfBook: null, lastChange: NOTHING_CHANGED };
 
 export function worldbuildingArea(ports: Ports) {
     const bySession = new Map<string, SessionState>();
 
-    const remember = (session: string, state: SessionState) => {
+    const stateOf = (session: string) => bySession.get(session) ?? NO_SESSION_STATE;
+
+    const remember = (session: string, change: Partial<SessionState>) => {
+        const state = { ...stateOf(session), ...change };
         bySession.delete(session);
         bySession.set(session, state);
         for (const old of bySession.keys()) {
@@ -82,30 +99,30 @@ export function worldbuildingArea(ports: Ports) {
         }
     };
 
-    const withWorld =
-        <P>(run: (context: ActionContext, state: SessionState, payload: P) => Promise<ActionResult>) =>
+    const withOverview =
+        <P>(run: (context: ActionContext, overview: ShownOverview, payload: P) => Promise<ActionResult>) =>
         async (context: ActionContext, payload: P): Promise<ActionResult> => {
-            const state = bySession.get(context.session);
-            return state ? run(context, state, payload) : { refused: NO_WORLD_SHOWN };
+            const overview = stateOf(context.session).overview;
+            return overview ? run(context, overview, payload) : { refused: NO_WORLD_SHOWN };
         };
 
     const who = (context: ActionContext): Who => ({ user: context.user, session: context.session });
 
     const relationChanged = async (
         context: ActionContext,
-        state: SessionState,
-        change: RelationChange,
-        loopCheckLimit: number,
+        { book, loopCheckLimit, ...change }: RelationChange & { book: string; loopCheckLimit: number },
     ): Promise<ActionResult> => {
-        const answer = await ports.changeRelation(who(context), state.overview.book, change, loopCheckLimit);
-        if (answer === 'missing') return { refused: WORLD_GONE, changed: [OVERVIEW_VIEW] };
+        const answer = await ports.changeRelation(who(context), book, change, loopCheckLimit);
+        if (answer === 'missing') return { refused: WORLD_GONE };
         if ('refused' in answer) return { refused: answer.refused };
         const target = change.change === 'move' ? change.newTarget : change.target;
-        const unreachedLoop =
-            answer.unreached === null
-                ? null
-                : { entry: change.entry, kind: change.kind, target, entries: answer.unreached };
-        remember(context.session, { ...state, lastChange: { createdKind: null, unreachedLoop } });
+        remember(context.session, {
+            lastChange: {
+                createdKind: null,
+                changedRelation: { book, entry: change.entry, kind: change.kind, target },
+                unreachedLoops: answer.unreachedLoops,
+            },
+        });
         return { changed: [OVERVIEW_VIEW, LAST_CHANGE_VIEW] };
     };
 
@@ -113,18 +130,18 @@ export function worldbuildingArea(ports: Ports) {
         schemas: actions,
         views: {
             [OVERVIEW_VIEW]: async (context: ViewContext): Promise<OverviewView> => {
-                const state = bySession.get(context.session);
-                if (!state) return NO_OVERVIEW;
-                const read = await ports.readOverview(context.user, state.overview);
-                return read ? { book: state.overview.book, groupBy: state.overview.groupBy, ...read } : NO_OVERVIEW;
+                const overview = stateOf(context.session).overview;
+                if (!overview) return NO_OVERVIEW;
+                const read = await ports.readOverview(context.user, overview);
+                return read ? { book: overview.book, groupBy: overview.groupBy, ...read } : NO_OVERVIEW;
             },
             [RELATION_KINDS_VIEW]: async (context: ViewContext): Promise<RelationKindsView> => {
-                const state = bySession.get(context.session);
-                const kinds = state ? await ports.readRelationKinds(context.user, state.overview.book) : null;
-                return kinds && state ? { book: state.overview.book, kinds } : { book: null, kinds: [] };
+                const book = stateOf(context.session).kindsOfBook;
+                const kinds = book === null ? null : await ports.readRelationKinds(context.user, book);
+                return kinds && book !== null ? { book, kinds } : { book: null, kinds: [] };
             },
             [LAST_CHANGE_VIEW]: async (context: ViewContext): Promise<LastChangeView> =>
-                bySession.get(context.session)?.lastChange ?? NOTHING_CHANGED,
+                stateOf(context.session).lastChange,
         },
         gone: (session) => {
             bySession.delete(session);
@@ -148,50 +165,62 @@ export function worldbuildingArea(ports: Ports) {
                         };
                     }
                 }
-                remember(context.session, { overview, lastChange: NOTHING_CHANGED });
+                remember(context.session, { overview, kindsOfBook: book, lastChange: NOTHING_CHANGED });
                 return { changed: [], opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW] };
             },
-            'worldbuilding.showRange': withWorld(async (context, state, { firstRank, endRank }) => {
-                remember(context.session, { ...state, overview: { ...state.overview, firstRank, endRank } });
+            'worldbuilding.showRange': withOverview(async (context, overview, { firstRank, endRank }) => {
+                if (!readFitsTheBudget(endRank - firstRank, overview.layout)) return { refused: READ_REFUSAL };
+                remember(context.session, { overview: { ...overview, firstRank, endRank } });
                 return { changed: [OVERVIEW_VIEW] };
             }),
-            'worldbuilding.stepOverview': withWorld(async (context, state, step) => {
-                const { book, groupBy, layout, firstRank, endRank } = state.overview;
+            'worldbuilding.stepOverview': withOverview(async (context, overview, step) => {
+                const crossed = 'by' in step ? Math.abs(step.by) + 1 : 1;
+                if (crossed * cardsPerTopLevelEntry(overview.layout.regionsByNestingLevel) > MAX_CARDS_PER_READ) {
+                    return { refused: READ_REFUSAL };
+                }
+                const { book, groupBy, layout, firstRank, endRank } = overview;
                 const landed = await ports.stepOverview(context.user, { book, groupBy, layout, ...step });
                 if (!landed) return { refused: 'That is no longer shown.', changed: [OVERVIEW_VIEW] };
-                const overview = {
-                    ...state.overview,
-                    ...rangeAround(landed.topLevelRank, firstRank, endRank),
-                    stepLandedOn: landed.occurrence,
-                };
-                remember(context.session, { ...state, overview });
+                remember(context.session, {
+                    overview: {
+                        ...overview,
+                        ...rangeAround(landed.topLevelRank, firstRank, endRank),
+                        stepLandedOn: landed.occurrence,
+                    },
+                });
                 return { changed: [OVERVIEW_VIEW] };
             }),
-            'worldbuilding.createRelationKind': withWorld(async (context, state, { name }) => {
-                const id = await ports.createRelationKind(who(context), state.overview.book, name);
-                if (id === null) return { refused: WORLD_GONE, changed: [OVERVIEW_VIEW] };
-                remember(context.session, { ...state, lastChange: { createdKind: id, unreachedLoop: null } });
+            'worldbuilding.showRelationKinds': async (context, { book }) => {
+                remember(context.session, { kindsOfBook: book });
+                return { changed: [], opensViews: [RELATION_KINDS_VIEW, LAST_CHANGE_VIEW] };
+            },
+            'worldbuilding.createRelationKind': async (context, { book, name }) => {
+                const kind = await ports.createRelationKind(who(context), book, name);
+                if (kind === null) return { refused: WORLD_GONE };
+                remember(context.session, { lastChange: { ...NOTHING_CHANGED, createdKind: { book, kind } } });
                 return { changed: [RELATION_KINDS_VIEW, LAST_CHANGE_VIEW] };
-            }),
-            'worldbuilding.renameRelationKind': withWorld(async (context, state, { kind, name }) => {
-                const done = await ports.renameRelationKind(who(context), state.overview.book, kind, name);
-                if (done === 'missing') return { refused: WORLD_GONE, changed: [OVERVIEW_VIEW] };
-                if (done === 'no kind')
-                    return { refused: 'This world has no such relation kind.', changed: [RELATION_KINDS_VIEW] };
+            },
+            'worldbuilding.renameRelationKind': async (context, { book, kind, name }) => {
+                const done = await ports.renameRelationKind(who(context), book, kind, name);
+                if (done === 'missing') return { refused: WORLD_GONE };
+                if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
                 return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW] };
-            }),
-            'worldbuilding.addRelation': withWorld((context, state, { loopCheckLimit, ...relation }) =>
-                relationChanged(context, state, { change: 'add', ...relation }, loopCheckLimit),
-            ),
-            'worldbuilding.moveRelation': withWorld((context, state, { loopCheckLimit, ...relation }) =>
-                relationChanged(context, state, { change: 'move', ...relation }, loopCheckLimit),
-            ),
-            'worldbuilding.removeRelation': withWorld((context, state, { loopCheckLimit, ...relation }) =>
-                relationChanged(context, state, { change: 'remove', ...relation }, loopCheckLimit),
-            ),
-            'worldbuilding.setRelationWeak': withWorld((context, state, { loopCheckLimit, ...relation }) =>
-                relationChanged(context, state, { change: 'setWeak', ...relation }, loopCheckLimit),
-            ),
+            },
+            'worldbuilding.deleteRelationKind': async (context, { book, kind }) => {
+                const done = await ports.deleteRelationKind(who(context), book, kind);
+                if (done === 'missing') return { refused: WORLD_GONE };
+                if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
+                if (done === 'in use') return { refused: 'Relations of this kind still exist.' };
+                return { changed: [RELATION_KINDS_VIEW] };
+            },
+            'worldbuilding.addRelation': (context, relation) =>
+                relationChanged(context, { change: 'add', ...relation }),
+            'worldbuilding.moveRelation': (context, relation) =>
+                relationChanged(context, { change: 'move', ...relation }),
+            'worldbuilding.removeRelation': (context, relation) =>
+                relationChanged(context, { change: 'remove', ...relation }),
+            'worldbuilding.setRelationWeak': (context, relation) =>
+                relationChanged(context, { change: 'setWeak', ...relation }),
         },
     });
 }
