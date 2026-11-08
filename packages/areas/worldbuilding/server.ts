@@ -2,6 +2,7 @@ import {
     actions,
     cardsPerTopLevelEntry,
     LAST_CHANGE_VIEW,
+    LOOPS_LEFT_BY_JOBS_VIEW,
     MAX_CARDS_PER_READ,
     OVERVIEW_VIEW,
     READ_REFUSAL,
@@ -10,6 +11,7 @@ import {
 } from './protocol.ts';
 import type {
     LastChangeView,
+    LoopsLeftByJobsView,
     OverviewLayout,
     OverviewView,
     RelationKind,
@@ -46,6 +48,7 @@ export type Ports = {
     readOverview(user: User, query: ShownOverview): Promise<Omit<OverviewView, 'book' | 'groupBy'> | null>;
     stepOverview(user: User, query: Grouping & { layout: OverviewLayout } & OverviewStep): Promise<StepLanding | null>;
     readRelationKinds(user: User, book: string): Promise<RelationKind[] | null>;
+    readLoopsLeftByJobs(user: User, book: string): Promise<UnreachedLoop[]>;
     createRelationKind(who: Who, book: string, name: string): Promise<string | null>;
     renameRelationKind(who: Who, book: string, kind: string, name: string): Promise<'ok' | 'missing' | 'no kind'>;
     deleteRelationKind(
@@ -153,6 +156,12 @@ export function worldbuildingArea(ports: Ports) {
             },
             [LAST_CHANGE_VIEW]: async (context: ViewContext): Promise<LastChangeView> =>
                 stateOf(context.session).lastChange,
+            [LOOPS_LEFT_BY_JOBS_VIEW]: async (context: ViewContext): Promise<LoopsLeftByJobsView> => {
+                const book = stateOf(context.session).kindsOfBook;
+                return book === null
+                    ? { book: null, unreachedLoops: [] }
+                    : { book, unreachedLoops: await ports.readLoopsLeftByJobs(context.user, book) };
+            },
         },
         gone: (session) => {
             bySession.delete(session);
@@ -177,7 +186,10 @@ export function worldbuildingArea(ports: Ports) {
                     }
                 }
                 remember(context.session, { overview, kindsOfBook: book, lastChange: NOTHING_CHANGED });
-                return { changed: [], opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW] };
+                return {
+                    changed: [],
+                    opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW],
+                };
             },
             'worldbuilding.showRange': withOverview(async (context, overview, { firstRank, endRank }) => {
                 if (!readFitsTheBudget(endRank - firstRank, overview.layout)) return { refused: READ_REFUSAL };

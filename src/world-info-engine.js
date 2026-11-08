@@ -54,7 +54,7 @@ const DISPLAY_INDEX = /** @type {number} */ (ENTRY_CODE.get('displayIndex'));
  * @typedef {{ rewrites: { entity: bigint, before: string | null, json: string }[], more: boolean }} RelationRewrites
  */
 
-export const RELATION_REWRITES_PER_CHANGE = 1000;
+export const RELATION_CHANGES_PER_STEP = 1000;
 
 /**
  * @typedef {object} Actor
@@ -178,40 +178,163 @@ function relationKindsOfFields(values) {
     return [...kinds.values()].sort((one, other) => one.id - other.id);
 }
 
+const TARGET_ENTRY = 'targetEntry';
+
 /**
- * @param {unknown} value
- * @returns {{ kind: number, target: string }[] | null}
+ * @param {unknown} key
+ * @returns {string | null}
  */
-function relationsOf(value) {
-    if (!Array.isArray(value)) return null;
-    const relations = [];
-    for (const relation of value) {
-        if (!isPlainObject(relation) || !isWholeId(relation.kind) || typeof relation.position !== 'string') return null;
-        if (relation.weak !== undefined && typeof relation.weak !== 'boolean') return null;
-        const target = relation.target;
-        if (typeof target === 'string' && target !== '') relations.push({ kind: relation.kind, target });
-        else if (typeof target === 'number' && Number.isSafeInteger(target) && target >= 0) relations.push({ kind: relation.kind, target: String(target) });
-        else return null;
+function fileTargetKey(key) {
+    if (typeof key === 'string' && key !== '') return key;
+    if (typeof key === 'number' && Number.isSafeInteger(key) && key >= 0) return String(key);
+    return null;
+}
+
+/**
+ * @param {string} key
+ * @returns {string | number}
+ */
+const keyForFile = key => (/^(0|[1-9]\d{0,15})$/.test(key) && Number.isSafeInteger(Number(key)) ? Number(key) : key);
+
+/**
+ * @param {Record<string, unknown>} relation
+ * @param {string} from
+ * @param {string} to
+ * @param {unknown} value
+ * @returns {Record<string, unknown>}
+ */
+function renamedField(relation, from, to, value) {
+    /** @type {Record<string, unknown>} */
+    const out = {};
+    for (const field of Object.keys(relation)) {
+        if (field === from) setOwn(out, to, value);
+        else setOwn(out, field, relation[field]);
     }
-    return relations;
+    return out;
 }
 
 /**
  * @param {unknown} entry
- * @param {(kind: number, target: string) => boolean} drop
+ * @returns {unknown[] | null}
+ */
+function relationsListOf(entry) {
+    if (!isPlainObject(entry)) return null;
+    const extensions = /** @type {any} */ (entry).extensions;
+    return isPlainObject(extensions) && Array.isArray(extensions.relations) ? extensions.relations : null;
+}
+
+/**
+ * @param {unknown} entry
+ * @param {unknown[]} relations
  * @returns {unknown}
  */
-function withoutRelations(entry, drop) {
-    if (!isPlainObject(entry)) return entry;
-    const extensions = /** @type {any} */ (entry).extensions;
-    const parsed = isPlainObject(extensions) ? relationsOf(extensions.relations) : null;
-    if (!parsed || !parsed.some(relation => drop(relation.kind, relation.target))) return entry;
-    const relations = extensions.relations.filter((/** @type {unknown} */ _, /** @type {number} */ index) => !drop(parsed[index].kind, parsed[index].target));
-    const entryFields = /** @type {object} */ (entry);
-    return { ...entryFields, extensions: { ...extensions, relations } };
+function withRelationsList(entry, relations) {
+    const entryFields = /** @type {Record<string, any>} */ (entry);
+    return { ...entryFields, extensions: { ...entryFields.extensions, relations } };
+}
+
+/**
+ * @param {unknown} entry
+ * @param {Map<string, string>} keyOfEntity
+ * @returns {unknown}
+ */
+function relationsForFile(entry, keyOfEntity) {
+    const relations = relationsListOf(entry);
+    if (!relations) return entry;
+    return withRelationsList(entry, relations.map(relation => {
+        if (!isPlainObject(relation)) return relation;
+        const fields = /** @type {Record<string, unknown>} */ (relation);
+        const target = fields[TARGET_ENTRY];
+        const key = typeof target === 'string' ? keyOfEntity.get(target) : undefined;
+        return key === undefined ? relation : renamedField(fields, TARGET_ENTRY, 'target', keyForFile(key));
+    }));
+}
+
+/**
+ * @param {unknown} entry
+ * @param {RelationTargets} targets
+ * @returns {unknown}
+ */
+function relationsForStore(entry, targets) {
+    const relations = relationsListOf(entry);
+    if (!relations) return entry;
+    /** @type {unknown[]} */
+    const kept = [];
+    for (const relation of relations) {
+        if (!isPlainObject(relation)) {
+            kept.push(relation);
+            continue;
+        }
+        const fields = /** @type {Record<string, unknown>} */ (relation);
+        const kind = fields.kind;
+        if (targets.kinds && typeof kind === 'number' && isWholeId(kind) && !targets.kinds.has(kind)) continue;
+        if ('target' in fields) {
+            const key = fileTargetKey(fields.target);
+            const entity = key === null ? undefined : targets.entityOfKey.get(key);
+            if (entity !== undefined) kept.push(renamedField(fields, 'target', TARGET_ENTRY, String(entity)));
+            continue;
+        }
+        const target = fields[TARGET_ENTRY];
+        if (typeof target === 'string' && !targets.entriesOfWorld.has(target)) continue;
+        kept.push(relation);
+    }
+    return withRelationsList(entry, kept);
+}
+
+/**
+ * @param {unknown} entry
+ * @returns {string[]}
+ */
+function fileTargetKeysOf(entry) {
+    return (relationsListOf(entry) ?? []).flatMap(relation => {
+        const fields = isPlainObject(relation) ? /** @type {Record<string, unknown>} */ (relation) : null;
+        const key = fields && 'target' in fields ? fileTargetKey(fields.target) : null;
+        return key === null ? [] : [key];
+    });
+}
+
+/**
+ * @param {unknown} entry
+ * @returns {string[]}
+ */
+function storeTargetsOf(entry) {
+    return (relationsListOf(entry) ?? []).flatMap(relation => (isPlainObject(relation) && typeof relation[TARGET_ENTRY] === 'string' ? [relation[TARGET_ENTRY]] : []));
+}
+
+/**
+ * @param {import('./entity-values.js').StoredEntity} stored
+ * @returns {string[]}
+ */
+function storedTargetsOf(stored) {
+    const field = stored.values.find(value => value.field === RELATIONS_FIELD);
+    if (!field || field.json === undefined) return [];
+    try {
+        const relations = JSON.parse(field.json);
+        return Array.isArray(relations) ? relations.flatMap(relation => (isPlainObject(relation) && typeof relation[TARGET_ENTRY] === 'string' ? [relation[TARGET_ENTRY]] : [])) : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * @typedef {{ entityOfKey: Map<string, bigint>, entriesOfWorld: Set<string>, kinds?: Set<number> }} RelationTargets
+ */
+
+/**
+ * @param {{ values: Map<number | string, { text?: string, json?: string }>, lists: Map<number, string[]> }} next
+ * @param {import('./entity-values.js').StoredEntity | null} stored
+ */
+function withMergeRecords(next, stored) {
+    for (const value of stored?.values ?? []) {
+        if (typeof value.field !== 'string' || !value.field.startsWith(RELATION_KIND_MERGE_FIELD) || value.text === undefined) continue;
+        const kind = Number(value.field.slice(RELATION_KIND_MERGE_FIELD.length));
+        if (!next.values.has(relationKindField(kind)) && !next.values.has(value.field)) next.values.set(value.field, { text: value.text });
+    }
+    return next;
 }
 
 const relationKindIds = (/** @type {Record<string, unknown>} */ book) => new Set((relationKindsOf(book[RELATION_KINDS]) ?? []).map(kind => kind.id));
+const keysOfEntities = (/** @type {Iterable<[string, { entity: import('./entity-values.js').StoredEntity }]>} */ entries) => new Map([...entries].map(([key, x]) => [String(x.entity.id), key]));
 
 function bookCanonical(/** @type {string[]} */ keys) {
     return [...keys.filter(k => k !== 'entries').sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ...(keys.includes('entries') ? ['entries'] : [])];
@@ -223,8 +346,10 @@ const put = (/** @type {unknown} */ v) => (typeof v === 'string' ? { text: v } :
  * @param {unknown} entry
  * @param {string} key
  * @param {boolean} owned
+ * @param {RelationTargets} [targets]
  */
-export function entryValues(entry, key, owned) {
+export function entryValues(entry, key, owned, targets) {
+    if (targets) entry = relationsForStore(entry, targets);
     /** @type {Map<number | string, { text?: string, json?: string }>} */
     const values = new Map();
     /** @type {Map<number, string[]>} */
@@ -266,8 +391,18 @@ export function entryValues(entry, key, owned) {
 /**
  * @param {import('./entity-values.js').StoredEntity} e
  * @param {boolean} owned
+ * @param {Map<string, string>} [keyOfEntity]
  */
-export function entryObject(e, owned) {
+export function entryObject(e, owned, keyOfEntity) {
+    const object = storedEntryObject(e, owned);
+    return keyOfEntity ? relationsForFile(object, keyOfEntity) : object;
+}
+
+/**
+ * @param {import('./entity-values.js').StoredEntity} e
+ * @param {boolean} owned
+ */
+function storedEntryObject(e, owned) {
     const key = e.key.slice(e.key.indexOf(':') + 1);
     /** @type {Map<string, unknown>} */
     const found = new Map();
@@ -510,15 +645,15 @@ export class WorldInfoEngine {
      * @returns {Promise<object[]>}
      */
     async bookRecords(id, s, book, { world = false, ownedKey } = {}, stamp) {
-        const records = valueRecords(id, s?.entity ?? null, bookValues(book, world));
+        const records = valueRecords(id, s?.entity ?? null, withMergeRecords(bookValues(book, world), s?.entity ?? null));
         if (!s?.entity && !world) records.push({ kind: 'entityCreate', entity: id, type: TYPE.ownedBook, key: ownedKey, added: Date.now() });
         const raw = book.entries;
         const stored = s?.entries ?? new Map();
         if (world) {
             const incoming = typeof raw === 'object' && raw !== null ? /** @type {Record<string, unknown>} */ (raw) : {};
-            pushAll(records, this.entryRecords(id, stored, Object.keys(incoming).filter(k => incoming[k] !== undefined).map(k => [k, incoming[k]]), false, stamp, relationKindIds(book)));
+            pushAll(records, await this.entryRecords(id, stored, Object.keys(incoming).filter(k => incoming[k] !== undefined).map(k => [k, incoming[k]]), false, stamp, relationKindIds(book)));
         } else {
-            pushAll(records, this.listEntryRecords(id, stored, /** @type {unknown[]} */ (raw), stamp, relationKindIds(book)));
+            pushAll(records, await this.listEntryRecords(id, stored, /** @type {unknown[]} */ (raw), stamp, relationKindIds(book)));
         }
         if (world) {
             const original = book.originalData;
@@ -541,18 +676,21 @@ export class WorldInfoEngine {
      * @param {() => import('./entity-values.js').Stamp} stamp
      * @param {Set<number>} kinds
      */
-    entryRecords(book, stored, incoming, owned, stamp, kinds) {
+    async entryRecords(book, stored, incoming, owned, stamp, kinds) {
         const records = [];
         const keys = new Set(incoming.map(([k]) => k));
-        incoming = incoming.map(([k, entry]) => [k, withoutRelations(entry, (kind, target) => !kinds.has(kind) || !keys.has(target))]);
+        /** @type {Map<string, bigint>} */
+        const entityOfKey = new Map(incoming.map(([k]) => [k, stored.get(k)?.entity.id ?? this.lib.nextId++]));
+        const named = [...new Set(incoming.flatMap(([, entry]) => storeTargetsOf(entry)))];
+        const targets = { entityOfKey, entriesOfWorld: await this.entriesOfWorld(book, named, new Set([...entityOfKey.values()].map(String))), kinds };
         for (const [k, x] of stored) {
             if (!keys.has(k)) records.push({ kind: 'histEntityDelete', entity: x.entity.id, ...stamp() });
         }
         const positions = placeEntries(incoming.map(([k]) => k), new Map([...stored].map(([k, x]) => [k, x.position])));
         for (const [k, entry] of incoming) {
             const had = stored.get(k);
-            const id = had ? had.entity.id : this.lib.nextId++;
-            pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, owned), historyWrites(stamp)));
+            const id = /** @type {bigint} */ (entityOfKey.get(k));
+            pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, owned, targets), historyWrites(stamp)));
             if (!had) records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
             const position = positions.get(k);
             if (position !== undefined) records.push({ kind: 'itemPlace', entity: book, list: 0, item: id, position });
@@ -571,7 +709,8 @@ export class WorldInfoEngine {
      */
     listEntryRecords(book, stored, incoming, stamp, kinds) {
         const before = [...stored.entries()].sort((a, b) => a[1].position - b[1].position);
-        const same = (/** @type {number} */ i, /** @type {number} */ j) => jsonHash(entryObject(before[i][1].entity, true)) === jsonHash(incoming[j]);
+        const keyOfEntity = keysOfEntities(stored);
+        const same = (/** @type {number} */ i, /** @type {number} */ j) => jsonHash(entryObject(before[i][1].entity, true, keyOfEntity)) === jsonHash(incoming[j]);
         let head = 0;
         while (head < before.length && head < incoming.length && same(head, head)) head++;
         let tail = 0;
@@ -870,13 +1009,12 @@ export class WorldInfoEngine {
             const conflicts = [];
             /** @type {Map<string, object>} */
             const current = new Map();
+            const keyOfEntity = await this.keysOfTargets(book, entities.flatMap(e => (e ? [e] : [])));
             entities.forEach((e, i) => {
-                if (e && !current.has(keys[i])) current.set(keys[i], entryObject(e, false));
+                if (e && !current.has(keys[i])) current.set(keys[i], entryObject(e, false, keyOfEntity));
             });
             const deletedUids = [];
             const gone = new Set();
-            /** @type {bigint[]} */
-            const jobsToStart = [];
             for (const [i, change] of entryChanges.entries()) {
                 const k = keys[i];
                 const cur = current.get(k);
@@ -904,29 +1042,22 @@ export class WorldInfoEngine {
                     deletedUids.push(change.uid);
                 }
             }
-            if (deleted.length > 0) {
-                for (const [key, entry] of writes) {
-                    const kept = /** @type {object} */ (withoutRelations(entry, (_, target) => gone.has(target)));
-                    writes.set(key, kept);
-                    stored[key] = kept;
-                }
-                /** @type {Set<bigint>} */
-                const skip = new Set();
-                keys.forEach((key, index) => {
-                    const stored = entities[index];
-                    if (stored && (gone.has(key) || writes.has(key))) skip.add(stored.id);
-                });
-                const removal = await this.rewritesRemovingRelationsTargeting(book, deleted, skip, stamp);
-                pushAll(records, removal.records);
-                if (removal.more) jobsToStart.push(book);
-            }
+            const deletedEntities = [...gone].flatMap(key => {
+                const index = keys.indexOf(key);
+                const e = index === -1 ? null : entities[index];
+                return e ? [e.id] : [];
+            });
+            const sourcesOfDeleted = deletedEntities.length === 0 ? [] : await this.store.worldRead('worldbuildingSourcesTargeting', { book, entities: deletedEntities, limit: RELATION_CHANGES_PER_STEP });
             if (writes.size > 0) {
                 const numbers = await this.store.worldRead('numbers', { book });
                 let last = numbers.lastPosition ?? 0;
+                /** @type {Map<string, bigint>} */
+                const entityOfWrite = new Map([...writes.keys()].map(k => [k, touched.get(k)?.entity.id ?? this.lib.nextId++]));
+                const targets = await this.relationTargets(book, [...writes.values()], entityOfWrite);
                 for (const [k, entry] of writes) {
                     const had = touched.get(k);
-                    const id = had ? had.entity.id : this.lib.nextId++;
-                    pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, false), historyWrites(stamp)));
+                    const id = /** @type {bigint} */ (entityOfWrite.get(k));
+                    pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, false, targets), historyWrites(stamp)));
                     if (!had) {
                         last += POSITION_GAP;
                         records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
@@ -937,11 +1068,13 @@ export class WorldInfoEngine {
                 }
             }
             const changes = () => records.some(r => /** @type {any} */ (r).kind !== 'keyMap');
-            const started = () => jobsToStart.forEach(id => this.jobs.start(id));
+            const started = () => {
+                if (deletedEntities.length > 0) this.jobs.start(book);
+            };
             if (fieldChanges.length === 0 && deletedUids.length === 0) {
                 if (changes()) await this.store.commit(records);
                 started();
-                return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records) };
+                return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records, sourcesOfDeleted) };
             }
             const s = { id: book, entity: bookEntity, entries: new Map(), original: null };
             const [o] = await this.lib.ids(TYPE.ownedBook, [`${book}:${SLOT.originalData}`]);
@@ -972,7 +1105,7 @@ export class WorldInfoEngine {
                 }
             }
             if (fieldsChanged) {
-                pushAll(records, valueRecords(book, bookEntity, bookValues(nextBook, true)));
+                pushAll(records, valueRecords(book, bookEntity, withMergeRecords(bookValues(nextBook, true), bookEntity)));
                 const ob = nextBook.originalData;
                 if (isEntryList(ob)) {
                     pushAll(records, (await this.bookRecords(s.original?.id ?? this.lib.nextId++, s.original, /** @type {Record<string, unknown>} */ (ob), { ownedKey: `${book}:${SLOT.originalData}` }, stamp)));
@@ -982,7 +1115,7 @@ export class WorldInfoEngine {
             }
             if (changes()) await this.store.commit(records);
             started();
-            return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records) };
+            return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records, sourcesOfDeleted) };
         });
     }
 
@@ -1026,9 +1159,10 @@ export class WorldInfoEngine {
             const [e] = id === null ? [null] : await this.lib.entities([id]);
             if (!e) return 'no entry';
             const entry = { ...data, uid: /** @type {any} */ (entryObject(e, false)).uid };
+            const targets = await this.relationTargets(found.id, [entry], new Map([[k, e.id]]));
             /** @type {object[]} */
             const keyed = [];
-            const records = valueRecords(e.id, e, entryValues(entry, k, false), historyWrites(await this.stamper(actor, keyed)));
+            const records = valueRecords(e.id, e, entryValues(entry, k, false, targets), historyWrites(await this.stamper(actor, keyed)));
             const index = /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
             if (!Object.is(index, e.entryIndex)) records.push({ kind: 'entryIndex', entry: e.id, book: found.id, ...(index === undefined ? {} : { index }) });
             if (records.length > 0) await this.store.commit([...keyed, ...records]);
@@ -1072,14 +1206,11 @@ export class WorldInfoEngine {
                 { kind: 'itemPlace', entity: to.id, list: 0, item: nid, position: (numbers.lastPosition ?? 0) + POSITION_GAP },
                 ...(entry.displayIndex === null ? [] : [{ kind: 'entryIndex', entry: nid, book: to.id, index: entry.displayIndex }]),
             );
-            if (deleteOriginal) {
-                const removal = await this.rewritesRemovingRelationsTargeting(from.id, [String(uid)], new Set([e.id]), stamp);
-                pushAll(records, removal.records);
-                records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
-            }
+            const sources = deleteOriginal ? await this.store.worldRead('worldbuildingSourcesTargeting', { book: from.id, entities: [e.id], limit: RELATION_CHANGES_PER_STEP }) : [];
+            if (deleteOriginal) records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
             await this.store.commit(records);
             if (deleteOriginal) this.jobs.start(from.id);
-            return { entry, unreachedLoops: await this.unreachedLoops(from.id, records) };
+            return { entry, unreachedLoops: await this.unreachedLoops(from.id, records, sources) };
         });
     }
 
@@ -1311,15 +1442,84 @@ export class WorldInfoEngine {
 
     /**
      * @param {bigint} book
-     * @param {string[]} keys
-     * @param {Set<bigint>} skip
-     * @param {() => import('./entity-values.js').Stamp} stamp
-     * @returns {Promise<{ records: object[], more: boolean }>}
+     * @returns {Promise<number>}
      */
-    async rewritesRemovingRelationsTargeting(book, keys, skip, stamp) {
-        /** @type {RelationRewrites} */
-        const chunk = await this.store.worldRead('worldbuildingRelationsWithout', { book, keys, limit: RELATION_REWRITES_PER_CHANGE });
-        return { records: await this.rewriteRecords(chunk.rewrites.filter(rewrite => !skip.has(rewrite.entity)), stamp), more: chunk.more };
+    async relationsByEntity(book) {
+        const stored = await this.storedEntries(book);
+        /** @type {Map<string, bigint>} */
+        const entityOfKey = new Map(stored.map(({ entity }) => [entity.key.slice(entity.key.indexOf(':') + 1), entity.id]));
+        const targets = { entityOfKey, entriesOfWorld: new Set([...entityOfKey.values()].map(String)) };
+        const stamp = await this.stamper(null, []);
+        const writes = historyWrites(stamp);
+        let rewritten = 0;
+        /** @type {object[]} */
+        let records = [];
+        for (const { entity } of stored) {
+            const field = entity.values.find(value => value.field === RELATIONS_FIELD);
+            if (!field || field.json === undefined) continue;
+            const relations = JSON.parse(field.json);
+            if (!Array.isArray(relations) || !relations.some(relation => isPlainObject(relation) && 'target' in relation)) continue;
+            const converted = relationsListOf(relationsForStore({ extensions: { relations } }, targets));
+            pushAll(records, writes.json(entity.id, RELATIONS_FIELD, JSON.stringify(converted), field.json));
+            rewritten++;
+            if (records.length >= RELATION_CHANGES_PER_STEP) {
+                await this.store.commit(records);
+                records = [];
+            }
+        }
+        if (records.length > 0) await this.store.commit(records);
+        return rewritten;
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {string[]} named
+     * @param {Set<string>} known
+     * @returns {Promise<Set<string>>}
+     */
+    async entriesOfWorld(book, named, known) {
+        const unknown = named.filter(entity => !known.has(entity) && /^\d+$/.test(entity));
+        const found = new Set(known);
+        if (unknown.length > 0) {
+            /** @type {bigint[]} */
+            const entries = await this.store.worldRead('worldbuildingEntriesOfWorld', { book, entities: unknown.map(BigInt) });
+            for (const entity of entries) found.add(String(entity));
+        }
+        return found;
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {unknown[]} entries
+     * @param {Map<string, bigint>} written
+     * @returns {Promise<RelationTargets>}
+     */
+    async relationTargets(book, entries, written) {
+        const entityOfKey = new Map(written);
+        const keys = [...new Set(entries.flatMap(fileTargetKeysOf))].filter(key => !entityOfKey.has(key));
+        const ids = keys.length > 0 ? await this.lib.ids(TYPE.entry, keys.map(key => `${book}:${key}`)) : [];
+        keys.forEach((key, index) => {
+            const id = ids[index];
+            if (id !== null && id !== undefined) entityOfKey.set(key, id);
+        });
+        const named = [...new Set(entries.flatMap(storeTargetsOf))];
+        return { entityOfKey, entriesOfWorld: await this.entriesOfWorld(book, named, new Set([...written.values()].map(String))) };
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {import('./entity-values.js').StoredEntity[]} entities
+     * @returns {Promise<Map<string, string>>}
+     */
+    async keysOfTargets(book, entities) {
+        const targets = [...new Set(entities.flatMap(storedTargetsOf))].filter(entity => /^\d+$/.test(entity));
+        /** @type {Map<string, string>} */
+        const keyOfEntity = new Map();
+        if (targets.length === 0) return keyOfEntity;
+        for (const stored of await this.lib.entities(targets.map(BigInt))) {
+            if (stored && stored.type === TYPE.entry && stored.key.startsWith(`${book}:`)) keyOfEntity.set(String(stored.id), stored.key.slice(stored.key.indexOf(':') + 1));
+        }
+        return keyOfEntity;
     }
 
     /**
@@ -1431,53 +1631,44 @@ export class WorldInfoEngine {
     }
 
     /**
-     * @param {bigint} book
-     * @returns {Promise<boolean>} whether there was anything to do
+     * @returns {Promise<{ book: bigint, changedSources: bigint[] } | null>}
      */
-    worldbuildingJobStep(book) {
-        return this.inWorld(book, async () => {
-            /** @type {{ deletions: { book: bigint, entity: bigint, key: string }[], restorations: { book: bigint, entity: bigint }[], merges: { book: bigint, kind: number, into: number }[] }} */
-            const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
-            const stamp = await this.stamper(null, []);
-            for (const deletion of pending.deletions.filter(job => job.book === book)) {
-                const removal = await this.rewritesRemovingRelationsTargeting(book, [deletion.key], new Set(), stamp);
-                if (removal.records.length > 0) {
-                    await this.store.commit(removal.records);
-                    return true;
-                }
-            }
-            for (const restoration of pending.restorations.filter(job => job.book === book)) {
+    async worldbuildingJobStep() {
+        /** @type {{ book: bigint, entry: bigint, changedSources: bigint[], more: boolean } | null} */
+        const step = await this.store.worldbuildingRelationStep(RELATION_CHANGES_PER_STEP);
+        if (step) return { book: step.book, changedSources: step.changedSources };
+        /** @type {{ merges: { book: bigint, kind: number, into: number }[], mergeRecordsDue: { book: bigint, kind: number }[] }} */
+        const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
+        for (const merge of pending.merges) {
+            const done = await this.inWorld(merge.book, async () => {
                 /** @type {RelationRewrites} */
-                const chunk = await this.store.worldRead('worldbuildingRelationsToRestore', { book, entity: restoration.entity, limit: RELATION_REWRITES_PER_CHANGE });
+                const chunk = await this.store.worldRead('worldbuildingKindMergeRewrites', { book: merge.book, kind: merge.kind, into: merge.into, limit: RELATION_CHANGES_PER_STEP });
                 if (chunk.rewrites.length > 0) {
-                    await this.store.commit(await this.rewriteRecords(chunk.rewrites, stamp));
-                    return true;
+                    await this.store.commit(await this.rewriteRecords(chunk.rewrites, await this.stamper(null, [])));
+                    return { book: merge.book, changedSources: chunk.rewrites.map(rewrite => rewrite.entity) };
                 }
-            }
-            for (const merge of pending.merges.filter(job => job.book === book)) {
-                /** @type {RelationRewrites} */
-                const chunk = await this.store.worldRead('worldbuildingKindMergeRewrites', { book, kind: merge.kind, into: merge.into, limit: RELATION_REWRITES_PER_CHANGE });
-                if (chunk.rewrites.length > 0) {
-                    await this.store.commit(await this.rewriteRecords(chunk.rewrites, stamp));
-                    return true;
-                }
-                await this.store.commit([
-                    { kind: 'valueDelete', entity: book, field: relationKindField(merge.kind) },
-                    { kind: 'valueDelete', entity: book, field: relationKindMergeField(merge.kind) },
-                ]);
-                return true;
-            }
-            return false;
-        }).then(done => done === true);
+                await this.store.commit([{ kind: 'valueDelete', entity: merge.book, field: relationKindField(merge.kind) }]);
+                return { book: merge.book, changedSources: [] };
+            });
+            if (done !== 'missing') return done;
+        }
+        for (const due of pending.mergeRecordsDue) {
+            const done = await this.inWorld(due.book, async () => {
+                await this.store.commit([{ kind: 'valueDelete', entity: due.book, field: relationKindMergeField(due.kind) }]);
+                return { book: due.book, changedSources: [] };
+            });
+            if (done !== 'missing') return done;
+        }
+        return null;
     }
 
     /**
-     * @returns {Promise<bigint[]>}
+     * @returns {Promise<boolean>}
      */
-    async booksWithWorldbuildingJobs() {
-        /** @type {{ deletions: { book: bigint }[], restorations: { book: bigint }[], merges: { book: bigint }[] }} */
+    async anyWorldbuildingJob() {
+        /** @type {{ booksWithRelationSteps: bigint[], merges: unknown[], mergeRecordsDue: unknown[] }} */
         const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
-        return [...new Set([...pending.deletions, ...pending.restorations, ...pending.merges].map(job => job.book))];
+        return pending.booksWithRelationSteps.length + pending.merges.length + pending.mergeRecordsDue.length > 0;
     }
 
     /**
@@ -1558,10 +1749,12 @@ function assembleBook(s, world) {
     if (world) {
         /** @type {Record<string, unknown>} */
         const entries = {};
-        for (const x of list) setOwn(entries, x.entity.key.slice(x.entity.key.indexOf(':') + 1), entryObject(x.entity, false));
+        const keyOfEntity = keysOfEntities(s.entries);
+        for (const x of list) setOwn(entries, x.entity.key.slice(x.entity.key.indexOf(':') + 1), entryObject(x.entity, false, keyOfEntity));
         found.set('entries', entries);
     } else {
-        found.set('entries', list.map(x => entryObject(x.entity, true)));
+        const keyOfEntity = keysOfEntities(s.entries);
+        found.set('entries', list.map(x => entryObject(x.entity, true, keyOfEntity)));
     }
     /** @type {Record<string, unknown>} */
     const out = {};

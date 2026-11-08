@@ -25,9 +25,16 @@ const users = fs.readdirSync(dataRoot, { withFileTypes: true })
     .map(d => d.name);
 
 let steps = 0;
+let rewritten = 0;
 for (const handle of users) {
     const lib = await LibraryEngine.open(engine, path.join(dataRoot, handle, 'store'));
     try {
+        let books = null;
+        do {
+            const page = await lib.store.worldRead('books', { after: books, limit: 1000 });
+            for (const book of page.books) rewritten += await lib.books.relationsByEntity(book.id);
+            books = page.more ? page.books[page.books.length - 1].key : null;
+        } while (books !== null);
         let after = null;
         do {
             after = await lib.store.worldOrderConversionStep(after, 2000);
@@ -38,4 +45,4 @@ for (const handle of users) {
     }
 }
 
-console.log(`Users: ${users.length}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed.`);
+console.log(`Users: ${users.length}. Relations fields rewritten to name targets by entity: ${rewritten}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed.`);

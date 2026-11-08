@@ -122,7 +122,7 @@ test('a write that leaves entries held only by a loop says so in its own answer:
     assert.equal(deleted.unreachedLoops.length, 1, 'entry 1 lost its relation to 3 and only the loop holds it');
 });
 
-test('deleting an entry removes every relation pointing at it, and restoring one leaves out relations to what is gone since', async () => {
+test('deleting an entry takes every relation targeting it out of use, kept in its source; restoring it puts back what its sources still hold', async () => {
     const entries = [
         entry(1, 0),
         entry(2, 1, [{ kind: IN, target: 1, position: 'a' }, { kind: OWES, target: 3, position: 'a' }]),
@@ -135,34 +135,36 @@ test('deleting an entry removes every relation pointing at it, and restoring one
     const result = await lib.books.apply('Deletes', [{ uid: 1, base_hash: await hash(1), data: null }], []);
     assert.ok(result && typeof result === 'object' && result.ok);
     let read = await lib.books.read('Deletes');
-    assert.deepEqual(read.entries[2].extensions.relations, [{ kind: OWES, target: 3, position: 'a' }]);
-    assert.deepEqual(read.entries[3].extensions.relations, []);
+    const first = String(ids.get(1));
+    const third = ids.get(3);
+    assert.deepEqual(read.entries[2].extensions.relations, [{ kind: IN, targetEntry: first, position: 'a' }, { kind: OWES, target: 3, position: 'a' }], 'kept, named by entity since the world no longer has that entry');
     const view = await overview(book, IN);
     assert.equal(view.topLevelCount, 2);
+    assert.deepEqual(view.entries[0].relations.map(r => [r.targetDeleted, r.inUse]), [[true, false], [false, true]]);
 
-    const third = ids.get(3);
     const gone = await lib.books.apply('Deletes', [{ uid: 3, base_hash: await hash(3), data: null }], []);
     assert.ok(gone && typeof gone === 'object' && gone.ok);
-    read = await lib.books.read('Deletes');
-    assert.deepEqual(read.entries[2].extensions.relations, []);
+    const reused = await lib.books.apply('Deletes', [{ uid: 3, base_hash: null, data: entry(3, 9) }], []);
+    assert.ok(reused && typeof reused === 'object' && reused.ok, 'a new entry takes the deleted entry\'s key at once');
     const restored = await lib.books.restore('Deletes', third);
     assert.ok(typeof restored === 'object');
     await lib.books.jobs.settled();
     read = await lib.books.read('Deletes');
-    assert.deepEqual(read.entries[3].extensions.relations, [], 'its relation to entry 1, deleted since, is left out');
-    assert.deepEqual(read.entries[2].extensions.relations, [{ kind: OWES, target: 3, position: 'a' }], 'restoring 3 puts back what targeted it');
+    assert.ok(typeof restored === 'object' && restored.uid !== '3');
+    assert.deepEqual(read.entries[restored.uid].extensions.relations, [{ kind: IN, targetEntry: first, position: 'b' }], 'its own relation to entry 1, deleted since, is kept');
+    assert.deepEqual(read.entries[2].extensions.relations[1], { kind: OWES, target: Number(restored.uid), position: 'a' }, 'the restored entry, under its new key, not the new entry under its old one');
 
     const restoredFirst = await lib.books.restore('Deletes', ids.get(1));
     assert.ok(typeof restoredFirst === 'object');
     await lib.books.jobs.settled();
     read = await lib.books.read('Deletes');
-    assert.deepEqual(read.entries[2].extensions.relations.map(r => [r.kind, r.target]).sort(), [[IN, 1], [OWES, 3]]);
-    assert.deepEqual(read.entries[3].extensions.relations, [{ kind: IN, target: 1, position: 'b' }]);
+    assert.deepEqual(read.entries[2].extensions.relations.map(r => [r.kind, r.target]), [[IN, 1], [OWES, Number(restored.uid)]]);
+    assert.deepEqual(read.entries[restored.uid].extensions.relations, [{ kind: IN, target: 1, position: 'b' }]);
 });
 
-test('deleting an entry that thousands of entries target removes it at once and their relations in chunks; until then they show in its place', async () => {
-    const { RELATION_REWRITES_PER_CHANGE } = await import('../world-info-engine.js');
-    const sources = RELATION_REWRITES_PER_CHANGE + 5;
+test('deleting an entry that thousands of entries target removes it at once and takes their relations out of use in steps', async () => {
+    const { RELATION_CHANGES_PER_STEP } = await import('../world-info-engine.js');
+    const sources = RELATION_CHANGES_PER_STEP + 5;
     const entries = [entry(1, 0)];
     for (let uid = 2; uid < sources + 2; uid++) entries.push(entry(uid, uid, [{ kind: IN, target: 1, position: 'a' }]));
     await lib.books.write('Large', { relationKinds: KINDS, entries: Object.fromEntries(entries.map(e => [e.uid, e])) });
@@ -172,14 +174,33 @@ test('deleting an entry that thousands of entries target removes it at once and 
     const result = await lib.books.apply('Large', [{ uid: 1, base_hash: jsonHash(current), data: null }], []);
     assert.ok(result && typeof result === 'object' && result.ok);
     assert.deepEqual(result.deleted, ['1']);
-    const during = await overview(book, IN);
-    assert.equal(during.entries[0].cell, 'placeOfDeletedEntry');
-    assert.equal(during.entries[0].groupingKindRelationsTargetingThis, 5, 'the first chunk went with the delete itself');
-    assert.equal(during.topLevelCount, RELATION_REWRITES_PER_CHANGE + 1);
     await lib.books.jobs.settled();
     const after = await overview(book, IN);
     assert.equal(after.topLevelCount, sources);
     assert.ok(after.entries.every(cell => cell.cell === 'entry'));
+});
+
+test('a deletion step that leaves entries held only by a loop pushes what it found to the world\'s open tabs', async () => {
+    const { RELATION_CHANGES_PER_STEP } = await import('../world-info-engine.js');
+    const entries = [entry(1, 0), entry(2, 1, [{ kind: IN, target: 1, position: 'z' }, { kind: IN, target: 3, position: 'a' }]), entry(3, 2, [{ kind: IN, target: 2, position: 'a' }])];
+    for (let uid = 4; uid < RELATION_CHANGES_PER_STEP + 5; uid++) entries.push(entry(uid, uid, [{ kind: IN, target: 1, position: 'a' }]));
+    await lib.books.write('Looping', { relationKinds: KINDS, entries: Object.fromEntries(entries.map(e => [e.uid, e])) });
+    const { id: book } = await lib.books.find('Looping');
+    const ids = await idsOf(book);
+    /** @type {bigint[]} */
+    const pushed = [];
+    lib.books.jobs.onLoopsChanged = world => pushed.push(world);
+    const { jsonHash } = await import('../../public/scripts/hash-utils.js');
+    const current = (await lib.books.read('Looping')).entries[1];
+    const result = await lib.books.apply('Looping', [{ uid: 1, base_hash: jsonHash(current), data: null }], []);
+    assert.ok(result && typeof result === 'object' && result.ok);
+    assert.deepEqual(result.unreachedLoops, [], 'entry 2 is still held by the deleted entry\'s place when the delete answers');
+    await lib.books.jobs.settled();
+    lib.books.jobs.onLoopsChanged = null;
+    assert.deepEqual(pushed, [book]);
+    const loops = lib.books.jobs.loopsLeft(book);
+    assert.equal(loops.length, 1);
+    assert.deepEqual(new Set(loops[0].entries), new Set([String(ids.get(2)), String(ids.get(3))]));
 });
 
 test('merging a kind into another turns its relations into the other kind, folds twins into one, then removes the kind', async () => {
@@ -209,7 +230,9 @@ test('moving an entry to another world drops its relations there and removes the
     assert.deepEqual(moved.entry.extensions, {});
     const from = await lib.books.read('From');
     assert.deepEqual(Object.keys(from.entries), ['2']);
-    assert.deepEqual(from.entries[2].extensions.relations, []);
+    assert.equal(from.entries[2].extensions.relations[0].targetEntry !== undefined, true, 'kept while its target is deleted');
+    const { id: fromBook } = await lib.books.find('From');
+    assert.equal((await overview(fromBook, IN)).topLevelCount, 1);
 });
 
 after(async () => {

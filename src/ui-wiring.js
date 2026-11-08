@@ -547,10 +547,24 @@ const regionLayout = layout => ({
 });
 const optionalId = (/** @type {string | null} */ id) => (id === null ? null : BigInt(id));
 
+/**
+ * @param {import('@st/server-ui').User} user
+ */
+async function worldbuildingLibOf(user) {
+    const lib = await libOf(user);
+    lib.books.jobs.onLoopsChanged = () => {
+        ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview']).catch(error => console.error('Pushing what a worldbuilding job found failed.', error));
+    };
+    return lib;
+}
+
 /** @type {import('@st/worldbuilding/server').Ports} */
 const worldbuildingPorts = {
+    async readLoopsLeftByJobs(user, book) {
+        return (await worldbuildingLibOf(user)).books.jobs.loopsLeft(BigInt(book));
+    },
     async readOverview(user, { book, groupBy, firstRank, endRank, layout, stepLandedOn }) {
-        const lib = await libOf(user);
+        const lib = await worldbuildingLibOf(user);
         return lib.store.worldRead('worldbuildingOverview', {
             book: BigInt(book),
             groupBy: groupBy === null ? null : Number(groupBy),
@@ -562,28 +576,28 @@ const worldbuildingPorts = {
         });
     },
     async stepOverview(user, { book, groupBy, layout, ...step }) {
-        const lib = await libOf(user);
+        const lib = await worldbuildingLibOf(user);
         return lib.store.worldRead('worldbuildingStep', { book: BigInt(book), groupBy: groupBy === null ? null : Number(groupBy), ...regionLayout(layout), ...step });
     },
     async readRelationKinds(user, book) {
-        const lib = await libOf(user);
+        const lib = await worldbuildingLibOf(user);
         return (await lib.books.relationKinds(BigInt(book))).map(kind => ({ id: String(kind.id), name: kind.name, mergingInto: kind.mergingInto === undefined ? null : String(kind.mergingInto) }));
     },
     async createRelationKind({ user }, book, name) {
-        const id = await (await libOf(user)).books.createRelationKind(BigInt(book), name);
+        const id = await (await worldbuildingLibOf(user)).books.createRelationKind(BigInt(book), name);
         return id === 'missing' ? null : String(id);
     },
     async renameRelationKind({ user }, book, kind, name) {
-        return (await libOf(user)).books.renameRelationKind(BigInt(book), Number(kind), name);
+        return (await worldbuildingLibOf(user)).books.renameRelationKind(BigInt(book), Number(kind), name);
     },
     async deleteRelationKind({ user }, book, kind) {
-        return (await libOf(user)).books.deleteRelationKind(BigInt(book), Number(kind));
+        return (await worldbuildingLibOf(user)).books.deleteRelationKind(BigInt(book), Number(kind));
     },
     async mergeRelationKind({ user }, book, kind, into) {
-        return (await libOf(user)).books.mergeRelationKind(BigInt(book), Number(kind), Number(into));
+        return (await worldbuildingLibOf(user)).books.mergeRelationKind(BigInt(book), Number(kind), Number(into));
     },
     async changeRelation({ user, session }, book, change, loopCheckLimit) {
-        const lib = await libOf(user);
+        const lib = await worldbuildingLibOf(user);
         const edit = {
             change: change.change,
             entry: BigInt(change.entry),

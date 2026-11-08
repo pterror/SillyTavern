@@ -5,12 +5,20 @@ import {
     cardsPerTopLevelEntry,
     LAST_CHANGE_VIEW,
     LOOP_CHECK_VISITS_PER_WRITE,
+    LOOPS_LEFT_BY_JOBS_VIEW,
     MAX_CARDS_PER_READ,
     OVERVIEW_VIEW,
     READ_REFUSAL,
     RELATION_KINDS_VIEW,
 } from './protocol.ts';
-import type { EntryCell, LastChangeView, OverviewLayout, OverviewView, RelationKindsView } from './protocol.ts';
+import type {
+    EntryCell,
+    LastChangeView,
+    LoopsLeftByJobsView,
+    OverviewLayout,
+    OverviewView,
+    RelationKindsView,
+} from './protocol.ts';
 import { rangeAround, worldbuildingArea } from './server.ts';
 import type { Grouping, OverviewStep, Ports, RelationChange } from './server.ts';
 import type { ActionContext, ActionResult, User } from '@st/server-ui';
@@ -74,6 +82,7 @@ function world(count: number) {
                 : { occurrence: String(rank + 100), topLevelRank: rank };
         },
         readRelationKinds: async (_u, book) => (book === '1' ? kinds : null),
+        readLoopsLeftByJobs: async (_u, book) => (book === '1' ? [{ entry: '7', kind: '1', entries: ['7', '8'] }] : []),
         createRelationKind: async (_w, book, name) => {
             if (book !== '1') return null;
             kinds.push({ id: String(kinds.length + 1), name, mergingInto: null });
@@ -129,7 +138,11 @@ test('opening a world opens its overview, its kinds and the last change in the s
     });
     expect(await w.act('worldbuilding.openOverview', open)).toEqual({
         changed: [],
-        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW],
+        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW],
+    });
+    expect(await w.view<LoopsLeftByJobsView>(LOOPS_LEFT_BY_JOBS_VIEW)).toEqual({
+        book: '1',
+        unreachedLoops: [{ entry: '7', kind: '1', entries: ['7', '8'] }],
     });
     const shown = await w.view<OverviewView>(OVERVIEW_VIEW);
     expect(shown).toMatchObject({ book: '1', groupBy: '1', topLevelCount: 1000, firstRank: 0, stepLanding: null });

@@ -4,6 +4,7 @@ import type { ActionSchemas } from '@st/protocol';
 export const OVERVIEW_VIEW = 'worldbuilding.overview';
 export const RELATION_KINDS_VIEW = 'worldbuilding.relationKinds';
 export const LAST_CHANGE_VIEW = 'worldbuilding.lastChange';
+export const LOOPS_LEFT_BY_JOBS_VIEW = 'worldbuilding.loopsLeftByJobs';
 
 export const READS_PER_REQUEST = 24_000;
 export const READS_PER_CARD = 6;
@@ -14,10 +15,11 @@ export const LOOP_CHECK_VISITS_PER_WRITE = READS_PER_REQUEST / READS_PER_LOOP_CH
 export type RelationOnCard = {
     kind: string;
     kindName: string | null;
-    targetKey: string;
-    target: string | null;
+    targetKey: string | null;
+    target: string;
     targetTitle: string | null;
-    targetBeingDeleted: boolean;
+    targetDeleted: boolean;
+    inUse: boolean;
     weak: boolean;
 };
 
@@ -39,7 +41,7 @@ export type EntryCell = {
 export type PlaceOfDeletedEntryCell = {
     cell: 'placeOfDeletedEntry';
     occurrence: string;
-    entryKey: string;
+    entryKey: null;
     groupingKindRelationsTargetingThis: number;
     alreadyOpenAbove: boolean;
     region: RegionCell[];
@@ -73,6 +75,8 @@ export type RelationKind = { id: string; name: string; mergingInto: string | nul
 export type RelationKindsView = { book: string | null; kinds: RelationKind[] };
 
 export type UnreachedLoop = { entry: string; kind: string; entries: string[] };
+
+export type LoopsLeftByJobsView = { book: string | null; unreachedLoops: UnreachedLoop[] };
 
 export type ChangedRelation = { book: string; entry: string; kind: string; target: string };
 
