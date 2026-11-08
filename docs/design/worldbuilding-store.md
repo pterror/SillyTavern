@@ -60,7 +60,7 @@ entry. The complement costs nothing until an entry gains the kind. Changing the 
 | Write | Derived writes |
 |---|---|
 | an entry's field other than `relations` | none |
-| relation added, kind already on the entry | 3: `REL_OF`, `MEMBERS`, `GROUP_COUNT` |
+| relation added, kind already on the entry | 3: `REL_OF`, `MEMBERS`, `GROUP_COUNT` (a count that reaches 0 is deleted, so no zero counters are left behind; that reads it first) |
 | relation added, first of its kind on the entry | 3 + `depth` (`TREE_KINDS` along the entry's path) |
 | relation removed | the same, mirrored |
 | position changed (move within a group) | 3: `REL_OF`, `MEMBERS` out and in |
@@ -92,9 +92,14 @@ drawing path) is drawn as its card with no region.
 
 One area, `@st/worldbuilding`, one view (`worldbuilding.overview`): the book, the grouping relation, the top-level
 count, the window's first rank and its items, each with its truncated region, and the occurrence the last move landed
-on with its top-level rank. Actions: `worldbuilding.open` (book, relation, window; opens the view in the same request),
-`worldbuilding.window` (the next window), `worldbuilding.move` (from an occurrence, `n` on in reading order, or to its
-parent or first child; the window follows the result).
+on with its top-level rank. Actions: `worldbuilding.open` (book, relation, window, and optionally an occurrence to open
+around; opens the view in the same request), `worldbuilding.window` (the next window), `worldbuilding.move` (from an
+occurrence, `n` on in reading order, or to its parent or first child; the window follows the result when it lands
+outside it). The engine answers each with one read in one snapshot (`overview.rs`: `window`, `moved`).
+
+Opening a view from an action is a gap the core had: a view was only answered once the tab had sent `view.open`, so
+opening the overview at a window would have been two requests. An action's result may now name views it `opens`
+(`packages/server-ui`); the tab shows them from then on.
 
 An occurrence's key is the path of entity ids from its top-level entry (`12/45/78`), and a region's "+N more" tile is
 `12/45/+`. So:
@@ -104,6 +109,13 @@ An occurrence's key is the path of entity ids from its top-level entry (`12/45/7
 - **Step** within what's held is the held items in pre-order; past it, `move`;
 - **parent** is the key without its last part; **first child** is the first of the held children, else `move`;
 - **inside region** `k` is "starts with `k/`".
+
+## Existing stores
+
+Entries written before the tree aren't in it, and a later `entryIndex` write or deletion of one is refused (the tree
+never guesses). `scripts/worldbuilding-cutover.mjs` puts every entry of every counted book in its world's order and
+indexes any `relations` already stored, in steps of 2000 (`relations::cutover_step`, idempotent), run once with the
+server stopped, then deleted with `Store::world_order_cutover` and its binding.
 
 ## Open
 

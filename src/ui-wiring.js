@@ -8,6 +8,7 @@ import { settingsArea } from '@st/settings/server';
 import { alternativesArea } from '@st/alternatives/server';
 import { activationsArea } from '@st/activations/server';
 import { referencesArea } from '@st/references/server';
+import { worldbuildingArea } from '@st/worldbuilding/server';
 import { References } from './world-info/references.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
 import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
@@ -539,7 +540,19 @@ const referencesPorts = {
     },
 };
 
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), referencesArea(referencesPorts)], {
+/** @type {import('@st/worldbuilding/server').Ports} */
+const worldbuildingPorts = {
+    async overview(user, { book, relation, from, to, active }) {
+        const { lib } = await userStore(directoriesOf(user), user.handle);
+        return lib.store.worldRead('overview', { book: BigInt(book), relation, from, to, active });
+    },
+    async move(user, query) {
+        const { lib } = await userStore(directoriesOf(user), user.handle);
+        return lib.store.worldRead('overviewMove', { ...query, book: BigInt(query.book) });
+    },
+};
+
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), referencesArea(referencesPorts), worldbuildingArea(worldbuildingPorts)], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);

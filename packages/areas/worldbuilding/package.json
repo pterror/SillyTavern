@@ -1,0 +1,17 @@
+{
+    "name": "@st/worldbuilding",
+    "private": true,
+    "type": "module",
+    "exports": {
+        "./protocol": "./protocol.ts",
+        "./server": "./server.ts"
+    },
+    "dependencies": {
+        "@st/protocol": "*",
+        "@st/server-ui": "*",
+        "valibot": "1.5.0"
+    },
+    "devDependencies": {
+        "vite-plus": "1.1.0"
+    }
+}
