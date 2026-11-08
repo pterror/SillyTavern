@@ -36,22 +36,31 @@ says how many that is. Imported entries keep the order the book's own editor sho
 
 ## Relations
 
-A world is entries and **relations** between them. A relation has a name the author chooses ("in", "works at",
-"owes"…) and goes from one entry to another. Any shape is allowed: an entry can be related to several entries by the
-same relation, and cycles are allowed. References in text are one more relation, **mentions**, derived from the text
-and never stored by hand.
+A world is entries and **relations** between them. A relation has a **kind** ("in", "works at", "owes"…) and goes
+from one entry to another. A world keeps a list of its kinds, each with its own name the author chooses; a relation
+names its kind, so renaming a kind renames it everywhere at once. Two kinds may have names that differ only in case.
+Any shape is allowed: an entry can be related to several entries by the same kind, and loops are allowed. References in
+text are one more relation, **mentions**, derived from the text and never stored by hand.
 
-A relation is stored on the entry it starts from, in its extension data: the relation's name, the target entry, and
-the entry's position in that target's group. The position is a fractional order key, so moving an entry within a group
-writes only that entry.
+A relation is stored on the entry it starts from, in its extension data: its kind, the target entry, the entry's
+position in that target's group, and whether it is **weak**. The position is a fractional order key, so moving an entry
+within a group writes only that entry. A weak relation draws the entry in the target's region like any other member,
+but doesn't keep it off the top level (below, Grouping inside a cell); it is how a loop is drawn: in "A in B, B in A"
+with nothing else holding either, one of the two is weak, and the loop opens from it.
 
-Relation names are the author's words, so the app never builds sentences from them. A relation is shown as
-"relation: target" ("in: The Lantern House"), what points at an entry as "relation → entry" ("owes → Ilse Varro"),
-and a change as the relation with its old and new target ("works at · The Pale Choir → The Lantern House").
+Deleting an entry removes every relation that points to it, so no relation ever names a missing entry.
+
+Kind names are the author's words, so the app never builds sentences from them. A relation is shown as
+"kind: target" ("in: The Lantern House"), what points at an entry as "kind → entry" ("owes → Ilse Varro"),
+and a change as the kind with its old and new target ("works at · The Pale Choir → The Lantern House").
 
 On an entry's page, its relations are its first line ("in: The Lantern House · works at: The Lantern House · owes: The
-Pale Choir"). Clicking one changes or removes it. **+ relation** offers the world's relation names first, then any
-other name, then the target entry.
+Pale Choir"). Clicking one changes or removes it. **+ relation** picks the kind from the world's list (its search
+ignores case), then the target entry; a new kind is made only by an explicit **New kind…** step in that list.
+
+When a change leaves an entry held only by a loop that nothing at the top level holds, the answer says so and the page
+offers making that relation weak. The check walks up only as far as the request allows; past that it says nothing, and
+the entry stays findable through search (`worldbuilding-store.md`, Loops).
 
 ## Views
 
@@ -108,12 +117,12 @@ Inside the overview and inside every cell of a board or grid, entries are groupe
   fucking reason for lorebook ui to mirror character card ui", owner, 2026-11-03T04:21:19).
 - An entry with members is a **region**, headed by the entry's own card with its member count, and holding its
   members' cards. A member with members of its own is a region nested inside, headed the same way.
-- A region shows its first members in that group's order, enough to show what the group is, then a **"+N more"** tile
-  that opens the region's entry, which lists every member.
+- A region shows its first members in that group's order, filling whole rows of the page's columns, then a
+  **"+N more"** tile in the last cell that opens the region's entry, which lists every member.
 - An entry in several groups appears in each, as the same entry.
 - Drawing stops where it would repeat: an entry met again inside its own region is drawn as its card, without opening
   its region again.
-- The top of a cell is its entries with no relation of the grouping kind.
+- The top of a cell is its entries with no strong relation of the grouping kind.
 - Grouping by "nothing" draws plain cards.
 
 ### Moving entries between groups and cells
@@ -140,9 +149,9 @@ Inside the overview and inside every cell of a board or grid, entries are groupe
 Everything works at 10 billion entries with no cost per entry. The page holds only what it shows.
 
 - **Members of a group** come from an index per (relation, target), in the group's order. A region reads its first few.
-- **The top of a cell** comes from an index per relation of the entries that have no relation of that kind. It is kept
-  as relations are written: an entry joins it when its last relation of that kind is removed and leaves it when it
-  gains one. Changing the grouping relation is one lookup, never a scan. The same index answers filters of the form
+- **The top of a cell** comes from a count per kind, on the world's order, of the entries that have a strong relation
+  of that kind; the top is its complement. It is kept as relations are written: an entry joins the top when its last
+  strong relation of that kind is removed or made weak and leaves it when it gains one. Changing the grouping relation is one lookup, never a scan. The same index answers filters of the form
   "has no relation of this kind".
 - **"+N more"** comes from a count per (relation, target) kept on each write, never counted on read.
 - **Cells** of a board or grid are intersections of filters. Their cards are read a page at a time from the indexes.
