@@ -323,7 +323,8 @@ bookmarks, chats); worldbuilding is their composition plus what is specific to l
 - **Page**: built on interact's small modules (`~/git/interact/packages/list`) and keybinds, wired by hand.
   Worldbuilding implements the modules' own abstractions over its server index, so nothing beyond what's on screen is
   loaded. The overview's answer is the top-level entries near the scroll position, each with its region truncated at
-  every level; nested regions are lists composed inside their head's item. A gap in interact is fixed there as a new
+  every level; nested regions are lists composed inside their head's item. How many columns and rows a region
+  fills at each nesting level, and how much of an entry's text a card carries, are the page's, sent with the request. A gap in interact is fixed there as a new
   module or a general abstraction, never as a worldbuilding feature. The page holds only what is on screen. One name
   renderer
   draws every name in the app, so a look applies everywhere at once.

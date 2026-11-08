@@ -4,7 +4,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const USAGE = 'Usage: node scripts/worldbuilding-cutover.mjs --data-root <data folder>\nRun it once, with the server stopped (the store has no lock against a second process), before the server runs this engine. Running it again changes nothing.';
+const USAGE = 'Usage: node scripts/convert-lorebooks-to-worldbuilding.mjs --data-root <data folder>\nRun it once, with the server stopped (the store has no lock against a second process), before the server runs this engine. Running it again changes nothing.';
 
 const args = process.argv.slice(2);
 const at = args.indexOf('--data-root');
@@ -30,7 +30,7 @@ for (const handle of users) {
     try {
         let after = null;
         do {
-            after = await lib.store.worldOrderCutover(after, 2000);
+            after = await lib.store.worldOrderConversionStep(after, 2000);
             steps++;
         } while (after !== null);
     } finally {
@@ -38,4 +38,4 @@ for (const handle of users) {
     }
 }
 
-console.log(`Users: ${users.length}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order.`);
+console.log(`Users: ${users.length}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed.`);

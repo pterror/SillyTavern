@@ -113,6 +113,62 @@ function extensionCanonical(/** @type {string[]} */ keys) {
 }
 
 const ownKeyField = (/** @type {string} */ k) => (k.startsWith(EXTENSION_MARK) || k.startsWith(KEY_ESCAPE) ? KEY_ESCAPE + k : k);
+const ownKeyOfField = (/** @type {string} */ field) => (field.startsWith(KEY_ESCAPE) ? field.slice(1) : field);
+
+const RELATIONS_FIELD = `${EXTENSION_MARK}relations`;
+const RELATION_KINDS = 'relationKinds';
+const RELATION_KIND_FIELD = `${EXTENSION_MARK}relationKind:`;
+const relationKindField = (/** @type {number} */ id) => `${RELATION_KIND_FIELD}${id}`;
+const isWholeId = (/** @type {unknown} */ n) => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
+
+/**
+ * @param {unknown} value
+ * @returns {{ id: number, name: string }[] | null}
+ */
+function relationKindsOf(value) {
+    if (!Array.isArray(value)) return null;
+    const ids = new Set();
+    for (const kind of value) {
+        if (!isPlainObject(kind) || Object.keys(kind).length !== 2 || !isWholeId(kind.id) || typeof kind.name !== 'string' || kind.name === '' || ids.has(kind.id)) return null;
+        ids.add(kind.id);
+    }
+    return /** @type {{ id: number, name: string }[]} */ (value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ kind: number, target: string }[] | null}
+ */
+function relationsOf(value) {
+    if (!Array.isArray(value)) return null;
+    const relations = [];
+    for (const relation of value) {
+        if (!isPlainObject(relation) || !isWholeId(relation.kind) || typeof relation.position !== 'string') return null;
+        if (relation.weak !== undefined && typeof relation.weak !== 'boolean') return null;
+        const target = relation.target;
+        if (typeof target === 'string' && target !== '') relations.push({ kind: relation.kind, target });
+        else if (typeof target === 'number' && Number.isSafeInteger(target) && target >= 0) relations.push({ kind: relation.kind, target: String(target) });
+        else return null;
+    }
+    return relations;
+}
+
+/**
+ * @param {unknown} entry
+ * @param {(kind: number, target: string) => boolean} drop
+ * @returns {unknown}
+ */
+function withoutRelations(entry, drop) {
+    if (!isPlainObject(entry)) return entry;
+    const extensions = /** @type {any} */ (entry).extensions;
+    const parsed = isPlainObject(extensions) ? relationsOf(extensions.relations) : null;
+    if (!parsed || !parsed.some(relation => drop(relation.kind, relation.target))) return entry;
+    const relations = extensions.relations.filter((/** @type {unknown} */ _, /** @type {number} */ index) => !drop(parsed[index].kind, parsed[index].target));
+    const entryFields = /** @type {object} */ (entry);
+    return { ...entryFields, extensions: { ...extensions, relations } };
+}
+
+const relationKindIds = (/** @type {Record<string, unknown>} */ book) => new Set((relationKindsOf(book[RELATION_KINDS]) ?? []).map(kind => kind.id));
 
 function bookCanonical(/** @type {string[]} */ keys) {
     return [...keys.filter(k => k !== 'entries').sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ...(keys.includes('entries') ? ['entries'] : [])];
@@ -249,7 +305,12 @@ function bookValues(book, defined) {
     for (const k of keys) {
         if (k === 'entries') continue;
         if (k === 'originalData' && defined && isEntryList(book[k])) continue;
-        values.set(k, put(book[k]));
+        const kinds = k === RELATION_KINDS ? relationKindsOf(book[k]) : null;
+        if (kinds) {
+            for (const { id, name } of kinds) values.set(relationKindField(id), { text: name });
+            continue;
+        }
+        values.set(ownKeyField(k), put(book[k]));
     }
     const order = orderValue(keys, bookCanonical(keys));
     if (order !== null) values.set(ORDER, { text: order });
@@ -408,9 +469,9 @@ export class WorldInfoEngine {
         const stored = s?.entries ?? new Map();
         if (world) {
             const incoming = typeof raw === 'object' && raw !== null ? /** @type {Record<string, unknown>} */ (raw) : {};
-            pushAll(records, this.entryRecords(id, stored, Object.keys(incoming).filter(k => incoming[k] !== undefined).map(k => [k, incoming[k]]), false, stamp));
+            pushAll(records, this.entryRecords(id, stored, Object.keys(incoming).filter(k => incoming[k] !== undefined).map(k => [k, incoming[k]]), false, stamp, relationKindIds(book)));
         } else {
-            pushAll(records, this.listEntryRecords(id, stored, /** @type {unknown[]} */ (raw), stamp));
+            pushAll(records, this.listEntryRecords(id, stored, /** @type {unknown[]} */ (raw), stamp, relationKindIds(book)));
         }
         if (world) {
             const original = book.originalData;
@@ -431,10 +492,12 @@ export class WorldInfoEngine {
      * @param {[string, unknown][]} incoming
      * @param {boolean} owned
      * @param {() => import('./entity-values.js').Stamp} stamp
+     * @param {Set<number>} kinds
      */
-    entryRecords(book, stored, incoming, owned, stamp) {
+    entryRecords(book, stored, incoming, owned, stamp, kinds) {
         const records = [];
         const keys = new Set(incoming.map(([k]) => k));
+        incoming = incoming.map(([k, entry]) => [k, withoutRelations(entry, (kind, target) => !kinds.has(kind) || !keys.has(target))]);
         for (const [k, x] of stored) {
             if (!keys.has(k)) records.push({ kind: 'histEntityDelete', entity: x.entity.id, ...stamp() });
         }
@@ -457,8 +520,9 @@ export class WorldInfoEngine {
      * @param {Map<string, { entity: import('./entity-values.js').StoredEntity, position: number }>} stored
      * @param {unknown[]} incoming
      * @param {() => import('./entity-values.js').Stamp} stamp
+     * @param {Set<number>} kinds
      */
-    listEntryRecords(book, stored, incoming, stamp) {
+    listEntryRecords(book, stored, incoming, stamp, kinds) {
         const before = [...stored.entries()].sort((a, b) => a[1].position - b[1].position);
         const same = (/** @type {number} */ i, /** @type {number} */ j) => jsonHash(entryObject(before[i][1].entity, true)) === jsonHash(incoming[j]);
         let head = 0;
@@ -473,7 +537,7 @@ export class WorldInfoEngine {
             if (j < before.length - tail) return [before[j][0], entry];
             return [String(next++), entry];
         });
-        return this.entryRecords(book, stored, keyed, true, stamp);
+        return this.entryRecords(book, stored, keyed, true, stamp, kinds);
     }
 
     /**
@@ -791,6 +855,20 @@ export class WorldInfoEngine {
                     deletedUids.push(change.uid);
                 }
             }
+            if (deleted.length > 0) {
+                for (const [key, entry] of writes) {
+                    const kept = /** @type {object} */ (withoutRelations(entry, (_, target) => gone.has(target)));
+                    writes.set(key, kept);
+                    stored[key] = kept;
+                }
+                /** @type {Set<bigint>} */
+                const skip = new Set();
+                keys.forEach((key, index) => {
+                    const stored = entities[index];
+                    if (stored && (gone.has(key) || writes.has(key))) skip.add(stored.id);
+                });
+                pushAll(records, await this.pointerRewrites(book, deleted, skip, stamp));
+            }
             if (writes.size > 0) {
                 const numbers = await this.store.worldRead('numbers', { book });
                 let last = numbers.lastPosition ?? 0;
@@ -920,6 +998,12 @@ export class WorldInfoEngine {
             const numbers = await this.store.worldRead('numbers', { book: to.id });
             if (numbers.freeKey >= MAX_UID) return 'full';
             const moved = /** @type {Record<string, unknown>} */ (entryObject(e, false));
+            if (isPlainObject(moved.extensions)) {
+                const movedExtensions = /** @type {Record<string, unknown>} */ (moved.extensions);
+                const extensions = { ...movedExtensions };
+                delete extensions.relations;
+                moved.extensions = extensions;
+            }
             moved.uid = numbers.freeKey;
             moved.displayIndex = Math.max(-1, numbers.maxIndex ?? -1) + 1;
             const entry = JSON.parse(JSON.stringify(moved));
@@ -934,7 +1018,10 @@ export class WorldInfoEngine {
                 { kind: 'itemPlace', entity: to.id, list: 0, item: nid, position: (numbers.lastPosition ?? 0) + POSITION_GAP },
                 ...(entry.displayIndex === null ? [] : [{ kind: 'entryIndex', entry: nid, book: to.id, index: entry.displayIndex }]),
             );
-            if (deleteOriginal) records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
+            if (deleteOriginal) {
+                pushAll(records, await this.pointerRewrites(from.id, [String(uid)], new Set([e.id]), stamp));
+                records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
+            }
             await this.store.commit(records);
             return { entry };
         });
@@ -1103,8 +1190,10 @@ export class WorldInfoEngine {
             /** @type {object[]} */
             const records = [];
             const stamp = await this.stamper(actor, records);
+            const kept = await this.store.worldRead('worldbuildingRelationsKept', { book: found.id, entity: id });
             records.push(
                 { kind: 'histRestore', entity: id, type: TYPE.entry, key: `${found.id}:${uid}`, added: 0, ...stamp() },
+                ...(kept === null ? [] : historyWrites(stamp).json(id, RELATIONS_FIELD, kept.json, kept.before)),
                 { kind: 'itemPlace', entity: found.id, list: 0, item: id, position: position ?? (numbers.lastPosition ?? 0) + POSITION_GAP },
                 ...(d.index === null ? [] : [{ kind: 'entryIndex', entry: id, book: found.id, index: d.index }]),
             );
@@ -1148,6 +1237,101 @@ export class WorldInfoEngine {
     }
 
     /**
+     * @param {bigint} book
+     * @param {string[]} keys
+     * @param {Set<bigint>} skip
+     * @param {() => import('./entity-values.js').Stamp} stamp
+     * @returns {Promise<object[]>}
+     */
+    async pointerRewrites(book, keys, skip, stamp) {
+        /** @type {{ entity: bigint, before: string, json: string }[]} */
+        const rewrites = await this.store.worldRead('worldbuildingRelationsWithout', { book, keys });
+        const writes = historyWrites(stamp);
+        return rewrites.filter(rewrite => !skip.has(rewrite.entity)).flatMap(rewrite => writes.json(rewrite.entity, RELATIONS_FIELD, rewrite.json, rewrite.before));
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {(key: string) => Promise<T>} write
+     * @returns {Promise<T | 'missing'>}
+     * @template T
+     */
+    async inWorld(book, write) {
+        const [bookEntity] = await this.lib.entities([book]);
+        if (!bookEntity || bookEntity.type !== TYPE.book) return 'missing';
+        return this.lane([bookEntity.key], async () => {
+            const found = await this.find(bookEntity.key);
+            return found?.defined && found.id === book ? write(bookEntity.key) : 'missing';
+        });
+    }
+
+    /**
+     * @param {bigint} book
+     * @returns {Promise<{ id: number, name: string }[]>}
+     */
+    async relationKinds(book) {
+        const [bookEntity] = await this.lib.entities([book]);
+        const kinds = (bookEntity?.values ?? []).flatMap(value => (typeof value.field === 'string' && value.field.startsWith(RELATION_KIND_FIELD) && value.text !== undefined
+            ? [{ id: Number(value.field.slice(RELATION_KIND_FIELD.length)), name: value.text }]
+            : []));
+        return kinds.sort((one, other) => one.id - other.id);
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {string} name
+     * @returns {Promise<number | 'missing'>}
+     */
+    createRelationKind(book, name) {
+        return this.inWorld(book, async () => {
+            const id = 1 + (await this.relationKinds(book)).reduce((highest, kind) => Math.max(highest, kind.id), 0);
+            await this.store.commit([{ kind: 'textValue', entity: book, field: relationKindField(id), text: name }]);
+            return id;
+        });
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {number} kind
+     * @param {string} name
+     * @returns {Promise<'ok' | 'missing' | 'no kind'>}
+     */
+    renameRelationKind(book, kind, name) {
+        return this.inWorld(book, async () => {
+            if (!(await this.relationKinds(book)).some(existing => existing.id === kind)) return 'no kind';
+            await this.store.commit([{ kind: 'textValue', entity: book, field: relationKindField(kind), text: name }]);
+            return 'ok';
+        });
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {{ change: 'add' | 'move' | 'remove' | 'setWeak', entry: bigint, kind: number, target: bigint, newTarget?: bigint, after?: bigint | null, before?: bigint | null, weak?: boolean }} edit
+     * @param {number} loopCheckLimit
+     * @param {Actor | null} [actor]
+     * @returns {Promise<{ refused: string } | { unreached: string[] | null } | 'missing'>}
+     */
+    changeRelation(book, edit, loopCheckLimit, actor = null) {
+        return this.inWorld(book, async () => {
+            /** @type {{ refused: string } | { before: string | null, json: string }} */
+            const edited = await this.store.worldRead('worldbuildingRelationEdit', { book, ...edit });
+            if ('refused' in edited) return { refused: edited.refused };
+            if (edited.json !== edited.before) {
+                /** @type {object[]} */
+                const records = [];
+                const writes = historyWrites(await this.stamper(actor, records));
+                const [entryEntity] = await this.lib.entities([edit.entry]);
+                if (!entryEntity?.values.some(value => value.field === EXTENSIONS)) pushAll(records, writes.json(edit.entry, EXTENSIONS, '', undefined));
+                pushAll(records, writes.json(edit.entry, RELATIONS_FIELD, edited.json, edited.before ?? undefined));
+                await this.store.commit(records);
+            }
+            /** @type {string[] | null} */
+            const unreached = await this.store.worldRead('worldbuildingUnreached', { book, entry: edit.entry, kind: edit.kind, limit: loopCheckLimit });
+            return { unreached };
+        });
+    }
+
+    /**
      * @param {bigint} owner
      * @param {string} slot
      */
@@ -1183,14 +1367,22 @@ function assembleBook(s, world) {
     /** @type {Map<string, unknown>} */
     const found = new Map();
     let order;
+    /** @type {{ id: number, name: string }[]} */
+    const kinds = [];
     for (const v of s.entity?.values ?? []) {
         if (v.field === DEFINED) continue;
         if (v.field === ORDER) {
             order = v.text;
             continue;
         }
-        if (typeof v.field === 'string') found.set(v.field, v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
+        if (typeof v.field !== 'string') continue;
+        if (v.field.startsWith(RELATION_KIND_FIELD) && v.text !== undefined) {
+            kinds.push({ id: Number(v.field.slice(RELATION_KIND_FIELD.length)), name: v.text });
+            continue;
+        }
+        found.set(ownKeyOfField(v.field), v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
     }
+    if (kinds.length > 0) found.set(RELATION_KINDS, kinds.sort((a, b) => a.id - b.id));
     if (s.original) found.set('originalData', assembleBook(s.original, false));
     const list = [...s.entries.values()].sort((a, b) => a.position - b.position);
     if (world) {
