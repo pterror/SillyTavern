@@ -93,6 +93,13 @@ impl<'v, 'w> LayeredWrites<'v, 'w> {
         }
     }
 
+    pub fn with_view<T>(
+        &self,
+        read: impl FnOnce(&View) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        read(&self.view.with_layer(&self.written_so_far))
+    }
+
     pub fn finish(self, out: &mut Out) {
         out.entries.extend(self.out.entries);
     }

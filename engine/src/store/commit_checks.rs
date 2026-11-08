@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
 use super::StoreError;
-use super::books::{ENTRY, EntryKey, entry_key};
+
 use super::derive::{Out, View};
 use super::kinds::key;
-use super::library::entity_by_key;
+
 use super::relations;
 use super::world_order_tree::LayeredWrites;
-use crate::keyspace::val::{Val, get_bytes, get_u64, put_bytes, put_u64};
+use crate::keyspace::val::{Val, get_u64, put_u64};
 
 // Keys of this structure live only in one commit's own layer: the commit runs them at its end and drops them.
 pub const COMMIT_CHECK: u64 = 231;
@@ -22,9 +22,9 @@ fn check_key(what: u8, book: u64) -> Vec<u8> {
     check
 }
 
-pub fn require_target(writes: &mut LayeredWrites, book: u64, target_key: &[u8]) {
+pub fn require_target(writes: &mut LayeredWrites, book: u64, target: u64) {
     let mut check = check_key(TARGET_EXISTS, book);
-    put_bytes(&mut check, target_key);
+    put_u64(&mut check, target);
     writes.put(check, Vec::new());
 }
 
@@ -72,15 +72,13 @@ pub fn run(view: &View, checks: &[Vec<u8>]) -> Result<(), StoreError> {
         let book = get_u64(check, &mut read_at).ok_or_else(corrupt)?;
         match what {
             TARGET_EXISTS => {
-                let target_key = get_bytes(check, &mut read_at).ok_or_else(corrupt)?;
-                if relations::any_relation_targets(view, book, &target_key)?
-                    && entity_by_key(view, ENTRY, &entry_key(book, &EntryKey::parse(&target_key)))?
-                        .is_none()
-                    && relations::deletion_in_progress(view, book, &target_key)?.is_none()
+                let target = get_u64(check, &mut read_at).ok_or_else(corrupt)?;
+                if relations::any_relation_targets(view, book, target)?
+                    && !relations::is_entry_of(view, book, target)?
+                    && !relations::is_deleted_entry_of(view, book, target)?
                 {
                     return Err(StoreError::Refused(format!(
-                        "an entry of book {book} still has a relation to entry {}, which doesn't exist: remove it in the same commit",
-                        String::from_utf8_lossy(&target_key)
+                        "an entry of book {book} still has a relation to entity {target}, which is no entry of the book, live or deleted"
                     )));
                 }
             }
@@ -89,6 +87,7 @@ pub fn run(view: &View, checks: &[Vec<u8>]) -> Result<(), StoreError> {
                 if (relations::relation_kind_in_use(view, book, kind)?
                     || relations::some_kind_is_being_merged_into(view, book, kind)?)
                     && relations::relation_kind_name(view, book, kind)?.is_none()
+                    && relations::relation_kind_being_merged_into(view, book, kind)?.is_none()
                 {
                     return Err(StoreError::Refused(format!(
                         "an entry of book {book} still has a relation of kind {kind}, or a kind being merged into it, which the book doesn't have"

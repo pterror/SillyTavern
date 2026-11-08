@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::books::{BOOK, ENTRY, EntryKey};
 use super::chat_read::Js;
 use super::relations::{
-    self, DELETION_IN_PROGRESS_BY_ENTITY, DELETION_IN_PROGRESS_BY_KEY, KINDS_BEING_MERGED,
-    RELATION_COUNT_BY_KIND_AND_TARGET, RELATIONS_BY_TARGET, RELATIONS_OF_ENTRY,
-    RELATIONS_REMOVED_BY_DELETION,
+    self, DELETION_IN_PROGRESS, KEPT_RELATIONS_BY_KIND, KEPT_RELATIONS_BY_TARGET, KIND_MERGE_RECORDS_DUE,
+    KINDS_BEING_MERGED, RELATION_COUNT_BY_KIND_AND_TARGET, RELATIONS_BY_TARGET, RELATIONS_OF_DELETED_ENTRIES_BY_KIND,
+    RELATIONS_OF_ENTRY, RESTORE_IN_PROGRESS,
 };
 use super::world_order_tree::{self as tree, ORDER_TREE_COUNT, ORDER_TREE_EDGE, ORDER_TREE_HELD};
 use super::*;
@@ -121,7 +121,7 @@ pub(super) fn json_of(rels: &[(u64, u64, &str, bool)]) -> String {
         .iter()
         .map(|(kind, target, position, weak)| {
             let weak_suffix = if *weak { r#","weak":true"# } else { "" };
-            format!(r#"{{"kind":{kind},"target":{target},"position":"{position}"{weak_suffix}}}"#)
+            format!(r#"{{"kind":{kind},"targetEntry":"{target}","position":"{position}"{weak_suffix}}}"#)
         })
         .collect();
     format!("[{}]", items.join(","))
@@ -198,7 +198,7 @@ impl Model {
         ordered.into_iter().map(|(_, entity)| entity).collect()
     }
 
-    fn groups(&self) -> BTreeMap<(u64, Vec<u8>), SourcesByPosition> {
+    fn groups(&self) -> BTreeMap<(u64, u64), SourcesByPosition> {
         let mut groups_by_target: BTreeMap<_, Vec<_>> = BTreeMap::new();
         for entity in self.entries.keys() {
             for ((kind, target), relation) in self.set(*entity) {
@@ -212,13 +212,6 @@ impl Model {
             sources.sort();
         }
         groups_by_target
-    }
-
-    fn uids(&self) -> Vec<u64> {
-        self.entries
-            .values()
-            .map(|entry_state| entry_state.own_key)
-            .collect()
     }
 
     fn check(&self, store: &Store) {
@@ -268,10 +261,10 @@ impl Model {
         read(store, |view| {
             for ((kind, target), sources) in &groups {
                 assert_eq!(
-                    relations::count_of_relations_of_kind_targeting(view, B, *kind, target)?,
+                    relations::count_of_relations_of_kind_targeting(view, B, *kind, *target)?,
                     sources.len() as u64
                 );
-                let prefix = relations::relations_of_kind_targeting_prefix(B, *kind, target);
+                let prefix = relations::relations_of_kind_targeting_prefix(B, *kind, *target);
                 let got: Vec<u64> = view
                     .scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)?
                     .iter()
@@ -295,35 +288,27 @@ impl Model {
     }
 
     fn pointers_rewritten(&self, gone: u64) -> Vec<(u64, String)> {
-        let target = self.entries[&gone].own_key;
         let mut out = Vec::new();
-        for (entity, entry_state) in &self.entries {
+        for entity in self.entries.keys() {
             if *entity == gone {
                 continue;
             }
             let set = self.set(*entity);
-            if !set
-                .keys()
-                .any(|(_, target_key)| *target_key == target.to_string().into_bytes())
-            {
+            if !set.keys().any(|(_, target)| *target == gone) {
                 continue;
             }
             let kept: Vec<(u64, u64, String, bool)> = set
                 .iter()
-                .filter(|((_, target_key), _)| *target_key != target.to_string().into_bytes())
-                .map(|((kind, target_key), relation)| {
+                .filter(|((_, target), _)| *target != gone)
+                .map(|((kind, target), relation)| {
                     (
                         *kind,
-                        String::from_utf8(target_key.clone())
-                            .unwrap()
-                            .parse()
-                            .unwrap(),
+                        *target,
                         String::from_utf8(relation.position.clone()).unwrap(),
                         relation.weak,
                     )
                 })
                 .collect();
-            let _ = entry_state;
             let with_strength: Vec<_> = kept
                 .iter()
                 .map(|(kind, target, position, weak)| (*kind, *target, position.as_str(), *weak))
@@ -331,6 +316,10 @@ impl Model {
             out.push((*entity, json_of(&with_strength)));
         }
         out
+    }
+
+    fn entity_ids(&self) -> Vec<u64> {
+        self.entries.keys().copied().collect()
     }
 }
 
@@ -385,10 +374,13 @@ fn dump(store: &Store) -> Vec<(Vec<u8>, Vec<u8>)> {
         RELATIONS_OF_ENTRY,
         RELATIONS_BY_TARGET,
         RELATION_COUNT_BY_KIND_AND_TARGET,
-        DELETION_IN_PROGRESS_BY_KEY,
-        DELETION_IN_PROGRESS_BY_ENTITY,
-        RELATIONS_REMOVED_BY_DELETION,
+        DELETION_IN_PROGRESS,
+        RESTORE_IN_PROGRESS,
+        KEPT_RELATIONS_BY_TARGET,
+        KEPT_RELATIONS_BY_KIND,
+        RELATIONS_OF_DELETED_ENTRIES_BY_KIND,
         KINDS_BEING_MERGED,
+        KIND_MERGE_RECORDS_DUE,
         commit_checks::COMMIT_CHECK,
     ] {
         let prefix = kinds::key::of(structure);
@@ -421,8 +413,8 @@ fn step(store: &Store, model: &mut Model, rng: &mut Rng, next: &mut u64) {
                 ..Ent::default()
             };
             if rng.below(2) == 0 {
-                let mut targets = model.uids();
-                targets.push(own_key);
+                let mut targets = model.entity_ids();
+                targets.push(entity);
                 let json = random_rels(rng, &targets);
                 records.push(set_json(entity, relations_field_of(), &json));
                 ent.rels = Some(json);
@@ -436,7 +428,7 @@ fn step(store: &Store, model: &mut Model, rng: &mut Rng, next: &mut u64) {
         }
         3 | 4 if !entity_ids.is_empty() => {
             let entity = pick(rng);
-            let json = random_rels(rng, &model.uids());
+            let json = random_rels(rng, &model.entity_ids());
             store
                 .commit_wait(vec![set_json(entity, relations_field_of(), &json)])
                 .unwrap();
@@ -472,7 +464,7 @@ fn step(store: &Store, model: &mut Model, rng: &mut Rng, next: &mut u64) {
                     set_json(
                         entity,
                         relations_field_of(),
-                        r#"[{"kind":1,"target":1.5,"position":"a"}]"#,
+                        r#"[{"kind":1,"targetEntry":"1.5","position":"a"}]"#,
                     ),
                     Some("[]".into()),
                 ),
@@ -489,7 +481,7 @@ fn step(store: &Store, model: &mut Model, rng: &mut Rng, next: &mut u64) {
         }
         8 if entity_ids.len() >= 2 => {
             let (first_entry, second_entry) = (pick(rng), pick(rng));
-            let json_for_both = random_rels(rng, &model.uids());
+            let json_for_both = random_rels(rng, &model.entity_ids());
             let index_for_second = random_index(rng);
             store
                 .commit_wait(vec![
@@ -579,38 +571,31 @@ fn every_write_keeps_the_top_the_groups_and_the_counts_and_the_tree_is_the_one_a
 #[test]
 fn a_value_that_isnt_a_list_of_relations_holds_none_and_a_repeated_pair_counts_once() {
     let none = |json: &str| {
-        assert!(
-            relations::parse_relations_field(json.as_bytes()).is_empty(),
-            "{json}"
-        )
+        assert!(relations::parse_relations_field(json.as_bytes()).is_empty(), "{json}")
     };
     none("{}");
     none("[1]");
-    none(r#"[{"kind":1,"target":3}]"#);
-    none(r#"[{"kind":0,"target":3,"position":"a"}]"#);
-    none(r#"[{"kind":"in","target":3,"position":"a"}]"#);
-    none(r#"[{"kind":1.5,"target":3,"position":"a"}]"#);
-    none(r#"[{"relation":"in","target":3,"position":"a"}]"#);
-    none(r#"[{"kind":1,"target":3,"position":"a"},{"kind":1}]"#);
-    none(r#"[{"kind":1,"target":-3,"position":"a"}]"#);
-    none(r#"[{"kind":1,"target":3e2,"position":"a"}]"#);
-    none(r#"[{"kind":1,"target":3,"position":"a","weak":1}]"#);
-    none(r#"[{"kind":1,"target":3,"position":"a"}"#);
+    none(r#"[{"kind":1,"targetEntry":"3"}]"#);
+    none(r#"[{"kind":0,"targetEntry":"3","position":"a"}]"#);
+    none(r#"[{"kind":1,"target":3,"position":"a"}]"#);
+    none(r#"[{"kind":1,"targetEntry":3,"position":"a"}]"#);
+    none(r#"[{"kind":1,"targetEntry":"03","position":"a"}]"#);
+    none(r#"[{"kind":1,"targetEntry":"3","position":"a","weak":1}]"#);
     let got = relations::parse_relations_field(
-        r#" [ {"kind":1,"target":3,"position":"b","note":{"x":[1,2]}},
-              {"kind":1,"target":"3","position":"a"},
-              {"kind":7,"target":"Inn","position":"é😀","weak":true} ] "#
+        r#" [ {"kind":1,"targetEntry":"3","position":"b","note":{"x":[1,2]}},
+              {"kind":1,"targetEntry":"3","position":"a"},
+              {"kind":7,"targetEntry":"40","position":"é😀","weak":true} ] "#
             .as_bytes(),
     );
-    let got: Vec<(u64, Vec<u8>, Vec<u8>, bool)> = got
+    let got: Vec<(u64, u64, Vec<u8>, bool)> = got
         .into_iter()
         .map(|((kind, target), relation)| (kind, target, relation.position, relation.weak))
         .collect();
     assert_eq!(
         got,
         vec![
-            (1, b"3".to_vec(), b"b".to_vec(), false),
-            (7, b"Inn".to_vec(), "é😀".as_bytes().to_vec(), true),
+            (1, 3, b"b".to_vec(), false),
+            (7, 40, "é😀".as_bytes().to_vec(), true),
         ]
     );
 }
@@ -632,249 +617,221 @@ fn a_position_between_two_is_strictly_between_them() {
         let position = relations::position_between(low.map(str::as_bytes), high.map(str::as_bytes))
             .unwrap_or_else(|| panic!("{low:?} {high:?}"));
         assert!(std::str::from_utf8(&position).is_ok());
-        assert!(
-            low.is_none_or(|l| l.as_bytes() < position.as_slice()),
-            "{low:?} {position:?}"
-        );
-        assert!(
-            high.is_none_or(|h| position.as_slice() < h.as_bytes()),
-            "{high:?} {position:?}"
-        );
+        assert!(low.is_none_or(|low| low.as_bytes() < position.as_slice()));
+        assert!(high.is_none_or(|high| position.as_slice() < high.as_bytes()));
     }
-    assert_eq!(
-        relations::position_between(Some(b"a"), Some(b"a\x00")),
-        None
-    );
+    assert_eq!(relations::position_between(Some(b"a"), Some(b"a\x00")), None);
     assert_eq!(relations::position_between(Some(b"b"), Some(b"a")), None);
 }
 
-#[test]
-fn history_writes_restores_and_a_target_written_before_it_exists_keep_the_groups() {
-    let dir = temp_dir("history");
-    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
-    let user = 1;
+fn history_meta(change: u64) -> Vec<Value> {
+    vec![
+        Value::Id(change),
+        Value::Time(1_700_000_000_000 + change as i64),
+        Value::Absent,
+        Value::Id(1),
+    ]
+}
+
+pub(super) fn history_user(store: &Store) {
     store
         .commit_wait(vec![rec(
             "keyMap",
-            vec![
-                Value::Sel(chat::KEYED_USER, user),
-                Value::Bytes(b"user-1".to_vec()),
-            ],
+            vec![Value::Sel(chat::KEYED_USER, 1), Value::Bytes(b"user-1".to_vec())],
         )])
         .unwrap();
-    book(&store, B, "one");
-    let meta = |change: u64| {
-        vec![
-            Value::Id(change),
-            Value::Time(1_700_000_000_000 + change as i64),
-            Value::Absent,
-            Value::Id(user),
-        ]
-    };
-    let hist_set = |change: u64, entity: u64, json: &str| {
-        let mut view = vec![
-            Value::Id(entity),
-            Value::Field(relations::relations_field()),
-            text(json),
-            Value::Bit(true),
-        ];
-        view.extend(meta(change));
-        rec("histSet", view)
-    };
-    let hist_edit = |change: u64, entity: u64, at: u64, removed: u64, target: &str| {
-        let mut view = vec![
-            Value::Id(entity),
-            Value::Field(relations::relations_field()),
-            Value::UInt(at),
-            Value::UInt(removed),
-            text(target),
-            Value::Bit(true),
-        ];
-        view.extend(meta(change));
-        rec("histEdit", view)
-    };
-    let first_json = strong(&[(IN, 2, "m")]);
-    store
-        .commit_wait(vec![
-            hist_set(1, 10, &first_json),
-            create(10, ENTRY, "1:1"),
-            hist_set(2, 11, &strong(&[(IN, 1, "a")])),
-            create(11, ENTRY, "1:2"),
-            create(12, ENTRY, "1:3"),
-        ])
-        .unwrap();
-    let book_tree = relations::order_tree_space(B);
-    let top = |store: &Store| -> Vec<u64> {
-        read(store, |view| {
-            Ok(
-                tree::top_level_from_rank(view, &book_tree, Some(IN), 0, usize::MAX)?
-                    .iter()
-                    .map(tree::entity_of_order_key)
-                    .collect(),
-            )
-        })
-    };
-    assert_eq!(top(&store), vec![12]);
-    let at = first_json.find("\"m\"").unwrap() as u64 + 1;
-    store
-        .commit_wait(vec![hist_edit(3, 10, at, 1, "c")])
-        .unwrap();
-    assert_eq!(
-        read(&store, |view| relations::relations_of_entry(view, 10)),
-        relations::parse_relations_field(strong(&[(IN, 2, "c")]).as_bytes())
-    );
-    let mut del = vec![Value::Id(11)];
-    del.extend(meta(4));
-    store
-        .commit_wait(vec![rec("histEntityDelete", del)])
-        .unwrap();
-    assert_eq!(top(&store), vec![11, 12], "the deleted entry's place holds what still targets it");
-    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"2")).is_some());
-    let chunk = read(&store, |view| {
-        relations::rewrites_removing_relations_targeting(view, B, &[b"2".to_vec()], 1)
-    });
-    let (rewrites, more) = rewrites_of(&chunk);
-    assert_eq!((rewrites.len(), more), (1, false));
-    assert_eq!(rewrites[0].0, 10);
-    store
-        .commit_wait(vec![hist_set(5, 10, &rewrites[0].1)])
-        .unwrap();
-    assert_eq!(top(&store), vec![10, 12]);
-    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"2")).is_none());
-    assert_eq!(
-        read(&store, |view| relations::count_of_relations_of_kind_targeting(view, B, IN, b"1")),
-        0,
-        "the deleted entry's own relations went with it"
-    );
-    let mut restore = vec![
-        Value::Id(11),
-        Value::UInt(ENTRY),
-        text("1:2"),
-        Value::F64(0.0),
+}
+
+pub(super) fn soft_delete(entity: u64, change: u64) -> Record {
+    let mut values = vec![Value::Id(entity)];
+    values.extend(history_meta(change));
+    rec("histEntityDelete", values)
+}
+
+fn restore_record(entity: u64, own_key: &str, change: u64) -> Record {
+    let mut values = vec![Value::Id(entity), Value::UInt(ENTRY), text(own_key), Value::F64(0.0)];
+    values.extend(history_meta(change));
+    rec("histRestore", values)
+}
+
+fn hist_set_relations(change: u64, entity: u64, json: &str) -> Record {
+    let mut values = vec![
+        Value::Id(entity),
+        Value::Field(relations::relations_field()),
+        text(json),
+        Value::Bit(true),
     ];
-    restore.extend(meta(6));
+    values.extend(history_meta(change));
+    rec("histSet", values)
+}
+
+fn top_of(store: &Store, kind: Option<u64>) -> Vec<u64> {
+    let book_tree = relations::order_tree_space(B);
+    read(store, |view| {
+        Ok(tree::top_level_from_rank(view, &book_tree, kind, 0, usize::MAX)?
+            .iter()
+            .map(tree::entity_of_order_key)
+            .collect())
+    })
+}
+
+fn derive_job<T: Send + 'static>(
+    store: &Store,
+    field: impl FnOnce(&derive::View, &mut derive::Out) -> StoreResult<T> + Send + 'static,
+) -> T {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let got = Arc::new(std::sync::Mutex::new(None));
+    let put = got.clone();
+    store.inner.submit(Job::Derive(
+        Box::new(move |view, out| {
+            *put.lock().unwrap() = Some(field(view, out)?);
+            Ok(())
+        }),
+        Box::new(move |result| {
+            let _ = sender.send(result);
+        }),
+    ));
+    store.inner.ks.pool().exec.recv(&receiver).unwrap().unwrap();
+    got.lock().unwrap().take().unwrap()
+}
+
+fn steps_until_done(store: &Store, limit: usize) -> usize {
+    let mut steps = 0;
+    while let Some(step) = derive_job(store, move |view, out| relations::relation_step(view, out, limit)) {
+        steps += 1;
+        if !step.more && steps > 10_000 {
+            break;
+        }
+    }
+    steps
+}
+
+fn in_use_targeting(store: &Store, kind: u64, target: u64) -> u64 {
+    read(store, |view| relations::count_of_relations_of_kind_targeting(view, B, kind, target))
+}
+
+#[test]
+fn a_delete_keeps_what_targets_the_entry_in_its_sources_and_steps_it_out_of_use_and_a_restore_steps_it_back() {
+    let dir = temp_dir("delete-restore");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    history_user(&store);
+    book(&store, B, "one");
+    let sources = relations::RELATION_CHANGES_PER_STEP as u64 + 3;
+    let mut records = vec![create(10, ENTRY, "1:1")];
+    for source in 0..sources {
+        let entity = 100 + source;
+        records.push(create(entity, ENTRY, &format!("1:{}", source + 2)));
+        records.push(hist_set_relations(
+            1 + source,
+            entity,
+            &json_of(&[(IN, 10, "a", false), (OWES, 10, "b", true)]),
+        ));
+    }
+    store.commit_wait(records).unwrap();
+    let mut change = 10_000;
+    let mut next_change = || {
+        change += 1;
+        change
+    };
+    store.commit_wait(vec![soft_delete(10, next_change())]).unwrap();
+    assert_eq!(top_of(&store, Some(IN)), {
+        let mut top = vec![10];
+        top.extend(100..100 + relations::RELATION_CHANGES_PER_STEP as u64);
+        top
+    }, "the first step went with the delete; the rest show in the deleted entry's place");
+    assert_eq!(in_use_targeting(&store, IN, 10), 3);
+    assert!(top_of(&store, None).iter().all(|entity| *entity != 10));
     store
-        .commit_wait(vec![rec("histRestore", restore)])
-        .unwrap();
-    assert_eq!(top(&store), vec![10, 12]);
-    let chunk = read(&store, |view| {
-        relations::rewrites_restoring_relations_removed_by_deletion(view, B, 11, 10)
-    });
-    let (rewrites, more) = rewrites_of(&chunk);
-    assert_eq!((rewrites.len(), more), (1, false));
+        .commit_wait(vec![create(11, ENTRY, "1:1")])
+        .expect("the deleted entry's key can be taken while its deletion runs");
+    store
+        .commit_wait(vec![hist_set_relations(next_change(), 100 + sources - 1, "[]")])
+        .expect("a user removes one of the relations still in use");
+    assert_eq!(in_use_targeting(&store, IN, 10), 2);
+    assert_eq!(steps_until_done(&store, 1), 1004, "the relations still in use, one a step");
+    assert!(read(&store, |view| relations::deletion_in_progress(view, 10)).is_none());
+    assert_eq!(top_of(&store, Some(IN)).len() as u64, sources + 1, "every source and the new entry under key 1");
     assert_eq!(
-        relations::parse_relations_field(rewrites[0].1.as_bytes()),
-        relations::parse_relations_field(strong(&[(IN, 2, "c")]).as_bytes()),
-        "the restore puts back the relation as it was"
+        read(&store, |view| relations::relations_of_entry(view, 100)),
+        relations::parse_relations_field(json_of(&[(IN, 10, "a", false), (OWES, 10, "b", true)]).as_bytes()),
+        "the source's field still holds what it wrote"
     );
     store
-        .commit_wait(vec![hist_set(7, 10, &rewrites[0].1)])
-        .unwrap();
-    assert_eq!(top(&store), vec![12]);
-    let (rewrites, _) = rewrites_of(&read(&store, |view| {
-        relations::rewrites_restoring_relations_removed_by_deletion(view, B, 11, 10)
-    }));
-    assert!(rewrites.is_empty(), "nothing is left to restore");
+        .commit_wait(vec![hist_set_relations(next_change(), 101, "[]")])
+        .expect("a user removes a kept relation");
+    store
+        .commit_wait(vec![restore_record(10, "1:9999", next_change())])
+        .expect("the entry is restored under a free key");
+    assert_eq!(steps_until_done(&store, 2000), 1, "the first 1,000 came back in the restore's own commit");
+    assert_eq!(in_use_targeting(&store, IN, 10), sources - 2, "all but the two a user removed are back");
+    assert_eq!(top_of(&store, Some(IN)), vec![11, 101, 100 + sources - 1, 10]);
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn a_commit_that_ends_with_a_relation_to_a_missing_entry_or_kind_is_refused_and_loops_import_in_any_order()
- {
+fn a_commit_that_ends_with_a_relation_to_no_entry_of_the_world_or_a_missing_kind_is_refused_and_loops_import_in_any_order() {
     let dir = temp_dir("checks");
     let store = Store::open_in(&dir, SMALL, pool()).unwrap();
     book(&store, B, "one");
-    let relations_field_of = relations::relations_field;
+    let field = relations::relations_field;
     store
         .commit_wait(vec![
-            set_json(10, relations_field_of(), &strong(&[(IN, 2, "a")])),
+            set_json(10, field(), &strong(&[(IN, 11, "a")])),
             create(10, ENTRY, "1:1"),
-            set_json(11, relations_field_of(), &strong(&[(IN, 1, "a")])),
+            set_json(11, field(), &strong(&[(IN, 10, "a")])),
             create(11, ENTRY, "1:2"),
         ])
         .expect("a loop written in one commit");
-    let refused = |records: StoreResult<Vec<u64>>| matches!(records, Err(StoreError::Refused(_)));
+    let refused = |result: StoreResult<Vec<u64>>| matches!(result, Err(StoreError::Refused(_)));
     assert!(refused(store.commit_wait(vec![
         create(12, ENTRY, "1:3"),
-        set_json(12, relations_field_of(), &strong(&[(IN, 9, "a")])),
+        set_json(12, field(), &strong(&[(IN, 99, "a")])),
     ])));
     assert!(refused(store.commit_wait(vec![
         create(12, ENTRY, "1:3"),
-        set_json(12, relations_field_of(), &strong(&[(5, 1, "a")])),
+        set_json(12, field(), &strong(&[(5, 10, "a")])),
     ])));
-    assert!(refused(store.commit_wait(vec![drop_value(
-        B,
-        relations::relation_kind_field(IN)
-    )])));
+    assert!(refused(store.commit_wait(vec![drop_value(B, relations::relation_kind_field(IN))])));
     store
         .commit_wait(vec![drop_value(B, relations::relation_kind_field(OWES))])
         .expect("a kind nothing uses goes");
+    assert!(refused(store.commit_wait(vec![rec("entityDelete", vec![Value::Id(10)])])), "erasing an entry others name");
     store
-        .commit_wait(vec![rec("entityDelete", vec![Value::Id(10)])])
-        .expect("a delete is never refused for what targets the entry");
-    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"1")).is_some());
-    assert!(
-        refused(store.commit_wait(vec![create(13, ENTRY, "1:1")])),
-        "the key of an entry still being deleted can't be taken"
-    );
-    store
-        .commit_wait(vec![rec("entityDelete", vec![Value::Id(11)])])
-        .expect("the last relation targeting it goes with its source");
-    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"1")).is_none());
-    store
-        .commit_wait(vec![create(13, ENTRY, "1:1")])
-        .expect("then its key is free");
-    assert!(
-        dump(&store)
-            .iter()
-            .all(|(kind, _)| !commit_checks::is_check(kind))
-    );
-    store.close();
-    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
-    assert!(
-        dump(&store)
-            .iter()
-            .all(|(kind, _)| !commit_checks::is_check(kind)),
-        "replay drops them"
-    );
+        .commit_wait(vec![
+            rec("entityDelete", vec![Value::Id(10)]),
+            rec("entityDelete", vec![Value::Id(11)]),
+        ])
+        .expect("a loop erased in one commit");
+    assert!(dump(&store).iter().all(|(stored_key, _)| !commit_checks::is_check(stored_key)));
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }
 
-fn edit(store: &Store, entity: relations::RelationEdit) -> Result<String, String> {
-    let answer = read(store, |view| relations::relation_edit(view, B, &entity));
+fn edit(store: &Store, change: relations::RelationEdit) -> Result<String, String> {
+    let answer = read(store, |view| relations::relation_edit(view, B, &change));
     let Js::Obj(fields) = answer else { panic!() };
-    let get = |count: &str| {
-        fields
-            .iter()
-            .find(|(kind, _)| *kind == count)
-            .map(|(_, view)| view.clone())
-    };
+    let get = |name: &str| fields.iter().find(|(key_name, _)| *key_name == name).map(|(_, value)| value.clone());
     match (get("refused"), get("json")) {
         (Some(Js::Text(refusal_text)), _) => Err(String::from_utf8(refusal_text).unwrap()),
-        (_, Some(Js::Text(answer))) => Ok(String::from_utf8(answer).unwrap()),
+        (_, Some(Js::Text(json))) => Ok(String::from_utf8(json).unwrap()),
         other => panic!("{other:?}"),
     }
 }
 
 #[test]
-fn relation_edits_place_keep_other_items_as_written_and_refuse_what_cant_be() {
+fn relation_edits_place_keep_other_relations_and_fields_as_written_and_refuse_what_cant_be() {
     let dir = temp_dir("edits");
     let store = Store::open_in(&dir, SMALL, pool()).unwrap();
     book(&store, B, "one");
-    let relations_field_of = relations::relations_field;
+    let field = relations::relations_field;
     let mut records = Vec::new();
     for (entity, own_key) in [(10, 1), (11, 2), (12, 3), (13, 4)] {
         records.push(create(entity, ENTRY, &format!("1:{own_key}")));
     }
-    records.push(set_json(11, relations_field_of(), &strong(&[(IN, 1, "b")])));
-    records.push(set_json(12, relations_field_of(), &strong(&[(IN, 1, "d")])));
-    records.push(set_json(
-        13,
-        relations_field_of(),
-        r#"[{"kind":2,"target":2,"position":"a","note":"kept"}]"#,
-    ));
+    records.push(set_json(11, field(), &strong(&[(IN, 10, "b")])));
+    records.push(set_json(12, field(), &strong(&[(IN, 10, "d")])));
+    records.push(set_json(13, field(), r#"[{"kind":2,"targetEntry":"11","position":"a","note":"kept"}]"#));
     store.commit_wait(records).unwrap();
     let base = |change| relations::RelationEdit {
         entry: 13,
@@ -885,10 +842,8 @@ fn relation_edits_place_keep_other_items_as_written_and_refuse_what_cant_be() {
         before: None,
     };
     let last = edit(&store, base(relations::RelationChange::Add { weak: false })).unwrap();
-    let set = relations::parse_relations_field(last.as_bytes());
-    let position = &set[&(IN, b"1".to_vec())].position;
-    assert!(position.as_slice() > b"d".as_slice());
-    assert!(last.starts_with(r#"[{"kind":2,"target":2,"position":"a","note":"kept"},"#));
+    assert!(last.starts_with(r#"[{"kind":2,"targetEntry":"11","position":"a","note":"kept"},"#), "{last}");
+    assert!(relations::parse_relations_field(last.as_bytes())[&(IN, 10)].position.as_slice() > b"d".as_slice());
     let between = edit(
         &store,
         relations::RelationEdit {
@@ -898,195 +853,146 @@ fn relation_edits_place_keep_other_items_as_written_and_refuse_what_cant_be() {
         },
     )
     .unwrap();
-    let set = relations::parse_relations_field(between.as_bytes());
-    let placed = &set[&(IN, b"1".to_vec())];
-    assert!(
-        placed.weak
-            && placed.position.as_slice() > b"b".as_slice()
-            && placed.position.as_slice() < b"d".as_slice()
-    );
-    let first = edit(
-        &store,
-        relations::RelationEdit {
-            before: Some(11),
-            ..base(relations::RelationChange::Add { weak: false })
-        },
-    )
-    .unwrap();
-    let set = relations::parse_relations_field(first.as_bytes());
-    assert!(set[&(IN, b"1".to_vec())].position.as_slice() < b"b".as_slice());
+    let placed = &relations::parse_relations_field(between.as_bytes())[&(IN, 10)];
+    assert!(placed.weak && placed.position.as_slice() > b"b".as_slice() && placed.position.as_slice() < b"d".as_slice());
     assert_eq!(
-        edit(
-            &store,
-            relations::RelationEdit {
-                kind: 9,
-                ..base(relations::RelationChange::Remove)
-            }
-        ),
+        edit(&store, relations::RelationEdit { kind: 9, ..base(relations::RelationChange::Remove) }),
         Err("This world has no such relation kind.".into())
     );
-    assert_eq!(
-        edit(&store, base(relations::RelationChange::Remove)),
-        Err("The entry has no such relation.".into())
-    );
-    store
-        .commit_wait(vec![set_json(13, relations_field_of(), &last)])
-        .unwrap();
-    assert_eq!(
-        edit(&store, base(relations::RelationChange::Add { weak: false })),
-        Err("The entry already has that relation.".into())
-    );
-    let weak = edit(&store, base(relations::RelationChange::SetWeak(true))).unwrap();
-    assert!(relations::parse_relations_field(weak.as_bytes())[&(IN, b"1".to_vec())].weak);
-    let moved = edit(
-        &store,
-        base(relations::RelationChange::Move { new_target: 11 }),
-    )
-    .unwrap();
-    let set = relations::parse_relations_field(moved.as_bytes());
-    assert!(set.contains_key(&(IN, b"2".to_vec())) && !set.contains_key(&(IN, b"1".to_vec())));
     let owes = |change| relations::RelationEdit {
         kind: OWES,
         target: 11,
         ..base(change)
     };
     let weak_kept = edit(&store, owes(relations::RelationChange::SetWeak(true))).unwrap();
-    assert!(
-        weak_kept.contains(r#"{"kind":2,"target":2,"position":"a","note":"kept","weak":true}"#),
-        "{weak_kept}"
-    );
-    let moved_kept = edit(
-        &store,
-        owes(relations::RelationChange::Move { new_target: 12 }),
-    )
-    .unwrap();
-    let moved_set = relations::parse_relations_field(moved_kept.as_bytes());
-    assert!(moved_set.contains_key(&(OWES, b"3".to_vec())));
-    assert!(moved_kept.contains(r#""note":"kept""#), "{moved_kept}");
-    let removed = edit(&store, base(relations::RelationChange::Remove)).unwrap();
-    assert_eq!(
-        removed,
-        r#"[{"kind":2,"target":2,"position":"a","note":"kept"}]"#
-    );
-    store
-        .commit_wait(vec![set_text(10, relations_field_of(), "in: somewhere")])
-        .unwrap();
-    assert!(
-        edit(
-            &store,
-            relations::RelationEdit {
-                entry: 10,
-                target: 11,
-                ..base(relations::RelationChange::Add { weak: false })
-            }
-        )
-        .is_err()
-    );
+    assert!(weak_kept.contains(r#"{"kind":2,"targetEntry":"11","position":"a","note":"kept","weak":true}"#), "{weak_kept}");
+    let moved_kept = edit(&store, owes(relations::RelationChange::Move { new_target: 12 })).unwrap();
+    assert!(moved_kept.contains(r#""targetEntry":"12""#) && moved_kept.contains(r#""note":"kept""#), "{moved_kept}");
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn the_loop_check_finds_an_entry_only_a_loop_holds_and_says_nothing_past_its_limit_or_when_the_top_holds_it()
- {
+fn the_loop_check_finds_an_entry_only_a_loop_holds_and_says_nothing_past_its_limit_or_when_the_top_holds_it() {
     let dir = temp_dir("loops");
     let store = Store::open_in(&dir, SMALL, pool()).unwrap();
     book(&store, B, "one");
-    let relations_field_of = relations::relations_field;
+    let field = relations::relations_field;
     let mut records = Vec::new();
     for (entity, own_key) in [(10, 1), (11, 2), (12, 3), (13, 4)] {
         records.push(create(entity, ENTRY, &format!("1:{own_key}")));
     }
-    records.push(set_json(10, relations_field_of(), &strong(&[(IN, 2, "a")])));
-    records.push(set_json(11, relations_field_of(), &strong(&[(IN, 3, "a")])));
-    records.push(set_json(12, relations_field_of(), &strong(&[(IN, 1, "a")])));
-    records.push(set_json(13, relations_field_of(), &strong(&[(IN, 1, "a")])));
+    records.push(set_json(10, field(), &strong(&[(IN, 11, "a")])));
+    records.push(set_json(11, field(), &strong(&[(IN, 12, "a")])));
+    records.push(set_json(12, field(), &strong(&[(IN, 10, "a")])));
+    records.push(set_json(13, field(), &strong(&[(IN, 10, "a")])));
     store.commit_wait(records).unwrap();
     let unreached = |entities: &[u64], limit| {
-        read(&store, |view| {
-            relations::unreached_among(view, B, entities, limit)
-        })
-        .into_iter()
-        .map(|found| {
-            let mut entries = found.entries;
-            entries.sort();
-            (found.entry, found.kind, entries)
-        })
-        .collect::<Vec<_>>()
+        read(&store, |view| relations::unreached_among(view, B, entities, limit))
+            .into_iter()
+            .map(|found| {
+                let mut entries = found.entries;
+                entries.sort();
+                (found.entry, found.kind, entries)
+            })
+            .collect::<Vec<_>>()
     };
     assert_eq!(unreached(&[13], 10), vec![(13, IN, vec![10, 11, 12, 13])]);
-    assert_eq!(
-        unreached(&[13, 10, 11], 10),
-        vec![(13, IN, vec![10, 11, 12, 13])],
-        "the entries the first walk found aren't walked again"
-    );
-    assert_eq!(
-        unreached(&[13], 3),
-        vec![],
-        "past the limit it says nothing"
-    );
+    assert_eq!(unreached(&[13, 10, 11], 10), vec![(13, IN, vec![10, 11, 12, 13])]);
+    assert_eq!(unreached(&[13], 3), vec![]);
     store
-        .commit_wait(vec![set_json(
-            12,
-            relations_field_of(),
-            &json_of(&[(IN, 1, "a", true)]),
-        )])
+        .commit_wait(vec![set_json(12, field(), &json_of(&[(IN, 10, "a", true)]))])
         .unwrap();
     assert_eq!(unreached(&[13], 10), vec![], "the weak one is at the top");
-    let book_tree = relations::order_tree_space(B);
-    let top: Vec<u64> = read(&store, |view| {
-        Ok(
-            tree::top_level_from_rank(view, &book_tree, Some(IN), 0, 10)?
-                .iter()
-                .map(tree::entity_of_order_key)
-                .collect(),
+    assert_eq!(top_of(&store, Some(IN)), vec![12]);
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn merging_a_kind_rewrites_live_sources_including_kept_relations_and_its_record_maps_deleted_entries_until_restored() {
+    let dir = temp_dir("merge");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    history_user(&store);
+    book(&store, B, "one");
+    let mut records = vec![create(10, ENTRY, "1:1"), create(11, ENTRY, "1:2"), create(14, ENTRY, "1:5")];
+    records.push(create(12, ENTRY, "1:3"));
+    records.push(hist_set_relations(
+        1,
+        12,
+        r#"[{"kind":2,"targetEntry":"10","position":"a","note":"kept"},{"kind":1,"targetEntry":"10","position":"b","weak":true},{"kind":2,"targetEntry":"14","position":"a"}]"#,
+    ));
+    records.push(create(13, ENTRY, "1:4"));
+    records.push(hist_set_relations(2, 13, &json_of(&[(OWES, 11, "a", false)])));
+    store.commit_wait(records).unwrap();
+    store.commit_wait(vec![soft_delete(14, 3), soft_delete(13, 4)]).unwrap();
+    store
+        .commit_wait(vec![set_text(B, relations::relation_kind_merge_field(OWES), "1")])
+        .unwrap();
+    let refused = read(&store, |view| {
+        relations::relation_edit(
+            view,
+            B,
+            &relations::RelationEdit {
+                entry: 11,
+                kind: OWES,
+                target: 10,
+                change: relations::RelationChange::Add { weak: false },
+                after: None,
+                before: None,
+            },
         )
     });
-    assert_eq!(top, vec![12]);
+    assert!(matches!(&refused, Js::Obj(fields) if fields.iter().any(|(name, _)| *name == "refused")));
+    let (rewrites, more) = rewrites_of(&read(&store, |view| {
+        relations::rewrites_merging_relation_kind(view, B, OWES, IN, 10)
+    }));
+    assert_eq!((rewrites.len(), more), (1, false), "only the live source; the deleted one keeps its field");
+    store
+        .commit_wait(vec![hist_set_relations(5, rewrites[0].0, &rewrites[0].1)])
+        .unwrap();
+    let folded = read(&store, |view| relations::relations_of_entry(view, 12));
+    assert_eq!(folded.keys().copied().collect::<Vec<_>>(), vec![(IN, 10), (IN, 14)]);
+    assert!(!folded[&(IN, 10)].weak);
+    assert!(String::from_utf8_lossy(&folded[&(IN, 10)].item).contains(r#""note":"kept""#));
+    store
+        .commit_wait(vec![drop_value(B, relations::relation_kind_field(OWES))])
+        .expect("the merged kind's name goes while a deleted entry still holds its record");
+    let pending = read(&store, relations::pending_worldbuilding_jobs);
+    assert!(format!("{pending:?}").contains("mergeRecordsDue\", Arr([])"));
+    let kept = read(&store, |view| relations::relations_kept(view, B, 13));
+    let Js::Obj(fields) = kept else { panic!("{kept:?}") };
+    let Js::Text(json) = &fields.iter().find(|(name, _)| *name == "json").unwrap().1 else { panic!() };
+    let json = String::from_utf8(json.clone()).unwrap();
+    assert_eq!(json, json_of(&[(IN, 11, "a", false)]), "a restore rewrites the merged kind by the record");
+    store
+        .commit_wait(vec![restore_record(13, "1:4", 6), hist_set_relations(7, 13, &json)])
+        .unwrap();
+    let pending = read(&store, relations::pending_worldbuilding_jobs);
+    assert!(format!("{pending:?}").contains("mergeRecordsDue\", Arr([Obj"), "{pending:?}");
+    store
+        .commit_wait(vec![drop_value(B, relations::relation_kind_merge_field(OWES))])
+        .unwrap();
+    let pending = read(&store, relations::pending_worldbuilding_jobs);
+    assert!(format!("{pending:?}").contains("mergeRecordsDue\", Arr([])"));
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }
 
 fn rewrites_of(chunk: &Js) -> (Vec<(u64, String)>, bool) {
-    let Js::Obj(fields) = chunk else {
-        panic!("not a chunk: {chunk:?}")
-    };
+    let Js::Obj(fields) = chunk else { panic!("not a chunk: {chunk:?}") };
     let field = |name: &str| &fields.iter().find(|(key_name, _)| *key_name == name).unwrap().1;
-    let Js::Arr(rewrites) = field("rewrites") else {
-        panic!()
-    };
+    let Js::Arr(rewrites) = field("rewrites") else { panic!() };
     let rewrites = rewrites
         .iter()
         .map(|rewrite| {
             let Js::Obj(parts) = rewrite else { panic!() };
             let part = |name: &str| &parts.iter().find(|(key_name, _)| *key_name == name).unwrap().1;
-            let (Js::Big(entity), Js::Text(json)) = (part("entity"), part("json")) else {
-                panic!()
-            };
+            let (Js::Big(entity), Js::Text(json)) = (part("entity"), part("json")) else { panic!() };
             (*entity, String::from_utf8(json.clone()).unwrap())
         })
         .collect();
     (rewrites, field("more") == &Js::Bool(true))
-}
-
-fn derive_job<T: Send + 'static>(
-    store: &Store,
-    field: impl FnOnce(&derive::View, &mut derive::Out) -> StoreResult<T> + Send + 'static,
-) -> T {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let got = Arc::new(std::sync::Mutex::new(None));
-    let put = got.clone();
-    store.inner.submit(Job::Derive(
-        Box::new(move |view, out| {
-            *put.lock().unwrap() = Some(field(view, out)?);
-            Ok(())
-        }),
-        Box::new(move |records| {
-            let _ = tx.send(records);
-        }),
-    ));
-    store.inner.ks.pool().exec.recv(&rx).unwrap().unwrap();
-    got.lock().unwrap().take().unwrap()
 }
 
 #[test]
@@ -1112,8 +1018,8 @@ fn the_conversion_builds_for_a_store_written_before_the_tree_what_its_writes_wou
             RELATION_COUNT_BY_KIND_AND_TARGET,
         ] {
             let prefix = kinds::key::of(structure);
-            for (kind, _) in view.scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)? {
-                out.del(kind);
+            for (stored_key, _) in view.scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)? {
+                out.del(stored_key);
             }
         }
         Ok(())
@@ -1133,189 +1039,9 @@ fn the_conversion_builds_for_a_store_written_before_the_tree_what_its_writes_wou
     }
     assert!(jobs > 1);
     assert_eq!(dump(&store), want);
-    derive_job(&store, |view, out| {
-        relations::world_order_conversion_step(view, out, None, 1000)
-    });
+    derive_job(&store, |view, out| relations::world_order_conversion_step(view, out, None, 1000));
     assert_eq!(dump(&store), want);
     model.check(&store);
-    store.close();
-    let _ = fs::remove_dir_all(&dir);
-}
-
-fn history_meta(change: u64) -> Vec<Value> {
-    vec![
-        Value::Id(change),
-        Value::Time(1_700_000_000_000 + change as i64),
-        Value::Absent,
-        Value::Id(1),
-    ]
-}
-
-fn history_user(store: &Store) {
-    store
-        .commit_wait(vec![rec(
-            "keyMap",
-            vec![Value::Sel(chat::KEYED_USER, 1), Value::Bytes(b"user-1".to_vec())],
-        )])
-        .unwrap();
-}
-
-fn top_of(store: &Store, kind: Option<u64>) -> Vec<u64> {
-    let book_tree = relations::order_tree_space(B);
-    read(store, |view| {
-        Ok(tree::top_level_from_rank(view, &book_tree, kind, 0, usize::MAX)?
-            .iter()
-            .map(tree::entity_of_order_key)
-            .collect())
-    })
-}
-
-#[test]
-fn a_large_delete_goes_at_once_and_its_relations_go_in_chunks_and_a_restore_midway_puts_back_what_went() {
-    let dir = temp_dir("chunked");
-    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
-    history_user(&store);
-    book(&store, B, "one");
-    let mut records = vec![create(10, ENTRY, "1:1")];
-    for source in 11..16 {
-        records.push(create(source, ENTRY, &format!("1:{}", source - 9)));
-        records.push(set_json(
-            source,
-            relations::relations_field(),
-            &json_of(&[(IN, 1, "a", false), (OWES, 1, "b", true)]),
-        ));
-    }
-    store.commit_wait(records).unwrap();
-    assert_eq!(top_of(&store, Some(IN)), vec![10]);
-    let mut delete = vec![Value::Id(10)];
-    delete.extend(history_meta(1));
-    store
-        .commit_wait(vec![rec("histEntityDelete", delete)])
-        .unwrap();
-    assert_eq!(top_of(&store, Some(IN)), vec![10], "the place of the deleted entry holds them");
-    assert_eq!(top_of(&store, Some(OWES)), vec![10, 11, 12, 13, 14, 15]);
-    assert_eq!(top_of(&store, None), vec![11, 12, 13, 14, 15], "ungrouped, it is gone");
-    let chunk = |store: &Store| {
-        rewrites_of(&read(store, |view| {
-            relations::rewrites_removing_relations_targeting(view, B, &[b"1".to_vec()], 2)
-        }))
-    };
-    let (first, more) = chunk(&store);
-    assert_eq!((first.len(), more), (2, true));
-    store
-        .commit_wait(
-            first
-                .iter()
-                .map(|(source, json)| set_json(*source, relations::relations_field(), json))
-                .collect(),
-        )
-        .unwrap();
-    assert_eq!(top_of(&store, Some(IN)), vec![10, 11, 12]);
-    let mut restore = vec![Value::Id(10), Value::UInt(ENTRY), text("1:1"), Value::F64(0.0)];
-    restore.extend(history_meta(2));
-    store
-        .commit_wait(vec![rec("histRestore", restore)])
-        .unwrap();
-    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"1")).is_none());
-    assert_eq!(top_of(&store, Some(IN)), vec![10, 11, 12]);
-    assert_eq!(top_of(&store, None), vec![10, 11, 12, 13, 14, 15]);
-    let (back, more) = rewrites_of(&read(&store, |view| {
-        relations::rewrites_restoring_relations_removed_by_deletion(view, B, 10, 100)
-    }));
-    assert_eq!((back.len(), more), (2, false));
-    store
-        .commit_wait(
-            back.iter()
-                .map(|(source, json)| set_json(*source, relations::relations_field(), json))
-                .collect(),
-        )
-        .unwrap();
-    assert_eq!(top_of(&store, Some(IN)), vec![10]);
-    assert_eq!(
-        read(&store, |view| relations::relations_of_entry(view, 11)),
-        relations::parse_relations_field(
-            json_of(&[(IN, 1, "a", false), (OWES, 1, "b", true)]).as_bytes()
-        ),
-        "the relations of both kinds came back as they were"
-    );
-    store.close();
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn merging_a_kind_rewrites_its_relations_in_chunks_folding_twins_into_one_and_then_the_kind_can_go() {
-    let dir = temp_dir("merge");
-    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
-    book(&store, B, "one");
-    let mut records = vec![create(10, ENTRY, "1:1"), create(11, ENTRY, "1:2")];
-    records.push(create(12, ENTRY, "1:3"));
-    records.push(set_json(
-        12,
-        relations::relations_field(),
-        r#"[{"kind":2,"target":1,"position":"a","note":"kept"},{"kind":1,"target":1,"position":"b","weak":true}]"#,
-    ));
-    records.push(create(13, ENTRY, "1:4"));
-    records.push(set_json(13, relations::relations_field(), &json_of(&[(OWES, 2, "a", false)])));
-    store.commit_wait(records).unwrap();
-    store
-        .commit_wait(vec![set_text(B, relations::relation_kind_merge_field(OWES), "1")])
-        .unwrap();
-    let edit = relations::RelationEdit {
-        entry: 11,
-        kind: OWES,
-        target: 10,
-        change: relations::RelationChange::Add { weak: false },
-        after: None,
-        before: None,
-    };
-    let refused = read(&store, |view| relations::relation_edit(view, B, &edit));
-    assert!(
-        matches!(&refused, Js::Obj(fields) if fields.iter().any(|(name, _)| *name == "refused")),
-        "a kind being merged can't be picked for a new relation"
-    );
-    let pending = read(&store, relations::pending_worldbuilding_jobs);
-    assert!(format!("{pending:?}").contains("merges\", Arr([Obj"));
-    let mut rounds = 0;
-    loop {
-        let (rewrites, more) = rewrites_of(&read(&store, |view| {
-            relations::rewrites_merging_relation_kind(view, B, OWES, IN, 1)
-        }));
-        if rewrites.is_empty() {
-            break;
-        }
-        rounds += 1;
-        store
-            .commit_wait(
-                rewrites
-                    .iter()
-                    .map(|(source, json)| set_json(*source, relations::relations_field(), json))
-                    .collect(),
-            )
-            .unwrap();
-        if !more {
-            break;
-        }
-    }
-    assert_eq!(rounds, 2);
-    assert!(!read(&store, |view| relations::relation_kind_in_use(view, B, OWES)));
-    let folded = read(&store, |view| relations::relations_of_entry(view, 12));
-    assert_eq!(folded.len(), 1);
-    let relation = &folded[&(IN, b"1".to_vec())];
-    assert!(!relation.weak, "a strong relation folded into a weak twin keeps it held");
-    assert!(String::from_utf8_lossy(&relation.item).contains(r#""note":"kept""#));
-    assert!(read(&store, |view| relations::relations_of_entry(view, 13)).contains_key(&(IN, b"2".to_vec())));
-    assert!(matches!(
-        store.commit_wait(vec![drop_value(B, relations::relation_kind_field(IN))]),
-        Err(StoreError::Refused(_))
-    ));
-    store
-        .commit_wait(vec![
-            drop_value(B, relations::relation_kind_field(OWES)),
-            drop_value(B, relations::relation_kind_merge_field(OWES)),
-        ])
-        .unwrap();
-    let pending = read(&store, relations::pending_worldbuilding_jobs);
-    assert!(format!("{pending:?}").contains("merges\", Arr([])"));
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }

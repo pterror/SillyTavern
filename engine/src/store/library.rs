@@ -924,7 +924,7 @@ fn delete_entity(
         tags::deleted(view, out, e, k, at)?;
     }
     searched::gone(view, out, e, kind, k)?;
-    super::book_stats::gone(view, out, e, kind, k)?;
+    super::book_stats::gone(view, out, e, kind, k, true)?;
     tags::entity_gone(view, out, e)?;
     super::local_import::entity_gone(view, out, e)?;
     super::choices::holder_gone(view, out, e)?;

@@ -1,5 +1,5 @@
 use super::StoreError;
-use super::books::{ENTRY, EntryKey, entry_key, parse_entry_key};
+use super::books::{ENTRY, EntryKey, parse_entry_key};
 use super::chat_read::Js;
 use super::derive::View;
 use super::kinds::{key, text_value};
@@ -38,7 +38,7 @@ pub enum OverviewStep {
 
 struct DrawnEntry {
     entity: u64,
-    own_key: EntryKey,
+    own_key: Option<EntryKey>,
     occurrence: String,
     grouping_kind_relations_targeting_this: u64,
     place_of_deleted_entry: bool,
@@ -80,9 +80,9 @@ fn draw_entry(
 ) -> Result<DrawnEntry, StoreError> {
     let entity = *path.last().expect("a drawn entry is on its path");
     let (own_key, place_of_deleted_entry) = match uid_in(view, grouping.book, entity)? {
-        Some(own_key) => (own_key, false),
-        None => match relations::deleted_entry_key_in_progress(view, entity)? {
-            Some((book, target_key)) if book == grouping.book => (EntryKey::parse(&target_key), true),
+        Some(own_key) => (Some(own_key), false),
+        None => match relations::deletion_in_progress(view, entity)? {
+            Some(deleting) if deleting.book == grouping.book => (None, true),
             _ => return Err(StoreError::Entry(format!("{entity} isn't an entry of this world"))),
         },
     };
@@ -100,9 +100,8 @@ fn draw_entry(
     let Some(kind) = grouping.kind else {
         return Ok(drawn);
     };
-    let target_key = drawn.own_key.text();
     drawn.grouping_kind_relations_targeting_this =
-        relations::count_of_relations_of_kind_targeting(view, grouping.book, kind, &target_key)?;
+        relations::count_of_relations_of_kind_targeting(view, grouping.book, kind, entity)?;
     let level = path.len() - 1;
     let Some(region) = layout.get(level) else {
         return Ok(drawn);
@@ -119,7 +118,7 @@ fn draw_entry(
     } else {
         cells - 1
     };
-    let prefix = relations::relations_of_kind_targeting_prefix(grouping.book, kind, &target_key);
+    let prefix = relations::relations_of_kind_targeting_prefix(grouping.book, kind, entity);
     for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), shown as usize)? {
         let (_, source) =
             relations::position_and_source_of_relation_of_kind_targeting(&prefix, &stored_key)?;
@@ -197,26 +196,22 @@ fn top_level_rank_of(
     entity: u64,
 ) -> Result<Option<u64>, StoreError> {
     let Some(own_key) = uid_in(view, grouping.book, entity)? else {
-        let Some((book, target_key)) = relations::deleted_entry_key_in_progress(view, entity)? else {
+        let (Some(kind), Some(deleting)) =
+            (grouping.kind, relations::deletion_in_progress(view, entity)?)
+        else {
             return Ok(None);
         };
-        let (Some(kind), Some(deleting)) = (
-            grouping.kind,
-            relations::deletion_in_progress(view, book, &target_key)?,
-        ) else {
-            return Ok(None);
-        };
-        if book != grouping.book
-            || relations::count_of_relations_of_kind_targeting(view, book, kind, &target_key)? == 0
+        if deleting.book != grouping.book
+            || relations::count_of_relations_of_kind_targeting(view, deleting.book, kind, entity)? == 0
         {
             return Ok(None);
         }
         let order_key = tree::order_key(deleting.order_value, entity);
-        let book_tree = relations::order_tree_space(book);
+        let book_tree = relations::order_tree_space(deleting.book);
         return tree::top_level_rank(view, &book_tree, &order_key, grouping.kind).map(Some);
     };
     if let Some(kind) = grouping.kind
-        && relations::strong_kinds(&relations::relations_of_entry(view, entity)?).contains(&kind)
+        && relations::strong_kinds_in_use_of_entry(view, entity)?.contains(&kind)
     {
         return Ok(None);
     }
@@ -407,7 +402,7 @@ fn card(
         return Ok(vec![
             ("cell", Js::Text(b"placeOfDeletedEntry".to_vec())),
             ("occurrence", Js::Text(drawn.occurrence.clone().into_bytes())),
-            ("entryKey", Js::Text(drawn.own_key.text())),
+            ("entryKey", drawn.own_key.as_ref().map_or(Js::Null, |own_key| Js::Text(own_key.text()))),
             (
                 "groupingKindRelationsTargetingThis",
                 Js::Num(drawn.grouping_kind_relations_targeting_this as f64),
@@ -428,12 +423,9 @@ fn card(
         }
     }
     let mut relations_line = Vec::new();
-    for ((kind, target_key), relation) in relations::relations_of_entry(view, drawn.entity)? {
-        let target = library::entity_by_key(
-            view,
-            ENTRY,
-            &entry_key(grouping.book, &EntryKey::parse(&target_key)),
-        )?;
+    for ((kind, target), stored) in relations::stored_relations_of_entry(view, drawn.entity)? {
+        let relation = stored.relation;
+        let target_key = uid_in(view, grouping.book, target)?;
         relations_line.push(Js::Obj(vec![
             ("kind", Js::Text(kind.to_string().into_bytes())),
             (
@@ -441,19 +433,20 @@ fn card(
                 relations::relation_kind_name(view, grouping.book, kind)?
                     .map_or(Js::Null, Js::Text),
             ),
+            ("targetDeleted", Js::Bool(target_key.is_none())),
             (
-                "targetBeingDeleted",
-                Js::Bool(relations::deletion_in_progress(view, grouping.book, &target_key)?.is_some()),
+                "inUse",
+                Js::Bool(stored.state == relations::RelationState::InUse),
             ),
-            ("targetKey", Js::Text(target_key)),
             (
-                "target",
-                target.map_or(Js::Null, |entity| Js::Text(entity.to_string().into_bytes())),
+                "targetKey",
+                target_key.as_ref().map_or(Js::Null, |own_key| Js::Text(own_key.text())),
             ),
+            ("target", Js::Text(target.to_string().into_bytes())),
             (
                 "targetTitle",
-                match target {
-                    Some(entity) => text_or_null(view, entity, COMMENT)?,
+                match target_key {
+                    Some(_) => text_or_null(view, target, COMMENT)?,
                     None => Js::Null,
                 },
             ),
@@ -467,7 +460,7 @@ fn card(
             Js::Text(drawn.occurrence.clone().into_bytes()),
         ),
         ("entry", Js::Text(drawn.entity.to_string().into_bytes())),
-        ("entryKey", Js::Text(drawn.own_key.text())),
+        ("entryKey", drawn.own_key.as_ref().map_or(Js::Null, |own_key| Js::Text(own_key.text()))),
         ("title", text_or_null(view, drawn.entity, COMMENT)?),
         ("text", Js::Text(text)),
         ("textCut", Js::Bool(text_cut)),

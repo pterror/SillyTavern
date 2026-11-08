@@ -484,6 +484,20 @@ pub(super) fn value_of(
     })
 }
 
+pub fn json_value_live_or_deleted(
+    view: &View,
+    e: u64,
+    f: &FieldRef,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    if let Some(value) = json_value(view, e, f)? {
+        return Ok(Some(value));
+    }
+    Ok(match chain_before(view, None, e, f, None)?.value()? {
+        Some((true, value)) => Some(value),
+        _ => None,
+    })
+}
+
 pub fn json_value(view: &View, e: u64, f: &FieldRef) -> Result<Option<Vec<u8>>, StoreError> {
     match Cur::get(view, e, f)? {
         Some(cur @ (Cur::Json(_) | Cur::Whole(_))) => Ok(Some(value_of(view, e, f, &cur)?.1)),
@@ -749,6 +763,10 @@ pub fn repoint_gone(
 
 fn deleted_key(book: u64, e: u64) -> Vec<u8> {
     key::ids(DELETED, book, e)
+}
+
+pub fn is_deleted_entry_of_book(view: &View, book: u64, e: u64) -> Result<bool, StoreError> {
+    Ok(view.get(&deleted_key(book, e))?.is_some())
 }
 
 fn place_change(
@@ -1132,7 +1150,7 @@ impl Deriver for EntityDelete {
                 varints(&[flags, place.unwrap_or(0), index.map_or(0, f64::to_bits)]),
             );
         }
-        let made = take_down(view, out, e, kind, &k, at)?;
+        let made = take_down(view, out, e, kind, &k, at, false)?;
         out.put(key::id(GONE, e), varints(&[made.pos, made.len, at.pos]));
         let mut local = BTreeMap::new();
         file(out, &mut local, e, None, Family::Entity, m.change(), at);
@@ -1166,9 +1184,10 @@ fn take_down(
     kind: u64,
     k: &[u8],
     at: Loc,
+    erased: bool,
 ) -> Result<Loc, StoreError> {
     super::searched::gone(view, out, e, kind, k)?;
-    super::book_stats::gone(view, out, e, kind, k)?;
+    super::book_stats::gone(view, out, e, kind, k, erased)?;
     super::tags::entity_gone(view, out, e)?;
     super::local_import::entity_gone(view, out, e)?;
     super::choices::holder_gone(view, out, e)?;
@@ -1210,7 +1229,7 @@ fn held_by_its_change(view: &View, l: Loc) -> Result<bool, StoreError> {
 
 pub fn erase(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<bool, StoreError> {
     let made = match entity_info(view, e)? {
-        Some((kind, k, _)) if library::history_kept(kind) => take_down(view, out, e, kind, &k, at)?,
+        Some((kind, k, _)) if library::history_kept(kind) => take_down(view, out, e, kind, &k, at, true)?,
         Some(_) => return Ok(false),
         None => {
             let Some([pos, len, _]) = gone(view, e)? else {
@@ -1221,8 +1240,7 @@ pub fn erase(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<bool, StoreE
             if id(&was, 1) == ENTRY {
                 let (book, _) = books::parse_entry_key(bytes(&was, 2))?;
                 out.del(deleted_key(book, e));
-                super::relations::deleted_entry_erased(view, out, e)?;
-                super::relations::removed_by_deletion_of_erased(view, out, book, e)?;
+                super::relations::deleted_entry_erased(view, out, book, e)?;
             }
             out.del(key::id(GONE, e));
             made

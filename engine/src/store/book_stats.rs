@@ -165,18 +165,24 @@ fn owned_value_changed(
             super::commit_checks::relation_kind_check_key(e, kind),
             Vec::new(),
         );
+        let mut writes = super::world_order_tree::LayeredWrites::new(view);
+        super::relations::refresh_kind_merge_state(&mut writes, e, kind, Some(new.is_some() && !json), None)?;
+        writes.finish(out);
     } else if let Some(kind) = super::relations::kind_of_relation_kind_merge_field(f) {
-        let merging_key = super::relations::kind_being_merged_key(e, kind);
-        match new.and_then(super::relations::merge_target_of_text).filter(|_| !json) {
-            Some(into) => {
-                out.put(merging_key, super::relations::kind_being_merged_value(into));
-                out.put(
-                    super::commit_checks::relation_kind_check_key(e, into),
-                    Vec::new(),
-                );
-            }
-            None => out.del(merging_key),
+        let into = new.and_then(super::relations::merge_target_of_text).filter(|_| !json);
+        out.put(
+            super::commit_checks::relation_kind_check_key(e, kind),
+            Vec::new(),
+        );
+        if let Some(into) = into {
+            out.put(
+                super::commit_checks::relation_kind_check_key(e, into),
+                Vec::new(),
+            );
         }
+        let mut writes = super::world_order_tree::LayeredWrites::new(view);
+        super::relations::refresh_kind_merge_state(&mut writes, e, kind, None, Some(into))?;
+        writes.finish(out);
     }
     let old = field_stat(view, e, f, json)?;
     let now = match new {
@@ -247,10 +253,17 @@ fn drop_fields(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
-pub fn gone(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Result<(), StoreError> {
+pub fn gone(
+    view: &View,
+    out: &mut Out,
+    e: u64,
+    kind: u64,
+    k: &[u8],
+    erased: bool,
+) -> Result<(), StoreError> {
     if kind == ENTRY {
         if let Some(Owner::Entry { book, own_key }) = owner_of(view, kind, k)? {
-            super::relations::entry_deleted(view, out, book, e, &own_key)?;
+            super::relations::entry_deleted(view, out, book, e, &own_key, erased)?;
             let s = entry_stat(view, e)?;
             add(
                 out,

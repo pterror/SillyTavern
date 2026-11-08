@@ -4,7 +4,7 @@ use super::books::ENTRY;
 use super::chat_read::Js;
 use super::overview::{self, Grouping, OverviewLayout, OverviewStep, RegionLayout};
 use super::relations;
-use super::relations_tests::{
+use super::relations_tests::{history_user, soft_delete, 
     IN as IN_KIND, OWES, book, create, index, rec, set_json, strong, text,
 };
 use super::*;
@@ -134,7 +134,12 @@ fn world(store: &Store) {
             records.push(set_json(
                 entity_of_uid(own_key),
                 relations::relations_field(),
-                &strong(relations_line),
+                &strong(
+                    &relations_line
+                        .iter()
+                        .map(|(kind, target, position)| (*kind, entity_of_uid(*target), *position))
+                        .collect::<Vec<_>>(),
+                ),
             ));
         }
         records
@@ -394,44 +399,8 @@ fn a_move_steps_through_reading_order_across_top_level_entries_and_hops_to_paren
         OverviewStep::InReadingOrder(1)
     )
     .is_err())));
-    let mut records: Vec<Record> = [102, 103, 104, 110]
-        .iter()
-        .map(|entity| set_json(*entity, relations::relations_field(), "[]"))
-        .collect();
-    records.push(set_json(
-        105,
-        relations::relations_field(),
-        &strong(&[(OWES, 8, "a")]),
-    ));
-    store
-        .commit_wait(vec![rec("entityDelete", vec![Value::Id(101)])])
-        .unwrap();
-    let while_deleting = read(&store, |view| {
-        overview::read_overview(view, IN, &LAYOUT, 0, 10, None)
-    });
-    let mut outline_while_deleting = Vec::new();
-    for entry_cell in list_of(field_of(&while_deleting, "entries")) {
-        outline(entry_cell, &mut outline_while_deleting);
-    }
-    assert_eq!(
-        outline_while_deleting,
-        [
-            "111",
-            "101",
-            "101/102",
-            "101/102/106",
-            "101/103",
-            "101/104",
-            "101/+=2",
-            "108",
-            "108/109",
-            "108/109/109!",
-        ],
-        "until their relations are removed, what targeted the deleted entry shows in its place"
-    );
-    let place = &list_of(field_of(&while_deleting, "entries"))[1];
-    assert_eq!(text_of(field_of(place, "cell")), "placeOfDeletedEntry");
-    store.commit_wait(records).unwrap();
+    history_user(&store);
+    store.commit_wait(vec![soft_delete(101, 1)]).unwrap();
     let overview_read = read(&store, |view| {
         overview::read_overview(view, IN, &LAYOUT, 0, 10, None)
     });

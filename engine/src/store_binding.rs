@@ -1469,6 +1469,36 @@ impl Store {
         Ok(promise)
     }
 
+    #[napi(
+        ts_args_type = "limit: number",
+        ts_return_type = "Promise<{ book: bigint, entry: bigint, changedSources: bigint[], more: boolean } | null>"
+    )]
+    pub fn worldbuilding_relation_step<'env>(&self, env: &'env Env, limit: u32) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.worldbuilding_relation_step(
+            limit.max(1) as usize,
+            Box::new(move |r| match r {
+                Ok(step) => deferred.resolve(move |_| {
+                    use crate::store::chat_read::Js;
+                    Ok(JsTree(match step {
+                        None => Js::Null,
+                        Some(step) => Js::Obj(vec![
+                            ("book", Js::Big(step.book)),
+                            ("entry", Js::Big(step.entry)),
+                            (
+                                "changedSources",
+                                Js::Arr(step.changed_sources.into_iter().map(Js::Big).collect()),
+                            ),
+                            ("more", Js::Bool(step.more)),
+                        ]),
+                    }))
+                }),
+                Err(e) => deferred.reject(store_error(e)),
+            }),
+        );
+        Ok(promise)
+    }
+
     #[napi(ts_return_type = "Promise<number>")]
     pub fn pairs_mode<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         derived(env, &self.store, |s| s.pairs_mode().map(|m| m as u32))
@@ -2909,37 +2939,23 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
-        "worldbuildingRelationsWithout" => {
+        "worldbuildingSourcesTargeting" | "worldbuildingEntriesOfWorld" => {
             use crate::store::relations;
-            let (book, keys, limit) = (
-                req_integer(a, "book")?,
-                byte_list(a, "keys")?,
-                req_integer(a, "limit")? as usize,
-            );
-            Box::new(move |store| {
-                store
-                    .chat_read(|view| {
-                        relations::rewrites_removing_relations_targeting(view, book, &keys, limit)
-                    })
-                    .map(JsTree)
-            })
-        }
-        "worldbuildingRelationsToRestore" => {
-            use crate::store::relations;
-            let (book, entity, limit) = (
-                req_integer(a, "book")?,
-                req_integer(a, "entity")?,
-                req_integer(a, "limit")? as usize,
-            );
-            Box::new(move |store| {
-                store
-                    .chat_read(|view| {
-                        relations::rewrites_restoring_relations_removed_by_deletion(
-                            view, book, entity, limit,
-                        )
-                    })
-                    .map(JsTree)
-            })
+            let (book, entities) = (req_integer(a, "book")?, integers(a, "entities")?);
+            if op == "worldbuildingSourcesTargeting" {
+                let limit = req_integer(a, "limit")? as usize;
+                Box::new(move |store| {
+                    store
+                        .chat_read(|view| relations::sources_targeting(view, book, &entities, limit))
+                        .map(JsTree)
+                })
+            } else {
+                Box::new(move |store| {
+                    store
+                        .chat_read(|view| relations::entries_of_world(view, book, &entities))
+                        .map(JsTree)
+                })
+            }
         }
         "worldbuildingKindMergeRewrites" => {
             use crate::store::relations;

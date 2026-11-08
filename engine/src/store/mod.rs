@@ -806,6 +806,22 @@ impl Store {
     }
 
 
+    pub fn worldbuilding_relation_step(
+        &self,
+        limit: usize,
+        done: Box<dyn FnOnce(StoreResult<Option<relations::RelationStep>>) + Send>,
+    ) {
+        let next = Arc::new(Mutex::new(None));
+        let found = next.clone();
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| {
+                *found.lock().unwrap() = relations::relation_step(view, out, limit)?;
+                Ok(())
+            }),
+            Box::new(move |r| done(r.map(|()| next.lock().unwrap().take()))),
+        ));
+    }
+
     pub fn tag_pass(&self) -> StoreResult<tags::PassStatus> {
         self.derived(tags::pass_status)
     }
