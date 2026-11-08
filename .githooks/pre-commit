@@ -21,14 +21,15 @@
 #
 # This is deliberately narrow on the type-check side: a full type-check of this codebase produces
 # hundreds of errors (loose `{object}` JSDoc typing, etc.) that aren't worth gating commits on.
-# TS2304/TS2305/TS2459/TS2614 specifically catch real ReferenceError/SyntaxError bugs (a name used
+# TS2304/TS2305/TS2306/TS2459/TS2614 specifically catch real ReferenceError/SyntaxError bugs (a name used
 # but never defined or imported; an import naming something the target module doesn't export at all;
-# an import naming something the target module defines locally but doesn't export; a default-import
-# mismatch) with clean signal and no noise, so those are the codes this hook enforces. See
+# an import of a file that exports nothing; an import naming something the target module defines locally but
+# doesn't export; a default-import mismatch) with clean signal and no noise, so those are the codes this hook enforces. See
 # tsconfig.precommit.json for the check scope.
 #
-# These four codes are not interchangeable: a bare undefined identifier is TS2304, importing a name a module never
-# declares at all is TS2305, and importing a name a module declares but doesn't `export` is TS2459.
+# These codes are not interchangeable: a bare undefined identifier is TS2304, importing a name a module never
+# declares at all is TS2305, importing from a file that lost its last `export` is TS2306, and importing a name a
+# module declares but doesn't `export` is TS2459.
 #
 # Each tool runs from node_modules/.bin, never through npx, which falls through to an install-prompt placeholder when
 # a package is missing and prints that as normal-looking output. A tool that exits without having checked (an invalid
@@ -150,15 +151,16 @@ cd "$snap_tree"
 
 check_tsc() {
     local output status=0
-    output="$(node "$hook_dir/lib/dangling-refs.mjs" "$cache/tsc.tsbuildinfo" 2304 2305 2459 2614 2>&1)" || status=$?
+    output="$(node "$hook_dir/lib/dangling-refs.mjs" "$cache/tsc.tsbuildinfo" 2304 2305 2306 2459 2614 2>&1)" || status=$?
     if [ "$status" -eq 3 ]; then
         echo "pre-commit: blocked -- dangling import/export reference errors found in the staged snapshot:"
         echo ""
         printf '%s\n' "$output"
         echo ""
-        echo "TS2304 (cannot find name), TS2305 (module has no exported member), TS2459 (declared locally but"
-        echo "not exported), or TS2614 (no default export) - a missing import, a missing/incomplete export, or"
-        echo "a call to something that doesn't exist. Fix them or, if this is a false positive, adjust"
+        echo "TS2304 (cannot find name), TS2305 (module has no exported member), TS2306 (file is not a module),"
+        echo "TS2459 (declared locally but not exported), or TS2614 (no default export) - a missing import, a"
+        echo "missing/incomplete export, or a call to something that doesn't exist. Fix them or, if this is a"
+        echo "false positive, adjust"
         echo "tsconfig.precommit.json. (Only staged content was checked - if the fix is in an unstaged file,"
         echo "stage it too.)"
         return 1
