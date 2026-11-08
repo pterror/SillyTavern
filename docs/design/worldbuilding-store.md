@@ -34,34 +34,54 @@ action; the relation actions take a kind's id, never a name.
 
 `worldbuilding.mergeRelationKind` marks A as merging into B: one text field on the book,
 `\u0001relationKindMergingInto:<A>` = B, carried in a world file as `mergingInto` on A's item of `relationKinds`, and a
-derived key `KINDS_BEING_MERGED (b, A) → B` so a restarted server finds it. From then on A can't be picked for a new
-relation (`relation_edit` refuses it), B can't be deleted or merged, and A can't be merged again.
+derived key `KINDS_BEING_MERGED (b, A) → B` (kept while A's name field exists) so a restarted server finds the job.
+From then on A can't be picked for a new relation (`relation_edit` refuses it), B can't be deleted or merged, and A
+can't be merged again.
 
-The merge job then rewrites, in chunks of `RELATION_REWRITES_PER_CHANGE` source entries, each chunk one commit with
-other writes in between (`worldbuildingKindMergeRewrites`): each source's relations of kind A become kind B; a source
-that already has the same relation of kind B gets one relation, B's item, strong if either was, with A's extra fields
-added where B's item lacks them. The sources are found from A's own index (`RELATION_COUNT_BY_KIND_AND_TARGET (b, A, ·)`,
-then `RELATIONS_BY_TARGET (b, t, A, ·)` per target), never by a scan of the world. When no relation of kind A is left,
-the job deletes A's two fields in one commit. Every state partway is valid: each source has its relations in one kind
-or the other, each counted where it is. The merge costs one rewrite per source entry with a relation of kind A; an
-alias (A saying "is B" while relations keep A) wouldn't avoid that, since an entry with the same relation in both kinds
-would be counted twice in B's held count and listed twice in B's region until each such entry is rewritten.
+The merge job rewrites, in chunks of `RELATION_CHANGES_PER_STEP` source entries, each chunk one commit with other
+writes in between (`worldbuildingKindMergeRewrites`): each live source's relations of kind A become kind B, both those
+in use and those kept while their target is deleted (below); a source that already has the same relation of kind B
+gets one relation, B's item, strong if either was, with A's extra fields added where B's item lacks them. The sources
+are found from A's own indexes (`RELATION_COUNT_BY_KIND_AND_TARGET (b, A, ·)` then `RELATIONS_BY_TARGET (b, t, A, ·)`,
+and `KEPT_RELATIONS_BY_KIND (b, A, ·)`), never by a scan of the world. When no live source has a relation of kind A,
+the job deletes A's name field. Every state partway is valid: each source has its relations in one kind or the other,
+each counted where it is. The merge costs one rewrite per live source with a relation of kind A; an alias (A saying
+"is B" while relations keep A) wouldn't avoid that, since an entry with the same relation in both kinds would be
+counted twice in B's held count and listed twice in B's region until each such entry is rewritten.
 
+**The merge's record.** A deleted entry's own field can't be rewritten, so its relations of kind A stay as written.
+The marker field stays, without A's name, as the record "A was merged into B", while any deleted entry has a relation
+of kind A (`RELATIONS_OF_DELETED_ENTRIES_BY_KIND (b, A)`, a count); restoring such an entry rewrites its relations of
+kind A to B in the restore's own commit (`worldbuildingRelationsKept`). When the count reaches 0 the record is due
+(`KIND_MERGE_RECORDS_DUE (b, A)`) and the job deletes it. Its cost: one book field and one count per merged kind,
+nothing per relation and no read at a store's opening; it lasts as long as a deleted entry holding such a relation
+can still be restored.
 ## The stored relation
 
-One extension field of the entry, `extensions.relations`, stored as the entry's JSON field `\u0001relations` (an
-unknown extension key, `src/world-info-engine.js`), so it round-trips through world files and card books:
+One extension field of the entry, `extensions.relations`, stored as the entry's JSON field `\u0001relations`
+(`src/world-info-engine.js`):
 
 ```json
-[{ "kind": 1, "target": 12, "position": "m" }, { "kind": 2, "target": 7, "position": "a", "weak": true }]
+[{ "kind": 1, "targetEntry": "4711", "position": "m" }, { "kind": 2, "targetEntry": "4790", "position": "a", "weak": true }]
 ```
 
-`target` is the target's key in the same book (a number or a string, as upstream's `uid`); `position` is a fractional
-order key compared as bytes, so moving a relation among the others of its kind and target rewrites only its source's
-field (a history edit of a few bytes). `weak: true` makes the relation **weak**: the source is drawn in the target's
-region like any other source of that kind, but the relation doesn't keep it off the top level (below). A value that isn't a list of such objects holds no relations: a
-third party's `relations` extension is read and kept as it is, never refused. A second `(kind, target)` in the list is
-ignored; the first one counts.
+A relation names its target by the target's **entity id** (`targetEntry`, decimal), which the store never gives to
+another entity: deleting an entry and making another under its key (upstream's `uid`) leaves every relation meaning
+what it meant. `position` is a fractional order key compared as bytes, so moving a relation among the others of its
+kind and target rewrites only its source's field (a history edit of a few bytes). `weak: true` makes the relation
+**weak**: the source is drawn in the target's region like any other source of that kind, but the relation doesn't keep
+it off the top level (below). A value that isn't a list of such objects holds no relations: a third party's
+`relations` extension is read and kept as it is, never refused. A second `(kind, target)` in the list is ignored; the
+first one counts.
+
+**World files carry keys.** Entity ids mean nothing outside one store, so a world file's relation names its target by
+the target's key (`"target": 12`), as before. Reading a world (export, the drawer, a card book) turns each
+`targetEntry` of an entry of the same world into `target` with that entry's key; one whose target isn't in the world
+(a deleted entry, below) stays as `targetEntry`, so a save of what was read keeps it. Writing turns each `target` into
+the `targetEntry` of the entry with that key in what is written (an import, a whole-world save) or in the stored world
+(an entry edit), and leaves out one whose key names nothing; a `targetEntry` is kept only when it names an entry of
+this world, live or deleted. The translation reads only what the write or read already holds, plus one lookup per
+target key not among them.
 
 This field is the only source of truth. Everything below is derived from it by the entry's own writes (`histSet`,
 `histEdit`, `jsonValue`, `valueDelete`, creation, deletion, restore), through the one hook every JSON write of a counted
@@ -69,71 +89,87 @@ book's entry passes (`book_stats::owned_value_changed`), and its creation and de
 
 ## No relation names a missing entry or kind
 
-The store refuses any commit that ends with a live entry's relation naming an entry that neither exists nor is being
-deleted, or naming a kind the world doesn't have (or a kind being merged into one it doesn't have). It is checked once,
-at the end of the commit (`commit_checks.rs`): a write that adds a relation leaves a check for its target and its kind
-in the commit's own layer; deleting an entry leaves one for its key; removing or merging a kind leaves one for the
-kind. At the end the engine runs each check (one bounded read each) and drops the check keys, which never reach the
-keyspace (replay, bulk loads and derive jobs drop them too). Checking at the end, not per record, is what lets a world
-be imported in any order and with loops.
+The store refuses any commit that ends with a relation naming an entity that isn't an entry of its world (live, or
+deleted and restorable), or a kind the world neither has nor holds a merge record for. It is checked once, at the end
+of the commit (`commit_checks.rs`): a write that adds a relation leaves a check for its target and its kind in the
+commit's own layer; erasing an entry leaves one for it; removing or merging a kind leaves one for the kind. At the end
+the engine runs each check (one bounded read each) and drops the check keys, which never reach the keyspace (replay,
+bulk loads and derive jobs drop them too). Checking at the end, not per record, is what lets a world be imported in any
+order and with loops.
 
-- **Writing a whole world** (import, save of the whole book): each entry's relations to keys not in the written world,
-  or to kinds not in its `relationKinds`, are left out of what is written.
-- **Restoring an entry**: its own relations to entries or kinds that are gone since are left out, by a history edit in
-  the same commit (`worldbuildingRelationsKept`).
-- **Moving an entry to another world** drops its relations: they name keys in the world it left.
-- **Deleting an entry**: below.
+- **Writing a whole world** (import, save of the whole book): relations to keys not in the written world, or to kinds
+  not in its `relationKinds`, are left out of what is written.
+- **Moving an entry to another world** drops its relations.
+- **Deleting and restoring an entry**: below. Nothing is refused while a deletion runs: creating, importing or restoring
+  an entry under the deleted entry's key makes a different entity, which no relation names.
 
 ## Deleting an entry
 
-Deleting entry D is one change, whatever targets it. D is gone at once (its entity is deleted, its own relations go
-with it), and every relation of every kind whose target is D is removed from its source, in chunks.
+Deleting entry D is one change, whatever targets it. D is gone at once, and every relation of every kind whose target
+is D stops counting: its source shows where it would without it. The relations stay written in their sources' fields,
+**kept**: nothing a user wrote is rewritten by the store.
 
-- **The delete itself** (`relations::entry_deleted`). D's own relations are removed from the indexes. If nothing
-  targets D, D leaves the order tree and that's all. Otherwise D stays in the order tree as **the place of a deleted
-  entry**: it is counted as deleted (`DeletedWhileRelationsTargetIt`), and, for each kind of relation still targeting
-  it, as a place shown under that kind (`DeletedEntryPlaceForKind(k)`); its own held counts are removed.
-  `DELETION_IN_PROGRESS_BY_KEY (b, u) → (D, order value)` and `DELETION_IN_PROGRESS_BY_ENTITY (D) → (b, u)` mark it.
-  The first chunk of rewrites goes in the same commit as the delete, so a small delete is one short change.
-- **The chunks** (the deletion job, `worldbuildingRelationsWithout`): up to `RELATION_REWRITES_PER_CHANGE` source
-  entries at a time, each rewritten without its relations targeting D, as history edits of its own field. Each chunk is
-  its own commit, taken in the world's lane like any write, so other writes go between chunks.
+Each relation's derived state (`RELATIONS_OF_ENTRY`) is one of: **in use**; **kept while its target is deleted**; **kept
+while its source is deleted**. Only relations in use are in `RELATIONS_BY_TARGET`, the counts and the held counts.
+
+- **The delete itself** (`relations::entry_deleted`). D's own relations become kept while their source is deleted
+  (counted per kind in `RELATIONS_OF_DELETED_ENTRIES_BY_KIND`, so their kinds stay in use). If no relation in use
+  targets D, D leaves the order tree. Otherwise D stays in it as **the place of a deleted entry**: counted as deleted
+  (`DeletedWhileRelationsTargetIt`) and, for each kind of relation still in use targeting it, as a place shown under
+  that kind (`DeletedEntryPlaceForKind(k)`). Up to `RELATION_CHANGES_PER_STEP` relations targeting D are made kept in
+  the delete's own commit, so a small delete is one short change. If more remain, `DELETION_IN_PROGRESS (D) → (b, order
+  value)` marks it.
+- **The steps** (`relations::deletion_step`, a derive job driven by `src/world-info/worldbuilding-jobs.js`): up to
+  `RELATION_CHANGES_PER_STEP` relations in use targeting D become kept while their target is deleted
+  (`KEPT_RELATIONS_BY_TARGET (b, D, source, k)`, `KEPT_RELATIONS_BY_KIND (b, k, source, D)`). A step writes derived keys
+  only, never a log record; each is its own short job, with commits in between. A step lost to a crash is redone: each
+  step's result depends only on the state it reads.
 - **What the reader sees meanwhile.** In a view grouped by kind `k`, D's place is at the top level where D was in the
   world's order, as a `placeOfDeletedEntry` cell with no content of D's, and its region shows the sources whose
-  relation of kind `k` still targets D. A source whose relation to D is removed goes where it would be without it:
-  another region if it has another strong relation of `k`, otherwise the top level. In a view grouped by a kind nothing
-  of which targets D any longer, and ungrouped, D's place isn't shown. Nothing disappears and nothing is broken at any
-  point: every source is in exactly the regions its relations put it in.
-- **The end.** When a source's rewrite removes the last relation of kind `k` targeting D, D's place stops counting
-  for `k`; when the last of any kind goes, D leaves the order tree and its markers go, in that same commit.
-- **What the deletion keeps for a restore.** Each relation removed from a source while D's deletion is in progress is
-  kept, as written (its whole object, extra fields included), in `RELATIONS_REMOVED_BY_DELETION (b, D, source, k)`.
-  It is dropped when that relation is written back, or when D is erased for good.
-- **D's key** stays D's while the deletion is in progress: no other entry can be created or restored under it (the
-  store refuses), since the relations still naming that key mean D.
-- **Erasing** D for good (erasing its world) drops its place, its markers and what it kept.
-- The job is stored: its state is these derived keys. A restarted server reads them (`worldbuildingPendingJobs`) and
-  carries on (`src/world-info/worldbuilding-jobs.js`). No size is refused.
+  relation of kind `k` to D is still in use. A source whose relation was made kept goes where it would be without it:
+  another region if it has another strong relation of `k` in use, otherwise the top level. In a view grouped by a kind
+  no relation in use of which targets D, and ungrouped, D's place isn't shown. Nothing disappears and nothing is broken
+  at any point.
+- **The end.** When the last relation in use of kind `k` targeting D is made kept, D's place stops counting for `k`;
+  when the last of any kind goes, D leaves the order tree and its marker goes, in that same step.
+- **A user's own removal.** A source whose field drops a relation to D (an edit, a save from the drawer that left it
+  out) has that relation gone for good, kept or not: a later restore of D doesn't bring it back, because the restore
+  only uses what the sources' fields still hold.
+- **Erasing** D for good (erasing its world, which erases the sources too) drops its place, its marker and its kept
+  relations.
 
 ### Restoring a deleted entry
 
-Restoring D undoes the deletion, all of it. If D's deletion is still in progress, the restore stops it at once: D is
-live again, its place counts and markers go, and the relations not yet removed simply stay. Then (and likewise when the
-deletion had finished) the restore job puts back, in chunks of the same size, each kept relation into its source's
-field (`worldbuildingRelationsToRestore`), with its target set to D's key now (a different one if D's old key was
-taken meanwhile), skipping a source that is gone, a kind that is gone, or a relation the source already has again.
+Restoring D undoes the deletion. If D's deletion is still running, the restore stops it at once: D's place and marker
+go, and the relations still in use stay in use. D's own relations come back from its field (those whose kind was
+merged since are rewritten to the kind it went into, in the restore's own commit; those whose target is deleted now are
+kept while it is). Then the relations kept while D was deleted come back into use: up to `RELATION_CHANGES_PER_STEP` in
+the restore's own commit, the rest by steps (`relations::restore_step`, marked by `RESTORE_IN_PROGRESS (D)`), each a
+derive job like a deletion's. A kept relation's kind is in use the whole time (it can't be deleted, and a merge
+rewrites it in its live source), so each comes back as written, in the kind it has by then.
+
+**What bounds a kept relation's life.** It goes when it comes back into use (its target restored), when its source's
+field drops it, or when its target is erased for good. While kept it costs its derived keys and nothing else: no job
+lists it and nothing reads it at a store's opening. It lasts as long as its target can still be restored.
 
 ## Every job
 
-| Job | Found by | One chunk | Ends when |
+| Job | Found by | One step | Ends when |
 |---|---|---|---|
-| a deletion's removals | `DELETION_IN_PROGRESS_BY_ENTITY` | up to 1,000 sources' fields rewritten without their relations targeting the deleted entry | nothing targets it |
-| a restore's returns | `RELATIONS_REMOVED_BY_DELETION` of a live entry | up to 1,000 sources' fields rewritten with their kept relations | nothing kept can be put back |
-| a kind's merge | `KINDS_BEING_MERGED` | up to 1,000 sources' fields rewritten from kind A to kind B | no relation of kind A is left; then A's fields go |
+| a deletion | `DELETION_IN_PROGRESS` | up to 1,000 relations in use targeting the deleted entry made kept (derived keys only) | none in use targets it |
+| a restore | `RESTORE_IN_PROGRESS` | up to 1,000 kept relations targeting the restored entry put back in use (derived keys only) | none kept targets it |
+| a kind's merge | `KINDS_BEING_MERGED` | up to 1,000 live sources' fields rewritten from kind A to kind B (one commit) | no live source has kind A; then A's name goes |
+| a merge record's end | `KIND_MERGE_RECORDS_DUE` | the record's field deleted | at once |
 
-`RELATION_REWRITES_PER_CHANGE` is 1,000: a source's rewrite reads its field and writes a few derived keys plus the
-tree's path, about 24 key operations, so a chunk is about the 24,000 reads one request may take (below, One request's
-budget). A chunk that finds nothing to do ends its job. A failed chunk stops the job until the store next opens.
+`RELATION_CHANGES_PER_STEP` is 1,000: a relation's change reads its key and writes a few derived keys plus the tree's
+path, about 24 key operations, so a step is about the 24,000 reads one request may take (below, One request's budget).
+A step that finds nothing to do ends its job. A failed step stops the job until the store next opens; a restarted
+server reads the markers (`worldbuildingPendingJobs`, one scan of each marker index, which hold only running jobs) and
+carries on.
+
+After every step the server runs the capped loop check (below) on the sources the step changed and pushes what it
+finds to the open tabs of the world's owner (`ui.changed` with `worldbuilding.loopsLeftByJobs`), since no request waits
+on a step.
 
 ## Keys
 
@@ -141,12 +177,16 @@ Per relation (derived, one each):
 
 | Key | Value | For |
 |---|---|---|
-| `RELATIONS_OF_ENTRY (e, k, t)` | strength, `p`, the relation's object as written | the source's own relations: the write's diff (old set without reading the old value), its strong kinds, its relations line, the loop check's walk up, and what a deletion keeps |
-| `RELATIONS_BY_TARGET (b, t, k, p, e)` | — | the relations of kind `k` targeting `t` in position order (a region); every relation targeting `t` |
-| `RELATION_COUNT_BY_KIND_AND_TARGET (b, k, t)` | count (Add) | how many relations of kind `k` target `t` ("+N not shown"), kept on write; whether any relation still has kind `k` |
+| `RELATIONS_OF_ENTRY (e, k, t)` | state (in use, kept while its target is deleted, kept while its source is deleted), strength, `p`, the relation's object as written | the source's own relations: the write's diff (old set without reading the old value), its strong kinds, its relations line, the loop check's walk up |
+| `RELATIONS_BY_TARGET (b, t, k, p, e)` | — | relations in use of kind `k` targeting `t` in position order (a region); every relation in use targeting `t` |
+| `RELATION_COUNT_BY_KIND_AND_TARGET (b, k, t)` | count (Add) | how many relations in use of kind `k` target `t` ("+N not shown"); whether kind `k` is in use |
+| `KEPT_RELATIONS_BY_TARGET (b, t, e, k)` | — | the relations kept while `t` is deleted, for its restore |
+| `KEPT_RELATIONS_BY_KIND (b, k, e, t)` | — | the same by kind, for a merge and for "kind in use" |
+| `RELATIONS_OF_DELETED_ENTRIES_BY_KIND (b, k)` | count (Add) | relations kept while their source is deleted, for "kind in use" and a merge record's life |
 
-These are keyed by the target's key, not its entity id, so a relation can be written before its target exists within a
-commit (an import writes entries in any order and loops allow no order).
+`t` is the target's entity id. A relation can be written before its target's creation in the same commit (an import
+writes entries in any order, and loops allow no order): the target's state is decided when either is written, and the
+end-of-commit check sees the commit's result.
 
 **The world's order** is one counted radix tree per book over every entry (`world_order_tree.rs`),
 `(order value, e)` as 16 bytes: the order value is `displayIndex`, else the entry's numeric key (upstream's editor shows
@@ -183,7 +223,7 @@ entry of the loop on each change. Instead:
   source). So after the commit, the server takes every entry whose relations field the commit wrote (plus a restored
   entry) and, for each kind it still has a strong relation of, walks up: the entry, then the targets of its strong
   relations of that kind, then theirs, keeping a visited set. A walk stops when it meets an entry with no strong relation
-  of the kind, or targeting a deleted entry's place (at the top level), or one an earlier walk of this write found
+  of the kind in use, or targeting a deleted entry's place (at the top level), or one an earlier walk of this write found
   reached (the entry is reached); an entry an earlier walk found
   unreached is a dead end. If a walk runs out without reaching, the entries it found are held only by a loop, and the
   write's answer names them (`unreachedLoops: [{entry, kind, entries}]`), so the page can offer making a relation weak.
@@ -202,7 +242,7 @@ Where the answer goes:
 | restore | `WorldInfoEngine.restore`'s result (no endpoint restores an entry yet) |
 | a character's embedded book (`LibraryEngine.writeCard`) | its result; the character endpoints answer the old client with a plain name or a fixed shape that would break if it changed, so they don't pass it on |
 | batched card imports, a card's bundled world (`card-import-extras.js`), new-user seeding (`users.js`), the import of upstream's files (`upstream-import.js`) | none: they run without a page waiting on them |
-| the chunks of a deletion, a restore or a merge job after the first | none: they run after the action's answer, with no page waiting on them; the delete's own answer covers the first chunk |
+| each step of a deletion, a restore or a merge after the action's own commit | pushed to the world's open tabs: the view `worldbuilding.loopsLeftByJobs` (the loops the world's jobs have found since its last job began), changed by `ui.changed` after each step |
 
 Requests that don't carry a limit use `LOOP_CHECK_VISITS_PER_WRITE` (below).
 
@@ -213,22 +253,24 @@ Requests that don't carry a limit use `LOOP_CHECK_VISITS_PER_WRITE` (below).
 | Write | Derived writes |
 |---|---|
 | an entry's field other than `relations` | none |
-| relation added, the source already has a strong relation of its kind, or the new one is weak | 3: `RELATIONS_OF_ENTRY`, `RELATIONS_BY_TARGET`, `RELATION_COUNT_BY_KIND_AND_TARGET` (a count that reaches 0 is deleted, so no zero counters are left behind; that reads it first); + 1 delete if a deletion kept it |
+| relation added, the source already has a strong relation of its kind, or the new one is weak | 3: `RELATIONS_OF_ENTRY`, `RELATIONS_BY_TARGET`, `RELATION_COUNT_BY_KIND_AND_TARGET` (a count that reaches 0 is deleted, so no zero counters are left behind; that reads it first); 3 (the entry's and the two kept indexes) if its target is deleted |
 | strong relation added, first strong one of its kind on the source | 3 + `depth` (`HeldByKind` along the source's path) |
-| relation removed | the same, mirrored; if its target is being deleted: + 1 (what the deletion keeps), + `depth` if it was the last of its kind targeting it, + `depth` + 1 edge + 2 markers if it was the last of all |
+| relation removed | the same, mirrored; + `depth` if it was the last in use of its kind targeting a deleted entry, + `depth` + 1 edge + 1 marker if the last of all |
 | position changed | 3: `RELATIONS_OF_ENTRY`, `RELATIONS_BY_TARGET` out and in |
 | target changed | 6 (one out, one in); + `depth` if the source's last strong one of the kind goes or its first comes |
 | weak ↔ strong, or an extra field changed | 1: `RELATIONS_OF_ENTRY`; + `depth` if it is the source's only strong relation of its kind |
 | entry created | `depth` + 1 edge; a split adds 3 + one count per slot under the split edge |
-| entry deleted, nothing targeting it | its own relations' removals + `depth` × (1 + its strong kinds) + 1 edge |
-| entry deleted, relations targeting it | its own relations' removals + `depth` × (its strong kinds + 1 + the kinds targeting it) + 2 markers; finding those kinds is one seek per kind. Nothing per relation targeting it: those are the job's chunks, each source a relation removal (above) |
-| entry restored while its deletion is in progress | `depth` × (1 + the kinds targeting it) + 2 markers, plus its own relations written back; the kept relations come back in chunks, each source a relation added (above) |
+| entry deleted | each own relation made kept (2: its entry key and the count per kind, after its in-use keys go) + `depth` × (its strong kinds) ; if nothing in use targets it, `depth` + 1 edge to leave the tree, else `depth` × (1 + the kinds targeting it) + 1 marker; one seek per kind targeting it; and up to 1,000 relations targeting it made kept (each: 3 in-use keys out, 3 kept keys in, + `depth` if the source loses its last strong one of the kind) |
+| one deletion step | up to 1,000 relations made kept, as above; the end as in "relation removed" |
+| entry restored | its own relations back from its field (each as "relation added"); if its deletion was running, `depth` × (1 + the kinds targeting it) + 1 marker; up to 1,000 kept relations back in use (each the reverse of being made kept), + 1 marker if more remain |
+| one restore step | up to 1,000 kept relations back in use |
 | `displayIndex` changed | delete and insert: 2 × `depth` × (1 + the entry's strong kinds) + 2 edges |
 | kind created or renamed | none (the kind's field is its own record) |
-| kind marked merging | 1 (`KINDS_BEING_MERGED`); then per source in its chunks, a relation removed and one added (above), or one removed when it folds into its twin |
+| kind marked merging | 1 (`KINDS_BEING_MERGED`); then per live source in its chunks, a relation removed and one added (above), or one removed when it folds into its twin; at the end A's name field (−1 index key), and the record while deleted entries hold kind A |
 
-No write touches anything per other entry; a deletion's, a restore's and a merge's per-source work is spread over their
-chunks, each chunk at most 1,000 sources. A created entry is inserted at its key's order and moved when its
+
+No write touches anything per other entry; a deletion's, a restore's and a merge's per-relation work is spread over
+steps of at most 1,000 relations or sources each. A created entry is inserted at its key's order and moved when its
 `entryIndex` record follows in the same commit; the shared upper nodes' adds fold in the commit's layer. The
 end-of-commit checks read one key or one bounded scan each and write nothing.
 
@@ -322,15 +364,17 @@ An occurrence's key is the path of entity ids from its top-level entry (`12/45/7
 ## Existing stores
 
 Entries written before the tree aren't in it, and a later `entryIndex` write or deletion of one is refused (the tree
-never guesses). The derived relation keys of this round's format (the relation's object kept in `RELATIONS_OF_ENTRY`,
-the slots of the tree, the deletion and merge keys) are only ever built from the relations fields, and no stored world
-has any relation yet, so the conversion has nothing else to convert: a world with no `relationKinds` is already the new
-format, and no job is pending in a store this conversion runs on. `scripts/convert-lorebooks-to-worldbuilding.mjs` puts every entry of every counted book in its world's
-order and indexes any `relations` already stored in this format, in steps of 2000
-(`relations::world_order_conversion_step`, idempotent), run once with the server stopped, then deleted with
-`Store::world_order_conversion_step` and its binding. No stored world has kinds or relations in this format yet (no
-page wrote any), so a world with no `relationKinds` already is the new format: an empty list. A `relations` value in any
-other shape holds none and is kept as it is.
+never guesses). `scripts/convert-lorebooks-to-worldbuilding.mjs` does two things, in steps, idempotently, run once with
+the server stopped, then deleted with what only it uses:
+
+1. Rewrites every relations field still naming targets by key (`"target"`) to name them by entity id
+   (`"targetEntry"`), as a history edit of that field, leaving out relations whose key names no entry of the world
+   (`WorldInfoEngine.relationsByEntity`). No stored world has any relation yet, so this finds nothing today; it is
+   there so the format can't be met half-converted.
+2. Puts every entry of every counted book in its world's order and indexes its relations
+   (`relations::world_order_conversion_step`).
+
+It prints only totals. Running it twice changes nothing.
 
 ## Open
 
