@@ -1451,14 +1451,14 @@ impl Store {
         ts_args_type = "after: Buffer | null, batch: number",
         ts_return_type = "Promise<Buffer | null>"
     )]
-    pub fn world_order_cutover<'env>(
+    pub fn world_order_conversion_step<'env>(
         &self,
         env: &'env Env,
         after: Option<Buffer>,
         batch: u32,
     ) -> Result<Object<'env>> {
         let (deferred, promise) = env.create_deferred()?;
-        self.store.world_order_cutover(
+        self.store.world_order_conversion_step(
             after.map(|b| b.to_vec()),
             batch.max(1) as usize,
             Box::new(move |r| match r {
@@ -2752,65 +2752,163 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
-        "overview" | "overviewMove" => {
-            use crate::store::overview as o;
+        "worldbuildingOverview" | "worldbuildingStep" => {
+            use crate::store::overview;
             let book = req_integer(a, "book")?;
+            let kind = opt_integer(a, "groupBy")?;
             let text = |name: &str| -> Result<Option<String>> {
                 match a.get::<Unknown>(name)? {
-                    Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
-                        String::from_utf8(string(name, v)?)
+                    Some(js_value)
+                        if !matches!(js_value.get_type()?, ValueType::Null | ValueType::Undefined) =>
+                    {
+                        String::from_utf8(string(name, js_value)?)
                             .map(Some)
                             .map_err(|_| invalid(format!("{name} isn't text")))
                     }
                     _ => Ok(None),
                 }
             };
-            let relation = text("relation")?;
-            if op == "overview" {
-                let (from, to, active) = (
-                    req_integer(a, "from")?,
-                    req_integer(a, "to")?,
-                    text("active")?,
+            let (columns, rows) = (integers(a, "regionColumns")?, integers(a, "regionRows")?);
+            if columns.len() != rows.len() {
+                return Err(invalid(
+                    "regionColumns and regionRows give one number per nesting level each".into(),
+                ));
+            }
+            let regions: Vec<overview::RegionLayout> = columns
+                .into_iter()
+                .zip(rows)
+                .map(|(columns, rows)| overview::RegionLayout { columns, rows })
+                .collect();
+            let grouping = overview::Grouping { book, kind };
+            if op == "worldbuildingOverview" {
+                let (first_rank, end_rank, step_landed_on) = (
+                    req_integer(a, "firstRank")?,
+                    req_integer(a, "endRank")?,
+                    text("stepLandedOn")?,
                 );
-                Box::new(move |s| {
-                    s.chat_read(|v| {
-                        let g = o::Grouping {
-                            book,
-                            relation: relation.as_deref().map(str::as_bytes),
-                        };
-                        o::window(v, g, from, to, active.as_deref())
-                    })
-                    .map(JsTree)
+                let characters = req_integer(a, "cardTextCharacters")? as usize;
+                Box::new(move |store| {
+                    store
+                        .chat_read(|view| {
+                            let layout = overview::OverviewLayout {
+                                regions_by_nesting_level: &regions,
+                                card_text_characters: characters,
+                            };
+                            overview::read_overview(
+                                view,
+                                grouping,
+                                &layout,
+                                first_rank,
+                                end_rank,
+                                step_landed_on.as_deref(),
+                            )
+                        })
+                        .map(JsTree)
                 })
             } else {
                 let from = text("from")?;
                 let by = match a.get::<Unknown>("by")? {
-                    Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
-                        Some(signed("by", v)?)
+                    Some(js_value)
+                        if !matches!(js_value.get_type()?, ValueType::Null | ValueType::Undefined) =>
+                    {
+                        Some(signed("by", js_value)?)
                     }
                     _ => None,
                 };
-                let how =
-                    match (by, text("to")?.as_deref()) {
-                        (Some(n), None) => o::Move::By(n),
-                        (None, Some("parent")) => o::Move::Parent,
-                        (None, Some("child")) => o::Move::Child,
-                        _ => return Err(invalid(
-                            "overviewMove takes `by` (a whole number) or `to` (parent or child)"
+                let step = match (by, text("to")?.as_deref()) {
+                    (Some(steps), None) => overview::OverviewStep::InReadingOrder(steps),
+                    (None, Some("parent")) => overview::OverviewStep::ToParent,
+                    (None, Some("firstChild")) => overview::OverviewStep::ToFirstChild,
+                    _ => {
+                        return Err(invalid(
+                            "worldbuildingStep takes `by` (a whole number) or `to` (parent or firstChild)"
                                 .into(),
-                        )),
-                    };
-                Box::new(move |s| {
-                    s.chat_read(|v| {
-                        let g = o::Grouping {
-                            book,
-                            relation: relation.as_deref().map(str::as_bytes),
-                        };
-                        o::moved(v, g, from.as_deref(), how)
-                    })
-                    .map(JsTree)
+                        ));
+                    }
+                };
+                Box::new(move |store| {
+                    store
+                        .chat_read(|view| {
+                            overview::step_in_reading_order(view, grouping, &regions, from.as_deref(), step)
+                        })
+                        .map(JsTree)
                 })
             }
+        }
+        "worldbuildingRelationEdit" => {
+            use crate::store::relations;
+            let book = req_integer(a, "book")?;
+            let change: Option<String> = a.get("change")?;
+            let weak: Option<bool> = a.get("weak")?;
+            let change = match change.as_deref() {
+                Some("add") => relations::RelationChange::Add {
+                    weak: weak.unwrap_or(false),
+                },
+                Some("move") => relations::RelationChange::Move {
+                    new_target: req_integer(a, "newTarget")?,
+                },
+                Some("remove") => relations::RelationChange::Remove,
+                Some("setWeak") => relations::RelationChange::SetWeak(
+                    weak.ok_or_else(|| invalid("setWeak takes `weak`".into()))?,
+                ),
+                _ => return Err(invalid("change is add, move, remove or setWeak".into())),
+            };
+            let edit = relations::RelationEdit {
+                entry: req_integer(a, "entry")?,
+                kind: req_integer(a, "kind")?,
+                target: req_integer(a, "target")?,
+                change,
+                after: opt_integer(a, "after")?,
+                before: opt_integer(a, "before")?,
+            };
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| relations::relation_edit(view, book, &edit))
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingUnreached" => {
+            use crate::store::chat_read::Js;
+            use crate::store::relations;
+            let (book, entry, kind, limit) = (
+                req_integer(a, "book")?,
+                req_integer(a, "entry")?,
+                req_integer(a, "kind")?,
+                req_integer(a, "limit")? as usize,
+            );
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| {
+                        Ok(match relations::unreached_from(view, book, entry, kind, limit)? {
+                            Some(found) => Js::Arr(
+                                found
+                                    .into_iter()
+                                    .map(|entity| Js::Text(entity.to_string().into_bytes()))
+                                    .collect(),
+                            ),
+                            None => Js::Null,
+                        })
+                    })
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingRelationsWithout" => {
+            use crate::store::relations;
+            let (book, keys) = (req_integer(a, "book")?, byte_list(a, "keys")?);
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| relations::relations_without(view, book, &keys))
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingRelationsKept" => {
+            use crate::store::relations;
+            let (book, entity) = (req_integer(a, "book")?, req_integer(a, "entity")?);
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| relations::relations_kept(view, book, entity))
+                    .map(JsTree)
+            })
         }
         "resolving" => {
             let book = req_integer(a, "book")?;

@@ -2,9 +2,11 @@ use std::fs;
 
 use super::books::ENTRY;
 use super::chat_read::Js;
-use super::overview::{self, Grouping, Move};
+use super::overview::{self, Grouping, OverviewLayout, OverviewStep, RegionLayout};
 use super::relations;
-use super::relations_tests::{book, create, index, json_of, rec, set_json, text};
+use super::relations_tests::{
+    IN as IN_KIND, OWES, book, create, index, rec, set_json, strong, text,
+};
 use super::*;
 use crate::log::format::{FieldRef, Value};
 
@@ -34,244 +36,388 @@ const SMALL: StoreConfig = StoreConfig {
     relocate_bytes: 1024,
 };
 
-fn set_text(e: u64, f: u64, t: &str) -> Record {
+fn set_code_text(entity: u64, field: u64, text_literal: &str) -> Record {
     rec(
         "textValue",
         vec![
-            Value::Sel(0, e),
-            Value::Field(FieldRef::Code(f)),
-            text(t),
+            Value::Sel(0, entity),
+            Value::Field(FieldRef::Code(field)),
+            text(text_literal),
             Value::Absent,
             Value::Absent,
         ],
     )
 }
 
-fn get<'a>(o: &'a Js, name: &str) -> &'a Js {
-    let Js::Obj(f) = o else {
-        panic!("not an object: {o:?}")
+fn field_of<'a>(fields: &'a Js, name: &str) -> &'a Js {
+    let Js::Obj(field) = fields else {
+        panic!("not an object: {fields:?}")
     };
-    &f.iter()
-        .find(|(k, _)| *k == name)
+    &field
+        .iter()
+        .find(|(key_name, _)| *key_name == name)
         .unwrap_or_else(|| panic!("no {name}"))
         .1
 }
 
-fn s(j: &Js) -> String {
-    match j {
-        Js::Text(t) => String::from_utf8(t.clone()).unwrap(),
+fn text_of(value: &Js) -> String {
+    match value {
+        Js::Text(text_literal) => String::from_utf8(text_literal.clone()).unwrap(),
         other => panic!("not a text: {other:?}"),
     }
 }
 
-fn n(j: &Js) -> f64 {
-    match j {
-        Js::Num(x) => *x,
+fn number_of(value: &Js) -> f64 {
+    match value {
+        Js::Num(number) => *number,
         other => panic!("not a number: {other:?}"),
     }
 }
 
-fn arr(j: &Js) -> &[Js] {
-    match j {
-        Js::Arr(a) => a,
+fn list_of(value: &Js) -> &[Js] {
+    match value {
+        Js::Arr(lantern_house) => lantern_house,
         other => panic!("not a list: {other:?}"),
     }
 }
 
 fn outline(item: &Js, out: &mut Vec<String>) {
-    let key = s(get(item, "key"));
-    if s(get(item, "kind")) == "more" {
-        out.push(format!("{key}={}", n(get(item, "more"))));
+    let occurrence = text_of(field_of(item, "occurrence"));
+    if text_of(field_of(item, "cell")) == "more" {
+        out.push(format!(
+            "{occurrence}={}",
+            number_of(field_of(item, "moreCount"))
+        ));
         return;
     }
-    let repeat = get(item, "repeat") == &Js::Bool(true);
-    out.push(if repeat { format!("{key}!") } else { key });
-    for c in arr(get(item, "children")) {
-        outline(c, out);
+    let repeat = field_of(item, "alreadyOpenAbove") == &Js::Bool(true);
+    out.push(if repeat {
+        format!("{occurrence}!")
+    } else {
+        occurrence
+    });
+    for cell in list_of(field_of(item, "region")) {
+        outline(cell, out);
     }
 }
 
 const IN: Grouping = Grouping {
     book: 1,
-    relation: Some(b"in"),
+    kind: Some(IN_KIND),
 };
 
-fn world(s: &Store) {
-    book(s, 1, "one");
-    let e = |uid: u64| 100 + uid;
-    let entry = |uid: u64, at: f64, rels: &[(&str, u64, &str)]| {
-        let mut r = vec![
-            create(e(uid), ENTRY, &format!("1:{uid}")),
-            index(e(uid), 1, Some(at)),
+const TWO_BY_TWO_THEN_ONE: [RegionLayout; 2] = [
+    RegionLayout {
+        columns: 2,
+        rows: 2,
+    },
+    RegionLayout {
+        columns: 1,
+        rows: 1,
+    },
+];
+
+const LAYOUT: OverviewLayout = OverviewLayout {
+    regions_by_nesting_level: &TWO_BY_TWO_THEN_ONE,
+    card_text_characters: 400,
+};
+
+fn world(store: &Store) {
+    book(store, 1, "one");
+    let entity_of_uid = |own_key: u64| 100 + own_key;
+    let entry = |own_key: u64, landing: f64, relations_line: &[(u64, u64, &str)]| {
+        let mut records = vec![
+            create(entity_of_uid(own_key), ENTRY, &format!("1:{own_key}")),
+            index(entity_of_uid(own_key), 1, Some(landing)),
         ];
-        if !rels.is_empty() {
-            r.push(set_json(e(uid), relations::field(), &json_of(rels)));
+        if !relations_line.is_empty() {
+            records.push(set_json(
+                entity_of_uid(own_key),
+                relations::relations_field(),
+                &strong(relations_line),
+            ));
         }
-        r
+        records
     };
-    let mut r = Vec::new();
-    r.extend(entry(11, -1.0, &[]));
-    r.extend(entry(1, 0.0, &[]));
-    r.extend(entry(2, 1.0, &[("in", 1, "a")]));
-    r.extend(entry(3, 2.0, &[("in", 1, "b")]));
-    r.extend(entry(4, 3.0, &[("in", 1, "c")]));
-    r.extend(entry(5, 4.0, &[("in", 1, "d"), ("owes", 8, "a")]));
-    r.extend(entry(6, 5.0, &[("in", 2, "a")]));
-    r.extend(entry(7, 6.0, &[("in", 6, "a")]));
-    r.extend(entry(8, 7.0, &[]));
-    r.extend(entry(9, 8.0, &[("in", 8, "a"), ("in", 9, "a")]));
-    r.push(set_text(e(1), 103, "The Lantern House"));
-    r.push(set_text(e(1), 104, &"word ".repeat(100)));
-    r.push(set_text(e(1), library::ITEM_BASE, "lantern"));
-    r.push(rec(
+    let mut records = Vec::new();
+    records.extend(entry(11, -1.0, &[]));
+    records.extend(entry(1, 0.0, &[]));
+    records.extend(entry(2, 1.0, &[(IN_KIND, 1, "a")]));
+    records.extend(entry(3, 2.0, &[(IN_KIND, 1, "b")]));
+    records.extend(entry(4, 3.0, &[(IN_KIND, 1, "c")]));
+    records.extend(entry(5, 4.0, &[(IN_KIND, 1, "d"), (OWES, 8, "a")]));
+    records.extend(entry(6, 5.0, &[(IN_KIND, 2, "a")]));
+    records.extend(entry(7, 6.0, &[(IN_KIND, 6, "a")]));
+    records.extend(entry(8, 7.0, &[]));
+    records.extend(entry(9, 8.0, &[(IN_KIND, 8, "a"), (IN_KIND, 9, "a")]));
+    records.extend(entry(10, 9.0, &[(IN_KIND, 1, "e")]));
+    records.push(set_code_text(entity_of_uid(1), 103, "The Lantern House"));
+    records.push(set_code_text(entity_of_uid(1), 104, &"word ".repeat(100)));
+    records.push(set_code_text(
+        entity_of_uid(1),
+        library::ITEM_BASE,
+        "lantern",
+    ));
+    records.push(rec(
         "itemPlace",
         vec![
-            Value::Id(e(1)),
+            Value::Id(entity_of_uid(1)),
             Value::UInt(0),
             Value::UInt(0),
             Value::UInt(1),
         ],
     ));
-    s.commit_wait(r).unwrap();
+    store.commit_wait(records).unwrap();
 }
 
-fn read<T>(s: &Store, f: impl FnOnce(&derive::View) -> StoreResult<T>) -> T {
-    s.chat_read(f).unwrap()
+fn read<T>(store: &Store, read_with: impl FnOnce(&derive::View) -> StoreResult<T>) -> T {
+    store.chat_read(read_with).unwrap()
 }
 
-fn moved(st: &Store, g: Grouping, from: Option<&str>, how: Move) -> Option<(String, f64)> {
-    let j = read(st, |v| overview::moved(v, g, from, how));
-    (j != Js::Null).then(|| (s(get(&j, "key")), n(get(&j, "rank"))))
+fn stepped(
+    store: &Store,
+    grouping: Grouping,
+    from: Option<&str>,
+    step: OverviewStep,
+) -> Option<(String, f64)> {
+    let landing_js = read(store, |view| {
+        overview::step_in_reading_order(view, grouping, &TWO_BY_TWO_THEN_ONE, from, step)
+    });
+    (landing_js != Js::Null).then(|| {
+        (
+            text_of(field_of(&landing_js, "occurrence")),
+            number_of(field_of(&landing_js, "topLevelRank")),
+        )
+    })
 }
 
 #[test]
 fn the_overview_is_the_top_with_each_region_cut_short_a_count_per_cut_and_repeats_closed() {
     let dir = temp_dir("window");
-    let st = Store::open_in(&dir, SMALL, pool()).unwrap();
-    world(&st);
-    let w = read(&st, |v| overview::window(v, IN, 0, 10, Some("101/102/999")));
-    assert_eq!(n(get(&w, "count")), 3.0);
-    let mut o = Vec::new();
-    for item in arr(get(&w, "items")) {
-        outline(item, &mut o);
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    world(&store);
+    let overview_read = read(&store, |view| {
+        overview::read_overview(view, IN, &LAYOUT, 0, 10, Some("101/102/999"))
+    });
+    assert_eq!(number_of(field_of(&overview_read, "topLevelCount")), 3.0);
+    let mut fields = Vec::new();
+    for item in list_of(field_of(&overview_read, "entries")) {
+        outline(item, &mut fields);
     }
     assert_eq!(
-        o,
+        fields,
         [
             "111",
             "101",
             "101/102",
             "101/102/106",
-            "101/102/106/+=1",
             "101/103",
             "101/104",
-            "101/+=1",
+            "101/+=2",
             "108",
             "108/109",
             "108/109/109!",
         ]
     );
-    let a = &arr(get(&w, "items"))[1];
-    assert_eq!(n(get(a, "rank")), 1.0);
-    assert_eq!(n(get(a, "members")), 4.0);
-    assert_eq!(s(get(a, "title")), "The Lantern House");
-    assert_eq!(get(a, "cut"), &Js::Bool(true));
-    assert_eq!(s(get(a, "text")).len(), overview::TEXT);
-    assert_eq!(arr(get(a, "keys")), [Js::Text(b"lantern".to_vec())]);
-    let b = &arr(get(a, "children"))[0];
-    let rels = arr(get(b, "relations"));
-    assert_eq!(s(get(&rels[0], "relation")), "in");
-    assert_eq!(s(get(&rels[0], "entry")), "101");
-    assert_eq!(s(get(&rels[0], "title")), "The Lantern House");
-    assert_eq!(s(get(get(&w, "active"), "key")), "101/102");
-    let second = read(&st, |v| overview::window(v, IN, 2, 3, None));
-    assert_eq!(n(get(&second, "from")), 2.0);
-    assert_eq!(s(get(&arr(get(&second, "items"))[0], "key")), "108");
-    let plain = read(&st, |v| {
-        overview::window(
-            v,
-            Grouping {
-                book: 1,
-                relation: None,
-            },
-            0,
-            100,
-            None,
-        )
-    });
-    assert_eq!(n(get(&plain, "count")), 10.0);
-    assert!(
-        arr(get(&plain, "items"))
-            .iter()
-            .all(|i| arr(get(i, "children")).is_empty())
+    let lantern_house = &list_of(field_of(&overview_read, "entries"))[1];
+    assert_eq!(number_of(field_of(lantern_house, "topLevelRank")), 1.0);
+    assert_eq!(number_of(field_of(lantern_house, "memberCount")), 5.0);
+    assert_eq!(
+        text_of(field_of(lantern_house, "title")),
+        "The Lantern House"
     );
-    let owes = read(&st, |v| {
-        overview::window(
-            v,
+    assert_eq!(field_of(lantern_house, "textCut"), &Js::Bool(true));
+    assert_eq!(text_of(field_of(lantern_house, "text")).len(), 400);
+    assert_eq!(
+        list_of(field_of(lantern_house, "keys")),
+        [Js::Text(b"lantern".to_vec())]
+    );
+    let first_member = &list_of(field_of(lantern_house, "region"))[0];
+    let relations_line = list_of(field_of(first_member, "relations"));
+    assert_eq!(text_of(field_of(&relations_line[0], "kind")), "1");
+    assert_eq!(text_of(field_of(&relations_line[0], "kindName")), "in");
+    assert_eq!(text_of(field_of(&relations_line[0], "target")), "101");
+    assert_eq!(
+        text_of(field_of(&relations_line[0], "targetTitle")),
+        "The Lantern House"
+    );
+    assert_eq!(
+        text_of(field_of(
+            field_of(&overview_read, "stepLanding"),
+            "occurrence"
+        )),
+        "101/102"
+    );
+    let second_range = read(&store, |view| {
+        overview::read_overview(view, IN, &LAYOUT, 2, 3, None)
+    });
+    assert_eq!(number_of(field_of(&second_range, "firstRank")), 2.0);
+    assert_eq!(
+        text_of(field_of(
+            &list_of(field_of(&second_range, "entries"))[0],
+            "occurrence"
+        )),
+        "108"
+    );
+    let ungrouped = read(&store, |view| {
+        overview::read_overview(
+            view,
             Grouping {
                 book: 1,
-                relation: Some(b"owes"),
+                kind: None,
             },
+            &LAYOUT,
             0,
             100,
             None,
         )
     });
-    assert_eq!(n(get(&owes, "count")), 9.0);
-    let mut o = Vec::new();
-    let h = arr(get(&owes, "items"))
+    assert_eq!(number_of(field_of(&ungrouped, "topLevelCount")), 11.0);
+    assert!(
+        list_of(field_of(&ungrouped, "entries"))
+            .iter()
+            .all(|entry_cell| list_of(field_of(entry_cell, "region")).is_empty())
+    );
+    let by_owes = read(&store, |view| {
+        overview::read_overview(
+            view,
+            Grouping {
+                book: 1,
+                kind: Some(OWES),
+            },
+            &LAYOUT,
+            0,
+            100,
+            None,
+        )
+    });
+    assert_eq!(number_of(field_of(&by_owes, "topLevelCount")), 10.0);
+    let mut fields = Vec::new();
+    let holder = list_of(field_of(&by_owes, "entries"))
         .iter()
-        .find(|i| s(get(i, "key")) == "108")
+        .find(|entry_cell| text_of(field_of(entry_cell, "occurrence")) == "108")
         .unwrap();
-    outline(h, &mut o);
-    assert_eq!(o, ["108", "108/105"]);
-    st.close();
+    outline(holder, &mut fields);
+    assert_eq!(fields, ["108", "108/105"]);
+    store.close();
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_move_steps_through_reading_order_across_top_level_entries_and_hops_to_parents_and_children() {
     let dir = temp_dir("move");
-    let st = Store::open_in(&dir, SMALL, pool()).unwrap();
-    world(&st);
-    let m = |from: Option<&str>, how: Move| moved(&st, IN, from, how);
-    let at = |k: &str, r: f64| Some((k.to_string(), r));
-    assert_eq!(m(None, Move::By(1)), at("111", 0.0));
-    assert_eq!(m(None, Move::By(2)), at("101", 1.0));
-    assert_eq!(m(None, Move::By(-1)), at("108/109/109", 2.0));
-    assert_eq!(m(Some("101/102"), Move::By(1)), at("101/102/106", 1.0));
-    assert_eq!(m(Some("101/102/106/+"), Move::By(3)), at("101/+", 1.0));
-    assert_eq!(m(Some("101/+"), Move::By(1)), at("108", 2.0));
-    assert_eq!(m(Some("108"), Move::By(-1)), at("101/+", 1.0));
-    assert_eq!(m(Some("111"), Move::By(9)), at("108/109", 2.0));
-    assert_eq!(m(Some("111"), Move::By(100)), at("108/109/109", 2.0));
-    assert_eq!(m(Some("108/109"), Move::By(-100)), at("111", 0.0));
-    assert_eq!(m(Some("101/102/106"), Move::Parent), at("101/102", 1.0));
-    assert_eq!(m(Some("101/+"), Move::Parent), at("101", 1.0));
-    assert_eq!(m(Some("101"), Move::Parent), at("101", 1.0));
-    assert_eq!(m(Some("101"), Move::Child), at("101/102", 1.0));
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    world(&store);
+    let step_from = |from: Option<&str>, step: OverviewStep| stepped(&store, IN, from, step);
+    let landing = |key_name: &str, records: f64| Some((key_name.to_string(), records));
     assert_eq!(
-        m(Some("101/102/106"), Move::Child),
-        at("101/102/106/+", 1.0)
+        step_from(None, OverviewStep::InReadingOrder(1)),
+        landing("111", 0.0)
     );
-    assert_eq!(m(Some("108/109/109"), Move::Child), at("108/109/109", 2.0));
-    assert_eq!(m(Some("101/104/77"), Move::By(0)), at("101/104", 1.0));
-    assert_eq!(m(Some("102"), Move::By(0)), None);
-    assert!(read(&st, |v| Ok(overview::moved(
-        v,
+    assert_eq!(
+        step_from(None, OverviewStep::InReadingOrder(2)),
+        landing("101", 1.0)
+    );
+    assert_eq!(
+        step_from(None, OverviewStep::InReadingOrder(-1)),
+        landing("108/109/109", 2.0)
+    );
+    assert_eq!(
+        step_from(Some("101/102"), OverviewStep::InReadingOrder(1)),
+        landing("101/102/106", 1.0)
+    );
+    assert_eq!(
+        step_from(Some("101/102/106/+"), OverviewStep::InReadingOrder(3)),
+        landing("101/+", 1.0)
+    );
+    assert_eq!(
+        step_from(Some("101/+"), OverviewStep::InReadingOrder(1)),
+        landing("108", 2.0)
+    );
+    assert_eq!(
+        step_from(Some("108"), OverviewStep::InReadingOrder(-1)),
+        landing("101/+", 1.0)
+    );
+    assert_eq!(
+        step_from(Some("111"), OverviewStep::InReadingOrder(9)),
+        landing("108/109/109", 2.0)
+    );
+    assert_eq!(
+        step_from(Some("111"), OverviewStep::InReadingOrder(8)),
+        landing("108/109", 2.0)
+    );
+    assert_eq!(
+        step_from(Some("111"), OverviewStep::InReadingOrder(100)),
+        landing("108/109/109", 2.0)
+    );
+    assert_eq!(
+        step_from(Some("108/109"), OverviewStep::InReadingOrder(-100)),
+        landing("111", 0.0)
+    );
+    assert_eq!(
+        step_from(Some("101/102/106"), OverviewStep::ToParent),
+        landing("101/102", 1.0)
+    );
+    assert_eq!(
+        step_from(Some("101/+"), OverviewStep::ToParent),
+        landing("101", 1.0)
+    );
+    assert_eq!(
+        step_from(Some("101"), OverviewStep::ToParent),
+        landing("101", 1.0)
+    );
+    assert_eq!(
+        step_from(Some("101"), OverviewStep::ToFirstChild),
+        landing("101/102", 1.0)
+    );
+    assert_eq!(
+        step_from(Some("101/102/106"), OverviewStep::ToFirstChild),
+        landing("101/102/106", 1.0)
+    );
+    assert_eq!(
+        step_from(Some("108/109/109"), OverviewStep::ToFirstChild),
+        landing("108/109/109", 2.0)
+    );
+    assert_eq!(
+        step_from(Some("101/104/77"), OverviewStep::InReadingOrder(0)),
+        landing("101/104", 1.0)
+    );
+    assert_eq!(
+        step_from(Some("102"), OverviewStep::InReadingOrder(0)),
+        None
+    );
+    assert!(read(&store, |view| Ok(overview::step_in_reading_order(
+        view,
         IN,
+        &TWO_BY_TWO_THEN_ONE,
         Some("1//2"),
-        Move::By(1)
+        OverviewStep::InReadingOrder(1)
     )
     .is_err())));
-    st.commit_wait(vec![rec("entityDelete", vec![Value::Id(101)])])
-        .unwrap();
-    let w = read(&st, |v| overview::window(v, IN, 0, 10, None));
-    let keys: Vec<String> = arr(get(&w, "items"))
+    let mut records: Vec<Record> = [102, 103, 104, 110]
         .iter()
-        .map(|i| s(get(i, "key")))
+        .map(|entity| set_json(*entity, relations::relations_field(), "[]"))
         .collect();
-    assert_eq!(keys, ["111", "108"]);
-    st.close();
+    records.push(set_json(
+        105,
+        relations::relations_field(),
+        &strong(&[(OWES, 8, "a")]),
+    ));
+    records.push(rec("entityDelete", vec![Value::Id(101)]));
+    assert!(
+        store
+            .commit_wait(vec![rec("entityDelete", vec![Value::Id(101)])])
+            .is_err()
+    );
+    store.commit_wait(records).unwrap();
+    let overview_read = read(&store, |view| {
+        overview::read_overview(view, IN, &LAYOUT, 0, 10, None)
+    });
+    let keys: Vec<String> = list_of(field_of(&overview_read, "entries"))
+        .iter()
+        .map(|entry_cell| text_of(field_of(entry_cell, "occurrence")))
+        .collect();
+    assert_eq!(keys, ["111", "102", "103", "104", "105", "108", "110"]);
+    store.close();
     let _ = fs::remove_dir_all(&dir);
 }

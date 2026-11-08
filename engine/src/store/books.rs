@@ -376,19 +376,19 @@ impl Deriver for EntryIndex {
                 )));
             }
         }
-        if let Some((b, uid)) = super::book_stats::counted_entry(view, entry)? {
-            let new = match rec.values[2] {
-                Value::F64(x) => Some(x),
+        if let Some((counted_book, own_key)) = super::book_stats::entry_of_counted_book(view, entry)? {
+            let new_index = match rec.values[2] {
+                Value::F64(index) => Some(index),
                 _ => None,
             };
-            super::relations::index_moved(
+            super::relations::display_index_changed(
                 view,
                 out,
-                b,
+                counted_book,
                 entry,
-                &uid,
+                &own_key,
                 entry_index(view, entry)?,
-                new,
+                new_index,
             )?;
         }
         drop_index(view, out, entry)?;

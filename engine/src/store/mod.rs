@@ -6,7 +6,7 @@ pub mod chat;
 pub mod chat_read;
 pub mod chat_search;
 pub mod choices;
-pub mod counted;
+pub mod commit_checks;
 pub mod derive;
 pub mod history;
 pub mod kinds;
@@ -25,6 +25,7 @@ pub mod state;
 pub mod stats;
 pub mod tags;
 pub mod token_cache;
+pub mod world_order_tree;
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
@@ -786,7 +787,7 @@ impl Store {
     pub fn pairs_mode(&self) -> StoreResult<u64> {
         self.derived(|v| Ok(crate::search::pairs::state(v)?.0))
     }
-    pub fn world_order_cutover(
+    pub fn world_order_conversion_step(
         &self,
         after: Option<Vec<u8>>,
         batch: usize,
@@ -797,7 +798,7 @@ impl Store {
         self.inner.submit(Job::Derive(
             Box::new(move |view, out| {
                 *found.lock().unwrap() =
-                    relations::cutover_step(view, out, after.as_deref(), batch)?;
+                    relations::world_order_conversion_step(view, out, after.as_deref(), batch)?;
                 Ok(())
             }),
             Box::new(move |r| done(r.map(|()| next.lock().unwrap().take()))),
@@ -1393,6 +1394,7 @@ impl Inner {
                 .map_err(|e| {
                     StoreError::Replay(format!("the {} record at {pos}: {e}", rec.kind.name))
                 })?;
+                commit_checks::strip(&mut out);
                 out.apply(&mut entries);
             }
             next = batch_next;
@@ -1523,6 +1525,7 @@ impl Inner {
                 let mut out = Out::default();
                 let r = f(&view, &mut out);
                 drop(view);
+                commit_checks::strip(&mut out);
                 match r {
                     Ok(()) => {
                         let wake =
@@ -1637,6 +1640,18 @@ impl Inner {
                     }
                 }
                 Job::Derive(..) => unreachable!("derived before"),
+            }
+            let checks = commit_checks::take(&mut entries);
+            if !checks.is_empty() {
+                let layers = [&entries]
+                    .into_iter()
+                    .chain(layers_below.iter().copied())
+                    .collect();
+                let pending = [&records]
+                    .into_iter()
+                    .chain(pending_below.iter().copied())
+                    .collect();
+                commit_checks::run(&self.view(layers, pending, Some(&memo)), &checks)?;
             }
             let size = layout.offset() - mark.offset();
             if size > max_commit(&self.cfg.log) {

@@ -1589,6 +1589,7 @@ fn work(
             drop(view);
             records.put(at.pos, &rec, at.len);
             let mut kept = Out::default();
+            super::commit_checks::strip(&mut o);
             for (k, v) in o.entries {
                 if summed_entry(&k) {
                     sink_bytes = sink_bytes.saturating_add_signed(sink_add(&mut sink, k, v));

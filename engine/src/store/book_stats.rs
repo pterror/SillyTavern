@@ -50,7 +50,7 @@ pub fn field_hash(f: &FieldRef, json: bool, v: &[u8]) -> i64 {
 
 #[derive(Clone)]
 enum Owner {
-    Entry { book: u64, uid: EntryKey },
+    Entry { book: u64, own_key: EntryKey },
     Book,
 }
 
@@ -72,8 +72,8 @@ fn counted_book(view: &View, book: u64) -> Result<bool, StoreError> {
 fn owner_of(view: &View, kind: u64, k: &[u8]) -> Result<Option<Owner>, StoreError> {
     Ok(match kind {
         ENTRY => {
-            let (book, uid) = parse_entry_key(k)?;
-            counted_book(view, book)?.then_some(Owner::Entry { book, uid })
+            let (book, own_key) = parse_entry_key(k)?;
+            counted_book(view, book)?.then_some(Owner::Entry { book, own_key })
         }
         BOOK => Some(Owner::Book),
         OWNED if k.ends_with(b":c") => Some(Owner::Book),
@@ -110,16 +110,19 @@ fn add(out: &mut Out, structure: u64, id: u64, d: Stat) {
     }
 }
 
-pub fn counted_entry_key(view: &View, k: &[u8]) -> Result<Option<(u64, EntryKey)>, StoreError> {
+pub fn entry_key_of_counted_book(
+    view: &View,
+    k: &[u8],
+) -> Result<Option<(u64, EntryKey)>, StoreError> {
     Ok(match owner_of(view, ENTRY, k)? {
-        Some(Owner::Entry { book, uid }) => Some((book, uid)),
+        Some(Owner::Entry { book, own_key }) => Some((book, own_key)),
         _ => None,
     })
 }
 
-pub fn counted_entry(view: &View, e: u64) -> Result<Option<(u64, EntryKey)>, StoreError> {
+pub fn entry_of_counted_book(view: &View, e: u64) -> Result<Option<(u64, EntryKey)>, StoreError> {
     Ok(match owner(view, e)? {
-        Some(Owner::Entry { book, uid }) => Some((book, uid)),
+        Some(Owner::Entry { book, own_key }) => Some((book, own_key)),
         _ => None,
     })
 }
@@ -151,12 +154,17 @@ fn owned_value_changed(
     json: bool,
     new: Option<&[u8]>,
 ) -> Result<(), StoreError> {
-    if let Owner::Entry { book, uid } = o {
+    if let Owner::Entry { book, own_key } = o {
         if !json {
             super::references::key_written(view, out, *book, e, f, new)?;
-        } else if super::relations::is_field(f) {
-            super::relations::written(view, out, *book, e, uid, new)?;
+        } else if super::relations::is_relations_field(f) {
+            super::relations::relations_field_written(view, out, *book, e, own_key, new)?;
         }
+    } else if let Some(kind) = super::relations::kind_of_relation_kind_field(f) {
+        out.put(
+            super::commit_checks::relation_kind_check_key(e, kind),
+            Vec::new(),
+        );
     }
     let old = field_stat(view, e, f, json)?;
     let now = match new {
@@ -198,10 +206,10 @@ pub fn created(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Resul
         return Ok(());
     };
     let mut local = BTreeMap::new();
-    if let Owner::Entry { book, uid } = &o {
+    if let Owner::Entry { book, own_key } = &o {
         out.add(key::ids(STAT_BOOK, *book, ENTRIES), 1);
         let mut placed = Out::default();
-        super::relations::entry_created(view, &mut placed, *book, e, uid)?;
+        super::relations::entry_created(view, &mut placed, *book, e, own_key)?;
         out.entries.extend(placed.entries.iter().cloned());
         placed.apply(&mut local);
     }
@@ -229,8 +237,8 @@ fn drop_fields(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError> {
 
 pub fn gone(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Result<(), StoreError> {
     if kind == ENTRY {
-        if let Some(Owner::Entry { book, uid }) = owner_of(view, kind, k)? {
-            super::relations::entry_gone(view, out, book, e, &uid)?;
+        if let Some(Owner::Entry { book, own_key }) = owner_of(view, kind, k)? {
+            super::relations::entry_deleted(view, out, book, e, &own_key)?;
             let s = entry_stat(view, e)?;
             add(
                 out,

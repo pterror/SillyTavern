@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::books::{BOOK, ENTRY, EntryKey};
-use super::counted::{self, TREE_COUNT, TREE_EDGE, TREE_KINDS};
-use super::relations::{self, GROUP_COUNT, MEMBERS, REL_OF};
+use super::chat_read::Js;
+use super::relations::{self, MEMBER_COUNT, MEMBERS_BY_TARGET, RELATIONS_OF_ENTRY};
+use super::world_order_tree::{self as tree, ORDER_TREE_COUNT, ORDER_TREE_EDGE, ORDER_TREE_HELD};
 use super::*;
 use crate::log::format::{FieldRef, Record, Value, kind_by_name};
 
@@ -43,84 +44,106 @@ pub(super) fn rec(kind: &str, values: Vec<Value>) -> Record {
     Record::new(kind_by_name(kind).unwrap(), values).unwrap()
 }
 
-pub(super) fn text(s: &str) -> Value {
-    Value::Text(s.as_bytes().to_vec())
+pub(super) fn text(text_literal: &str) -> Value {
+    Value::Text(text_literal.as_bytes().to_vec())
 }
 
-pub(super) fn create(e: u64, kind: u64, key: &str) -> Record {
+pub(super) fn create(entity: u64, kind: u64, key: &str) -> Record {
     rec(
         "entityCreate",
-        vec![Value::Id(e), Value::UInt(kind), text(key), Value::F64(0.0)],
+        vec![
+            Value::Id(entity),
+            Value::UInt(kind),
+            text(key),
+            Value::F64(0.0),
+        ],
     )
 }
 
-pub(super) fn set_json(e: u64, f: FieldRef, j: &str) -> Record {
+pub(super) fn set_json(entity: u64, field: FieldRef, json: &str) -> Record {
     rec(
         "jsonValue",
         vec![
-            Value::Sel(0, e),
-            Value::Field(f),
-            text(j),
+            Value::Sel(0, entity),
+            Value::Field(field),
+            text(json),
             Value::Absent,
             Value::Absent,
         ],
     )
 }
 
-fn set_text(e: u64, f: FieldRef, t: &str) -> Record {
+pub(super) fn set_text(entity: u64, field: FieldRef, text_literal: &str) -> Record {
     rec(
         "textValue",
         vec![
-            Value::Sel(0, e),
-            Value::Field(f),
-            text(t),
+            Value::Sel(0, entity),
+            Value::Field(field),
+            text(text_literal),
             Value::Absent,
             Value::Absent,
         ],
     )
 }
 
-fn drop_value(e: u64, f: FieldRef) -> Record {
+pub(super) fn drop_value(entity: u64, field: FieldRef) -> Record {
     rec(
         "valueDelete",
         vec![
-            Value::Sel(0, e),
-            Value::Field(f),
+            Value::Sel(0, entity),
+            Value::Field(field),
             Value::Absent,
             Value::Absent,
         ],
     )
 }
 
-pub(super) fn index(e: u64, book: u64, x: Option<f64>) -> Record {
+pub(super) fn index(entity: u64, book: u64, display_index: Option<f64>) -> Record {
     rec(
         "entryIndex",
         vec![
-            Value::Id(e),
+            Value::Id(entity),
             Value::Id(book),
-            x.map_or(Value::Absent, Value::F64),
+            display_index.map_or(Value::Absent, Value::F64),
         ],
     )
 }
 
-pub(super) fn json_of(rels: &[(&str, u64, &str)]) -> String {
+pub(super) const IN: u64 = 1;
+pub(super) const OWES: u64 = 2;
+
+pub(super) fn json_of(rels: &[(u64, u64, &str, bool)]) -> String {
     let items: Vec<String> = rels
         .iter()
-        .map(|(r, t, p)| format!(r#"{{"relation":"{r}","target":{t},"position":"{p}"}}"#))
+        .map(|(kind, target, position, weak)| {
+            let weak_suffix = if *weak { r#","weak":true"# } else { "" };
+            format!(r#"{{"kind":{kind},"target":{target},"position":"{position}"{weak_suffix}}}"#)
+        })
         .collect();
     format!("[{}]", items.join(","))
 }
 
-pub(super) fn book(s: &Store, id: u64, key: &str) {
-    s.commit_wait(vec![
-        create(id, BOOK, key),
-        set_json(id, FieldRef::Code(books::DEFINED), ""),
-    ])
-    .unwrap();
+pub(super) fn strong(rels: &[(u64, u64, &str)]) -> String {
+    let with_strength: Vec<_> = rels
+        .iter()
+        .map(|(kind, target, position)| (*kind, *target, *position, false))
+        .collect();
+    json_of(&with_strength)
 }
 
-fn read<T>(s: &Store, f: impl FnOnce(&derive::View) -> StoreResult<T>) -> T {
-    s.chat_read(f).unwrap()
+pub(super) fn book(store: &Store, id: u64, key: &str) {
+    store
+        .commit_wait(vec![
+            create(id, BOOK, key),
+            set_json(id, FieldRef::Code(books::DEFINED), ""),
+            set_text(id, relations::relation_kind_field(IN), "in"),
+            set_text(id, relations::relation_kind_field(OWES), "owes"),
+        ])
+        .unwrap();
+}
+
+fn read<T>(store: &Store, field: impl FnOnce(&derive::View) -> StoreResult<T>) -> T {
+    store.chat_read(field).unwrap()
 }
 
 const B: u64 = 1;
@@ -129,7 +152,7 @@ type Members = Vec<(Vec<u8>, u64)>;
 
 #[derive(Clone, Default)]
 struct Ent {
-    uid: u64,
+    own_key: u64,
     index: Option<f64>,
     rels: Option<String>,
 }
@@ -140,56 +163,80 @@ struct Model {
 }
 
 impl Model {
-    fn set(&self, e: u64) -> relations::Set {
-        self.entries[&e]
+    fn set(&self, entity: u64) -> relations::RelationSet {
+        self.entries[&entity]
             .rels
             .as_deref()
-            .map(|j| relations::parse(j.as_bytes()))
+            .map(|json| relations::parse_relations_field(json.as_bytes()))
             .unwrap_or_default()
     }
 
-    fn top(&self, kind: Option<&str>) -> Vec<u64> {
-        let mut v: Vec<(u64, u64)> = self
+    fn top(&self, kind: Option<u64>) -> Vec<u64> {
+        let mut ordered: Vec<(u64, u64)> = self
             .entries
             .iter()
-            .filter(|(e, _)| {
-                kind.is_none_or(|k| !self.set(**e).keys().any(|(r, _)| r == k.as_bytes()))
+            .filter(|(entity, _)| {
+                kind.is_none_or(|kind| {
+                    !relations::strong_kinds(&self.set(**entity)).contains(&kind)
+                })
             })
-            .map(|(e, x)| (relations::order_value(x.index, &EntryKey::Int(x.uid)), *e))
+            .map(|(entity, entry_state)| {
+                (
+                    relations::world_order_value(
+                        entry_state.index,
+                        &EntryKey::Int(entry_state.own_key),
+                    ),
+                    *entity,
+                )
+            })
             .collect();
-        v.sort();
-        v.into_iter().map(|(_, e)| e).collect()
+        ordered.sort();
+        ordered.into_iter().map(|(_, entity)| entity).collect()
     }
 
-    fn groups(&self) -> BTreeMap<(Vec<u8>, Vec<u8>), Members> {
-        let mut g: BTreeMap<_, Vec<_>> = BTreeMap::new();
-        for e in self.entries.keys() {
-            for ((r, t), p) in self.set(*e) {
-                g.entry((r, t)).or_default().push((p, *e));
+    fn groups(&self) -> BTreeMap<(u64, Vec<u8>), Members> {
+        let mut groups_by_target: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for entity in self.entries.keys() {
+            for ((kind, target), relation) in self.set(*entity) {
+                groups_by_target
+                    .entry((kind, target))
+                    .or_default()
+                    .push((relation.position, *entity));
             }
         }
-        for v in g.values_mut() {
-            v.sort();
+        for members in groups_by_target.values_mut() {
+            members.sort();
         }
-        g
+        groups_by_target
     }
 
-    fn check(&self, s: &Store) {
-        let sp = relations::space(B);
-        for kind in [None, Some("in"), Some("owes"), Some("never")] {
+    fn uids(&self) -> Vec<u64> {
+        self.entries
+            .values()
+            .map(|entry_state| entry_state.own_key)
+            .collect()
+    }
+
+    fn check(&self, store: &Store) {
+        let book_tree = relations::order_tree_space(B);
+        for kind in [None, Some(IN), Some(OWES), Some(9)] {
             let want = self.top(kind);
-            let k = kind.map(str::as_bytes);
-            read(s, |v| {
-                assert_eq!(counted::size(v, &sp, k)?, want.len() as u64, "{kind:?}");
-                let all: Vec<u64> = counted::take(v, &sp, k, 0, usize::MAX)?
-                    .iter()
-                    .map(counted::entity_of)
-                    .collect();
+            read(store, |view| {
+                assert_eq!(
+                    tree::top_level_count(view, &book_tree, kind)?,
+                    want.len() as u64,
+                    "{kind:?}"
+                );
+                let all: Vec<u64> =
+                    tree::top_level_from_rank(view, &book_tree, kind, 0, usize::MAX)?
+                        .iter()
+                        .map(tree::entity_of_order_key)
+                        .collect();
                 assert_eq!(all, want, "{kind:?}");
                 for skip in [1, 3, 7] {
-                    let got: Vec<u64> = counted::take(v, &sp, k, skip, 3)?
+                    let got: Vec<u64> = tree::top_level_from_rank(view, &book_tree, kind, skip, 3)?
                         .iter()
-                        .map(counted::entity_of)
+                        .map(tree::entity_of_order_key)
                         .collect();
                     let from = (skip as usize).min(want.len());
                     assert_eq!(
@@ -198,35 +245,87 @@ impl Model {
                         "{kind:?} at {skip}"
                     );
                 }
-                for (i, e) in want.iter().enumerate() {
-                    let x = relations::elem_of(v, *e, &EntryKey::Int(self.entries[e].uid))?;
+                for (step_number, entity) in want.iter().enumerate() {
+                    let entry_state = relations::order_key_of_entry(
+                        view,
+                        *entity,
+                        &EntryKey::Int(self.entries[entity].own_key),
+                    )?;
                     assert_eq!(
-                        counted::rank(v, &sp, &x, k)?,
-                        i as u64,
-                        "{kind:?} rank of {e}"
+                        tree::top_level_rank(view, &book_tree, &entry_state, kind)?,
+                        step_number as u64,
+                        "{kind:?} rank of {entity}"
                     );
                 }
                 Ok(())
             });
         }
         let groups = self.groups();
-        read(s, |v| {
-            for ((r, t), members) in &groups {
-                assert_eq!(relations::group_count(v, B, r, t)?, members.len() as u64);
-                let prefix = relations::members_prefix(B, r, t);
-                let got: Vec<u64> = v
+        read(store, |view| {
+            for ((kind, target), members) in &groups {
+                assert_eq!(
+                    relations::member_count(view, B, *kind, target)?,
+                    members.len() as u64
+                );
+                let prefix = relations::group_members_prefix(B, *kind, target);
+                let got: Vec<u64> = view
                     .scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)?
                     .iter()
-                    .map(|(k, _)| relations::member_of(&prefix, k))
+                    .map(|(key, _)| {
+                        relations::member_of_group_key(&prefix, key).map(|(_, entity)| entity)
+                    })
                     .collect::<Result<_, _>>()?;
-                let want: Vec<u64> = members.iter().map(|(_, e)| *e).collect();
+                let want: Vec<u64> = members.iter().map(|(_, entity)| *entity).collect();
                 assert_eq!(got, want);
             }
-            for e in self.entries.keys() {
-                assert_eq!(relations::rels_of(v, *e)?, self.set(*e), "entry {e}");
+            for entity in self.entries.keys() {
+                assert_eq!(
+                    relations::relations_of_entry(view, *entity)?,
+                    self.set(*entity),
+                    "entry {entity}"
+                );
             }
             Ok(())
         });
+    }
+
+    fn pointers_rewritten(&self, gone: u64) -> Vec<(u64, String)> {
+        let target = self.entries[&gone].own_key;
+        let mut out = Vec::new();
+        for (entity, entry_state) in &self.entries {
+            if *entity == gone {
+                continue;
+            }
+            let set = self.set(*entity);
+            if !set
+                .keys()
+                .any(|(_, target_key)| *target_key == target.to_string().into_bytes())
+            {
+                continue;
+            }
+            let kept: Vec<(u64, u64, String, bool)> = set
+                .iter()
+                .filter(|((_, target_key), _)| *target_key != target.to_string().into_bytes())
+                .map(|((kind, target_key), relation)| {
+                    (
+                        *kind,
+                        String::from_utf8(target_key.clone())
+                            .unwrap()
+                            .parse()
+                            .unwrap(),
+                        String::from_utf8(relation.position.clone()).unwrap(),
+                        relation.weak,
+                    )
+                })
+                .collect();
+            let _ = entry_state;
+            let with_strength: Vec<_> = kept
+                .iter()
+                .map(|(kind, target, position, weak)| (*kind, *target, position.as_str(), *weak))
+                .collect();
+            out.push((*entity, json_of(&with_strength)));
+        }
+        out
     }
 }
 
@@ -240,19 +339,22 @@ impl Rng {
         self.0
     }
 
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
     }
 }
 
-fn random_rels(rng: &mut Rng) -> String {
-    let n = rng.below(4);
+fn random_rels(rng: &mut Rng, targets: &[u64]) -> String {
+    if targets.is_empty() {
+        return "[]".into();
+    }
+    let count = rng.below(4);
     let mut rels = Vec::new();
-    for _ in 0..n {
-        let r = ["in", "owes", "in"][rng.below(3) as usize];
-        let t = rng.below(12);
-        let p = ["a", "b", "m", "mm", "z", ""][rng.below(6) as usize];
-        rels.push((r, t, p));
+    for _ in 0..count {
+        let kind = [IN, OWES, IN][rng.below(3) as usize];
+        let target = targets[rng.below(targets.len() as u64) as usize];
+        let position = ["a", "b", "m", "mm", "z", ""][rng.below(6) as usize];
+        rels.push((kind, target, position, rng.below(4) == 0));
     }
     json_of(&rels)
 }
@@ -269,128 +371,163 @@ fn random_index(rng: &mut Rng) -> Option<f64> {
     ][rng.below(7) as usize]
 }
 
-fn dump(s: &Store) -> Vec<(Vec<u8>, Vec<u8>)> {
+fn dump(store: &Store) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out = Vec::new();
-    for st in [
-        TREE_EDGE,
-        TREE_COUNT.id(),
-        TREE_KINDS.id(),
-        REL_OF,
-        MEMBERS,
-        GROUP_COUNT,
+    for structure in [
+        ORDER_TREE_EDGE,
+        ORDER_TREE_COUNT.id(),
+        ORDER_TREE_HELD.id(),
+        RELATIONS_OF_ENTRY,
+        MEMBERS_BY_TARGET,
+        MEMBER_COUNT,
+        commit_checks::COMMIT_CHECK,
     ] {
-        let p = kinds::key::of(st);
-        out.extend(read(s, |v| {
-            v.scan(&p, &kinds::key::prefix_end(&p), usize::MAX)
+        let prefix = kinds::key::of(structure);
+        out.extend(read(store, |view| {
+            view.scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)
         }));
     }
     out
 }
 
-fn step(s: &Store, m: &mut Model, rng: &mut Rng, next: &mut u64) {
-    let ids: Vec<u64> = m.entries.keys().copied().collect();
-    let pick = |rng: &mut Rng| ids[rng.below(ids.len() as u64) as usize];
-    let rf = relations::field;
+fn step(store: &Store, model: &mut Model, rng: &mut Rng, next: &mut u64) {
+    let entity_ids: Vec<u64> = model.entries.keys().copied().collect();
+    let pick = |rng: &mut Rng| entity_ids[rng.below(entity_ids.len() as u64) as usize];
+    let relations_field_of = relations::relations_field;
     match rng.below(10) {
         0..=2 => {
-            let u = rng.below(20);
-            if m.entries.values().any(|x| x.uid == u) {
+            let own_key = rng.below(20);
+            if model
+                .entries
+                .values()
+                .any(|display_index| display_index.own_key == own_key)
+            {
                 return;
             }
-            let (e, uid) = (*next, u);
+            let (entity, own_key) = (*next, own_key);
             *next += 1;
-            let mut r = vec![create(e, ENTRY, &format!("{B}:{uid}"))];
+            let mut records = vec![create(entity, ENTRY, &format!("{B}:{own_key}"))];
             let mut ent = Ent {
-                uid,
+                own_key,
                 ..Ent::default()
             };
             if rng.below(2) == 0 {
-                let j = random_rels(rng);
-                r.push(set_json(e, rf(), &j));
-                ent.rels = Some(j);
+                let mut targets = model.uids();
+                targets.push(own_key);
+                let json = random_rels(rng, &targets);
+                records.push(set_json(entity, relations_field_of(), &json));
+                ent.rels = Some(json);
             }
             if rng.below(2) == 0 {
                 ent.index = random_index(rng);
-                r.push(index(e, B, ent.index));
+                records.push(index(entity, B, ent.index));
             }
-            s.commit_wait(r).unwrap();
-            m.entries.insert(e, ent);
+            store.commit_wait(records).unwrap();
+            model.entries.insert(entity, ent);
         }
-        3 | 4 if !ids.is_empty() => {
-            let e = pick(rng);
-            let j = random_rels(rng);
-            s.commit_wait(vec![set_json(e, rf(), &j)]).unwrap();
-            m.entries.get_mut(&e).unwrap().rels = Some(j);
-        }
-        5 if !ids.is_empty() => {
-            let e = pick(rng);
-            let x = random_index(rng);
-            s.commit_wait(vec![index(e, B, x)]).unwrap();
-            m.entries.get_mut(&e).unwrap().index = x;
-        }
-        6 if !ids.is_empty() => {
-            let e = pick(rng);
-            s.commit_wait(vec![rec("entityDelete", vec![Value::Id(e)])])
+        3 | 4 if !entity_ids.is_empty() => {
+            let entity = pick(rng);
+            let json = random_rels(rng, &model.uids());
+            store
+                .commit_wait(vec![set_json(entity, relations_field_of(), &json)])
                 .unwrap();
-            m.entries.remove(&e);
+            model.entries.get_mut(&entity).unwrap().rels = Some(json);
         }
-        7 if !ids.is_empty() => {
-            let e = pick(rng);
-            let (r, j) = match rng.below(3) {
-                0 => (drop_value(e, rf()), None),
+        5 if !entity_ids.is_empty() => {
+            let entity = pick(rng);
+            let display_index = random_index(rng);
+            store
+                .commit_wait(vec![index(entity, B, display_index)])
+                .unwrap();
+            model.entries.get_mut(&entity).unwrap().index = display_index;
+        }
+        6 if !entity_ids.is_empty() => {
+            let entity = pick(rng);
+            let rewrites = model.pointers_rewritten(entity);
+            let mut records: Vec<Record> = rewrites
+                .iter()
+                .map(|(pointer, json)| set_json(*pointer, relations_field_of(), json))
+                .collect();
+            records.push(rec("entityDelete", vec![Value::Id(entity)]));
+            if !rewrites.is_empty() {
+                assert!(
+                    store
+                        .commit_wait(vec![rec("entityDelete", vec![Value::Id(entity)])])
+                        .is_err(),
+                    "a delete that leaves relations pointing at it is refused"
+                );
+            }
+            store.commit_wait(records).unwrap();
+            for (pointer, json) in rewrites {
+                model.entries.get_mut(&pointer).unwrap().rels = Some(json);
+            }
+            model.entries.remove(&entity);
+        }
+        7 if !entity_ids.is_empty() => {
+            let entity = pick(rng);
+            let (records, json) = match rng.below(3) {
+                0 => (drop_value(entity, relations_field_of()), None),
                 1 => (
                     set_json(
-                        e,
-                        rf(),
-                        r#"[{"relation":"in","target":1.5,"position":"a"}]"#,
+                        entity,
+                        relations_field_of(),
+                        r#"[{"kind":1,"target":1.5,"position":"a"}]"#,
                     ),
                     Some("[]".into()),
                 ),
-                _ => (set_text(e, rf(), "in: somewhere"), None),
+                _ => (
+                    set_text(entity, relations_field_of(), "in: somewhere"),
+                    None,
+                ),
             };
-            if m.entries[&e].rels.is_none() && j.is_none() {
+            if model.entries[&entity].rels.is_none() && json.is_none() {
                 return;
             }
-            s.commit_wait(vec![r]).unwrap();
-            m.entries.get_mut(&e).unwrap().rels = j;
+            store.commit_wait(vec![records]).unwrap();
+            model.entries.get_mut(&entity).unwrap().rels = json;
         }
-        8 if ids.len() >= 2 => {
-            let (a, b) = (pick(rng), pick(rng));
-            let ja = random_rels(rng);
-            let xb = random_index(rng);
-            s.commit_wait(vec![
-                set_json(a, rf(), &ja),
-                index(b, B, xb),
-                set_json(b, rf(), &ja),
-            ])
-            .unwrap();
-            m.entries.get_mut(&a).unwrap().rels = Some(ja.clone());
-            m.entries.get_mut(&b).unwrap().index = xb;
-            m.entries.get_mut(&b).unwrap().rels = Some(ja);
+        8 if entity_ids.len() >= 2 => {
+            let (first_entry, second_entry) = (pick(rng), pick(rng));
+            let json_for_both = random_rels(rng, &model.uids());
+            let index_for_second = random_index(rng);
+            store
+                .commit_wait(vec![
+                    set_json(first_entry, relations_field_of(), &json_for_both),
+                    index(second_entry, B, index_for_second),
+                    set_json(second_entry, relations_field_of(), &json_for_both),
+                ])
+                .unwrap();
+            model.entries.get_mut(&first_entry).unwrap().rels = Some(json_for_both.clone());
+            model.entries.get_mut(&second_entry).unwrap().index = index_for_second;
+            model.entries.get_mut(&second_entry).unwrap().rels = Some(json_for_both);
         }
         _ => {}
     }
 }
 
-fn fresh(m: &Model) -> Vec<(Vec<u8>, Vec<u8>)> {
+fn fresh(model: &Model) -> Vec<(Vec<u8>, Vec<u8>)> {
     let dir = temp_dir("fresh");
-    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
-    book(&s, B, "one");
-    let mut r = Vec::new();
-    for (e, x) in m.entries.iter().rev() {
-        r.push(create(*e, ENTRY, &format!("{B}:{}", x.uid)));
-        if let Some(j) = &x.rels {
-            r.push(set_json(*e, relations::field(), j));
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, B, "one");
+    let mut records = Vec::new();
+    for (entity, entry_state) in model.entries.iter().rev() {
+        if let Some(json) = &entry_state.rels {
+            records.push(set_json(*entity, relations::relations_field(), json));
         }
-        if x.index.is_some() {
-            r.push(index(*e, B, x.index));
+        records.push(create(
+            *entity,
+            ENTRY,
+            &format!("{B}:{}", entry_state.own_key),
+        ));
+        if entry_state.index.is_some() {
+            records.push(index(*entity, B, entry_state.index));
         }
     }
-    s.commit_wait(r).unwrap();
-    let d = dump(&s);
-    s.close();
+    store.commit_wait(records).unwrap();
+    let built = dump(&store);
+    store.close();
     let _ = fs::remove_dir_all(&dir);
-    d
+    built
 }
 
 #[test]
@@ -398,69 +535,86 @@ fn every_write_keeps_the_top_the_groups_and_the_counts_and_the_tree_is_the_one_a
  {
     let seeds: u64 = std::env::var("ST_MODEL_SEEDS")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|view| view.parse().ok())
         .unwrap_or(3);
     let steps: usize = std::env::var("ST_MODEL_STEPS")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|view| view.parse().ok())
         .unwrap_or(300);
     for seed in 0..seeds {
         let dir = temp_dir("model");
-        let mut m = Model::default();
+        let mut model = Model::default();
         let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (seed + 1).wrapping_mul(0x2545_f491_4f6c_dd1d));
         let mut next = 100;
         {
-            let s = Store::open_in(&dir, SMALL, pool()).unwrap();
-            book(&s, B, "one");
-            for i in 0..steps {
-                step(&s, &mut m, &mut rng, &mut next);
-                if i % 10 == 0 {
-                    m.check(&s);
+            let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+            book(&store, B, "one");
+            for step_number in 0..steps {
+                step(&store, &mut model, &mut rng, &mut next);
+                if step_number % 10 == 0 {
+                    model.check(&store);
                 }
             }
-            m.check(&s);
+            model.check(&store);
             assert_eq!(
-                dump(&s),
-                fresh(&m),
+                dump(&store),
+                fresh(&model),
                 "seed {seed}: the tree depends on its history"
             );
-            s.close();
+            store.close();
         }
-        let s = Store::open_in(&dir, SMALL, pool()).unwrap();
-        m.check(&s);
+        let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+        model.check(&store);
         for _ in 0..steps / 3 {
-            step(&s, &mut m, &mut rng, &mut next);
+            step(&store, &mut model, &mut rng, &mut next);
         }
-        m.check(&s);
-        assert_eq!(dump(&s), fresh(&m), "seed {seed} after a reopen");
-        s.close();
+        model.check(&store);
+        assert_eq!(dump(&store), fresh(&model), "seed {seed} after a reopen");
+        store.close();
         let _ = fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
 fn a_value_that_isnt_a_list_of_relations_holds_none_and_a_repeated_pair_counts_once() {
-    let none = |j: &str| assert!(relations::parse(j.as_bytes()).is_empty(), "{j}");
+    let none = |json: &str| {
+        assert!(
+            relations::parse_relations_field(json.as_bytes()).is_empty(),
+            "{json}"
+        )
+    };
     none("{}");
     none("[1]");
-    none(r#"[{"relation":"in","target":3}]"#);
-    none(r#"[{"relation":"","target":3,"position":"a"}]"#);
-    none(r#"[{"relation":"in","target":3,"position":"a"},{"relation":"in"}]"#);
-    none(r#"[{"relation":"in","target":-3,"position":"a"}]"#);
-    none(r#"[{"relation":"in","target":3e2,"position":"a"}]"#);
-    none(r#"[{"relation":"\ud800","target":3,"position":"a"}]"#);
-    none(r#"[{"relation":"in","target":3,"position":"a"}"#);
-    let got = relations::parse(
-        r#" [ {"relation":"in","target":3,"position":"b","note":{"x":[1,2]}},
-              {"relation":"in","target":"3","position":"a"},
-              {"relation":"works at","target":"Inn","position":"é😀"} ] "#
+    none(r#"[{"kind":1,"target":3}]"#);
+    none(r#"[{"kind":0,"target":3,"position":"a"}]"#);
+    none(r#"[{"kind":"in","target":3,"position":"a"}]"#);
+    none(r#"[{"kind":1.5,"target":3,"position":"a"}]"#);
+    none(r#"[{"relation":"in","target":3,"position":"a"}]"#);
+    none(r#"[{"kind":1,"target":3,"position":"a"},{"kind":1}]"#);
+    none(r#"[{"kind":1,"target":-3,"position":"a"}]"#);
+    none(r#"[{"kind":1,"target":3e2,"position":"a"}]"#);
+    none(r#"[{"kind":1,"target":3,"position":"a","weak":1}]"#);
+    none(r#"[{"kind":1,"target":3,"position":"a"}"#);
+    let got = relations::parse_relations_field(
+        r#" [ {"kind":1,"target":3,"position":"b","note":{"x":[1,2]}},
+              {"kind":1,"target":"3","position":"a"},
+              {"kind":7,"target":"Inn","position":"é😀","weak":true} ] "#
             .as_bytes(),
     );
-    let want: relations::Set = [
-        ((b"in".to_vec(), b"3".to_vec()), b"b".to_vec()),
+    let want: relations::RelationSet = [
         (
-            (b"works at".to_vec(), b"Inn".to_vec()),
-            "é😀".as_bytes().to_vec(),
+            (1, b"3".to_vec()),
+            relations::Relation {
+                position: b"b".to_vec(),
+                weak: false,
+            },
+        ),
+        (
+            (7, b"Inn".to_vec()),
+            relations::Relation {
+                position: "é😀".as_bytes().to_vec(),
+                weak: true,
+            },
         ),
     ]
     .into_iter()
@@ -469,154 +623,458 @@ fn a_value_that_isnt_a_list_of_relations_holds_none_and_a_repeated_pair_counts_o
 }
 
 #[test]
+fn a_position_between_two_is_strictly_between_them() {
+    let cases: [(Option<&str>, Option<&str>); 9] = [
+        (None, None),
+        (Some("a"), None),
+        (None, Some("a")),
+        (Some("a"), Some("b")),
+        (Some("a"), Some("a0")),
+        (Some("z"), Some("z1")),
+        (Some("m"), Some("mm")),
+        (Some(""), Some("0")),
+        (Some("é"), Some("ê")),
+    ];
+    for (low, high) in cases {
+        let position = relations::position_between(low.map(str::as_bytes), high.map(str::as_bytes))
+            .unwrap_or_else(|| panic!("{low:?} {high:?}"));
+        assert!(std::str::from_utf8(&position).is_ok());
+        assert!(
+            low.is_none_or(|l| l.as_bytes() < position.as_slice()),
+            "{low:?} {position:?}"
+        );
+        assert!(
+            high.is_none_or(|h| position.as_slice() < h.as_bytes()),
+            "{high:?} {position:?}"
+        );
+    }
+    assert_eq!(
+        relations::position_between(Some(b"a"), Some(b"a\x00")),
+        None
+    );
+    assert_eq!(relations::position_between(Some(b"b"), Some(b"a")), None);
+}
+
+#[test]
 fn history_writes_restores_and_a_target_written_before_it_exists_keep_the_groups() {
     let dir = temp_dir("history");
-    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
     let user = 1;
-    s.commit_wait(vec![rec(
-        "keyMap",
+    store
+        .commit_wait(vec![rec(
+            "keyMap",
+            vec![
+                Value::Sel(chat::KEYED_USER, user),
+                Value::Bytes(b"user-1".to_vec()),
+            ],
+        )])
+        .unwrap();
+    book(&store, B, "one");
+    let meta = |change: u64| {
         vec![
-            Value::Sel(chat::KEYED_USER, user),
-            Value::Bytes(b"user-1".to_vec()),
-        ],
-    )])
-    .unwrap();
-    book(&s, B, "one");
-    let meta = |c: u64| {
-        vec![
-            Value::Id(c),
-            Value::Time(1_700_000_000_000 + c as i64),
+            Value::Id(change),
+            Value::Time(1_700_000_000_000 + change as i64),
             Value::Absent,
             Value::Id(user),
         ]
     };
-    let hist_set = |c: u64, e: u64, j: &str| {
-        let mut v = vec![
-            Value::Id(e),
-            Value::Field(relations::field()),
-            text(j),
+    let hist_set = |change: u64, entity: u64, json: &str| {
+        let mut view = vec![
+            Value::Id(entity),
+            Value::Field(relations::relations_field()),
+            text(json),
             Value::Bit(true),
         ];
-        v.extend(meta(c));
-        rec("histSet", v)
+        view.extend(meta(change));
+        rec("histSet", view)
     };
-    let hist_edit = |c: u64, e: u64, at: u64, removed: u64, t: &str| {
-        let mut v = vec![
-            Value::Id(e),
-            Value::Field(relations::field()),
+    let hist_edit = |change: u64, entity: u64, at: u64, removed: u64, target: &str| {
+        let mut view = vec![
+            Value::Id(entity),
+            Value::Field(relations::relations_field()),
             Value::UInt(at),
             Value::UInt(removed),
-            text(t),
+            text(target),
             Value::Bit(true),
         ];
-        v.extend(meta(c));
-        rec("histEdit", v)
+        view.extend(meta(change));
+        rec("histEdit", view)
     };
-    let a = json_of(&[("in", 2, "m")]);
-    s.commit_wait(vec![
-        hist_set(1, 10, &a),
-        create(10, ENTRY, "1:1"),
-        hist_set(2, 11, &json_of(&[("in", 1, "a")])),
-        create(11, ENTRY, "1:2"),
-        create(12, ENTRY, "1:3"),
-    ])
-    .unwrap();
-    let sp = relations::space(B);
-    let top = |s: &Store| -> Vec<u64> {
-        read(s, |v| {
-            Ok(counted::take(v, &sp, Some(b"in"), 0, usize::MAX)?
-                .iter()
-                .map(counted::entity_of)
-                .collect())
+    let first_json = strong(&[(IN, 2, "m")]);
+    store
+        .commit_wait(vec![
+            hist_set(1, 10, &first_json),
+            create(10, ENTRY, "1:1"),
+            hist_set(2, 11, &strong(&[(IN, 1, "a")])),
+            create(11, ENTRY, "1:2"),
+            create(12, ENTRY, "1:3"),
+        ])
+        .unwrap();
+    let book_tree = relations::order_tree_space(B);
+    let top = |store: &Store| -> Vec<u64> {
+        read(store, |view| {
+            Ok(
+                tree::top_level_from_rank(view, &book_tree, Some(IN), 0, usize::MAX)?
+                    .iter()
+                    .map(tree::entity_of_order_key)
+                    .collect(),
+            )
         })
     };
-    assert_eq!(top(&s), vec![12]);
-    let at = a.find("\"m\"").unwrap() as u64 + 1;
-    s.commit_wait(vec![hist_edit(3, 10, at, 1, "c")]).unwrap();
+    assert_eq!(top(&store), vec![12]);
+    let at = first_json.find("\"m\"").unwrap() as u64 + 1;
+    store
+        .commit_wait(vec![hist_edit(3, 10, at, 1, "c")])
+        .unwrap();
     assert_eq!(
-        read(&s, |v| relations::rels_of(v, 10)),
-        relations::parse(json_of(&[("in", 2, "c")]).as_bytes())
+        read(&store, |view| relations::relations_of_entry(view, 10)),
+        relations::parse_relations_field(strong(&[(IN, 2, "c")]).as_bytes())
     );
     let mut del = vec![Value::Id(11)];
     del.extend(meta(4));
-    s.commit_wait(vec![rec("histEntityDelete", del)]).unwrap();
-    assert_eq!(top(&s), vec![12]);
-    assert_eq!(read(&s, |v| relations::group_count(v, B, b"in", b"2")), 1);
-    assert_eq!(read(&s, |v| relations::group_count(v, B, b"in", b"1")), 0);
+    assert!(
+        store
+            .commit_wait(vec![rec("histEntityDelete", del.clone())])
+            .is_err()
+    );
+    let rewrites = read(&store, |view| {
+        relations::relations_without(view, B, &[b"2".to_vec()])
+    });
+    let Js::Arr(rewrites) = rewrites else {
+        panic!()
+    };
+    assert_eq!(rewrites.len(), 1);
+    let mut del = vec![Value::Id(11)];
+    del.extend(meta(5));
+    store
+        .commit_wait(vec![hist_set(6, 10, "[]"), rec("histEntityDelete", del)])
+        .unwrap();
+    assert_eq!(top(&store), vec![10, 12]);
+    assert_eq!(
+        read(&store, |view| relations::member_count(view, B, IN, b"2")),
+        0
+    );
+    assert_eq!(
+        read(&store, |view| relations::member_count(view, B, IN, b"1")),
+        0
+    );
+    let kept = read(&store, |view| relations::relations_kept(view, B, 11));
+    assert_eq!(kept, Js::Null, "its target 1 is still there");
     let mut restore = vec![
         Value::Id(11),
         Value::UInt(ENTRY),
         text("1:2"),
         Value::F64(0.0),
     ];
-    restore.extend(meta(5));
-    s.commit_wait(vec![rec("histRestore", restore)]).unwrap();
-    assert_eq!(top(&s), vec![12]);
-    assert_eq!(read(&s, |v| relations::group_count(v, B, b"in", b"1")), 1);
-    s.commit_wait(vec![hist_set(6, 10, "[]"), hist_set(7, 11, "[]")])
+    restore.extend(meta(7));
+    store
+        .commit_wait(vec![rec("histRestore", restore)])
         .unwrap();
-    assert_eq!(top(&s), vec![10, 11, 12]);
-    assert!(read(&s, |v| relations::rels_of(v, 10)).is_empty());
-    s.close();
+    assert_eq!(top(&store), vec![10, 12]);
+    assert_eq!(
+        read(&store, |view| relations::member_count(view, B, IN, b"1")),
+        1
+    );
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_commit_that_ends_with_a_relation_to_a_missing_entry_or_kind_is_refused_and_loops_import_in_any_order()
+ {
+    let dir = temp_dir("checks");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, B, "one");
+    let relations_field_of = relations::relations_field;
+    store
+        .commit_wait(vec![
+            set_json(10, relations_field_of(), &strong(&[(IN, 2, "a")])),
+            create(10, ENTRY, "1:1"),
+            set_json(11, relations_field_of(), &strong(&[(IN, 1, "a")])),
+            create(11, ENTRY, "1:2"),
+        ])
+        .expect("a loop written in one commit");
+    let refused = |records: StoreResult<Vec<u64>>| matches!(records, Err(StoreError::Refused(_)));
+    assert!(refused(store.commit_wait(vec![
+        create(12, ENTRY, "1:3"),
+        set_json(12, relations_field_of(), &strong(&[(IN, 9, "a")])),
+    ])));
+    assert!(refused(store.commit_wait(vec![
+        create(12, ENTRY, "1:3"),
+        set_json(12, relations_field_of(), &strong(&[(5, 1, "a")])),
+    ])));
+    assert!(refused(store.commit_wait(vec![drop_value(
+        B,
+        relations::relation_kind_field(IN)
+    )])));
+    store
+        .commit_wait(vec![drop_value(B, relations::relation_kind_field(OWES))])
+        .expect("a kind nothing uses goes");
+    assert!(refused(
+        store.commit_wait(vec![rec("entityDelete", vec![Value::Id(10)])])
+    ));
+    store
+        .commit_wait(vec![
+            rec("entityDelete", vec![Value::Id(10)]),
+            rec("entityDelete", vec![Value::Id(11)]),
+        ])
+        .expect("a loop erased in one commit");
+    assert!(
+        dump(&store)
+            .iter()
+            .all(|(kind, _)| !commit_checks::is_check(kind))
+    );
+    store.close();
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    assert!(
+        dump(&store)
+            .iter()
+            .all(|(kind, _)| !commit_checks::is_check(kind)),
+        "replay drops them"
+    );
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn edit(store: &Store, entity: relations::RelationEdit) -> Result<String, String> {
+    let answer = read(store, |view| relations::relation_edit(view, B, &entity));
+    let Js::Obj(fields) = answer else { panic!() };
+    let get = |count: &str| {
+        fields
+            .iter()
+            .find(|(kind, _)| *kind == count)
+            .map(|(_, view)| view.clone())
+    };
+    match (get("refused"), get("json")) {
+        (Some(Js::Text(refusal_text)), _) => Err(String::from_utf8(refusal_text).unwrap()),
+        (_, Some(Js::Text(answer))) => Ok(String::from_utf8(answer).unwrap()),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn relation_edits_place_keep_other_items_as_written_and_refuse_what_cant_be() {
+    let dir = temp_dir("edits");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, B, "one");
+    let relations_field_of = relations::relations_field;
+    let mut records = Vec::new();
+    for (entity, own_key) in [(10, 1), (11, 2), (12, 3), (13, 4)] {
+        records.push(create(entity, ENTRY, &format!("1:{own_key}")));
+    }
+    records.push(set_json(11, relations_field_of(), &strong(&[(IN, 1, "b")])));
+    records.push(set_json(12, relations_field_of(), &strong(&[(IN, 1, "d")])));
+    records.push(set_json(
+        13,
+        relations_field_of(),
+        r#"[{"kind":2,"target":2,"position":"a","note":"kept"}]"#,
+    ));
+    store.commit_wait(records).unwrap();
+    let base = |change| relations::RelationEdit {
+        entry: 13,
+        kind: IN,
+        target: 10,
+        change,
+        after: None,
+        before: None,
+    };
+    let last = edit(&store, base(relations::RelationChange::Add { weak: false })).unwrap();
+    let set = relations::parse_relations_field(last.as_bytes());
+    let position = &set[&(IN, b"1".to_vec())].position;
+    assert!(position.as_slice() > b"d".as_slice());
+    assert!(last.starts_with(r#"[{"kind":2,"target":2,"position":"a","note":"kept"},"#));
+    let between = edit(
+        &store,
+        relations::RelationEdit {
+            after: Some(11),
+            before: Some(12),
+            ..base(relations::RelationChange::Add { weak: true })
+        },
+    )
+    .unwrap();
+    let set = relations::parse_relations_field(between.as_bytes());
+    let placed = &set[&(IN, b"1".to_vec())];
+    assert!(
+        placed.weak
+            && placed.position.as_slice() > b"b".as_slice()
+            && placed.position.as_slice() < b"d".as_slice()
+    );
+    let first = edit(
+        &store,
+        relations::RelationEdit {
+            before: Some(11),
+            ..base(relations::RelationChange::Add { weak: false })
+        },
+    )
+    .unwrap();
+    let set = relations::parse_relations_field(first.as_bytes());
+    assert!(set[&(IN, b"1".to_vec())].position.as_slice() < b"b".as_slice());
+    assert_eq!(
+        edit(
+            &store,
+            relations::RelationEdit {
+                kind: 9,
+                ..base(relations::RelationChange::Remove)
+            }
+        ),
+        Err("This world has no such relation kind.".into())
+    );
+    assert_eq!(
+        edit(&store, base(relations::RelationChange::Remove)),
+        Err("The entry has no such relation.".into())
+    );
+    store
+        .commit_wait(vec![set_json(13, relations_field_of(), &last)])
+        .unwrap();
+    assert_eq!(
+        edit(&store, base(relations::RelationChange::Add { weak: false })),
+        Err("The entry already has that relation.".into())
+    );
+    let weak = edit(&store, base(relations::RelationChange::SetWeak(true))).unwrap();
+    assert!(relations::parse_relations_field(weak.as_bytes())[&(IN, b"1".to_vec())].weak);
+    let moved = edit(
+        &store,
+        base(relations::RelationChange::Move { new_target: 11 }),
+    )
+    .unwrap();
+    let set = relations::parse_relations_field(moved.as_bytes());
+    assert!(set.contains_key(&(IN, b"2".to_vec())) && !set.contains_key(&(IN, b"1".to_vec())));
+    let removed = edit(&store, base(relations::RelationChange::Remove)).unwrap();
+    assert_eq!(
+        removed,
+        r#"[{"kind":2,"target":2,"position":"a","note":"kept"}]"#
+    );
+    store
+        .commit_wait(vec![set_text(10, relations_field_of(), "in: somewhere")])
+        .unwrap();
+    assert!(
+        edit(
+            &store,
+            relations::RelationEdit {
+                entry: 10,
+                target: 11,
+                ..base(relations::RelationChange::Add { weak: false })
+            }
+        )
+        .is_err()
+    );
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_loop_check_finds_an_entry_only_a_loop_holds_and_says_nothing_past_its_limit_or_when_the_top_holds_it()
+ {
+    let dir = temp_dir("loops");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, B, "one");
+    let relations_field_of = relations::relations_field;
+    let mut records = Vec::new();
+    for (entity, own_key) in [(10, 1), (11, 2), (12, 3), (13, 4)] {
+        records.push(create(entity, ENTRY, &format!("1:{own_key}")));
+    }
+    records.push(set_json(10, relations_field_of(), &strong(&[(IN, 2, "a")])));
+    records.push(set_json(11, relations_field_of(), &strong(&[(IN, 3, "a")])));
+    records.push(set_json(12, relations_field_of(), &strong(&[(IN, 1, "a")])));
+    records.push(set_json(13, relations_field_of(), &strong(&[(IN, 1, "a")])));
+    store.commit_wait(records).unwrap();
+    let unreached = |entity, limit| {
+        read(&store, |view| {
+            relations::unreached_from(view, B, entity, IN, limit)
+        })
+    };
+    assert_eq!(
+        unreached(13, 10).map(|mut view| {
+            view.sort();
+            view
+        }),
+        Some(vec![10, 11, 12, 13])
+    );
+    assert_eq!(unreached(13, 3), None);
+    assert_eq!(
+        read(&store, |view| relations::unreached_from(
+            view, B, 13, OWES, 10
+        )),
+        None
+    );
+    store
+        .commit_wait(vec![set_json(
+            12,
+            relations_field_of(),
+            &json_of(&[(IN, 1, "a", true)]),
+        )])
+        .unwrap();
+    assert_eq!(unreached(13, 10), None, "the weak one is at the top");
+    let book_tree = relations::order_tree_space(B);
+    let top: Vec<u64> = read(&store, |view| {
+        Ok(
+            tree::top_level_from_rank(view, &book_tree, Some(IN), 0, 10)?
+                .iter()
+                .map(tree::entity_of_order_key)
+                .collect(),
+        )
+    });
+    assert_eq!(top, vec![12]);
+    store.close();
     let _ = fs::remove_dir_all(&dir);
 }
 
 fn derive_job<T: Send + 'static>(
-    s: &Store,
-    f: impl FnOnce(&derive::View, &mut derive::Out) -> StoreResult<T> + Send + 'static,
+    store: &Store,
+    field: impl FnOnce(&derive::View, &mut derive::Out) -> StoreResult<T> + Send + 'static,
 ) -> T {
     let (tx, rx) = std::sync::mpsc::channel();
     let got = Arc::new(std::sync::Mutex::new(None));
     let put = got.clone();
-    s.inner.submit(Job::Derive(
-        Box::new(move |v, out| {
-            *put.lock().unwrap() = Some(f(v, out)?);
+    store.inner.submit(Job::Derive(
+        Box::new(move |view, out| {
+            *put.lock().unwrap() = Some(field(view, out)?);
             Ok(())
         }),
-        Box::new(move |r| {
-            let _ = tx.send(r);
+        Box::new(move |records| {
+            let _ = tx.send(records);
         }),
     ));
-    s.inner.ks.pool().exec.recv(&rx).unwrap().unwrap();
+    store.inner.ks.pool().exec.recv(&rx).unwrap().unwrap();
     got.lock().unwrap().take().unwrap()
 }
 
 #[test]
-fn the_cutover_builds_for_a_store_written_before_the_tree_what_its_writes_would_have() {
-    let dir = temp_dir("cutover");
-    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
-    book(&s, B, "one");
-    let mut m = Model::default();
+fn the_conversion_builds_for_a_store_written_before_the_tree_what_its_writes_would_have() {
+    let dir = temp_dir("conversion");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, B, "one");
+    let mut model = Model::default();
     let mut rng = Rng(77);
     let mut next = 100;
     for _ in 0..120 {
-        step(&s, &mut m, &mut rng, &mut next);
+        step(&store, &mut model, &mut rng, &mut next);
     }
-    let want = dump(&s);
+    let want = dump(&store);
     assert!(!want.is_empty());
-    derive_job(&s, |v, out| {
-        for st in [
-            TREE_EDGE,
-            TREE_COUNT.id(),
-            TREE_KINDS.id(),
-            REL_OF,
-            MEMBERS,
-            GROUP_COUNT,
+    derive_job(&store, |view, out| {
+        for structure in [
+            ORDER_TREE_EDGE,
+            ORDER_TREE_COUNT.id(),
+            ORDER_TREE_HELD.id(),
+            RELATIONS_OF_ENTRY,
+            MEMBERS_BY_TARGET,
+            MEMBER_COUNT,
         ] {
-            let p = kinds::key::of(st);
-            for (k, _) in v.scan(&p, &kinds::key::prefix_end(&p), usize::MAX)? {
-                out.del(k);
+            let prefix = kinds::key::of(structure);
+            for (kind, _) in view.scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)? {
+                out.del(kind);
             }
         }
         Ok(())
     });
-    assert!(dump(&s).is_empty());
+    assert!(dump(&store).is_empty());
     let mut after: Option<Vec<u8>> = None;
     let mut jobs = 0;
     loop {
         let from = after.clone();
-        after = derive_job(&s, move |v, out| {
-            relations::cutover_step(v, out, from.as_deref(), 3)
+        after = derive_job(&store, move |view, out| {
+            relations::world_order_conversion_step(view, out, from.as_deref(), 3)
         });
         jobs += 1;
         if after.is_none() {
@@ -624,10 +1082,12 @@ fn the_cutover_builds_for_a_store_written_before_the_tree_what_its_writes_would_
         }
     }
     assert!(jobs > 1);
-    assert_eq!(dump(&s), want);
-    derive_job(&s, |v, out| relations::cutover_step(v, out, None, 1000));
-    assert_eq!(dump(&s), want);
-    m.check(&s);
-    s.close();
+    assert_eq!(dump(&store), want);
+    derive_job(&store, |view, out| {
+        relations::world_order_conversion_step(view, out, None, 1000)
+    });
+    assert_eq!(dump(&store), want);
+    model.check(&store);
+    store.close();
     let _ = fs::remove_dir_all(&dir);
 }
