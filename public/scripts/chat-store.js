@@ -1,4 +1,6 @@
 import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, refreshSwipeButtons, updateMessageBlock, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
+import { eventSource, event_types } from './events.js';
+import { openingView } from './opening-view.js';
 import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore } from './character-store.js';
@@ -248,7 +250,7 @@ const _openingRowInFlight = new Map();
  * @property {number} [total]
  * @property {number} [stored]
  * @property {number} [offset]
- * @property {string|null} [default_node_id]
+ * @property {number} [default_index]
  * @property {OpeningAlternative[]} [alternatives]
  */
 
@@ -346,6 +348,7 @@ export async function ensureOpeningRow(mesId = 0) {
             });
             const answer = response.ok ? await response.json().catch(() => null) : null;
             adoptStored(answer?.stored);
+            if (!inGroup) await takeOpenings(getCurrentCharacter()?.avatar, answer);
         })().finally(() => _openingRowInFlight.delete(provisional));
         _openingRowInFlight.set(provisional, pending);
     }
@@ -375,6 +378,7 @@ export async function rememberCardOpening(text) {
             body: JSON.stringify({ avatar_url: character.avatar, text, index }),
         });
         if (!response.ok) throw new Error(`/api/chats/openings/choose responded ${response.status}`);
+        await takeOpenings(character.avatar, await response.json().catch(() => null));
     } catch (error) {
         console.warn('[greetings] Could not remember the chosen greeting:', error);
         toastr.warning(t`The chat couldn't remember the greeting you switched to, so reopening it will show the default greeting.`, t`Greeting not remembered`);
@@ -382,190 +386,49 @@ export async function rememberCardOpening(text) {
 }
 
 /**
- * @param {object} [options]
- * @param {{from: string, to: string, index?: number}|null} [options.greetingEdit]
- * @param {{ openings: OpeningsResponse|null, card_openings: OpeningsResponse|null }|null} [options.openings]
+ * @param {string|null|undefined} avatar the character whose tree the openings are
+ * @param {unknown} answer an answer carrying `openings` and `card_openings`
+ * @param {{ render?: boolean }} [options]
  */
-export async function _mergeCardGreetingsIntoOpening({ greetingEdit = null, openings = null } = {}) {
-    const edits = greetingEdit ? [greetingEdit] : [];
-    const opening = _chatAt(0);
+export async function takeOpenings(avatar, answer, { render = true } = {}) {
+    if (!answer || typeof answer !== 'object' || !('openings' in answer)) return;
+    if (selected_group != null && selected_group !== '') return;
     const character = getCurrentCharacter();
-    if (opening?.node_id == null || opening.node_id === '' || character?.avatar == null || character.avatar === '') return;
-    const speaker = character.name;
-
-    /**
-     * @param {{offset?: number, limit?: number, around?: object}} body
-     * @returns {Promise<OpeningsResponse|null>}
-     */
-    const ask = async (body) => {
-        if (openings) return body.offset === undefined ? openings.openings : openings.card_openings;
-        try {
-            const response = await fetch('/api/chats/openings', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: character.avatar, ...body }),
-            });
-            return response.ok ? await response.json().catch(() => null) : null;
-        } catch (error) {
-            console.warn('[greetings] Could not read openings:', error);
-            return null;
-        }
-    };
-
-    const head = await ask({});
-    if (!head) return;
-    const storedCount = head.stored ?? 0;
-    const total = head.total ?? 0;
-
-    const cardOnlyCount = total - storedCount;
-    const tail = cardOnlyCount > 0 ? await ask({ offset: storedCount, limit: cardOnlyCount }) : null;
-    if (cardOnlyCount > 0 && !tail) return;
-
-    const current = _chatAt(0);
-    if (current?.node_id == null || current.node_id === '' || current.node_id !== opening.node_id) return;
-
-    /** @type {(string|null)[]} */
-    const keptSwipes = new Array(total).fill(null);
-    /** @type {(SwipeInfoWithSpeaker|null)[]} */
-    const keptInfo = new Array(total).fill(null);
-    /**
-     * @param {OpeningsResponse|null} window
-     * @param {number} start
-     */
-    const place = (window, start) => (window?.alternatives ?? []).forEach((alt, k) => {
-        const at = start + k;
-        if (at < 0 || at >= total) return;
-        keptSwipes[at] = alt.mes;
-        keptInfo[at] = {
-            send_date: alt.send_date, extra: alt.extra ?? {},
-            name: alt.name, is_user: alt.is_user,
-            node_id: alt.node_id != null && alt.node_id !== '' ? alt.node_id : provisionalNodeId(alt.name ?? speaker, alt.mes),
-        };
+    if (character?.avatar == null || character.avatar === '' || character.avatar !== avatar) return;
+    const state = /** @type {import('./opening-view.js').OpeningState} */ (answer);
+    const view = openingView({ openings: state.openings, card_openings: state.card_openings ?? null }, {
+        first: _chatAt(0),
+        count: chat.length,
+        speaker: character.name,
+        sendDate: getMessageTimeStamp(),
+        provisionalId: provisionalNodeId,
+        isStored: isStoredNodeId,
+        isProvisional: isProvisionalNodeId,
     });
-    place(head, head.offset ?? 0);
-    place(tail, tail?.offset ?? storedCount);
-
-    const swipes = Array.isArray(current.swipes) ? current.swipes : [current.mes ?? ''];
-    const shownWas = current.swipe_id ?? 0;
-    const shownText = Array.isArray(current.swipes) ? current.swipes[shownWas] : current.mes;
-    if (isStoredNodeId(current.node_id) && !openings && !keptInfo.some(info => info?.node_id === current.node_id)) {
-        const around = await ask({ around: { name: current.name, is_user: current.is_user, mes: current.mes } });
-        if (around) place(around, around.offset ?? 0);
-        if (_chatAt(0) !== current) return;
-    }
-    const shownAt = isStoredNodeId(current.node_id)
-        ? keptInfo.findIndex(info => info?.node_id === current.node_id)
-        : (typeof shownText === 'string' ? keptSwipes.indexOf(shownText) : -1);
-
-    const unchanged = keptSwipes.length === swipes.length
-        && keptSwipes.every((x, k) => x === swipes[k])
-        && keptInfo.every((info, k) => (info?.node_id ?? null) === (current.swipe_info?.[k]?.node_id ?? null))
-        && shownAt === shownWas;
-    if (unchanged) return;
-
-    /**
-     * @param {OpeningAlternative} alt
-     * @param {number} serverIndex
-     * @returns {number}
-     */
-    const placeOpening = (alt, serverIndex) => {
-        if (!isStoredNodeId(alt.node_id)) return keptSwipes.indexOf(alt.mes);
-        if (serverIndex >= storedCount) return -1;
-        if (typeof keptSwipes[serverIndex] !== 'string') {
-            keptSwipes[serverIndex] = alt.mes;
-            keptInfo[serverIndex] = {
-                send_date: alt.send_date, extra: alt.extra ?? {},
-                name: alt.name, is_user: alt.is_user,
-                node_id: alt.node_id,
-            };
-        }
-        return keptSwipes[serverIndex] === alt.mes ? serverIndex : -1;
-    };
-
-    const placeDefault = () => {
-        const alternatives = head.alternatives ?? [];
-        let k = head.default_chosen === true ? (head.default_index ?? -1) - (head.offset ?? 0) : -1;
-        if (k >= alternatives.length) k = -1;
-        if (k < 0) k = alternatives.findIndex(a => isStoredNodeId(a.node_id) && a.node_id === head.default_node_id);
-        if (k < 0) {
-            const { greetings, defaultIndex } = cardToGreetingsModel(character);
-            const preferredText = greetings.filter(text => typeof text === 'string' && text.length > 0)[defaultIndex ?? 0];
-            k = alternatives.findIndex(a => a.mes === preferredText);
-        }
-        if (k < 0) k = 0;
-        return k < alternatives.length ? placeOpening(alternatives[k], (head.offset ?? 0) + k) : -1;
-    };
-
-    /**
-     * @returns {Promise<number|null>}
-     */
-    const placeLanding = async () => {
-        try {
-            const response = await fetch('/api/chats/openings/land', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: character.avatar, shown_text: shownText, index: shownWas, edits }),
-            });
-            const landing = response.ok ? await response.json().catch(() => null) : null;
-            if (!landing) {
-                console.warn('[greetings] Could not find where the chat lands:', response.status);
-                return null;
-            }
-            if (!landing.opening) return -1;
-            const at = placeOpening(landing.opening, landing.index);
-            return at >= 0 ? at : null;
-        } catch (error) {
-            console.warn('[greetings] Could not find where the chat lands:', error);
-            return null;
-        }
-    };
-
-    let landAt = shownAt;
-    if (shownAt < 0 && !isStoredNodeId(current.node_id)) {
-        const landing = await placeLanding();
-        if (landing === null) {
-            toastr.warning(t`The chat couldn't follow the greeting change, so it shows the greeting it would open on.`, t`Greeting not followed`);
-        }
-        landAt = landing ?? -1;
-        if (landAt < 0) landAt = placeDefault();
-        if (_chatAt(0) !== current) return;
-    }
-
-    if (landAt < 0 && !isStoredNodeId(current.node_id)) {
-        if ((head.total ?? 0) > 0) return;
-        forgetStored([current.node_id]);
+    if (view.kind === 'keep') return;
+    if (view.kind === 'clear') {
+        forgetStored([chat[0].node_id]);
         chat.splice(0, chat.length);
-        await redisplayChat();
+        if (render) await redisplayChat();
         return;
     }
-
-    /** @type {Partial<ChatMessage>} */
-    const updates = { swipes: keptSwipes, swipe_info: /** @type {SwipeInfo[]} */ (keptInfo) };
-    if (landAt >= 0) {
-        updates.swipe_id = landAt;
-        if (landAt !== shownAt) {
-            const info = keptInfo[landAt];
-            updates.mes = keptSwipes[landAt];
-            updates.name = info?.name ?? speaker;
-            updates.is_user = info?.is_user === true;
-            updates.send_date = info?.send_date ?? current.send_date;
-            updates.extra = info?.extra ?? {};
-            updates.node_id = info?.node_id ?? provisionalNodeId(updates.name, updates.mes);
-        }
+    if (view.kind === 'show') {
+        chat.push(/** @type {ChatMessage} */ (view.message));
+        markStoredAs(view.message.node_id, chat[0]);
+        if (!render) return;
+        await redisplayChat();
+        await eventSource.emit(event_types.MESSAGE_RECEIVED, 0, 'first_message');
+        await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, 0, 'first_message');
+        return;
     }
-
+    const current = /** @type {ChatMessage} */ (_chatAt(0));
     const wasClean = isAsStored(current);
-    updateMessage(0, updates);
-    if (updates.node_id != null && updates.node_id !== current.node_id) {
-        forgetStored([current.node_id]);
-    }
-    const updated = _chatAt(0);
-    if ((wasClean || updates.node_id != null) && updated?.node_id != null && updated.node_id !== '') {
-        markStoredAs(updated.node_id, updated);
-    }
-    if (updates.mes !== undefined && updated) {
-        updateMessageBlock(0, updated);
-    }
+    updateMessage(0, /** @type {Partial<ChatMessage>} */ (view.updates));
+    const updated = /** @type {ChatMessage} */ (_chatAt(0));
+    if (updated.node_id !== current.node_id) forgetStored([current.node_id]);
+    if ((wasClean || view.shownChanged) && typeof updated.node_id === 'string' && updated.node_id !== '') markStoredAs(updated.node_id, updated);
+    if (!render) return;
+    if (view.shownChanged) updateMessageBlock(0, updated);
     refreshSwipeButtons(true);
 }
 
@@ -626,8 +489,10 @@ function _reportChatOpFailure() {
 async function _chatOpPost(path, body, silent = false) {
     const owner = _currentOwner();
     if (!owner) throw new Error('no character or group is selected');
+    /** @type {any} */
+    let answer;
     try {
-        return await _retryTransient(async () => {
+        answer = await _retryTransient(async () => {
             const response = await fetch(path, {
                 method: 'POST',
                 headers: getRequestHeaders(),
@@ -644,6 +509,8 @@ async function _chatOpPost(path, body, silent = false) {
         if (!silent) _reportChatOpFailure();
         throw error;
     }
+    if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
+    return answer;
 }
 
 /**
@@ -655,8 +522,10 @@ async function _chatOpPost(path, body, silent = false) {
 async function _chatOpPostAnswering(path, body, answered) {
     const owner = _currentOwner();
     if (!owner) throw new Error('no character or group is selected');
+    /** @type {any} */
+    let answer;
     try {
-        return await _retryTransient(async () => {
+        answer = await _retryTransient(async () => {
             const response = await fetch(path, {
                 method: 'POST',
                 headers: getRequestHeaders(),
@@ -673,6 +542,8 @@ async function _chatOpPostAnswering(path, body, answered) {
         _reportChatOpFailure();
         throw error;
     }
+    if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
+    return answer;
 }
 
 /**
@@ -777,9 +648,13 @@ export async function chatOpEdit(mesId) {
     }
     const msg = _chatAt(mesId);
     if (isProvisionalNodeId(msg?.node_id)) {
-        if (!isStoredNodeId(await ensureOpeningRow(mesId))) return false;
-        await _mergeCardGreetingsIntoOpening();
-        return true;
+        const inGroup = selected_group != null && selected_group !== '';
+        const asCard = provisionalNodeId(msg.name, msg.mes);
+        if (!inGroup && (msg.swipe_info ?? []).some(info => info.node_id === asCard)) {
+            await rememberCardOpening(msg.mes);
+            return true;
+        }
+        return isStoredNodeId(await ensureOpeningRow(mesId));
     }
     if (!isStoredNodeId(msg?.node_id)) return false;
     if (typeof msg.mes === 'string' && msg.mes.length === 0) return false;
@@ -787,7 +662,6 @@ export async function chatOpEdit(mesId) {
     const edit = _editOf(msg);
     if (edit !== null) await _chatOpPost('/api/chats/message/edit', edit);
     _markMessageSaved(mesId, msg.node_id);
-    if (mesId === 0 && (selected_group == null || selected_group === '')) await _mergeCardGreetingsIntoOpening();
     return true;
 }
 
@@ -836,7 +710,6 @@ export async function chatOpStoreComposed(mesId) {
     swipeInfo[at] = { ...(swipeInfo[at] ?? {}), node_id: nodeId };
     updateMessage(mesId, { swipe_info: swipeInfo });
     _markMessageSaved(mesId, nodeId);
-    if (mesId === 0 && (selected_group == null || selected_group === '')) await _mergeCardGreetingsIntoOpening();
     return nodeId;
 }
 
@@ -845,12 +718,9 @@ export async function chatOpStoreComposed(mesId) {
  * @param {boolean} [silent]
  */
 export async function chatOpEditMany(mesIds, silent = false) {
-    let ensuredOpening = false;
     for (const mesId of mesIds) {
-        if (!isProvisionalNodeId(_chatAt(mesId)?.node_id)) continue;
-        if (isStoredNodeId(await ensureOpeningRow(mesId))) ensuredOpening = true;
+        if (isProvisionalNodeId(_chatAt(mesId)?.node_id)) await ensureOpeningRow(mesId);
     }
-    if (ensuredOpening) await _mergeCardGreetingsIntoOpening();
 
     /** @type {{node_id: string, content: Partial<ChatMessageWithSpeakerDefault>, _mesId: number}[]} */
     const edits = [];

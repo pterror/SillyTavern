@@ -272,7 +272,7 @@ import {
     chatOpGraft,
     chatOpReadyAlternativeDelete,
     chatOpDeleteAlternativeNode,
-    _mergeCardGreetingsIntoOpening,
+    takeOpenings,
     isComposedSlot,
     chatOpStoreComposed,
     _setCurrentTarget,
@@ -916,6 +916,10 @@ function setupCharacterChangeStream() {
             }
             if (message?.type === 'state') {
                 takePushedState({ tree: message.tree, at: message.at ?? null, state: message.state });
+                return;
+            }
+            if (message?.type === 'openings') {
+                void takeOpenings(message.avatar, message);
                 return;
             }
             if (message !== null && typeof message === 'object' && message.type === undefined) onCharacterChangeMessage();
@@ -5712,9 +5716,7 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
     chat.splice(0, chat.length, ...answer.messages);
     chat.forEach(ensureMessageMediaIsArray);
     _snapshotMessages();
-    const openings = { openings: answer.openings, card_openings: answer.card_openings };
-    if (chat.length) await _mergeCardGreetingsIntoOpening({ openings });
-    await getChatResult({ openings });
+    await getChatResult({ openings: answer });
 
     _snapshotMessages();
 
@@ -5729,36 +5731,14 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
 }
 
 /**
- * @returns {Promise<boolean>}
+ * @param {{ openings?: ChatOpenAnswer|null }} [options]
  */
-/**
- * @param {{ openings?: import('./scripts/chat-store.js').OpeningsResponse|null }} [options]
- */
-async function pushFirstMessageIntoEmptyChat({ openings = null } = {}) {
-    if (chat.length !== 0) {
-        return false;
-    }
-    let pushed = false;
-    const message = await getFirstMessage({ openings });
-    if (message.mes) {
-        chat.push(message);
-        pushed = true;
-    }
-
-    if (message?.node_id) {
-        _snapshotMessages();
-    }
-    return pushed;
-}
-
-/**
- * @param {{ openings?: { openings: import('./scripts/chat-store.js').OpeningsResponse|null } }} [options]
- */
-async function getChatResult({ openings = undefined } = {}) {
-    name2 = getCurrentCharacter().name;
-    await pushFirstMessageIntoEmptyChat({ openings: openings?.openings ?? null });
+async function getChatResult({ openings = null } = {}) {
+    const character = getCurrentCharacter();
+    name2 = character.name;
+    await takeOpenings(character.avatar, openings, { render: false });
     await printMessages();
-    select_selected_character(getCurrentCharacter()?.avatar);
+    select_selected_character(character.avatar);
 
     await eventSource.emit(event_types.CHAT_CHANGED, (getCurrentChatId()));
 
@@ -5767,112 +5747,6 @@ async function getChatResult({ openings = undefined } = {}) {
         await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, 'first_message');
         await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, 'first_message');
     }
-}
-
-/**
- * @param {{ openings?: import('./scripts/chat-store.js').OpeningsResponse|null }} [options]
- */
-async function getFirstMessage({ openings = null } = {}) {
-    const character = getCurrentCharacter();
-    const { greetings, defaultIndex } = cardToGreetingsModel(character);
-    const swipeId = defaultIndex ?? 0;
-
-    const fromTree = await _openingFromTree(greetings, swipeId, openings);
-    if (fromTree) return fromTree;
-
-    return {
-        name: name2,
-        is_user: false,
-        is_system: false,
-        send_date: getMessageTimeStamp(),
-        mes: '',
-        extra: {},
-    };
-}
-
-/**
- * @param {string[]} cardGreetings
- * @param {number} preferredIndex
- * @param {import('./scripts/chat-store.js').OpeningsResponse|null} [prefetched]
- */
-async function _openingFromTree(cardGreetings, preferredIndex, prefetched = null) {
-    const character = getCurrentCharacter();
-    if (!character?.avatar) throw new Error('_openingFromTree: no resolvable character avatar');
-
-    const post = async (path, body) => {
-        const response = await fetch(path, {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: character.avatar, ...body }),
-        });
-        if (!response.ok) throw new Error(`_openingFromTree: ${path} responded ${response.status}`);
-        return response.json().catch(() => null);
-    };
-
-    const sendDate = getMessageTimeStamp();
-    const speaker = character.name ?? name2;
-    const asMessage = text => ({
-        name: speaker,
-        is_user: false,
-        is_system: false,
-        send_date: sendDate,
-        mes: text,
-        extra: {},
-    });
-
-    const contents = (cardGreetings ?? [])
-        .filter(text => typeof text === 'string' && text.length > 0)
-        .map(asMessage);
-
-    const openings = prefetched ?? await post('/api/chats/openings', {});
-    if (!openings) throw new Error('_openingFromTree: /api/chats/openings returned no usable body');
-
-    const windowStart = openings.offset ?? 0;
-    const preferredText = contents[preferredIndex]?.mes;
-    let chosenOffset = openings.default_chosen === true ? (openings.default_index ?? -1) - windowStart : -1;
-    if (chosenOffset >= openings.alternatives.length) chosenOffset = -1;
-    if (chosenOffset < 0) chosenOffset = openings.alternatives.findIndex(a => a.node_id && a.node_id === openings.default_node_id);
-    if (chosenOffset < 0 && preferredText !== undefined) {
-        chosenOffset = openings.alternatives.findIndex(a => a.mes === preferredText);
-    }
-    if (chosenOffset < 0) chosenOffset = 0;
-
-    const chosen = openings.alternatives[chosenOffset]
-        ?? (preferredText !== undefined ? { node_id: null, mes: preferredText, name: speaker, is_user: false, send_date: sendDate, extra: {} } : null);
-    if (!chosen) return null;
-
-    const chosenNodeId = chosen.node_id ?? provisionalNodeId(chosen.name ?? speaker, chosen.mes);
-
-    const message = {
-        name: chosen.name ?? speaker,
-        is_user: !!chosen.is_user,
-        is_system: !!chosen.is_system,
-        send_date: chosen.send_date ?? sendDate,
-        mes: chosen.mes,
-        extra: chosen.extra ?? {},
-        node_id: chosenNodeId,
-    };
-
-    if (openings.total > 1) {
-        const swipes = new Array(openings.total).fill(null);
-        const swipeInfo = new Array(openings.total).fill(null);
-        openings.alternatives.forEach((alt, k) => {
-            const at = windowStart + k;
-            if (at >= openings.total) return;
-            swipes[at] = alt.mes;
-            const nodeId = alt.node_id ?? provisionalNodeId(alt.name ?? speaker, alt.mes);
-            swipeInfo[at] = {
-                send_date: alt.send_date, extra: alt.extra ?? {},
-                name: alt.name, is_user: alt.is_user,
-                node_id: nodeId,
-            };
-        });
-        message.swipes = swipes;
-        message.swipe_info = swipeInfo;
-        message.swipe_id = windowStart + chosenOffset;
-    }
-
-    return message;
 }
 
 /**
@@ -8165,6 +8039,7 @@ function hashGreetingText(text) {
  * @property {number[]} hashes
  * @property {number|null} defaultPosition
  * @property {number} [position]
+ * @property {unknown} openings the answer, carrying the character tree's openings when the server sent them
  */
 
 /**
@@ -8183,7 +8058,7 @@ async function postGreetingOp(opName, body) {
         try { payload = await response.json(); } catch { /* no body, or not JSON */ }
         if (response.ok && payload?.ok) {
             takeCardCounts(payload.card_token_counts);
-            return { ok: true, greetings: payload.greetings, hashes: payload.hashes, defaultPosition: payload.default_position, position: payload.position };
+            return { ok: true, greetings: payload.greetings, hashes: payload.hashes, defaultPosition: payload.default_position, position: payload.position, openings: payload };
         }
         return { ok: false, status: response.status, reason: payload?.reason };
     } catch (error) {
@@ -8214,24 +8089,18 @@ function applyGreetingsModelToCharacter(character, model) {
 /**
  * @param {object} character
  * @param {GreetingOpResult} result
- * @param {{expectedHash: number, text: string}} [edit]
  */
-function applyGreetingOpSuccess(character, result, edit) {
+async function applyGreetingOpSuccess(character, result) {
     const run = greetingSaveRuns.get(character?.avatar);
     if (!run) {
         throw new Error(`applyGreetingOpSuccess: no queued greeting save for ${character?.avatar} is running`);
     }
-    const before = cardToGreetingsModel(character).greetings;
     applyGreetingsModelToCharacter(character, { greetings: result.greetings, defaultIndex: result.defaultPosition });
     if (greetingPagerState.owner === character.avatar) {
         setGreetingPagerGreetings(character.avatar, result.greetings, result.defaultPosition, result.hashes);
     }
     run.character = character;
-    if (!edit) return;
-    const from = before.find(text => hashGreetingText(text) === edit.expectedHash);
-    if (from !== undefined && from !== edit.text && Number.isInteger(result.position)) {
-        run.edit = { from, to: edit.text, index: result.position };
-    }
+    await takeOpenings(character.avatar, result.openings);
 }
 
 /**
@@ -8240,13 +8109,12 @@ function applyGreetingOpSuccess(character, result, edit) {
  */
 function emitGreetingSaveEdited(run) {
     if (!run.character) return Promise.resolve();
-    return eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: run.character, greetingEdit: run.edit } });
+    return eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: run.character } });
 }
 
 /**
  * @typedef {object} GreetingSaveRun
  * @property {object|null} character
- * @property {{from: string, to: string, index: number}|null} edit
  */
 
 /** @type {Map<string, Promise<void>>} */
@@ -8281,7 +8149,7 @@ function holdUntilSettled(map, key, promise) {
 function queueGreetingSave(avatar, save) {
     const previous = greetingSaveQueues.get(avatar) ?? Promise.resolve();
     /** @type {GreetingSaveRun} */
-    const record = { character: null, edit: null };
+    const record = { character: null };
     const run = previous.then(async () => {
         greetingSaveRuns.set(avatar, record);
         try {
@@ -8423,7 +8291,7 @@ async function saveGreetingPagerEdit(avatar, character, position, expectedHash, 
     const result = await postGreetingOp('edit', { avatar_url: avatar, position, expected_hash: expectedHash, text });
     if (result.ok) {
         const landed = Number.isInteger(result.position) ? result.position : position;
-        applyGreetingOpSuccess(character, result, { expectedHash, text });
+        await applyGreetingOpSuccess(character, result);
         return { position: landed, hash: result.hashes[landed] };
     }
     console.error('Greeting save failed', { avatar, position, status: result.status, reason: result.reason });
@@ -8459,7 +8327,7 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
             if (!confirmed || !Number.isFinite(target.hash)) return false;
             const removed = await postGreetingOp('delete', { avatar_url: avatar, position: target.position, expected_hash: target.hash });
             if (removed.ok) {
-                applyGreetingOpSuccess(character, removed);
+                await applyGreetingOpSuccess(character, removed);
                 if (edit && greetingPagerEdit === edit) {
                     edit.committed = false;
                     edit.hash = undefined;
@@ -8485,19 +8353,10 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
         const expectedLength = greetingPagerState.hashes.length;
         const result = await postGreetingOp('add', { avatar_url: avatar, position: target.position, expected_length: expectedLength, text: value });
         if (result.ok) {
-            applyGreetingOpSuccess(character, result);
+            await applyGreetingOpSuccess(character, result);
             if (edit && greetingPagerEdit === edit) {
                 edit.committed = true;
                 edit.hash = result.hashes[target.position];
-            }
-            if (expectedLength === 0 && result.defaultPosition === null) {
-                const made = await postGreetingOp('default/set', { avatar_url: avatar, position: target.position, expected_hash: result.hashes[target.position] });
-                if (made.ok) {
-                    applyGreetingOpSuccess(character, made);
-                } else {
-                    console.error('Making the first greeting the default failed', { avatar, status: made.status, reason: made.reason });
-                    toastr.warning(t`The greeting was added, but couldn't be made the default greeting.`, t`Default not set`);
-                }
             }
             return true;
         }
@@ -8539,7 +8398,7 @@ async function deleteGreetingPagerGreeting() {
     await queueGreetingSave(avatar, async () => {
         const result = await postGreetingOp('delete', { avatar_url: avatar, position: index, expected_hash: expectedHash });
         if (result.ok) {
-            applyGreetingOpSuccess(character, result);
+            await applyGreetingOpSuccess(character, result);
             return;
         }
         console.error('Greeting delete failed', { avatar, position: index, status: result.status, reason: result.reason });
@@ -8596,22 +8455,19 @@ function openGreetingsList() {
 /**
  * @param {string} avatar
  * @param {{ greetings: string[], hashes: number[], defaultPosition: number|null }} card
- * @param {{ hash: number, text: string } | null} edit
+ * @param {unknown} openings the dialog's answer, carrying the character tree's openings
  * @returns {Promise<void>}
  */
-export function applyServerGreetings(avatar, card, edit) {
+export function applyServerGreetings(avatar, card, openings) {
     const character = charactersStore.get(avatar);
     if (!character) return Promise.resolve();
-    return queueGreetingSave(avatar, async () => {
-        const position = edit ? card.greetings.indexOf(edit.text) : -1;
-        applyGreetingOpSuccess(character, {
-            ok: true,
-            greetings: card.greetings,
-            hashes: card.hashes,
-            defaultPosition: card.defaultPosition,
-            ...(position >= 0 ? { position } : {}),
-        }, edit ? { expectedHash: edit.hash, text: edit.text } : undefined);
-    });
+    return queueGreetingSave(avatar, () => applyGreetingOpSuccess(character, {
+        ok: true,
+        greetings: card.greetings,
+        hashes: card.hashes,
+        defaultPosition: card.defaultPosition,
+        openings,
+    }));
 }
 
 /**
@@ -9996,12 +9852,6 @@ jQuery(async function () {
 
     $('#send_textarea').on('input', () => saveDraftDebounced());
 
-    eventSource.on(event_types.CHARACTER_EDITED, async (event) => {
-        const edited = event?.detail?.character?.avatar;
-        if (!edited || edited !== getCurrentCharacter()?.avatar) return;
-        await _mergeCardGreetingsIntoOpening({ greetingEdit: event.detail.greetingEdit });
-    });
-
     eventSource.on(event_types.CHAT_CHANGED, () => {
         if (queuedSend && queuedSend.chat !== JSON.stringify(getCurrentDraftContext())) {
             cancelQueuedSend(t`The queued send was cancelled because the chat changed. Your text is kept as that chat's draft.`);
@@ -10948,32 +10798,9 @@ jQuery(async function () {
             return;
         }
 
-        const siblingNodeId = await ensureOpeningRow(mesId);
-        if (isProvisionalNodeId(message.node_id) && !siblingNodeId) {
-            toastr.error(t`Could not create the alternative.`);
-            return;
-        }
-
-        const content = { ...(chat[mesId] ?? message), mes: text };
-        delete content.swipes;
-        delete content.swipe_info;
-        delete content.swipe_id;
-        delete content.swipe_speaker_default;
-        delete content.node_id;
-
         let createdId = null;
         try {
-            const response = await fetch('/api/chats/message/alternative', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({
-                    avatar_url: getCurrentCharacter()?.avatar,
-                    sibling_node_id: siblingNodeId,
-                    contents: [content],
-                }),
-            });
-            const made = response.ok ? await response.json().catch(() => null) : null;
-            createdId = made?.node_ids?.[0] ?? null;
+            createdId = await chatOpAddAlternative(mesId, text);
         } catch (error) {
             console.warn('[duplicate] Could not create the alternative:', error);
         }
@@ -10993,8 +10820,8 @@ jQuery(async function () {
         if (at < 0) {
             swipes.push(text);
             swipeInfo.push({
-                send_date: content.send_date, extra: content.extra ?? {},
-                name: content.name, is_user: !!content.is_user, node_id: createdId,
+                send_date: current.send_date, extra: current.extra ?? {},
+                name: current.name, is_user: !!current.is_user, node_id: createdId,
             });
             at = swipes.length - 1;
         }

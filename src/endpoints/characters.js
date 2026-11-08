@@ -34,7 +34,8 @@ import cacheBuster from '../middleware/cacheBuster.js';
 import { savedViewsEvents } from '../saved-views.js';
 import { getAtPath, getStringHash, normalizeFav, setAtPath } from '../../public/scripts/hash-utils.js';
 import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
-import { hashGreetingText, opAdd, opAppend, opEdit, opDelete, opSetDefault } from '../greeting-ops.js';
+import { chosenGreetingAfter, greetingOperation, hashGreetingText } from '../greeting-ops.js';
+import { openingState } from '../opening-state.js';
 import { withSearchTiming } from '../search-timing.js';
 import { requestStore, userStore } from '../user-stores.js';
 import { FIELD, HASH, TYPE } from '../library-engine.js';
@@ -42,7 +43,7 @@ import { convertedFileKey } from '../library-codes.js';
 import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, linkWithAvatar, writeWithAvatar } from '../character-avatars.js';
 import { writeUserImage } from '../image-entities.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, moveToChatNamed } from '../chat-request.js';
-import { requestSession, requireSessionHeader } from '../request-session.js';
+import { requestSession, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
 import { ALTERNATIVES_VIEWS, ui, uiUser } from '../ui-wiring.js';
 
 import { groupDigests, groupObjects } from './groups.js';
@@ -1141,11 +1142,12 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel, position?: number, sourcePosition?: number, targetPosition?: number}} op
+ * @param {(result: {position?: number, sourcePosition?: number, targetPosition?: number}) => Promise<void>} [beforeWrite] runs once the op is known to apply, before the card is written
  * @returns {Promise<{ok: boolean, reason?: string, status?: number, greetings?: string[], hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
  */
-export function applyGreetingOperation(directories, avatar, op) {
+export function applyGreetingOperation(directories, avatar, op, beforeWrite = async () => {}) {
     const key = `${directories.root}\u0000${avatar}`;
-    const run = (greetingOperationQueues.get(key) ?? Promise.resolve()).then(() => runGreetingOperation(directories, avatar, op));
+    const run = (greetingOperationQueues.get(key) ?? Promise.resolve()).then(() => runGreetingOperation(directories, avatar, op, beforeWrite));
     const tail = run.then(() => {}, () => {});
     greetingOperationQueues.set(key, tail);
     void tail.then(() => {
@@ -1163,7 +1165,7 @@ const greetingOperationQueues = new Map();
  * @param {Parameters<typeof applyGreetingOperation>[2]} op
  * @returns {ReturnType<typeof applyGreetingOperation>}
  */
-async function runGreetingOperation(directories, avatar, op) {
+async function runGreetingOperation(directories, avatar, op, beforeWrite) {
     const pngStringData = await readCardContent(directories, avatar);
     if (!pngStringData) {
         return { ok: false, reason: 'character not found', status: 404 };
@@ -1175,6 +1177,7 @@ async function runGreetingOperation(directories, avatar, op) {
     if (!result.ok) {
         return { ok: false, reason: result.reason, status: 409 };
     }
+    await beforeWrite(result);
 
     const unchanged = result.model.defaultIndex === model.defaultIndex
         && result.model.greetings.length === model.greetings.length
@@ -1212,24 +1215,56 @@ async function runGreetingOperation(directories, avatar, op) {
 }
 
 /**
- * On success, echoes back the post-op greeting list, its hash-per-position list and the default position, so a caller can
- * show the list as stored (other sessions' changes included) and chain further operations without re-fetching the card,
- * and the positions the op acted on: `position` for edit, delete, set-default and an appending add, `source_position` and
- * `target_position` for move, with the card's texts counted as the character editor shows them.
+ * @param {object} p
+ * @param {import('../users.js').UserDirectoryList} p.directories
+ * @param {import('../user-stores.js').UserStore} p.store
+ * @param {import('../chat-engine.js').Actor | null} p.actor
+ * @param {string} p.avatar
+ * @param {import('../greeting-ops.js').GreetingChange} p.change
+ */
+export async function changeGreetings({ directories, store, actor, avatar, change }) {
+    const [tree] = actor === null ? [null] : await store.people.trees([{ avatar }]);
+    const follow = tree === null || tree === undefined || actor === null
+        ? undefined
+        : (/** @type {{position?: number, sourcePosition?: number, targetPosition?: number}} */ applied) => store.chats.followCardChoice({ tree, actor, follow: chosen => chosenGreetingAfter(change, applied, chosen) });
+    const result = await applyGreetingOperation(directories, avatar, greetingOperation(change), follow);
+    if (!result.ok || tree === null || tree === undefined || actor === null) return { result, opening: null };
+    return { result, opening: await openingState({ store, tree, actor, avatar }) };
+}
+
+/**
  * @param {import('express').Request} request
  * @param {import('express').Response} response
- * @param {Awaited<ReturnType<typeof applyGreetingOperation>>} result
+ * @param {import('../greeting-ops.js').GreetingChange} change
  */
-async function sendGreetingOpResult(request, response, result) {
+async function sendGreetingChange(request, response, change) {
+    const avatar = String(request.body.avatar_url || '');
+    const store = await requestStore(request);
+    const actor = await sessionActorOf(request, store, avatar);
+    const { result, opening } = await changeGreetings({ directories: request.user.directories, store, actor, avatar, change });
     if (!result.ok) {
         return response.status(result.status ?? 409).send({ ok: false, reason: result.reason });
     }
-    const counts = await savedCardCounts(request, String(request.body.avatar_url || ''));
-    const body = { ok: true, greetings: result.greetings, hashes: result.hashes, default_position: result.defaultPosition, ...(counts ? { card_token_counts: counts } : {}) };
+    const counts = await savedCardCounts(request, avatar);
+    /** @type {Record<string, unknown>} */
+    const body = { ok: true, greetings: result.greetings, hashes: result.hashes, default_position: result.defaultPosition, ...(counts ? { card_token_counts: counts } : {}), ...(opening ?? {}) };
     if (result.position !== undefined) body.position = result.position;
     if (result.sourcePosition !== undefined) body.source_position = result.sourcePosition;
     if (result.targetPosition !== undefined) body.target_position = result.targetPosition;
     return response.status(200).send(body);
+}
+
+/**
+ * @param {import('express').Request} request
+ * @param {import('../user-stores.js').UserStore} store
+ * @param {string} avatar
+ * @returns {Promise<import('../chat-engine.js').Actor | null>}
+ */
+async function sessionActorOf(request, store, avatar) {
+    if (sessionHeaderOf(request) === undefined) return null;
+    const [tree] = await store.people.trees([{ avatar }]);
+    if (tree === null || tree === undefined) return null;
+    return (await requestSession(store.chats, request, tree)).reader();
 }
 
 router.post('/greetings/add', validateAvatarUrlMiddleware, async function (request, response) {
@@ -1243,16 +1278,13 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
             if (request.body.position !== undefined || request.body.expected_length !== undefined) {
                 return response.status(400).send({ ok: false, reason: 'append takes no position or expected_length' });
             }
-            const appended = await applyGreetingOperation(request.user.directories, avatar, model => opAppend(model, text));
-            return await sendGreetingOpResult(request, response, appended);
+            return await sendGreetingChange(request, response, { op: 'add', text });
         }
         const position = Number(request.body.position);
         const expectedLength = Number(request.body.expected_length);
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isInteger(expectedLength)) return response.status(400).send({ ok: false, reason: 'expected_length is required' });
-
-        const result = await applyGreetingOperation(request.user.directories, avatar, model => opAdd(model, position, expectedLength, text));
-        return await sendGreetingOpResult(request, response, result);
+        return await sendGreetingChange(request, response, { op: 'add', text, position, expectedLength });
     } catch (error) {
         console.error('Error adding greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
@@ -1270,9 +1302,7 @@ router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (requ
         if (text === '') return response.status(400).send({ ok: false, reason: 'refused to blank stored greeting text' });
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
-
-        const result = await applyGreetingOperation(request.user.directories, avatar, model => opEdit(model, position, expectedHash, text));
-        return await sendGreetingOpResult(request, response, result);
+        return await sendGreetingChange(request, response, { op: 'edit', position, hash: expectedHash, text });
     } catch (error) {
         console.error('Error editing greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
@@ -1287,28 +1317,9 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
         if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
-
-        const result = await applyGreetingOperation(request.user.directories, avatar, model => opDelete(model, position, expectedHash));
-        return await sendGreetingOpResult(request, response, result);
+        return await sendGreetingChange(request, response, { op: 'delete', position, hash: expectedHash });
     } catch (error) {
         console.error('Error deleting greeting:', error);
-        return response.status(500).send({ ok: false, reason: 'internal error' });
-    }
-});
-
-router.post('/greetings/default/set', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const avatar = String(request.body.avatar_url || '');
-        const position = Number(request.body.position);
-        const expectedHash = Number(request.body.expected_hash);
-        if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
-        if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
-        if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
-
-        const result = await applyGreetingOperation(request.user.directories, avatar, model => opSetDefault(model, position, expectedHash));
-        return await sendGreetingOpResult(request, response, result);
-    } catch (error) {
-        console.error('Error setting default greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
     }
 });
@@ -2269,10 +2280,24 @@ async function tabStreamSession(request, store, send) {
         statePushed = { place, hash: read.hash };
         send({ type: 'state', tree, at: here.at, state: read.state });
     };
+    /** @type {{ tree: bigint, json: string } | null} */
+    let openingsPushed = null;
+    const pushOpenings = async (/** @type {any[]} */ records) => {
+        const here = await chats.pointer(session);
+        if (here === null || !records.some(r => r.entity === here.tree)) return;
+        const owner = await ownerOf(here.tree);
+        if (!owner || !('avatar' in owner)) return;
+        const openings = await openingState({ store, tree: here.tree, actor: { user: request.user.profile.handle, session }, avatar: owner.avatar });
+        const json = JSON.stringify(openings);
+        if (openingsPushed?.tree === here.tree && openingsPushed.json === json) return;
+        openingsPushed = { tree: here.tree, json };
+        send({ type: 'openings', avatar: owner.avatar, ...openings });
+    };
     return {
         session,
         async told(records) {
             stateChain = stateChain.then(() => pushState(/** @type {any[]} */ (records))).catch(error => console.error('[characters/changes/stream] The chat state was not pushed:', error));
+            stateChain = stateChain.then(() => pushOpenings(/** @type {any[]} */ (records))).catch(error => console.error('[characters/changes/stream] The openings were not pushed:', error));
             const ours = /** @type {any[]} */ (records).filter(r => SESSION_KINDS.has(r.kind) && r.session !== undefined);
             if (!ours.length) return;
             sid ??= await chats.sessionId(session);

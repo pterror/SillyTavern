@@ -17,7 +17,7 @@ export type OldPage = {
     go(mesId: number, index: number): Promise<void>;
     remove(mesId: number, index: number): Promise<void>;
     copy(text: string): Promise<void>;
-    greetingsChanged(card: NonNullable<ListView['card']>, edit: { hash: number; text: string } | null): void;
+    greetingsChanged(card: NonNullable<ListView['card']>, answer: unknown): void;
     editAt(event: MouseEvent, rendered: HTMLElement, source: string): number | null;
 };
 
@@ -364,10 +364,10 @@ function Dialog(props: {
     };
     const removeGreeting = async (item: Item) => {
         const sure = await ask({ kind: 'confirm', message: t('Delete this greeting from the card?') }, t);
-        if (sure) await greeting({ op: 'delete', position: item.card!.position, hash: item.card!.hash }, null);
+        if (sure) await greeting({ op: 'delete', position: item.card!.position, hash: item.card!.hash });
     };
 
-    const greeting = async (op: GreetingOp, edit: { hash: number; text: string } | null) => {
+    const greeting = async (op: GreetingOp) => {
         const result = await client.send('alternatives.greeting', op);
         const card = list()?.card;
         if (!result.ok) {
@@ -375,18 +375,17 @@ function Dialog(props: {
             return false;
         }
         setNotice(null);
-        if (card) props.old.greetingsChanged(structuredClone(unwrap(card)), edit);
+        if (card) props.old.greetingsChanged(structuredClone(unwrap(card)), result.answer);
         return true;
     };
-    const add = async (text: string) => text.trim() !== '' && (await greeting({ op: 'add', text }, null));
+    const add = async (text: string) => text.trim() !== '' && (await greeting({ op: 'add', text }));
     const save = async (item: Item, text: string) => {
         if (text.trim() === '') {
             const sure = await ask({ kind: 'confirm', message: t('This greeting is empty now. Delete it?') }, t);
             if (!sure) return;
         }
         const card = item.card!;
-        if (await greeting({ op: 'edit', position: card.position, hash: card.hash, text }, { hash: card.hash, text }))
-            setEditing(null);
+        if (await greeting({ op: 'edit', position: card.position, hash: card.hash, text })) setEditing(null);
     };
     const editAt = (item: Item, event: MouseEvent) => {
         if (!isCardRow(item) || editing()?.id === item.id) return;
@@ -400,22 +399,18 @@ function Dialog(props: {
             isDefault
                 ? { op: 'undefault', hash: card.hash }
                 : { op: 'default', position: card.position, hash: card.hash },
-            null,
         );
     };
     const move = (item: Item, target: Item, side: 'before' | 'after') => {
         if (item.id === target.id || !item.card || !target.card) return;
-        void greeting(
-            {
-                op: 'move',
-                position: item.card.position,
-                hash: item.card.hash,
-                side,
-                target: target.card.position,
-                targetHash: target.card.hash,
-            },
-            null,
-        );
+        void greeting({
+            op: 'move',
+            position: item.card.position,
+            hash: item.card.hash,
+            side,
+            target: target.card.position,
+            targetHash: target.card.hash,
+        });
     };
 
     const dragFrom = (item: Item, event: PointerEvent) => {

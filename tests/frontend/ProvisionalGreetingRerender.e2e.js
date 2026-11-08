@@ -140,20 +140,16 @@ async function showSwipe(page, swipeId, text) {
 
 /**
  * @param {import('@playwright/test').Page} page
- * @returns {{writes: string[], openingBodies: any[], landingBodies: any[]}}
+ * @returns {{writes: string[], openingBodies: any[]}}
  */
 function recordChatRequests(page) {
-    const record = { writes: [], openingBodies: [], landingBodies: [] };
+    const record = { writes: [], openingBodies: [] };
     page.on('request', (request) => {
         if (request.method() !== 'POST') return;
         const path = new URL(request.url()).pathname;
         if (!path.startsWith('/api/chats/')) return;
         if (path === '/api/chats/openings') {
             record.openingBodies.push(request.postDataJSON());
-            return;
-        }
-        if (path === '/api/chats/openings/land') {
-            record.landingBodies.push(request.postDataJSON());
             return;
         }
         record.writes.push(path);
@@ -246,6 +242,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(edited);
 
         expect(requests.writes).toEqual([]);
+        expect(requests.openingBodies).toEqual([]);
         expect((await fetchOpenings(page, avatar)).stored).toBe(0);
     });
 
@@ -269,10 +266,11 @@ test.describe('provisional greeting follows greeting saves', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g1);
 
         expect(requests.writes).toEqual([]);
+        expect(requests.openingBodies).toEqual([]);
         expect((await fetchOpenings(page, avatar)).stored).toBe(0);
     });
 
-    test('add, edit of another greeting, move, default set and unset rebuild the swipes and keep the showing greeting', async ({ page }) => {
+    test('add, edit of another greeting and move rebuild the swipes and keep the showing greeting; a default set or unset shows the default', async ({ page }) => {
         const s = stamp();
         const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `ProvOtherOps-${s}`, [g0, g1, g2]);
@@ -287,14 +285,14 @@ test.describe('provisional greeting follows greeting saves', () => {
          * @param {string[]} swipes
          * @param {number} swipeId
          */
-        const expectShowing = async (swipes, swipeId) => {
+        const expectShowing = async (swipes, swipeId, shown = g1) => {
             await expect.poll(async () => (await openingState(page)).swipes, { timeout: 10000 }).toEqual(swipes);
+            await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(shown);
             const state = await openingState(page);
             expect(state.length).toBe(1);
-            expect(state.mes).toBe(g1);
-            expect(state.node_id).toBe(shownId);
+            if (shown === g1) expect(state.node_id).toBe(shownId);
             expect(state.swipe_id).toBe(swipeId);
-            await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g1);
+            await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(shown);
         };
 
         const g3 = `Three ${s}`;
@@ -311,24 +309,24 @@ test.describe('provisional greeting follows greeting saves', () => {
         await expect(greetingsList(page).locator('li.alternative')).toHaveCount(4, { timeout: 10000 });
         await popupSetDefault(page, 1);
         await expect(greetingRow(page, 1).locator('.alternative-default')).toHaveAttribute('aria-pressed', 'true');
-        await expectShowing([g0, g2e, g3, g1], 3);
+        await expectShowing([g0, g2e, g3, g1], 1, g2e);
 
         await popupUnsetDefault(page, 1);
         await expect(greetingRow(page, 1).locator('.alternative-default')).toHaveAttribute('aria-pressed', 'false');
-        await expectShowing([g0, g2e, g3, g1], 3);
+        await expectShowing([g0, g2e, g3, g1], 0, g0);
 
         expect(requests.writes).toEqual([]);
+        expect(requests.openingBodies).toEqual([]);
         expect((await fetchOpenings(page, avatar)).stored).toBe(0);
     });
 
-    test('with more than 11 openings, deleting a showing greeting outside the first window shows the next opening', async ({ page }) => {
+    test('with more than 11 openings, deleting the showing greeting shows the next opening', async ({ page }) => {
         const s = stamp();
         const greetings = Array.from({ length: 14 }, (_, i) => `Greeting ${i} ${s}`);
         const avatar = await createCharacter(page, `ProvWide-${s}`, greetings);
         await openCharacter(page, avatar);
         const loaded = await openingState(page);
-        expect(loaded.swipes).toHaveLength(14);
-        expect(loaded.swipes[12]).toBeNull();
+        expect(loaded.swipes).toEqual(greetings);
 
         await showSwipe(page, 12, greetings[12]);
 
@@ -345,6 +343,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(greetings[13]);
 
         expect(requests.writes).toEqual([]);
+        expect(requests.openingBodies).toEqual([]);
         expect((await fetchOpenings(page, avatar)).stored).toBe(0);
     });
 
@@ -379,6 +378,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(b);
 
         expect(requests.writes).toEqual([]);
+        expect(requests.openingBodies).toEqual([]);
         const storedAfter = await fetchOpenings(page, avatar);
         expect(storedAfter.alternatives.filter(x => x.node_id)).toEqual(storedBefore.alternatives.filter(x => x.node_id));
     });
@@ -412,11 +412,12 @@ test.describe('provisional greeting follows greeting saves', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(stored);
 
         expect(requests.writes).toEqual([]);
+        expect(requests.openingBodies).toEqual([]);
         const storedAfter = await fetchOpenings(page, avatar);
         expect(storedAfter.alternatives.filter(x => x.node_id)).toEqual(storedBefore.alternatives.filter(x => x.node_id));
     });
 
-    test('editing the showing greeting into a stored opening\'s text outside the loaded window finds it through the server and swaps in memory', async ({ page }) => {
+    test('editing the showing greeting into a stored opening\'s text outside the loaded window swaps onto that row in memory', async ({ page }) => {
         const s = stamp();
         const name = `ProvCollideOut-${s}`;
         const [g0, a] = [`Zero ${s}`, `Alpha ${s}`];
@@ -450,8 +451,8 @@ test.describe('provisional greeting follows greeting saves', () => {
         expect(after.swipes[60]).toBe(g0);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(target);
 
-        expect(requests.landingBodies.some(body => body?.edits?.some(edit => edit.to === target))).toBe(true);
         expect(requests.writes).toEqual([]);
+        expect(requests.openingBodies).toEqual([]);
         const storedAfter = await fetchOpenings(page, avatar);
         expect(storedAfter.alternatives.filter(x => x.node_id)).toEqual(storedBefore.alternatives.filter(x => x.node_id));
     });

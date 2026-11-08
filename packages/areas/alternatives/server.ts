@@ -1,7 +1,7 @@
 import { actions, COUNTS_VIEW, LIST_VIEW, MATCHES_VIEW, VIEWS } from './protocol.ts';
 import type { GreetingOp, Item, ListView, Target, TokenizerState } from './protocol.ts';
 import { defineArea, patch } from '@st/server-ui';
-import type { ActionResult, User, ViewContext } from '@st/server-ui';
+import type { ActionContext, ActionResult, User, ViewContext } from '@st/server-ui';
 
 export type Alternative = {
     nodeId: string | null;
@@ -32,7 +32,11 @@ export type Ports = {
         ): Promise<void>;
     };
     match(query: string, texts: string[]): (number[] | null)[];
-    greeting(user: User, avatar: string, op: GreetingOp): Promise<{ ok: true } | { ok: false; reason: string }>;
+    greeting(
+        context: ActionContext,
+        avatar: string,
+        op: GreetingOp,
+    ): Promise<{ ok: true; opening: unknown } | { ok: false; reason: string }>;
 };
 
 function freshLook(target: Target, tokenizer: TokenizerState | null): Look {
@@ -316,21 +320,13 @@ export function alternativesArea(ports: Ports) {
                 const look = lookOf(context);
                 const avatar = look ? ('greetings' in look.target ? look.target.greetings : look.card?.avatar) : null;
                 if (avatar === null || avatar === undefined) return { refused: 'These have no card to change.' };
-                const greetingsBefore = look?.card?.greetings ?? 0;
                 const sent: GreetingOp =
                     op.op === 'edit' && op.text.trim() === ''
                         ? { op: 'delete', position: op.position, hash: op.hash }
                         : op;
-                const result = await ports.greeting(context.user, avatar, sent);
+                const result = await ports.greeting(context, avatar, sent);
                 if (!result.ok) return { refused: result.reason, changed: [...VIEWS] };
-                if (sent.op === 'add' && greetingsBefore === 0) {
-                    await ports.greeting(context.user, avatar, {
-                        op: 'default',
-                        position: 0,
-                        hash: ports.hash(sent.text),
-                    });
-                }
-                return all;
+                return { ...all, answer: { opening: result.opening } };
             },
         },
     });

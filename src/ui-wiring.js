@@ -23,14 +23,14 @@ import { settingsDocumentOf } from './settings-documents.js';
 import { modelListOf, rememberModelList } from './model-lists.js';
 import { default_settings as chatCompletionDefaults } from '../public/scripts/chat-completion-defaults.js';
 import { writeNamedSettings, readAllSettings } from './settings-store.js';
-import { readCardGreetings } from './endpoints/chats.js';
-import { applyGreetingOperation } from './endpoints/characters.js';
+import { readCardGreetings } from './opening-state.js';
+import { changeGreetings } from './endpoints/characters.js';
 import { openTokenizer } from './endpoints/tokenizers-current.js';
 import { readTokenizerState } from './connection-state-header.js';
 import { TOKEN_KEY_KINDS, readCount, tokenKeyHash } from './token-count-store.js';
 import { textMatches } from './text-matches.js';
 import { getEngine } from '../engine/load.js';
-import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefaultByHash } from './greeting-ops.js';
+import { hashGreetingText } from './greeting-ops.js';
 
 /** @typedef {import('@st/server-ui').User} User */
 /** @typedef {import('@st/server-ui').ViewContext} ViewContext */
@@ -317,21 +317,6 @@ async function tokenizerOf(user, tokenizer) {
     return state ? openTokenizer(state, directoriesOf(user)) : null;
 }
 
-/**
- * @param {import('@st/alternatives/protocol').GreetingOp} op
- * @returns {(model: import('./greeting-list.js').GreetingsModel) => any}
- */
-function greetingOperation(op) {
-    switch (op.op) {
-        case 'add': return model => opAppend(model, op.text);
-        case 'edit': return model => opEdit(model, op.position, op.hash, op.text);
-        case 'delete': return model => opDelete(model, op.position, op.hash);
-        case 'move': return model => opMove(model, op.position, op.hash, op.side, op.target, op.targetHash);
-        case 'default': return model => opSetDefault(model, op.position, op.hash);
-        case 'undefault': return model => opUnsetDefaultByHash(model, op.hash);
-    }
-}
-
 /** @type {import('@st/alternatives/server').Ports} */
 const alternativesPorts = {
     async list(context, target) {
@@ -345,7 +330,7 @@ const alternativesPorts = {
         if ('opening' in target) {
             if (!chat) return null;
             const card = chat.avatar ? await readCardGreetings(chat.store, chat.avatar) : null;
-            const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, cardGreetings: card?.greetings ?? [] });
+            const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, cardGreetings: card?.greetings ?? [], cardDefault: card?.defaultText ?? null });
             return {
                 alternatives: openings.alternatives.map(alternativeOf),
                 current: openings.total > 0 ? openings.default_index : null,
@@ -357,7 +342,7 @@ const alternativesPorts = {
         const card = await readCardGreetings(store, target.greetings);
         if (!card) return null;
         const inChat = chat && chat.avatar === target.greetings
-            ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, cardGreetings: card.greetings })
+            ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, cardGreetings: card.greetings, cardDefault: card.defaultText })
             : null;
         return {
             alternatives: card.texts.map(text => ({ nodeId: null, text, name: card.name, isUser: false, isSystem: false, date: null })),
@@ -397,9 +382,12 @@ const alternativesPorts = {
         },
     },
     match: (query, texts) => textMatches(getEngine(), query, texts),
-    async greeting(user, avatar, op) {
-        const result = await applyGreetingOperation(directoriesOf(user), avatar, greetingOperation(op));
-        return result.ok ? { ok: true } : { ok: false, reason: result.reason ?? 'The greetings changed.' };
+    async greeting(context, avatar, op) {
+        const directories = directoriesOf(context.user);
+        const store = await userStore(directories, context.user.handle);
+        const actor = { user: context.user.handle, session: context.session };
+        const { result, opening } = await changeGreetings({ directories, store, actor, avatar, change: op });
+        return result.ok ? { ok: true, opening } : { ok: false, reason: result.reason ?? 'The greetings changed.' };
     },
 };
 

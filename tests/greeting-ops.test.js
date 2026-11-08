@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { hashGreetingText, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefaultByHash } from '../src/greeting-ops.js';
+import { chosenGreetingAfter, hashGreetingText, opAdd, opAppend, opDelete, opEdit, opMove, opSetDefault, opUnsetDefaultByHash } from '../src/greeting-ops.js';
 
 const h = hashGreetingText;
 const modelOf = (greetings, defaultIndex = 0) => ({ greetings, defaultIndex });
@@ -254,7 +254,7 @@ describe('opMove looks each end up by its hash', () => {
 describe('opAppend', () => {
     test('puts the text after the last greeting, whatever the length', () => {
         expect(opAppend(modelOf(['a', 'b'], 0), 'c')).toEqual({ ok: true, model: modelOf(['a', 'b', 'c'], 0), position: 2 });
-        expect(opAppend(modelOf([], null), 'a')).toEqual({ ok: true, model: modelOf(['a'], null), position: 0 });
+        expect(opAppend(modelOf([], null), 'a')).toEqual({ ok: true, model: modelOf(['a'], 0), position: 0 });
     });
 
     test('keeps the default where it is', () => {
@@ -313,5 +313,62 @@ describe('an op whose outcome is already in place succeeds', () => {
 
     test('delete still refuses when no greeting has the hash', () => {
         expect(opDelete(modelOf(['a', 'c'], 0), 1, h('b'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
+    });
+});
+
+describe('the first greeting', () => {
+    test('added to a card with none is its default, inserted or appended', () => {
+        expect(opAdd(modelOf([], null), 0, 0, 'Hi')).toEqual({ ok: true, model: modelOf(['Hi'], 0), position: 0 });
+        expect(opAppend(modelOf([], null), 'Hi')).toEqual({ ok: true, model: modelOf(['Hi'], 0), position: 0 });
+    });
+
+    test('a later one leaves the default where it is', () => {
+        expect(opAdd(modelOf(['a'], null), 0, 1, 'b')).toEqual({ ok: true, model: modelOf(['b', 'a'], null), position: 0 });
+        expect(opAdd(modelOf(['a', 'b'], 1), 1, 2, 'c')).toEqual({ ok: true, model: modelOf(['a', 'c', 'b'], 2), position: 1 });
+    });
+});
+
+describe('chosenGreetingAfter', () => {
+    const after = (change, model, chosen) => {
+        const result = greetingOperationResult(change, model);
+        return chosenGreetingAfter(change, result, chosen);
+    };
+    const greetingOperationResult = (change, model) => {
+        switch (change.op) {
+            case 'add': return opAdd(model, change.position, model.greetings.length, change.text);
+            case 'edit': return opEdit(model, change.position, change.hash, change.text);
+            case 'delete': return opDelete(model, change.position, change.hash);
+            case 'move': return opMove(model, change.position, change.hash, change.side, change.target, change.targetHash);
+            case 'default': return opSetDefault(model, change.position, change.hash);
+        }
+    };
+    const abcd = modelOf(['a', 'b', 'c', 'd'], 0);
+
+    test('an add before the chosen greeting moves it along; after it, not', () => {
+        expect(after({ op: 'add', position: 1, text: 'x' }, abcd, 2)).toBe(3);
+        expect(after({ op: 'add', position: 3, text: 'x' }, abcd, 2)).toBe(2);
+    });
+
+    test('an edit keeps it, the edited one included', () => {
+        expect(after({ op: 'edit', position: 2, hash: h('c'), text: 'c2' }, abcd, 2)).toBe(2);
+    });
+
+    test('deleting it shows the greeting now in its place, or the last; deleting one before it moves it back', () => {
+        expect(after({ op: 'delete', position: 2, hash: h('c') }, abcd, 2)).toBe(2);
+        expect(after({ op: 'delete', position: 3, hash: h('d') }, abcd, 3)).toBe(2);
+        expect(after({ op: 'delete', position: 0, hash: h('a') }, modelOf(['a'], 0), 0)).toBeNull();
+        expect(after({ op: 'delete', position: 0, hash: h('a') }, abcd, 2)).toBe(1);
+        expect(after({ op: 'delete', position: 3, hash: h('d') }, abcd, 2)).toBe(2);
+    });
+
+    test('a move carries it, or the greetings it passes shift it', () => {
+        expect(after({ op: 'move', position: 2, hash: h('c'), side: 'before', target: 0, targetHash: h('a') }, abcd, 2)).toBe(0);
+        expect(after({ op: 'move', position: 0, hash: h('a'), side: 'after', target: 3, targetHash: h('d') }, abcd, 2)).toBe(1);
+        expect(after({ op: 'move', position: 3, hash: h('d'), side: 'before', target: 0, targetHash: h('a') }, abcd, 2)).toBe(3);
+    });
+
+    test('a default change shows the default', () => {
+        expect(after({ op: 'default', position: 3, hash: h('d') }, abcd, 2)).toBeNull();
+        expect(chosenGreetingAfter({ op: 'undefault', hash: h('a') }, {}, 2)).toBeNull();
     });
 });

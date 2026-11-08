@@ -57,7 +57,7 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
         greeting: async (_u, _a, op) => {
             if (state.refuse !== null) return { ok: false, reason: state.refuse };
             state.ops.push(op);
-            return { ok: true };
+            return { ok: true, opening: null };
         },
     };
     const area = alternativesArea(ports);
@@ -335,6 +335,7 @@ test("greeting operations go to the target's card; an edit to empty text removes
     await w.list();
     expect(await w.act('alternatives.greeting', { op: 'edit', position: 1, hash: hash('B'), text: 'B2' })).toEqual({
         changed: ['alternatives.list', 'alternatives.counts', 'alternatives.matches'],
+        answer: { opening: null },
     });
     await w.act('alternatives.greeting', { op: 'edit', position: 1, hash: hash('B2'), text: ' \n' });
     await w.act('alternatives.greeting', {
@@ -386,15 +387,15 @@ test('a refused operation says why, and the views are read again', async () => {
     });
 });
 
-test("a character's first greeting becomes its default", async () => {
+test("a greeting change is one change to the card, answered with the character tree's openings", async () => {
     const w = greetingsWorld([]);
     await w.act('alternatives.open', { target: { greetings: 'cara.png' }, tokenizer });
     await w.list();
-    await w.act('alternatives.greeting', { op: 'add', text: 'Hi' });
-    expect(w.state.ops).toEqual([
-        { op: 'add', text: 'Hi' },
-        { op: 'default', position: 0, hash: hash('Hi') },
-    ]);
+    expect(await w.act('alternatives.greeting', { op: 'add', text: 'Hi' })).toEqual({
+        changed: ['alternatives.list', 'alternatives.counts', 'alternatives.matches'],
+        answer: { opening: null },
+    });
+    expect(w.state.ops).toEqual([{ op: 'add', text: 'Hi' }]);
 });
 
 test('a greeting is known by its text, wherever it moves; the same text twice is told apart', () => {

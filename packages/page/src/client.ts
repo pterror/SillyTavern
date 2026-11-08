@@ -2,7 +2,7 @@ import type { Accessor } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type { ActionAnswer, ChatOwner, ViewFrame, ViewPush } from '@st/protocol';
 
-export type ActionResult = { ok: true } | { ok: false; error: string };
+export type ActionResult = { ok: true; answer?: unknown } | { ok: false; error: string };
 
 export type Client = {
     send(type: string, payload: unknown, file?: File): Promise<ActionResult>;
@@ -89,9 +89,11 @@ export function createClient({ headers }: ClientOptions): Client {
                 ok?: unknown;
                 error?: unknown;
                 views?: ViewFrame[];
+                answer?: unknown;
             } | null;
             const views = Array.isArray(answer?.views) ? answer.views : [];
-            if (answer?.ok === true) return { ok: true, views };
+            if (answer?.ok === true)
+                return { ok: true, views, ...(answer.answer === undefined ? {} : { answer: answer.answer }) };
             return {
                 ok: false,
                 error: typeof answer?.error === 'string' ? answer.error : 'The server refused it.',
@@ -147,7 +149,7 @@ export function createClient({ headers }: ClientOptions): Client {
         async send(type, payload, file) {
             const answer = await post(type, payload, file);
             apply(answer.views);
-            return answer.ok ? { ok: true } : { ok: false, error: answer.error };
+            return answer.ok ? { ok: true, answer: answer.answer } : { ok: false, error: answer.error };
         },
         view<T>(key: string) {
             const known = views.has(key);

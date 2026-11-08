@@ -225,7 +225,7 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(typed);
     });
 
-    test('greetings list: another session editing the same greeting again before the openings are read keeps that greeting shown, with the other session\'s text', async ({ page, browser }) => {
+    test('greetings list: another session editing the same greeting again keeps that greeting shown, with the other session\'s text', async ({ page, browser }) => {
         const s = stamp();
         const [g0, g1, g2] = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `ProvOtherReEdit-${s}`, [g0, g1, g2]);
@@ -235,39 +235,22 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
 
         const typed = `One edited ${s}`;
         const otherText = `One edited elsewhere ${s}`;
+        await openGreetingsList(page, 3);
+        await listEdit(page, 1, typed);
+        await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(typed);
 
         await withOtherSession(browser, async (other) => {
-            let armed = false;
-            let otherEdited = false;
-            let otherStored = false;
-            await page.route('**/api/ui/action', async (route) => {
-                const response = await route.fetch();
-                if (route.request().postDataJSON()?.type === 'alternatives.greeting') armed = true;
-                await route.fulfill({ response });
-            });
-            await page.route('**/api/chats/openings', async (route) => {
-                if (armed && !otherEdited) {
-                    otherEdited = true;
-                    const status = await other.evaluate(async ({ avatar, expectedHash, text }) => {
-                        // @ts-ignore
-                        const headers = stTest.context().getRequestHeaders();
-                        const response = await fetch('/api/characters/greetings/edit', {
-                            method: 'POST',
-                            headers,
-                            body: JSON.stringify({ avatar_url: avatar, position: 1, expected_hash: expectedHash, text }),
-                        });
-                        return response.status;
-                    }, { avatar, expectedHash: hashGreetingText(typed), text: otherText });
-                    expect(status).toBe(200);
-                    otherStored = true;
-                }
-                await route.continue();
-            });
-
-            await openGreetingsList(page, 3);
-            await listEdit(page, 1, typed);
-
-            await expect.poll(() => otherStored, { timeout: 10000 }).toBe(true);
+            const status = await other.evaluate(async ({ avatar, expectedHash, text }) => {
+                // @ts-ignore
+                const headers = stTest.context().getRequestHeaders();
+                const response = await fetch('/api/characters/greetings/edit', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ avatar_url: avatar, position: 1, expected_hash: expectedHash, text }),
+                });
+                return response.status;
+            }, { avatar, expectedHash: hashGreetingText(typed), text: otherText });
+            expect(status).toBe(200);
             expect(await storedGreetings(other, avatar)).toEqual([g0, otherText, g2]);
         });
 

@@ -89,13 +89,13 @@ async function addSwipeCallback(args, value) {
         ...(hadSlots ? {} : { swipe_id: 0 }),
     });
 
-    const newSwipeId = swipes.length - 1;
-
     const createdId = await chatOpAddAlternative(lastMessageId, value).catch(error => {
         console.error('Could not save the new swipe as an alternative:', error);
         return null;
     });
-    if (createdId) {
+    const taken = createdId ? chat[lastMessageId].swipe_info?.findIndex(entry => entry?.node_id === createdId) ?? -1 : -1;
+    const newSwipeId = taken >= 0 ? taken : swipes.length - 1;
+    if (createdId && taken < 0) {
         const info = [...chat[lastMessageId].swipe_info];
         info[newSwipeId] = { ...(info[newSwipeId] || {}), node_id: createdId };
         updateMessage(lastMessageId, { swipe_info: info });

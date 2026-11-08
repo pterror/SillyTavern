@@ -87,8 +87,8 @@ export const alternativesOldPage = {
         await copyText(text);
         toastr.info(t`Copied!`, '', { timeOut: 2000 });
     },
-    greetingsChanged(card, edit) {
-        void applyServerGreetings(card.avatar, card, edit);
+    greetingsChanged(card, answer) {
+        void applyServerGreetings(card.avatar, card, /** @type {{ opening?: unknown } | undefined} */ (answer)?.opening ?? null);
     },
     editAt(event, rendered, source) {
         return editPosition(event, rendered, source, power_user.click_to_edit);

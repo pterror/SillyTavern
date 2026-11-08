@@ -150,4 +150,29 @@ test.describe('creating a character with greetings', () => {
             await deleteCharacter(page, avatar2);
         }
     });
+
+    test('the first greeting added to a new character shows in its empty chat at once', async ({ page }) => {
+        const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        await openCharacterManagementDrawer(page);
+        await page.locator('#rm_button_create').click();
+        await page.locator('#character_name_pole').fill(`EmptyThenGreeted-${s}`);
+        const createResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/create');
+        await page.evaluate(() => {
+            // @ts-ignore
+            $('#create_button').click();
+        });
+        const avatar = await (await createResponse).text();
+        try {
+            await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
+            await expect(page.locator('#chat .mes')).toHaveCount(0);
+            await openInfoTab(page, 'greeting');
+            await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
+            await page.locator('#charInfoTab_greeting .cm-content').click();
+            await page.keyboard.type(`Hello ${s}`);
+            await page.locator('.field_edit_done[data-for="greeting_field"]').click();
+            await expect(page.locator('#chat .mes .mes_text')).toHaveText([`Hello ${s}`], { timeout: 10000 });
+        } finally {
+            await deleteCharacter(page, avatar);
+        }
+    });
 });

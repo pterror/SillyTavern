@@ -110,7 +110,7 @@ describe('metadata edits on a PNG-less character stay DB-only', () => {
         await createPngLessAlice();
         const res = await post('greetings/add', { avatar_url: 'Alice.png', position: 0, expected_length: 0, text: 'Hello there' });
         expect(res.status).toBe(200);
-        expect((await storedCard('Alice.png')).data.alternate_greetings).toContain('Hello there');
+        expect((await storedCard('Alice.png')).data.first_mes).toBe('Hello there');
         expect(await hasImageFile('Alice.png')).toBe(false);
     });
 

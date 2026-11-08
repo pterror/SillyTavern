@@ -157,18 +157,20 @@ test.describe('editing the opening to a card greeting\'s text', () => {
         await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
     }
 
-    test('a greeting with macros, typed as the card has it, is that greeting, not another alternative', async ({ page }) => {
+    test('a greeting with macros, typed as the card has it, is that greeting: the chat shows it and nothing is stored', async ({ page }) => {
         const s = stamp();
         const g = [`Hi {{user}} ${s}`, `Bye {{char}} ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `DedupeMacro-${s}`, g);
         await openCharacter(page, avatar);
         await editOpening(page, g[1]);
-        await expect.poll(() => storedOpenings(page, avatar), { timeout: 10000 }).toEqual([
-            { stored: true, mes: g[1] },
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual(g);
+        expect((await opening(page)).mes).toBe(g[1]);
+        expect((await opening(page)).node_id.startsWith('card:')).toBe(true);
+        expect(await storedOpenings(page, avatar)).toEqual([
             { stored: false, mes: g[0] },
+            { stored: false, mes: g[1] },
             { stored: false, mes: g[2] },
         ]);
-        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([g[1], g[0], g[2]]);
     });
 
     test('a stored opening edited to a card greeting\'s text becomes that greeting in the open chat too', async ({ page }) => {

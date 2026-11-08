@@ -4,7 +4,9 @@ export type ViewFrame =
     | { key: string; version: number; value: unknown }
     | { key: string; version: number; patch: unknown };
 
-export type ActionAnswer = { ok: true; views: ViewFrame[] } | { ok: false; error: string; views: ViewFrame[] };
+export type ActionAnswer =
+    | { ok: true; views: ViewFrame[]; answer?: unknown }
+    | { ok: false; error: string; views: ViewFrame[] };
 
 export type ViewPush = { type: 'views'; views: ViewFrame[] };
 
