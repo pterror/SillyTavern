@@ -297,24 +297,7 @@ async function keepStoredGreetings(directories, avatar, data, freshFieldPaths) {
  * @returns {Promise<void>}
  * @throws {ImageReadError}
  */
-async function writeCharacter(request, avatar, data, options = {}) {
-    const store = await userStore(request.user.directories);
-    const before = options.greetings === undefined ? JSON.stringify((await store.lib.greetingModel(avatar)).greetings) : null;
-    await writeCard(request, avatar, data, options);
-    if (before === null) return;
-    const after = await store.lib.greetingModel(avatar);
-    if (JSON.stringify(after.greetings) === before) return;
-    const [tree] = await store.people.trees([{ avatar }]);
-    if (tree !== null && tree !== undefined) await store.chats.relinkStarts({ tree, greetings: after.greetings.filter(g => g.text !== ''), actor: { user: store.handle } });
-}
-
-/**
- * @param {import('express').Request} request
- * @param {string} avatar
- * @param {string} data
- * @param {Parameters<typeof writeCharacter>[3]} o
- */
-async function writeCard(request, avatar, data, { image, crop, contentHash = null, freshFieldPaths = null, fav, dateAdded, renamed, greetings } = {}) {
+async function writeCharacter(request, avatar, data, { image, crop, contentHash = null, freshFieldPaths = null, fav, dateAdded, renamed, greetings } = {}) {
     const directories = request.user.directories;
     const { lib } = await userStore(directories);
     const card = await keepStoredGreetings(directories, avatar, data, freshFieldPaths);
@@ -1211,11 +1194,6 @@ async function runGreetingOperation(directories, avatar, op) {
     const validator = new TavernCardValidator(character);
     if (!validator.validate()) {
         return { ok: false, reason: validator.lastValidationError ?? 'validation failed', status: 500 };
-    }
-    const store = await userStore(directories);
-    const [tree] = await store.people.trees([{ avatar }]);
-    if (tree !== null && tree !== undefined) {
-        await store.chats.relinkStarts({ tree, greetings: result.model.greetings.filter(g => g.text !== ''), actor: { user: store.handle } });
     }
 
     await writeCharacter(/** @type {any} */ ({ user: { directories } }), avatar, JSON.stringify(character), { freshFieldPaths: new Set(['data.alternate_greetings']), greetings: result.model });

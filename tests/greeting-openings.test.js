@@ -196,7 +196,7 @@ test('a greeting that a stored opening holds is history: changing or deleting th
     expect(shownText(deleted.body)).toBe('Once');
 });
 
-test('an opening and a card greeting with the same text are one entry: linked when either is written with it', async () => {
+test('an opening written with a card greeting\'s text is that greeting; a card edit links no opening, it only changes what the card offers', async () => {
     const session = '0190a1b2-0000-7000-8000-0000000000f3';
     expect((await post('create', { ch_name: 'Twins', first_mes: 'Zero', file_name: 'Twins' }, session)).status).toBe(200);
     await post('greetings/add', { avatar_url: 'Twins.png', append: true, text: 'One' }, session);
@@ -212,7 +212,7 @@ test('an opening and a card greeting with the same text are one entry: linked wh
     });
     const edited = await post('greetings/edit', { avatar_url: 'Twins.png', position: 2, expected_hash: two.body.hashes[2], text: 'Shared' }, session);
     const texts = edited.body.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.node_id !== null]);
-    expect(texts).toEqual([['Zero', false], ['One', false], ['Shared', true]]);
+    expect(texts).toEqual([['Zero', false], ['Shared', true], ['One', false], ['Shared', false]]);
 
     const mine = await chats.appendMessages({
         tree, treeSpeaker: null, after: null,
@@ -222,5 +222,5 @@ test('an opening and a card greeting with the same text are one entry: linked wh
     expect(mine.ok).toBe(true);
     const { openingState } = await import('../src/opening-state.js');
     const now = await openingState({ store: user.store, tree, actor: { user: user.user.profile.handle, session }, avatar: 'Twins.png' });
-    expect(now.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.node_id !== null])).toEqual([['Zero', false], ['One', true], ['Shared', true]]);
+    expect(now.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.node_id !== null])).toEqual([['Zero', false], ['Shared', true], ['One', true], ['Shared', false]]);
 });

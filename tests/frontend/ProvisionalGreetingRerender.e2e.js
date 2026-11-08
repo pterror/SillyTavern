@@ -382,7 +382,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         expect(storedAfter.alternatives.filter(x => x.node_id)).toEqual(storedBefore.alternatives.filter(x => x.node_id));
     });
 
-    test('editing the showing greeting into a stored opening\'s text inside the loaded window swaps onto that row in memory', async ({ page }) => {
+    test('editing the showing greeting into a stored opening\'s text inside the loaded window shows the edited greeting, the stored one beside it', async ({ page }) => {
         const s = stamp();
         const name = `ProvCollideIn-${s}`;
         const [g0, a, b] = [`Zero ${s}`, `Alpha ${s}`, `Beta ${s}`];
@@ -402,12 +402,13 @@ test.describe('provisional greeting follows greeting saves', () => {
         await openGreetingsPopup(page, 3);
         await popupEdit(page, 1, stored);
 
-        await expect.poll(async () => (await openingState(page)).node_id, { timeout: 10000 }).toBe(storedId);
+        await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(stored);
         const after = await openingState(page);
         expect(after.length).toBe(1);
-        expect(after.mes).toBe(stored);
+        expect(after.node_id.startsWith('card:')).toBe(true);
         expect(after.swipe_id).toBe(1);
-        expect(after.swipes).toEqual([g0, stored, b]);
+        expect(after.swipes).toEqual([g0, stored, b, stored]);
+        expect(after.swipe_node_ids[3]).toBe(storedId);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(stored);
 
         expect(requests.writes).toEqual([]);
@@ -416,7 +417,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         expect(storedAfter.alternatives.filter(x => x.node_id)).toEqual(storedBefore.alternatives.filter(x => x.node_id));
     });
 
-    test('editing the showing greeting into a stored opening\'s text outside the loaded window swaps onto that row in memory', async ({ page }) => {
+    test('editing the showing greeting into a stored opening\'s text outside the loaded window shows the edited greeting, the stored one kept', async ({ page }) => {
         const s = stamp();
         const name = `ProvCollideOut-${s}`;
         const [g0, a] = [`Zero ${s}`, `Alpha ${s}`];
@@ -424,6 +425,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         const storedTexts = Array.from({ length: 60 }, (_, i) => `Stored ${i} ${s}`);
         const storedIds = await storeOpenings(page, avatar, name, storedTexts);
         const target = storedTexts[30];
+        expect(storedIds).toHaveLength(60);
         const storedBefore = await fetchOpenings(page, avatar);
         expect(storedBefore.stored).toBe(60);
 
@@ -440,12 +442,12 @@ test.describe('provisional greeting follows greeting saves', () => {
         await openGreetingsPopup(page, 2);
         await popupEdit(page, 1, target);
 
-        await expect.poll(async () => (await openingState(page)).node_id, { timeout: 10000 }).toBe(storedIds[30]);
+        await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(target);
         const after = await openingState(page);
         expect(after.length).toBe(1);
-        expect(after.mes).toBe(target);
+        expect(after.node_id.startsWith('card:')).toBe(true);
         expect(after.swipe_id).toBe(1);
-        expect(after.swipes).toHaveLength(61);
+        expect(after.swipes).toHaveLength(62);
         expect(after.swipes[1]).toBe(target);
         expect(after.swipes[0]).toBe(g0);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(target);
