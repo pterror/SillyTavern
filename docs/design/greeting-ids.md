@@ -45,23 +45,23 @@ position.
 
 ## An opening's card greeting
 
-A stored opening that came from a card greeting names that greeting's id in `extra.greeting_id`, written with the
-opening and never worked out again. The tree's openings the server sends carry the id on each card greeting not yet
-stored, so whatever the page stores from one keeps it:
-- the greeting stored with what goes under it, or with a bookmark;
-- the greeting edited in the chat, stored as its edited text;
-- an alternative added to it, and a duplicate of an opening that has one, which keep the id they were made from.
+A stored opening names the card greeting it came from in `extra.greeting_id`. The tree's openings the server sends
+carry the id on each card greeting not yet stored, so whatever the page stores from one keeps it: the greeting stored
+with what goes under it, an in-chat edit of it, an alternative added to it, a duplicate of an opening that has one.
 
-An opening the user wrote with no card greeting under it (their own first message) has none.
+Texts are compared only when a first message is written (stored, edited, imported or converted): one whose text is a
+card greeting's is that greeting, linked with its id and `extra.greeting_hash`, the hash of the text it had. Any other
+keeps the greeting it came from, unlinked. A user's own first message with a greeting's text is that greeting too.
 
-The openings are in card order: each card greeting, then the stored openings from it in the order they were stored,
-the one with the greeting's text first; after every card greeting, the openings from no greeting, and those from a
-deleted greeting, in the order they were stored. An edit to a card greeting leaves its openings with it; a delete
-leaves them as history, after the card's greetings.
+A card greeting is left out of the openings exactly when a stored opening links to it with its current text's hash:
+editing the card greeting offers its new text again beside the opening that had the old one.
 
-A chat imported from upstream, and the openings stored before this, name the card greeting whose text their first
-message has when they're imported or converted (`scripts/convert-greeting-choices.mjs`); this is the only time a
-text is matched.
+The openings are in card order: each card greeting, then the stored openings from it in the order they were stored;
+after every card greeting, the openings from no greeting, and those from a deleted greeting, in the order they were
+stored.
+
+Chats imported from upstream are linked as they are written. Openings stored before this are written again once by
+`scripts/convert-greeting-choices.mjs`.
 
 ## The greeting character info shows
 

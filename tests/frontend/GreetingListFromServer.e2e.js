@@ -370,14 +370,14 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(opening).toEqual({ mes: g[0], swipe_id: 0, swipes: [g[0], g[1], g[2]] });
     });
 
-    test('the shown greeting now has another opening\'s text: the chat shows that text, the opening once', async ({ page }) => {
+    test('the shown greeting now has another greeting\'s text: the chat stays on it, both greetings offered', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
         const opening = await chatAfterOtherSession(page, {
             name: `SlotCopy-${s}`, g, shown: 2, expected: g[0],
             otherSession: avatar => otherSessionOp(page, 'edit', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g[2]), text: g[0] }),
         });
-        expect(opening).toEqual({ mes: g[0], swipe_id: 0, swipes: [g[0], g[1], g[3]] });
+        expect(opening).toEqual({ mes: g[0], swipe_id: 2, swipes: [g[0], g[1], g[0], g[3]] });
     });
 
     test('several openings changed around the shown greeting: the chat shows that greeting, edited, where it now is', async ({ page }) => {
@@ -561,10 +561,10 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[2], y);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[1]]);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], g[1], y]);
         const opening = await openingSwipes(page);
-        expect(opening.nodeIds.map(isStoredId)).toEqual([false, true, false]);
-        expect(opening.swipe_id).toBe(1);
+        expect(opening.nodeIds.map(isStoredId)).toEqual([false, false, true]);
+        expect(opening.swipe_id).toBe(2);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y);
     });
 
@@ -585,8 +585,8 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[2], y);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[1]]);
-        expect(isStoredId((await openingSwipes(page)).nodeIds[1])).toBe(true);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], g[1], y]);
+        expect(isStoredId((await openingSwipes(page)).nodeIds[2])).toBe(true);
     });
 
     test('a greeting swiped to, edited in the chat, then the same greeting on the card edited to match: one alternative, shown at once, no hole', async ({ page }) => {
@@ -622,7 +622,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[2], `${y}\n`);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[1]]);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], g[1], y]);
     });
 
     test('list delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {

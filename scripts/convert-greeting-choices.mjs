@@ -18,8 +18,8 @@ const { setConfigFilePath } = await import('../src/util.js');
 setConfigFilePath(path.join(ROOT, 'default', 'config.yaml'));
 const { loadEngine } = await import('../engine/load.js');
 const { LibraryEngine } = await import('../src/library-engine.js');
-const { GREETINGS_BY_ID, STORE_DIR } = await import('../src/user-stores.js');
-const { convertGreetingChoices, convertOpeningOrigins } = await import('../src/greeting-choice-conversion.js');
+const { GREETINGS_BY_ID, GREETING_LINKS, STORE_DIR } = await import('../src/user-stores.js');
+const { convertGreetingChoices, convertOpeningLinks } = await import('../src/greeting-choice-conversion.js');
 const { ChatEngine } = await import('../src/chat-engine.js');
 const { libraryPeople } = await import('../src/chat-people.js');
 
@@ -29,24 +29,27 @@ const users = fs.readdirSync(dataRoot, { withFileTypes: true })
     .map(d => d.name);
 
 let converted = 0;
-let origins = 0;
+let linked = 0;
 let skipped = 0;
 for (const handle of users) {
     const dir = path.join(dataRoot, handle, STORE_DIR);
-    const marker = path.join(dir, GREETINGS_BY_ID);
-    if (fs.existsSync(marker)) {
+    const steps = [GREETINGS_BY_ID, GREETING_LINKS].filter(marker => !fs.existsSync(path.join(dir, marker)));
+    if (!steps.length) {
         skipped++;
         continue;
     }
     const lib = await LibraryEngine.open(engine, dir);
     try {
-        converted += await convertGreetingChoices(lib, handle);
+        if (steps.includes(GREETINGS_BY_ID)) {
+            converted += await convertGreetingChoices(lib, handle);
+            fs.writeFileSync(path.join(dir, GREETINGS_BY_ID), '');
+        }
         const chats = await ChatEngine.open(lib.store, libraryPeople(lib), await lib.nextIds());
-        origins += await convertOpeningOrigins(lib, chats, handle);
+        linked += await convertOpeningLinks(lib, chats, handle);
+        fs.writeFileSync(path.join(dir, GREETING_LINKS), '');
     } finally {
         await lib.close();
     }
-    fs.writeFileSync(marker, '');
 }
 
-console.log(`Users: ${users.length} (${skipped} already converted). Remembered greetings now kept by greeting id: ${converted}. Openings now naming their card greeting: ${origins}.`);
+console.log(`Users: ${users.length} (${skipped} already converted). Remembered greetings now kept by greeting id: ${converted}. Chats' first messages now linked to their card greeting: ${linked}.`);

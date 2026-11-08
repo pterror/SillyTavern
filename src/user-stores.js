@@ -10,6 +10,7 @@ import { markUpstreamImportPending } from './upstream-import.js';
 
 export const STORE_DIR = 'store';
 export const GREETINGS_BY_ID = 'greetings-by-id';
+export const GREETING_LINKS = 'greeting-links';
 const OLD_LIBRARY = 'character-metadata.sqlite';
 const OLD_CHATS = 'message-tree.sqlite';
 export const NAMED_THUMBNAILS = Object.freeze(['bg', 'avatar', 'persona'].map(d => path.join('thumbnails', d)));
@@ -58,8 +59,8 @@ export async function oldFormatLine(directories) {
 function oldFormatLineHere(directories) {
     const store = path.join(directories.root, STORE_DIR);
     if (fs.existsSync(store)) {
-        if (fs.existsSync(path.join(store, GREETINGS_BY_ID)) || fs.readdirSync(store).length === 0) return null;
-        return `${directories.root} remembers the greetings chats show by their place on the card: run node scripts/convert-greeting-choices.mjs --data-root <the folder holding it> once, with the server stopped`;
+        if ([GREETINGS_BY_ID, GREETING_LINKS].every(marker => fs.existsSync(path.join(store, marker))) || fs.readdirSync(store).length === 0) return null;
+        return `${directories.root} has chats whose greetings aren't kept by greeting id yet: run node scripts/convert-greeting-choices.mjs --data-root <the folder holding it> once, with the server stopped`;
     }
     const old = [OLD_LIBRARY, OLD_CHATS].filter(f => fs.existsSync(path.join(directories.root, f)));
     if (!old.length) return null;
@@ -116,6 +117,7 @@ async function openStore(root, handle) {
     try {
         if (made) {
             fs.writeFileSync(path.join(dir, GREETINGS_BY_ID), '');
+            fs.writeFileSync(path.join(dir, GREETING_LINKS), '');
             await lib.keepPairs();
             await lib.tags.markSeedPending();
             await markUpstreamImportPending(lib);
@@ -172,7 +174,10 @@ export function engineStoreHere(directories) {
         if (!fs.existsSync(dir)) madeHere.add(key);
     }
     const store = engineOf().Store.openSync(dir);
-    if (madeHere.has(key)) fs.writeFileSync(path.join(dir, GREETINGS_BY_ID), '');
+    if (madeHere.has(key)) {
+        fs.writeFileSync(path.join(dir, GREETINGS_BY_ID), '');
+        fs.writeFileSync(path.join(dir, GREETING_LINKS), '');
+    }
     openedHere.set(key, store);
     return store;
 }

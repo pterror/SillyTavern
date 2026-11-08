@@ -54,8 +54,9 @@ export async function applyPageWrites(response, chat, body, { waitForReply = fal
     if (opening && (nodeId === null || nodeId === undefined)) {
         const contents = [...opening.messages, ...(pushed?.messages ?? [])].map(storedForm);
         const refs = [...opening.refs, ...(pushed?.refs ?? [])];
-        if (!pushed && waitForReply && !body?.page_metadata) {
-            chat.opening = { refs: opening.refs, messages: contents, variables: null, record: stored => recordStored(response, stored) };
+        if (!pushed && waitForReply) {
+            const metadata = body?.page_metadata && typeof body.page_metadata === 'object' ? body.page_metadata : null;
+            chat.opening = { refs: opening.refs, messages: contents, variables: null, metadata, record: stored => recordStored(response, stored) };
             nodeId = null;
         } else {
             const made = await store.chats.appendMessages({
@@ -81,7 +82,7 @@ export async function applyPageWrites(response, chat, body, { waitForReply = fal
         pushedIds = appended.node_ids;
     }
 
-    if (body?.page_metadata && typeof body.page_metadata === 'object') {
+    if (body?.page_metadata && typeof body.page_metadata === 'object' && !chat.opening) {
         /** @type {PageMetadata} */
         const metadata = body.page_metadata;
         const at = typeof nodeId === 'string' && nodeId !== '' ? nodeId : null;

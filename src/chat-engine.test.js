@@ -323,9 +323,9 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 }
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
-    test(`${kind}: a tree's openings follow their card greetings; it shows the one the session landed on, else the greeting it chose by id, else the default`, async () => {
+    test(`${kind}: a tree's openings follow their card greetings, linked when written; it shows where the session landed, else its chosen greeting, else the default`, async () => {
         const store = await engine.Store.open(path.join(root, `engine-shown-opening-${kind}`));
-        const chats = await ChatEngine.open(store, ivyPeople);
+        const chats = await ChatEngine.open(store, { ...ivyPeople, greetings: async () => [{ id: 5, text: 'Greeting 1' }, { id: 7, text: 'Greeting 2' }, { id: 9, text: 'Greeting 3' }] });
         const t = ivy.id;
         const g = n => ({ name: 'Ivy', is_user: false, is_system: false, send_date: `2025-10-10T10:0${n}:00.000Z`, mes: `Greeting ${n}`, extra: {} });
         const cardOf = (texts, ids, defaultId, defaultEpoch = 0) => ({ greetings: texts.map((mes, i) => ({ ...g(i), mes })), ids, defaultId, defaultEpoch });
@@ -372,6 +372,10 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(grouped.alternatives.map(a => a.node_id === null), [false, true, false, true, false, false, false]);
         const unstored = await chats.openingAlternatives({ tree: t, actor: { user: actor.user }, range: { unstored: true }, card });
         assert.deepEqual(unstored.alternatives.map(a => [a.index, a.mes]), [[1, 'Greeting 2'], [3, 'Greeting 3']]);
+        const ones = grouped.alternatives.filter(a => a.mes === 'Greeting 1');
+        assert.equal(ones.length, 1, 'a stored opening with the greeting\'s text is that greeting, once');
+        assert.equal(typeof ones[0].extra.greeting_hash, 'number');
+        assert.equal(grouped.alternatives.find(a => a.mes === 'Greeting 3, edited in the chat').extra.greeting_hash, undefined);
 
         await store.close();
     });

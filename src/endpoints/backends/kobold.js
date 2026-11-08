@@ -229,7 +229,7 @@ export const generateKobold = withGenerationStop(async function (request, respon
             if (!userNodeId) return;
             replyAnchorNodeId = userNodeId;
         }
-        await storeMacroVariables(response_generate, chat, nodeId, built.macroVariables);
+        await storeMacroVariables(response_generate, chat, nodeId, built.macroVariables, { withReply: !skipPersistence });
         const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
         if (!skipPersistence) {
             pendingAssistantPersist = {

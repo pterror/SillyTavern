@@ -4,7 +4,6 @@ import path from 'node:path';
 import writeFileAtomic from 'write-file-atomic';
 
 import { parseChatFile } from './chat-header.js';
-import { cardGreetingsOf } from './opening-state.js';
 import { newSessionKey } from './chat-engine.js';
 import { normalizeGroupRecord, storedGroup } from './group-id.js';
 import { TYPE } from './library-engine.js';
@@ -122,9 +121,8 @@ async function runImport(store, directories) {
      * @param {import('./chat-codec.js').Speaker | null} treeSpeaker
      * @param {string} name
      * @param {'chats' | 'groupChats'} kind
-     * @param {import('./chat-engine.js').CardGreetings} [card]
      */
-    const importChatFile = async (file, tree, treeSpeaker, name, kind, card) => {
+    const importChatFile = async (file, tree, treeSpeaker, name, kind) => {
         const where = rel(file);
         if (map.chats[where]) {
             report.present.push({ file: where, why: `imported before, as ${map.chats[where]}` });
@@ -143,7 +141,6 @@ async function runImport(store, directories) {
         const header = /** @type {Record<string, any> | null} */ (parsed.header);
         const imported = await store.chats.importChat({
             tree, treeSpeaker, name, messages: /** @type {Record<string, any>[]} */ (parsed.messages), metadata: header?.chat_metadata, actor,
-            ...(card ? { card } : {}),
         });
         if (!imported.ok) {
             report.notImported.push({ file: where, why: `the chat couldn't be stored (${imported.reason})` });
@@ -165,10 +162,9 @@ async function runImport(store, directories) {
             continue;
         }
         const treeSpeaker = (await store.people.byAvatar([avatar])).get(avatar) ?? null;
-        const card = await cardGreetingsOf(store, avatar);
         for (const file of files) {
             try {
-                await importChatFile(file, tree, treeSpeaker, path.parse(file).name, 'chats', card);
+                await importChatFile(file, tree, treeSpeaker, path.parse(file).name, 'chats');
             } catch (err) {
                 report.notImported.push({ file: rel(file), why: messageOf(err) });
             }

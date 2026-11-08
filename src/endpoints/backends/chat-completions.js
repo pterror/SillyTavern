@@ -3182,7 +3182,7 @@ export const generateChatCompletion = withGenerationStop(async function (request
                 if (!userNodeId) return;
                 replyAnchorNodeId = userNodeId;
             }
-            await storeMacroVariables(response, chat, nodeId, built.macroVariables);
+            await storeMacroVariables(response, chat, nodeId, built.macroVariables, { withReply: !skipPersistence });
 
             const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
             if (!skipPersistence) {

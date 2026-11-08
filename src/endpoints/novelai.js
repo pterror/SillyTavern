@@ -359,7 +359,7 @@ export const generateNovel = withGenerationStop(async function (req, res) {
             if (!userNodeId) return;
             replyAnchorNodeId = userNodeId;
         }
-        await storeMacroVariables(res, chat, nodeId, built.macroVariables);
+        await storeMacroVariables(res, chat, nodeId, built.macroVariables, { withReply: !skipPersistence });
         const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
         if (!skipPersistence) {
             pendingAssistantPersist = {

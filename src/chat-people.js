@@ -1,5 +1,6 @@
 import { FIELD, NAME_HISTORY, TYPE, renamesOf } from './library-codes.js';
 import { storedValues } from './entity-values.js';
+import { greetingModelOf } from './greeting-items.js';
 
 const ONLY = { fields: [FIELD.name], lists: [NAME_HISTORY] };
 
@@ -55,6 +56,12 @@ export function libraryPeople(lib) {
                 out.set(ids[i], { group: e.type === TYPE.group, name: typeof name === 'string' ? name : '', created: e.type === TYPE.group ? e.added : (e.createMs ?? e.added) });
             });
             return out;
+        },
+        /** @param {bigint} tree */
+        async greetings(tree) {
+            const [e] = await lib.entities([tree]);
+            if (!e || e.type !== TYPE.character) return [];
+            return greetingModelOf(e).greetings.filter(g => g.text !== '');
         },
         /** @type {import('./chat-engine.js').Books} */
         books: {

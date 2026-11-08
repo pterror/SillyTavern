@@ -71,20 +71,57 @@ test('a store from before greeting ids is refused until the conversion script ha
     }
 });
 
-test('a stored first message with a card greeting\'s text is given that greeting, once; one the user wrote is not', async () => {
-    const { lib, chats } = user.store;
-    const { convertOpeningOrigins } = await import('../src/greeting-choice-conversion.js');
+test('every stored first message with a card greeting\'s text is linked to it, once; any other keeps where it came from, unlinked', async () => {
+    const { lib } = user.store;
+    const { convertOpeningLinks } = await import('../src/greeting-choice-conversion.js');
+    const { hashGreetingText } = await import('../src/greeting-ops.js');
     await lib.writeCard(user.directories, 'r.png', JSON.stringify({
         spec: 'chara_card_v2', spec_version: '2.0', name: 'R',
         data: { name: 'R', description: '', first_mes: 'Hello', alternate_greetings: ['Bye'], extensions: {} },
     }));
     const [tree] = await user.store.people.trees([{ avatar: 'r.png' }]);
-    for (const content of [{ name: 'You', is_user: true, mes: 'Hello', extra: {} }, { name: 'R', is_user: false, mes: ' Bye ', extra: {} }, { name: 'R', is_user: false, mes: 'Mine', extra: {} }]) {
-        await chats.appendMessages({ tree, treeSpeaker: null, after: null, contents: [content], actor: { user: 'u' } });
-    }
-    expect(await convertOpeningOrigins(lib, chats, 'u')).toBe(1);
     const { greetings } = await lib.greetingModel('r.png');
-    const origins = (await chats.openings(tree)).map(o => [o.message.mes, o.message.extra?.greeting_id ?? null]);
-    expect(origins).toEqual([['Hello', null], [' Bye ', greetings[1].id], ['Mine', null]]);
-    expect(await convertOpeningOrigins(lib, chats, 'u')).toBe(0);
+    const old = [
+        { name: 'You', is_user: true, mes: 'Hello', extra: {} },
+        { name: 'R', is_user: false, mes: ' Bye ', extra: {} },
+        { name: 'R', is_user: false, mes: 'Mine', extra: { greeting_id: greetings[0].id } },
+    ];
+    const { ChatEngine } = await import('../src/chat-engine.js');
+    const { libraryPeople } = await import('../src/chat-people.js');
+    const before = await ChatEngine.open(lib.store, { ...user.store.people, greetings: undefined }, await lib.nextIds());
+    for (const content of old) {
+        await before.appendMessages({ tree, treeSpeaker: null, after: null, contents: [content], actor: { user: 'u' } });
+    }
+    const links = async (/** @type {any} */ engine) => (await engine.openings(tree)).map(o => [o.message.mes, o.message.extra?.greeting_id ?? null, o.message.extra?.greeting_hash ?? null]);
+    expect(await links(before)).toEqual([['Hello', null, null], [' Bye ', null, null], ['Mine', greetings[0].id, null]]);
+
+    const after = await ChatEngine.open(lib.store, libraryPeople(lib), await lib.nextIds());
+    expect(await convertOpeningLinks(lib, after, 'u')).toBe(2);
+    expect(await links(after)).toEqual([['Hello', greetings[0].id, hashGreetingText('Hello')], [' Bye ', greetings[1].id, hashGreetingText('Bye')], ['Mine', greetings[0].id, null]]);
+    expect(await convertOpeningLinks(lib, after, 'u')).toBe(0);
+});
+
+test('a store converted by the first version of the script gets the links when it runs again, and then opens', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const { execFileSync } = await import('node:child_process');
+    const stores = await import('../src/user-stores.js');
+    const { LibraryEngine } = await import('../src/library-engine.js');
+    const { loadEngine } = await import('../engine/load.js');
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'st-greeting-links-script-'));
+    try {
+        const root = path.join(dataRoot, 'u');
+        const dir = path.join(root, stores.STORE_DIR);
+        const lib = await LibraryEngine.open(loadEngine().binding, dir);
+        await lib.close();
+        fs.writeFileSync(path.join(dir, stores.GREETINGS_BY_ID), '');
+        expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-choices.mjs');
+        const run = () => execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-choices.mjs'), '--data-root', dataRoot], { encoding: 'utf8' });
+        expect(run()).toContain('Users: 1 (0 already converted)');
+        expect(fs.existsSync(path.join(dir, stores.GREETING_LINKS))).toBe(true);
+        expect(await stores.oldFormatLine({ root })).toBeNull();
+        expect(run()).toContain('Users: 1 (1 already converted)');
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
 });

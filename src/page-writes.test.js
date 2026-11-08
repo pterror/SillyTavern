@@ -143,6 +143,33 @@ test('a group chat with no stored greetings: its members\' greetings are stored 
     assert.equal(response.locals.storedMessages[2].integrity, session);
 });
 
+test('a group\'s greetings no one has answered wait for what goes under them, and are stored with it in one write', async () => {
+    const group = '1700000000001';
+    const session = newSessionKey();
+    const chat = await chatContext(fakeRequest(session), { group });
+    const response = fakeResponse();
+    const commits = [];
+    const listen = (/** @type {any[]} */ records) => commits.push(records.filter(r => r.kind === 'messageAppend').length);
+    user.store.events.on('commit', listen);
+    try {
+        const written = await applyPageWrites(response, chat, {
+            node_id: null,
+            opening: { refs: ['w1', 'w2'], messages: [{ name: 'Alice', is_user: false, mes: 'Ahoy again.' }, { name: 'Bob', is_user: false, mes: 'Welcome again.' }] },
+            page_metadata: { ref: 'wm', set: {}, unset: [] },
+        }, { waitForReply: true });
+        assert.equal(written.nodeId, null);
+        assert.equal(commits.filter(n => n > 0).length, 0, 'nothing is stored before what goes under them');
+        const { storeUserMessage } = await import('./stored-messages.js');
+        const userNode = await storeUserMessage(response, { chat, anchorNodeId: null, message: { name: 'Tester', is_user: true, mes: 'Hello all.', extra: {} }, ref: 'wu' });
+        assert.deepEqual(commits.filter(n => n > 0), [3], 'both greetings and the user message in one write');
+        assert.deepEqual((await pathTo({ group }, userNode)).messages.map(m => m.mes), ['Ahoy again.', 'Welcome again.', 'Hello all.']);
+        assert.deepEqual(response.locals.storedMessages.map(s => s.ref), ['w1', 'w2', 'wm', 'wu']);
+        assert.equal(response.locals.storedMessages[2].integrity, session);
+    } finally {
+        user.store.events.off('commit', listen);
+    }
+});
+
 test('messages with no stored message to follow are refused, and nothing is generated', async () => {
     const avatar = `pw-none-${randomUUID()}.png`;
     await writeCharacter(avatar, 'Rex');
@@ -363,7 +390,7 @@ test('under a greeting no one has answered, a send stores the greeting with the 
     assert.equal(openings.openings.openings.alternatives[0].node_id, reply.stored.find(s => s.ref === 'o').node_id);
 });
 
-test('under a greeting no one has answered, a reply with nothing sent is stored with the greeting; a quiet one stores nothing', async (t) => {
+test('under a greeting no one has answered, a reply with nothing sent is stored with the greeting; a quiet one stores nothing unless it sets a chat variable', async (t) => {
     const avatar = `pw-reply-write-${randomUUID()}.png`;
     await writeCharacter(avatar, 'Rex');
     const generate = await generateServer(t, 'I speak first.');
@@ -376,6 +403,7 @@ test('under a greeting no one has answered, a reply with nothing sent is stored 
     const tree = await treeOf(user.store, { avatar });
     assert.equal((await user.store.chats.openings(tree)).length, 0, 'a quiet generation stores no opening');
 
+
     const watch = watchAppends();
     const answer = await generate.post({
         owner_id: avatar, character_avatar: avatar, type: 'normal', stream: false, node_id: null, opening,
@@ -386,4 +414,18 @@ test('under a greeting no one has answered, a reply with nothing sent is stored 
     assert.deepEqual(watch.appends(), [2], 'the greeting and the reply in one write');
     assert.deepEqual((await pathTo({ avatar }, reply.assistant_node_id)).messages.map(m => m.mes), ['Hi.', 'I speak first.']);
     assert.ok(reply.stored.some(s => s.ref === 'openings'));
+
+    const other = `pw-quiet-vars-${randomUUID()}.png`;
+    await writeCharacter(other, 'Rex');
+    const marked = await generate.post({
+        owner_id: other, character_avatar: other, type: 'quiet', stream: false, node_id: null, opening, quiet_prompt: '{{setvar::mood::calm}}One word.',
+    }, { [SESSION_HEADER]: newSessionKey() });
+    const markedReply = await marked.json();
+    assert.equal(marked.status, 200, JSON.stringify(markedReply));
+    const otherTree = await treeOf(user.store, { avatar: other });
+    const kept = await user.store.chats.openings(otherTree);
+    assert.deepEqual(kept.map(o => o.message.mes), ['Hi.'], 'a quiet generation that sets a chat variable stores the greeting with it');
+    const read = await user.store.chats.stateAt({ tree: otherTree, at: user.store.chats.externalId(kept[0].stored), session: null });
+    assert.equal(/** @type {any} */ (read).state.variables.mood, 'calm');
+    assert.ok(markedReply.stored.some(s => s.ref === 'o'));
 });

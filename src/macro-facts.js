@@ -1,3 +1,4 @@
+import { appendUnderStart } from './pending-opening.js';
 import { baselineOf, metadataChanges } from '../public/scripts/state-sync.js';
 import { recordStored } from './stored-messages.js';
 
@@ -108,12 +109,14 @@ export function macroVariableChanges(chatMetadata, globalVariables, before) {
  * @param {import('./chat-request.js').ChatContext} chat
  * @param {string|null|undefined} at
  * @param {{ chat: VariableChanges | null, global: VariableChanges | null }} changes
+ * @param {{ withReply?: boolean }} [options] withReply: a reply will be stored, and a waiting opening with it
  */
-export async function storeMacroVariables(response, chat, at, { chat: chatVariables, global }) {
+export async function storeMacroVariables(response, chat, at, { chat: chatVariables, global }, { withReply = true } = {}) {
     if (global) recordStored(response, { ref: 'macro-global-variables', node_id: '', global_variables: global });
     if (!chatVariables) return;
     if (!at && chat.opening) {
         chat.opening.variables = chatVariables;
+        if (!withReply) await appendUnderStart(chat, { contents: [] });
         return;
     }
     at ||= chat.openedAt;

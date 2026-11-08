@@ -561,7 +561,7 @@ async function saveCompatChat(request, response, chat, name, chatData) {
     const isOwn = name === '' || name === own || (found !== null && await isOwnChat(chat, found));
 
     if (!isOwn && found === null) {
-        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages, metadata, actor, ...await importedCard(chat) });
+        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages, metadata, actor });
         if (!imported.ok) return { status: 400, body: { error: imported.reason } };
         if (!unique) await chats.goTo({ tree: chat.tree, node_id: imported.node_ids[imported.node_ids.length - 1] ?? null, actor });
         chat.session.answer(response, { moved: !unique });
@@ -585,7 +585,7 @@ async function saveCompatChat(request, response, chat, name, chatData) {
         : found !== null && 'bookmark' in found ? await chats.bookmarkChatId(chat.tree, found.bookmark) : await chats.conversationName(String(found?.session), String(found?.session), chat.tree);
 
     if (at === null && isOwn && messages.length > 0) {
-        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name: null, messages, metadata, actor, bookmark: false, ...await importedCard(chat) });
+        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name: null, messages, metadata, actor, bookmark: false });
         if (!imported.ok) return { status: 400, body: { error: imported.reason } };
         const last = imported.node_ids.length ? imported.node_ids[imported.node_ids.length - 1] : null;
         await chats.goTo({ tree: chat.tree, node_id: last, actor });
@@ -728,14 +728,6 @@ async function greetingShownOf(chat, avatar) {
     const { greetings } = await chat.store.lib.greetingModel(avatar);
     const position = greetings.findIndex(g => g.id === id);
     return position < 0 ? null : { position, hash: hashGreetingText(greetings[position].text) };
-}
-
-/**
- * @param {import('../chat-request.js').ChatContext} chat
- * @returns {Promise<{ card?: import('../chat-engine.js').CardGreetings }>}
- */
-async function importedCard(chat) {
-    return chat.avatar === null ? {} : { card: await cardGreetingsOf(chat.store, chat.avatar) };
 }
 
 /**
@@ -1336,7 +1328,7 @@ async function importChatText(chat, chatText, name) {
     const lines = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
     const header = lines.length && !('mes' in lines[0]) ? lines.shift() : null;
     const imported = await chat.store.chats.importChat({
-        tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages: lines, metadata: header?.chat_metadata, actor: chat.session.actor(), ...await importedCard(chat),
+        tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages: lines, metadata: header?.chat_metadata, actor: chat.session.actor(),
     });
     return imported.ok ? chat.store.chats.bookmarkChatId(chat.tree, /** @type {bigint} */ (imported.bookmark)) : null;
 }

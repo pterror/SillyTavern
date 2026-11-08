@@ -195,3 +195,32 @@ test('a greeting that a stored opening holds is history: changing or deleting th
     expect(deleted.body.openings.alternatives.map((/** @type {any} */ a) => a.mes)).toEqual(['Twice', 'Once']);
     expect(shownText(deleted.body)).toBe('Once');
 });
+
+test('an opening and a card greeting with the same text are one entry: linked when either is written with it', async () => {
+    const session = '0190a1b2-0000-7000-8000-0000000000f3';
+    expect((await post('create', { ch_name: 'Twins', first_mes: 'Zero', file_name: 'Twins' }, session)).status).toBe(200);
+    await post('greetings/add', { avatar_url: 'Twins.png', append: true, text: 'One' }, session);
+    const two = await post('greetings/add', { avatar_url: 'Twins.png', append: true, text: 'Two' }, session);
+    const { chats, people, lib } = user.store;
+    const [tree] = await people.trees([{ avatar: 'Twins.png' }]);
+    const { storedForm } = await import('../src/chat-engine.js');
+    const before = await lib.greetingModel('Twins.png');
+    await chats.appendMessages({
+        tree, treeSpeaker: null, after: null,
+        contents: [storedForm({ name: 'You', is_user: true, mes: 'Shared', extra: { greeting_id: before.greetings[0].id }, send_date: Date.now() })],
+        actor: { user: user.user.profile.handle, session },
+    });
+    const edited = await post('greetings/edit', { avatar_url: 'Twins.png', position: 2, expected_hash: two.body.hashes[2], text: 'Shared' }, session);
+    const texts = edited.body.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.node_id !== null]);
+    expect(texts).toEqual([['Zero', false], ['One', false], ['Shared', true]]);
+
+    const mine = await chats.appendMessages({
+        tree, treeSpeaker: null, after: null,
+        contents: [storedForm({ name: 'You', is_user: true, mes: 'One', extra: {}, send_date: Date.now() })],
+        actor: { user: user.user.profile.handle, session },
+    });
+    expect(mine.ok).toBe(true);
+    const { openingState } = await import('../src/opening-state.js');
+    const now = await openingState({ store: user.store, tree, actor: { user: user.user.profile.handle, session }, avatar: 'Twins.png' });
+    expect(now.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.node_id !== null])).toEqual([['Zero', false], ['One', true], ['Shared', true]]);
+});

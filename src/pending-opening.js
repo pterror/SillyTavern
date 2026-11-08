@@ -6,6 +6,7 @@ import { openingState } from './opening-state.js';
  * @property {string[]} refs
  * @property {Record<string, any>[]} messages
  * @property {{ set?: Record<string, unknown>, unset?: string[] } | null} variables the chat variables the prompt's macros changed, stored on the opening
+ * @property {{ ref: string, set?: Record<string, unknown>, unset?: string[], variables?: { set?: Record<string, unknown>, unset?: string[] } } | null} [metadata] the page's chat metadata for the opening
  * @property {(stored: Record<string, unknown>) => void} record
  */
 
@@ -21,6 +22,18 @@ function variableOps(variables, state) {
     for (const key of variables.unset ?? []) ops.push({ key, variable: true, value: undefined });
     if (set.length > 0 && !state.has('k\u0000variables')) ops.unshift({ key: 'variables', value: {} });
     return ops;
+}
+
+/**
+ * @param {{ set?: Record<string, unknown>, unset?: string[], variables?: { set?: Record<string, unknown>, unset?: string[] } } | null} metadata
+ * @param {Map<string, string>} state
+ * @returns {import('./chat-engine.js').StateOp[]}
+ */
+function metadataOps(metadata, state) {
+    if (!metadata) return [];
+    const ops = Object.entries(metadata.set ?? {}).filter(([, v]) => v !== undefined).map(([key, value]) => ({ key, value }));
+    for (const key of metadata.unset ?? []) ops.push({ key, value: undefined });
+    return [...ops, ...variableOps(metadata.variables ?? null, state)];
 }
 
 /**
@@ -41,7 +54,7 @@ export async function appendUnderStart(chat, { contents, sendKeys = [], changes 
     }
     const openingContents = replaced ? [...pending.messages.slice(0, -1), storedForm(replaced)] : pending.messages;
     const state = await store.chats.stateMap(tree, null);
-    const openingChanges = openingContents.map((_, i) => (i === openingContents.length - 1 ? variableOps(pending.variables, state) : null));
+    const openingChanges = openingContents.map((_, i) => (i === openingContents.length - 1 ? [...metadataOps(pending.metadata ?? null, state), ...variableOps(pending.variables, state)] : null));
     const made = await store.chats.appendMessages({
         tree, treeSpeaker, after: null,
         contents: [...openingContents, ...contents],
@@ -56,6 +69,7 @@ export async function appendUnderStart(chat, { contents, sendKeys = [], changes 
     chat.openedAt = openingIds[openingIds.length - 1];
     openingIds.forEach((id, i) => pending.record({ ref: pending.refs[i], node_id: id }));
     if (pending.variables) pending.record({ ref: 'macro-variables', node_id: openingIds[openingIds.length - 1], variables: pending.variables });
+    if (pending.metadata) pending.record({ ref: pending.metadata.ref, node_id: openingIds[openingIds.length - 1], integrity: session.actor().session });
     if (chat.avatar !== null) {
         const openings = await openingState({ store, tree, actor: session.reader(), avatar: chat.avatar });
         pending.record({ ref: 'openings', node_id: '', avatar: chat.avatar, openings });

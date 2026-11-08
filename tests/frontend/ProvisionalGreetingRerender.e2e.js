@@ -406,8 +406,8 @@ test.describe('provisional greeting follows greeting saves', () => {
         const after = await openingState(page);
         expect(after.length).toBe(1);
         expect(after.mes).toBe(stored);
-        expect(after.swipe_id).toBe(2);
-        expect(after.swipes).toEqual([g0, b, stored]);
+        expect(after.swipe_id).toBe(1);
+        expect(after.swipes).toEqual([g0, stored, b]);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(stored);
 
         expect(requests.writes).toEqual([]);
@@ -444,16 +444,17 @@ test.describe('provisional greeting follows greeting saves', () => {
         const after = await openingState(page);
         expect(after.length).toBe(1);
         expect(after.mes).toBe(target);
-        expect(after.swipe_id).toBe(31);
+        expect(after.swipe_id).toBe(1);
         expect(after.swipes).toHaveLength(61);
-        expect(after.swipes[31]).toBe(target);
+        expect(after.swipes[1]).toBe(target);
         expect(after.swipes[0]).toBe(g0);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(target);
 
         expect(requests.writes).toEqual([]);
         expect(requests.openingBodies).toEqual([]);
         const storedAfter = await fetchOpenings(page, avatar);
-        expect(storedAfter.alternatives.filter(x => x.node_id)).toEqual(storedBefore.alternatives.filter(x => x.node_id));
+        const rows = (/** @type {any} */ answer) => answer.alternatives.filter(x => x.node_id).map(x => `${x.node_id} ${x.mes}`).sort();
+        expect(rows(storedAfter)).toEqual(rows(storedBefore));
     });
 });
 
