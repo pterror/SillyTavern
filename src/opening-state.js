@@ -1,24 +1,31 @@
-import { cardToGreetingsModel } from './greeting-list.js';
+import { FIELD, TYPE } from './library-codes.js';
+import { storedValues } from './entity-values.js';
+import { greetingModelOf } from './greeting-items.js';
+
+/**
+ * @typedef {import('./chat-engine.js').CardGreetings & { texts: string[], defaultIndex: number | null, name: string }} CardGreetingsRead
+ */
 
 /**
  * @param {import('./user-stores.js').UserStore} store
  * @param {string} avatar
- * @returns {Promise<{ greetings: Record<string, any>[], texts: string[], defaultIndex: number|null, defaultText: string|null, name: string } | null>}
+ * @returns {Promise<CardGreetingsRead | null>}
  */
 export async function readCardGreetings(store, avatar) {
     try {
-        const [character] = /** @type {any[]} */ (await store.lib.cards([avatar]));
-        if (!character) return null;
-        const { greetings, defaultIndex } = cardToGreetingsModel(character);
-        const speaker = character?.name ?? character?.data?.name ?? '';
+        const entity = await store.lib.entity(TYPE.character, avatar);
+        if (!entity) return null;
+        const model = greetingModelOf(entity);
+        const speaker = storedValues(entity).values.get(FIELD.name)?.text ?? '';
         const sendDate = Date.now();
+        const shown = model.greetings.filter(g => g.text.length > 0);
+        const defaultIndex = model.greetings.findIndex(g => g.id === model.defaultId);
         return {
-            greetings: greetings
-                .filter(text => typeof text === 'string' && text.length > 0)
-                .map(text => ({ name: speaker, is_user: false, is_system: false, send_date: sendDate, mes: text, extra: {} })),
-            texts: greetings,
-            defaultIndex,
-            defaultText: defaultIndex === null ? null : greetings[defaultIndex] ?? null,
+            greetings: shown.map(g => ({ name: speaker, is_user: false, is_system: false, send_date: sendDate, mes: g.text, extra: {} })),
+            ids: shown.map(g => g.id),
+            defaultId: model.defaultId,
+            texts: model.greetings.map(g => g.text),
+            defaultIndex: defaultIndex < 0 ? null : defaultIndex,
             name: speaker,
         };
     } catch (error) {
@@ -30,10 +37,10 @@ export async function readCardGreetings(store, avatar) {
 /**
  * @param {import('./user-stores.js').UserStore} store
  * @param {string} avatar
- * @returns {Promise<{ greetings: Record<string, any>[], texts: string[], defaultText: string|null }>}
+ * @returns {Promise<CardGreetingsRead>}
  */
 export async function cardGreetingsOf(store, avatar) {
-    return (await readCardGreetings(store, avatar)) ?? { greetings: [], texts: [], defaultText: null };
+    return (await readCardGreetings(store, avatar)) ?? { greetings: [], ids: [], defaultId: null, texts: [], defaultIndex: null, name: '' };
 }
 
 /**
@@ -41,7 +48,7 @@ export async function cardGreetingsOf(store, avatar) {
  */
 export async function openingState({ store, tree, actor, avatar }) {
     const card = await cardGreetingsOf(store, avatar);
-    const read = (/** @type {{ offset?: number, limit?: number }} */ range) => store.chats.openingAlternatives({ tree, actor, range, cardGreetings: card.greetings, cardDefault: card.defaultText });
+    const read = (/** @type {{ offset?: number, limit?: number }} */ range) => store.chats.openingAlternatives({ tree, actor, range, card });
     const openings = await read({});
     const cardOnly = openings.total - openings.stored;
     const cardOpenings = cardOnly > 0 ? await read({ offset: openings.stored, limit: cardOnly }) : null;

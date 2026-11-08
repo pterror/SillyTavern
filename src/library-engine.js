@@ -7,6 +7,7 @@ import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords, withoutStatements } from './entity-values.js';
+import { GREETING_LIST, greetingModelOf, greetingRecords, greetingTextsOf, matchedGreetings } from './greeting-items.js';
 import { SPACE, actorIds } from './actor-ids.js';
 import { LINKS, linkListRecords, storedLinks } from './character-links.js';
 import { FIELD, HASH, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
@@ -154,6 +155,14 @@ export function cardValues(parts) {
     }
     if (parts.tags.length > 0) lists.set(LIST.tags, [...parts.tags].sort((a, b) => a.position - b.position).map(t => t.name));
     return { values, lists };
+}
+
+/**
+ * @param {StoredEntity | null} entity
+ * @returns {StoredEntity | null}
+ */
+function withoutGreetingItems(entity) {
+    return entity && { ...entity, items: entity.items.filter(i => i.list !== GREETING_LIST) };
 }
 
 /**
@@ -482,9 +491,10 @@ export class LibraryEngine {
      * @param {boolean} [options.fav]
      * @param {{ from: string, pastChats: boolean, at?: number }} [options.renamed]
      * @param {bigint[]} [options.tags]
+     * @param {import('./greeting-items.js').GreetingModel} [options.greetings] the card's greetings with their ids, in the card's order
      * @returns {Promise<{ id: bigint, records: number, unreachedLoops: import('./world-info-engine.js').UnreachedLoop[] }>}
      */
-    writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, animatedHash, dateAdded = Date.now(), fav, renamed, tags = [] } = {}) {
+    writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, animatedHash, dateAdded = Date.now(), fav, renamed, tags = [], greetings } = {}) {
         return this.serialized(TYPE.character, avatar, async () => {
             const card = JSON.parse(cardJson);
             const stored = await this.entity(TYPE.character, avatar);
@@ -518,7 +528,16 @@ export class LibraryEngine {
                     setAtPath(identityCard, 'data.extensions.world', name);
                 }
             }
-            records.push(...valueRecords(id, withoutStatements(stored), next));
+            const written = greetingTextsOf(parts);
+            const model = greetings ?? matchedGreetings(greetingModelOf(stored), written);
+            if (model.greetings.length !== written.texts.length || model.greetings.some((g, i) => g.text !== written.texts[i]) || (model.defaultId === null) !== (written.defaultIndex === null)) {
+                throw new Error(`writeCard(): the greetings given for ${avatar} aren't the card's`);
+            }
+            const byId = greetingRecords(id, stored, model);
+            next.lists.delete(GREETING_LIST);
+            for (const [field, value] of byId.values) next.values.set(field, value);
+            records.push(...valueRecords(id, withoutGreetingItems(withoutStatements(stored)), next));
+            records.push(...byId.records);
             const { getCharaCardV2 } = await import('./character-card-normalize.js');
             const normalized = getCharaCardV2(JSON.parse(cardJson), directories, false);
             const size = calculateDataSize(normalized.data ?? {});
@@ -1127,6 +1146,14 @@ export class LibraryEngine {
         const children = await this.store.chatRead('children', { tree, limit: 1 });
         if (children.ids.length > 0) return true;
         return (await this.store.chatRead('treeBookmarks', { tree, limit: 1 })).length > 0;
+    }
+
+    /**
+     * @param {string} avatar
+     * @returns {Promise<import('./greeting-items.js').GreetingModel>}
+     */
+    async greetingModel(avatar) {
+        return greetingModelOf(await this.entity(TYPE.character, avatar));
     }
 
     /**

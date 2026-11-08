@@ -330,7 +330,7 @@ const alternativesPorts = {
         if ('opening' in target) {
             if (!chat) return null;
             const card = chat.avatar ? await readCardGreetings(chat.store, chat.avatar) : null;
-            const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, cardGreetings: card?.greetings ?? [], cardDefault: card?.defaultText ?? null });
+            const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, ...(card ? { card } : {}) });
             return {
                 alternatives: openings.alternatives.map(alternativeOf),
                 current: openings.total > 0 ? openings.default_index : null,
@@ -342,7 +342,7 @@ const alternativesPorts = {
         const card = await readCardGreetings(store, target.greetings);
         if (!card) return null;
         const inChat = chat && chat.avatar === target.greetings
-            ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, cardGreetings: card.greetings, cardDefault: card.defaultText })
+            ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, card })
             : null;
         return {
             alternatives: card.texts.map(text => ({ nodeId: null, text, name: card.name, isUser: false, isSystem: false, date: null })),

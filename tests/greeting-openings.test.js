@@ -101,7 +101,7 @@ test('a greeting change answers with the character tree\'s openings, and a tab o
         expect((await post('create', { ch_name: 'Greeter', first_mes: '', file_name: 'Greeter' }, session)).status).toBe(200);
         const { chats, people } = user.store;
         const [tree] = await people.trees([{ avatar: 'Greeter.png' }]);
-        await chats.chooseCardGreeting({ tree, index: null, actor: { user: user.user.profile.handle, session } });
+        await chats.chooseCardGreeting({ tree, greetingId: null, actor: { user: user.user.profile.handle, session } });
 
         const added = await post('greetings/add', { avatar_url: 'Greeter.png', position: 0, expected_length: 0, text: 'Hi' }, session);
         expect(added.status).toBe(200);
@@ -130,7 +130,8 @@ test('a card greeting the session chose stays shown through the session\'s own c
     expect(hey.body.greetings).toEqual(['Hi', 'Yo', 'Hey']);
     const { chats, people } = user.store;
     const [tree] = await people.trees([{ avatar: 'Chooser.png' }]);
-    await chats.chooseCardGreeting({ tree, index: 2, actor: { user: user.user.profile.handle, session } });
+    const { greetings } = await user.store.lib.greetingModel('Chooser.png');
+    await chats.chooseCardGreeting({ tree, greetingId: greetings[2].id, actor: { user: user.user.profile.handle, session } });
 
     const deleted = await post('greetings/delete', { avatar_url: 'Chooser.png', position: 0, expected_hash: yo.body.hashes[0] }, session);
     expect(deleted.body.greetings).toEqual(['Yo', 'Hey']);

@@ -106,7 +106,7 @@ export async function buildStandardUser({ directories, store, handle = 'u' }) {
     const bobChat = await storeConversation(bob, [header({}), msg('Bob', false, 'Bob here.'), msg('You', true, 'Hi Bob.')]);
     const bobEnd = bobChat.assigned_node_ids[bobChat.assigned_node_ids.length - 1].node_id;
     ok(await chats.createBookmark({ ...bob, node_id: bobEnd, name: 'Bob - Checkpoint #1', mode: MODE.pinned }));
-    ok(await chats.chooseCardGreeting({ ...bob, index: 0 }));
+    ok(await chats.chooseCardGreeting({ ...bob, greetingId: 0 }));
 
     const party = await treeOf({ group: groupId });
     const partyChat = await storeConversation(party, [

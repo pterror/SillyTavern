@@ -288,6 +288,10 @@ function alternativeEntry(nodeId, o, itemized) {
  * @typedef {{ ok: true, preview?: true, drops?: Drops, copied?: Record<string, string> } | { ok: false, reason: string, drops?: Drops }} EditAnswer
  */
 
+/** @typedef {{ greetings: Record<string, any>[], ids: number[], defaultId: number | null }} CardGreetings */
+
+const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], defaultId: null });
+
 export class ChatEngine {
     /**
      * @param {any} store
@@ -784,28 +788,26 @@ export class ChatEngine {
      * @param {bigint} p.tree
      * @param {Actor} p.actor
      * @param {{ offset?: number, limit?: number }} [p.range]
-     * @param {Record<string, any>[]} [p.cardGreetings]
-     * @param {string|null} [p.cardDefault] the text of the card's default greeting
+     * @param {CardGreetings} [p.card]
      */
-    async openingAlternatives({ tree, actor, range = {}, cardGreetings = [], cardDefault = null }) {
+    async openingAlternatives({ tree, actor, range = {}, card = NO_GREETINGS }) {
         const hasSavedChats = (await this.store.chatRead('children', { tree, limit: 1 })).ids.length > 0;
         const rows = await this.openings(tree);
-        const virtual = this.unstoredGreetings(rows, cardGreetings);
+        const virtual = this.unstoredGreetings(rows, card.greetings);
         const { user, session } = await this.knownActorIds(actor);
         const lands = await this.store.chatRead('landing', { tree, ...(session === null ? {} : { session }), ...(user === null ? {} : { user }) });
         const all = [
             ...rows.map(r => ({ ...alternativeEntry(this.externalId(r.stored), r.message, false), is_system: !!r.message?.is_system })),
             ...virtual.map(o => alternativeEntry(/** @type {any} */ (null), o, false)),
         ];
-        const cardTexts = (Array.isArray(cardGreetings) ? cardGreetings : []).map(g => g?.mes).filter(t => typeof t === 'string');
         let defaultIndex = -1;
         if (lands !== null) {
             const shown = (await this.store.chatRead('path', { tree, at: lands }))[0];
             defaultIndex = rows.findIndex(r => r.id === shown);
         } else {
             const chosen = session === null ? null : await this.cardChoice(session, tree);
-            const text = chosen !== null && chosen < cardTexts.length ? cardTexts[chosen] : cardDefault;
-            if (typeof text === 'string') defaultIndex = all.findIndex(o => o.mes === text);
+            const at = card.ids.indexOf(chosen !== null && card.ids.includes(chosen) ? chosen : card.defaultId ?? -1);
+            if (at >= 0) defaultIndex = all.findIndex(o => o.mes === card.greetings[at].mes);
         }
         if (defaultIndex < 0) defaultIndex = 0;
         const width = Number.isInteger(range.limit) ? /** @type {number} */ (range.limit) : 11;
@@ -826,34 +828,14 @@ export class ChatEngine {
     }
 
     /**
-     * Stored as the greeting's place among the card's greetings + 1, 0 being the card's default.
+     * Stored as the greeting's id + 1, 0 being the card's default.
      * @param {bigint} session
      * @param {bigint} tree
-     * @returns {Promise<number | null>} the place; null for the default
+     * @returns {Promise<number | null>} the chosen greeting's id; null for the default
      */
     async cardChoice(session, tree) {
         const stored = await this.store.chatRead('openingChoice', { session, tree });
         return stored === null || stored === undefined || Number(stored) === 0 ? null : Number(stored) - 1;
-    }
-
-    /**
-     * @param {object} p
-     * @param {bigint} p.tree
-     * @param {Actor} p.actor
-     * @param {(chosen: number) => number | null} p.follow
-     */
-    followCardChoice({ tree, actor, follow }) {
-        return this.serialized(tree, async () => {
-            const { user, session } = await this.knownActorIds(actor);
-            if (session === null || user === null) return;
-            const lands = await this.store.chatRead('landing', { tree, session, user });
-            if (lands !== null) return;
-            const chosen = await this.cardChoice(session, tree);
-            if (chosen === null) return;
-            const next = follow(chosen);
-            if (next === chosen) return;
-            await this.store.commit([{ kind: 'openingChoice', session, user, tree, index: next === null ? 0 : next + 1 }]);
-        });
     }
 
     /**
@@ -1241,10 +1223,10 @@ export class ChatEngine {
     /**
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {number | null} p.index the chosen greeting's place among the card's greetings; null for the default
+     * @param {number | null} p.greetingId the chosen greeting's id; null for the card's default
      * @param {Actor} p.actor
      */
-    chooseCardGreeting({ tree, index, actor }) {
+    chooseCardGreeting({ tree, greetingId, actor }) {
         return this.serialized(tree, async () => {
             const records = [];
             const { user, session } = await this.actorIds(actor, records);
@@ -1252,9 +1234,9 @@ export class ChatEngine {
             const [now] = await this.store.chatRead('sessions', { ids: [session] });
             const atRoot = !!now && now.tree === tree && now.at === null;
             const chosen = now ? await this.cardChoice(session, tree) : null;
-            if (atRoot && chosen === index) return { ok: true };
+            if (atRoot && chosen === greetingId) return { ok: true };
             if (!atRoot) records.push({ kind: 'pointerRoot', session, user, tree, time: this.now() });
-            records.push({ kind: 'openingChoice', session, user, tree, index: index === null ? 0 : index + 1 });
+            records.push({ kind: 'openingChoice', session, user, tree, index: greetingId === null ? 0 : greetingId + 1 });
             await this.claimConversation(records, tree, actor, { user, session });
             await this.store.commit(records);
             return { ok: true };
@@ -2278,7 +2260,7 @@ export class ChatEngine {
      * @param {boolean} [p.group]
      */
     newChat({ tree, actor, group = false }) {
-        return group ? this.goTo({ tree, node_id: null, actor }) : this.chooseCardGreeting({ tree, index: null, actor });
+        return group ? this.goTo({ tree, node_id: null, actor }) : this.chooseCardGreeting({ tree, greetingId: null, actor });
     }
 
     /**

@@ -323,44 +323,38 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 }
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
-    test(`${kind}: a tree shows the opening the session landed on, else the card greeting it chose, else the card's default`, async () => {
+    test(`${kind}: a tree shows the opening the session landed on, else the card greeting it chose by id, else the card's default`, async () => {
         const store = await engine.Store.open(path.join(root, `engine-shown-opening-${kind}`));
         const chats = await ChatEngine.open(store, ivyPeople);
         const t = ivy.id;
         const g = n => ({ name: 'Ivy', is_user: false, is_system: false, send_date: `2025-10-10T10:0${n}:00.000Z`, mes: `Greeting ${n}`, extra: {} });
-        const card = [g(1), g(2), g(3)];
-        const shown = async (cardDefault, who = actor, greetings = card) => {
-            const o = await chats.openingAlternatives({ tree: t, actor: who, cardGreetings: greetings, cardDefault });
+        const cardOf = (texts, ids, defaultId) => ({ greetings: texts.map((mes, i) => ({ ...g(i), mes })), ids, defaultId });
+        const card = cardOf(['Greeting 1', 'Greeting 2', 'Greeting 3'], [5, 7, 9], 7);
+        const shown = async (c = card, who = actor) => {
+            const o = await chats.openingAlternatives({ tree: t, actor: who, card: c });
             return o.alternatives[o.default_index - o.offset]?.mes ?? null;
         };
 
-        assert.deepEqual(await chats.openingAlternatives({ tree: t, actor, cardGreetings: [], cardDefault: null }), {
+        assert.deepEqual(await chats.openingAlternatives({ tree: t, actor }), {
             has_saved_chats: false, total: 0, stored: 0, default_index: 0, offset: 0, alternatives: [],
         });
-        assert.equal(await shown(g(2).mes), 'Greeting 2');
-        assert.equal(await shown(null), 'Greeting 1');
+        assert.equal(await shown(), 'Greeting 2');
+        assert.equal(await shown(cardOf(['Greeting 1', 'Greeting 2', 'Greeting 3'], [5, 7, 9], null)), 'Greeting 1');
 
-        await chats.chooseCardGreeting({ tree: t, index: 2, actor });
-        assert.equal(await shown(g(2).mes), 'Greeting 3');
-        assert.equal(await shown(g(2).mes, { user: actor.user }), 'Greeting 2');
-        assert.equal(await shown(g(2).mes, actor, [g(1), g(2), { ...g(3), mes: 'Greeting 3, edited' }]), 'Greeting 3, edited');
-
+        await chats.chooseCardGreeting({ tree: t, greetingId: 9, actor });
         const [session] = await store.chatRead('ids', { space: 1, keys: [actor.session] });
-        await chats.followCardChoice({ tree: t, actor, follow: chosen => chosen - 1 });
-        assert.equal(await chats.cardChoice(session, t), 1);
-        await chats.followCardChoice({ tree: t, actor, follow: () => null });
-        assert.equal(await chats.cardChoice(session, t), null);
-        assert.equal(await shown(g(3).mes), 'Greeting 3');
-        await chats.followCardChoice({ tree: t, actor, follow: () => 0 });
-        assert.equal(await chats.cardChoice(session, t), null);
+        assert.equal(await chats.cardChoice(session, t), 9);
+        assert.equal(await shown(), 'Greeting 3');
+        assert.equal(await shown(card, { user: actor.user }), 'Greeting 2');
+        assert.equal(await shown(cardOf(['Greeting 3, edited', 'Greeting 1'], [9, 5], 5)), 'Greeting 3, edited');
+        assert.equal(await shown(cardOf(['Greeting 1', 'Greeting 2'], [5, 7], 7)), 'Greeting 2');
 
-        await chats.chooseCardGreeting({ tree: t, index: 0, actor });
         await chats.newChat({ tree: t, actor });
         assert.equal(await chats.cardChoice(session, t), null);
-        assert.equal(await shown(g(3).mes), 'Greeting 3');
+        assert.equal(await shown(), 'Greeting 2');
 
         const [said] = (await chats.appendMessages({ tree: t, treeSpeaker: ivy, after: null, contents: [{ name: 'You', is_user: true, is_system: false, send_date: '2025-10-10T10:09:00.000Z', mes: 'hello', extra: {} }], actor })).node_ids;
-        const landed = await chats.openingAlternatives({ tree: t, actor, cardGreetings: card, cardDefault: g(3).mes });
+        const landed = await chats.openingAlternatives({ tree: t, actor, card });
         assert.deepEqual(landed.alternatives.map(a => a.mes), ['hello', 'Greeting 1', 'Greeting 2', 'Greeting 3']);
         assert.equal(landed.stored, 1);
         assert.equal(landed.alternatives[landed.default_index].node_id, said);

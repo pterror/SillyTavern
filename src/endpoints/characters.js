@@ -33,8 +33,8 @@ import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { savedViewsEvents } from '../saved-views.js';
 import { getAtPath, getStringHash, normalizeFav, setAtPath } from '../../public/scripts/hash-utils.js';
-import { cardToGreetingsModel, applyGreetingsModelToCard } from '../greeting-list.js';
-import { chosenGreetingAfter, greetingOperation, hashGreetingText } from '../greeting-ops.js';
+import { applyGreetingsModelToCard } from '../greeting-list.js';
+import { defaultPositionOf, greetingOperation, hashGreetingText } from '../greeting-ops.js';
 import { openingState } from '../opening-state.js';
 import { withSearchTiming } from '../search-timing.js';
 import { requestStore, userStore } from '../user-stores.js';
@@ -292,14 +292,15 @@ async function keepStoredGreetings(directories, avatar, data, freshFieldPaths) {
  * @param {boolean} [o.fav]
  * @param {number} [o.dateAdded]
  * @param {{ from: string, pastChats: boolean }} [o.renamed]
+ * @param {import('../greeting-items.js').GreetingModel} [o.greetings]
  * @returns {Promise<void>}
  * @throws {ImageReadError}
  */
-async function writeCharacter(request, avatar, data, { image, crop, contentHash = null, freshFieldPaths = null, fav, dateAdded, renamed } = {}) {
+async function writeCharacter(request, avatar, data, { image, crop, contentHash = null, freshFieldPaths = null, fav, dateAdded, renamed, greetings } = {}) {
     const directories = request.user.directories;
     const { lib } = await userStore(directories);
     const card = await keepStoredGreetings(directories, avatar, data, freshFieldPaths);
-    const options = { contentHash, ...(fav === undefined ? {} : { fav }), ...(dateAdded === undefined ? {} : { dateAdded }), ...(renamed === undefined ? {} : { renamed }) };
+    const options = { contentHash, ...(fav === undefined ? {} : { fav }), ...(dateAdded === undefined ? {} : { dateAdded }), ...(renamed === undefined ? {} : { renamed }), ...(greetings === undefined ? {} : { greetings }) };
     if (image === undefined) {
         await lib.writeCard(directories, avatar, cardWithCrop(card, cropOf(await lib.entity(TYPE.character, avatar))), options);
         return;
@@ -1141,13 +1142,12 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
 /**
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
- * @param {(model: import('../greeting-list.js').GreetingsModel) => {ok: boolean, reason?: string, model?: import('../greeting-list.js').GreetingsModel, position?: number, sourcePosition?: number, targetPosition?: number}} op
- * @param {(result: {position?: number, sourcePosition?: number, targetPosition?: number}) => Promise<void>} [beforeWrite] runs once the op is known to apply, before the card is written
+ * @param {(model: import('../greeting-items.js').GreetingModel) => {ok: boolean, reason?: string, model?: import('../greeting-items.js').GreetingModel, position?: number, sourcePosition?: number, targetPosition?: number}} op
  * @returns {Promise<{ok: boolean, reason?: string, status?: number, greetings?: string[], hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
  */
-export function applyGreetingOperation(directories, avatar, op, beforeWrite = async () => {}) {
+export function applyGreetingOperation(directories, avatar, op) {
     const key = `${directories.root}\u0000${avatar}`;
-    const run = (greetingOperationQueues.get(key) ?? Promise.resolve()).then(() => runGreetingOperation(directories, avatar, op, beforeWrite));
+    const run = (greetingOperationQueues.get(key) ?? Promise.resolve()).then(() => runGreetingOperation(directories, avatar, op));
     const tail = run.then(() => {}, () => {});
     greetingOperationQueues.set(key, tail);
     void tail.then(() => {
@@ -1165,53 +1165,38 @@ const greetingOperationQueues = new Map();
  * @param {Parameters<typeof applyGreetingOperation>[2]} op
  * @returns {ReturnType<typeof applyGreetingOperation>}
  */
-async function runGreetingOperation(directories, avatar, op, beforeWrite) {
+async function runGreetingOperation(directories, avatar, op) {
     const pngStringData = await readCardContent(directories, avatar);
     if (!pngStringData) {
         return { ok: false, reason: 'character not found', status: 404 };
     }
 
     const character = JSON.parse(pngStringData);
-    const model = cardToGreetingsModel(character);
+    const model = await (await userStore(directories)).lib.greetingModel(avatar);
     const result = op(model);
     if (!result.ok) {
         return { ok: false, reason: result.reason, status: 409 };
     }
-    await beforeWrite(result);
+    const answer = {
+        ok: true,
+        greetings: result.model.greetings.map(g => g.text),
+        hashes: result.model.greetings.map(g => hashGreetingText(g.text)),
+        defaultPosition: defaultPositionOf(result.model),
+        position: result.position,
+        sourcePosition: result.sourcePosition,
+        targetPosition: result.targetPosition,
+    };
+    if (result.model === model) return answer;
 
-    const unchanged = result.model.defaultIndex === model.defaultIndex
-        && result.model.greetings.length === model.greetings.length
-        && result.model.greetings.every((text, i) => text === model.greetings[i]);
-    if (unchanged) {
-        return {
-            ok: true,
-            greetings: model.greetings,
-            hashes: model.greetings.map(hashGreetingText),
-            defaultPosition: model.defaultIndex,
-            position: result.position,
-            sourcePosition: result.sourcePosition,
-            targetPosition: result.targetPosition,
-        };
-    }
-
-    applyGreetingsModelToCard(character, result.model);
+    applyGreetingsModelToCard(character, { greetings: answer.greetings, defaultIndex: answer.defaultPosition });
 
     const validator = new TavernCardValidator(character);
     if (!validator.validate()) {
         return { ok: false, reason: validator.lastValidationError ?? 'validation failed', status: 500 };
     }
 
-    await writeCharacter(/** @type {any} */ ({ user: { directories } }), avatar, JSON.stringify(character), { freshFieldPaths: new Set(['data.alternate_greetings']) });
-
-    return {
-        ok: true,
-        greetings: result.model.greetings,
-        hashes: result.model.greetings.map(hashGreetingText),
-        defaultPosition: result.model.defaultIndex,
-        position: result.position,
-        sourcePosition: result.sourcePosition,
-        targetPosition: result.targetPosition,
-    };
+    await writeCharacter(/** @type {any} */ ({ user: { directories } }), avatar, JSON.stringify(character), { freshFieldPaths: new Set(['data.alternate_greetings']), greetings: result.model });
+    return answer;
 }
 
 /**
@@ -1223,11 +1208,8 @@ async function runGreetingOperation(directories, avatar, op, beforeWrite) {
  * @param {import('../greeting-ops.js').GreetingChange} p.change
  */
 export async function changeGreetings({ directories, store, actor, avatar, change }) {
+    const result = await applyGreetingOperation(directories, avatar, greetingOperation(change));
     const [tree] = actor === null ? [null] : await store.people.trees([{ avatar }]);
-    const follow = tree === null || tree === undefined || actor === null
-        ? undefined
-        : (/** @type {{position?: number, sourcePosition?: number, targetPosition?: number}} */ applied) => store.chats.followCardChoice({ tree, actor, follow: chosen => chosenGreetingAfter(change, applied, chosen) });
-    const result = await applyGreetingOperation(directories, avatar, greetingOperation(change), follow);
     if (!result.ok || tree === null || tree === undefined || actor === null) return { result, opening: null };
     return { result, opening: await openingState({ store, tree, actor, avatar }) };
 }

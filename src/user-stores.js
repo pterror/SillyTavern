@@ -9,6 +9,7 @@ import { TokenCache } from './token-cache-engine.js';
 import { markUpstreamImportPending } from './upstream-import.js';
 
 export const STORE_DIR = 'store';
+export const GREETINGS_BY_ID = 'greetings-by-id';
 const OLD_LIBRARY = 'character-metadata.sqlite';
 const OLD_CHATS = 'message-tree.sqlite';
 export const NAMED_THUMBNAILS = Object.freeze(['bg', 'avatar', 'persona'].map(d => path.join('thumbnails', d)));
@@ -55,7 +56,11 @@ export async function oldFormatLine(directories) {
  * @returns {string | null}
  */
 function oldFormatLineHere(directories) {
-    if (fs.existsSync(path.join(directories.root, STORE_DIR))) return null;
+    const store = path.join(directories.root, STORE_DIR);
+    if (fs.existsSync(store)) {
+        if (fs.existsSync(path.join(store, GREETINGS_BY_ID)) || fs.readdirSync(store).length === 0) return null;
+        return `${directories.root} remembers the greetings chats show by their place on the card: run node scripts/convert-greeting-choices.mjs --data-root <the folder holding it> once, with the server stopped`;
+    }
     const old = [OLD_LIBRARY, OLD_CHATS].filter(f => fs.existsSync(path.join(directories.root, f)));
     if (!old.length) return null;
     return `${directories.root} holds data in the format before the engine (${old.join(', ')}) and no ${STORE_DIR}/: this version can't open it`;
@@ -110,6 +115,7 @@ async function openStore(root, handle) {
     const lib = await LibraryEngine.open(engineOf(), dir);
     try {
         if (made) {
+            fs.writeFileSync(path.join(dir, GREETINGS_BY_ID), '');
             await lib.keepPairs();
             await lib.tags.markSeedPending();
             await markUpstreamImportPending(lib);
@@ -166,6 +172,7 @@ export function engineStoreHere(directories) {
         if (!fs.existsSync(dir)) madeHere.add(key);
     }
     const store = engineOf().Store.openSync(dir);
+    if (madeHere.has(key)) fs.writeFileSync(path.join(dir, GREETINGS_BY_ID), '');
     openedHere.set(key, store);
     return store;
 }

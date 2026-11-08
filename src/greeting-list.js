@@ -39,30 +39,6 @@ export function greetingsModelToCardFields({ greetings, defaultIndex }) {
 }
 
 /**
- * @param {number|null} defaultIndex
- * @param {number} removedIndex
- */
-export function reindexDefaultAfterRemoval(defaultIndex, removedIndex) {
-    if (defaultIndex === null) return null;
-    if (removedIndex === defaultIndex) return null;
-    return removedIndex < defaultIndex ? defaultIndex - 1 : defaultIndex;
-}
-
-/**
- * @param {number|null} defaultIndex
- * @param {number} sourceIndex
- * @param {number} finalTargetIndex
- */
-export function reindexDefaultAfterMove(defaultIndex, sourceIndex, finalTargetIndex) {
-    if (defaultIndex === null) return null;
-    if (defaultIndex === sourceIndex) return finalTargetIndex;
-    let result = defaultIndex;
-    if (sourceIndex < result) result -= 1;
-    if (finalTargetIndex <= result) result += 1;
-    return result;
-}
-
-/**
  * @param {object} card
  * @param {GreetingsModel} model
  */

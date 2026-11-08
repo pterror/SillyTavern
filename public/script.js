@@ -8015,16 +8015,6 @@ function greetingsModelToCardFields({ greetings, defaultIndex }) {
 }
 
 /**
- * @param {number|null} defaultIndex
- * @param {number} removedIndex
- */
-function reindexDefaultAfterRemoval(defaultIndex, removedIndex) {
-    if (defaultIndex === null) return null;
-    if (removedIndex === defaultIndex) return null;
-    return removedIndex < defaultIndex ? defaultIndex - 1 : defaultIndex;
-}
-
-/**
  * @param {string} text
  * @returns {number}
  */
@@ -8174,12 +8164,18 @@ const greetingPagerState = {
     /** @type {string|null} */
     owner: null,
     greetings: [''],
-    defaultIndex: 0,
+    /** @type {boolean[]} */
+    defaults: [true],
     /** @type {number[]} */
     hashes: [],
     committed: [false],
     index: 0,
 };
+
+function pagerDefaultIndex() {
+    const at = greetingPagerState.defaults.indexOf(true);
+    return at < 0 ? null : at;
+}
 
 /**
  * @typedef {object} GreetingPagerEdit
@@ -8219,13 +8215,13 @@ function endGreetingPagerEdit() {
  * @param {number} position
  */
 function dropUncommittedPagerSlot(position) {
-    const { greetings, committed, defaultIndex } = greetingPagerState;
+    const { greetings, committed, defaults } = greetingPagerState;
     greetings.splice(position, 1);
     committed.splice(position, 1);
-    greetingPagerState.defaultIndex = reindexDefaultAfterRemoval(defaultIndex, position);
+    defaults.splice(position, 1);
     greetingPagerState.index = Math.min(greetingPagerState.index, greetings.length - 1);
     if (menu_type === 'create') {
-        const fields = greetingsModelToCardFields({ greetings, defaultIndex: greetingPagerState.defaultIndex });
+        const fields = greetingsModelToCardFields({ greetings, defaultIndex: pagerDefaultIndex() });
         create_save.first_message = fields.firstMes;
         create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager slot dropped (create mode)');
         if (!create_save.extensions) create_save.extensions = {};
@@ -8250,7 +8246,7 @@ function setGreetingPagerGreetings(owner, greetings, defaultIndex, hashes, selec
     const shown = selected ?? { owner: greetingPagerState.owner, index, hash: greetingPagerState.hashes[index] };
     greetingPagerState.owner = owner;
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
-    greetingPagerState.defaultIndex = greetings.length > 0 ? defaultIndex : 0;
+    greetingPagerState.defaults = greetings.length > 0 ? greetings.map((_, i) => i === defaultIndex) : [true];
     greetingPagerState.hashes = greetings.length > 0 ? hashes.slice() : [];
     greetingPagerState.committed = greetings.length > 0 ? greetingPagerState.greetings.map(() => true) : [false];
     greetingPagerState.index = selectedGreetingIndex(shown, owner, greetingPagerState.hashes, greetingPagerState.greetings.length);
@@ -8309,10 +8305,10 @@ async function saveGreetingPagerEdit(avatar, character, position, expectedHash, 
  * @returns {Promise<boolean>}
  */
 async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
-    const { index, defaultIndex } = greetingPagerState;
+    const { index } = greetingPagerState;
     greetingPagerState.greetings[index] = value;
     if (menu_type === 'create') {
-        const fields = greetingsModelToCardFields({ greetings: greetingPagerState.greetings, defaultIndex });
+        const fields = greetingsModelToCardFields({ greetings: greetingPagerState.greetings, defaultIndex: pagerDefaultIndex() });
         create_save.first_message = fields.firstMes;
         create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager create-mode input');
         return true;
@@ -8367,7 +8363,7 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
 }
 
 async function deleteGreetingPagerGreeting() {
-    const { greetings, committed, index, defaultIndex, hashes } = greetingPagerState;
+    const { greetings, committed, index, defaults, hashes } = greetingPagerState;
     if (greetings.length === 1 && greetings[0] === '') return;
     const expectedHash = hashes[index];
     if (committed[index] === false && menu_type !== 'create') {
@@ -8375,13 +8371,14 @@ async function deleteGreetingPagerGreeting() {
         return;
     }
 
-    const label = index === defaultIndex ? 'the default greeting' : 'this greeting';
+    const label = defaults[index] ? 'the default greeting' : 'this greeting';
     const confirm = await callGenericPopup(t`Are you sure you want to delete ${label}?`, POPUP_TYPE.CONFIRM);
     if (!confirm) return;
 
     if (menu_type === 'create') {
         const remaining = greetings.filter((_, i) => i !== index);
-        const remainingDefault = reindexDefaultAfterRemoval(defaultIndex, index);
+        const kept = defaults.filter((_, i) => i !== index).indexOf(true);
+        const remainingDefault = kept < 0 ? null : kept;
         const fields = greetingsModelToCardFields({ greetings: remaining, defaultIndex: remainingDefault });
         create_save.first_message = fields.firstMes;
         create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager delete (create mode)');
@@ -10234,7 +10231,7 @@ jQuery(async function () {
         if (blockFieldEditStart()) {
             return;
         }
-        const { greetings, committed, index } = greetingPagerState;
+        const { greetings, committed, defaults, index } = greetingPagerState;
         greetings[index] = String($('#greeting_field').val());
         if (committed[index] === false && greetings[index] === '') {
             beginEdit('greeting_field');
@@ -10243,6 +10240,7 @@ jQuery(async function () {
         const newIndex = greetings.length;
         greetings.push('');
         committed[newIndex] = false;
+        defaults[newIndex] = false;
         greetingPagerState.index = newIndex;
         renderGreetingPager();
         beginEdit('greeting_field');

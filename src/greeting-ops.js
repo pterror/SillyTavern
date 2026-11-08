@@ -1,5 +1,6 @@
 import { getStringHash } from '../public/scripts/hash-utils.js';
-import { reindexDefaultAfterMove, reindexDefaultAfterRemoval } from './greeting-list.js';
+
+/** @typedef {import('./greeting-items.js').GreetingModel} GreetingModel */
 
 /**
  * @param {string} text
@@ -12,12 +13,26 @@ function positionInBounds(position, length) {
     return Number.isInteger(position) && position >= 0 && position < length;
 }
 
+/**
+ * @param {GreetingModel} model
+ * @param {number} position
+ * @param {number} expectedHash
+ */
 function hashMatches(model, position, expectedHash) {
-    return hashGreetingText(model.greetings[position]) === expectedHash;
+    return hashGreetingText(model.greetings[position].text) === expectedHash;
 }
 
 /**
- * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {GreetingModel} model
+ * @returns {number | null}
+ */
+export function defaultPositionOf(model) {
+    const at = model.greetings.findIndex(g => g.id === model.defaultId);
+    return at < 0 ? null : at;
+}
+
+/**
+ * @param {GreetingModel} model
  * @param {number} position
  * @param {number} expectedHash
  * @param {{outOfRange: string, changed: string}} reasons
@@ -42,10 +57,11 @@ const GREETING_REASONS = { outOfRange: 'position out of range', changed: 'greeti
 const TARGET_REASONS = { outOfRange: 'target position out of range', changed: 'target greeting changed since it was loaded' };
 
 /**
- * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {GreetingModel} model
  * @param {number} position
  * @param {number} expectedLength
  * @param {string} text
+ * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
  */
 export function opAdd(model, position, expectedLength, text) {
     if (typeof text !== 'string' || text === '') {
@@ -57,17 +73,17 @@ export function opAdd(model, position, expectedLength, text) {
     if (!Number.isInteger(position) || position < 0 || position > model.greetings.length) {
         return { ok: false, reason: 'position out of range' };
     }
+    const added = { id: model.nextId, text };
     const greetings = model.greetings.slice();
-    greetings.splice(position, 0, text);
-    let defaultIndex = model.greetings.length === 0 ? position : model.defaultIndex;
-    if (defaultIndex !== null && model.greetings.length > 0 && position <= defaultIndex) defaultIndex += 1;
-    return { ok: true, model: { greetings, defaultIndex }, position };
+    greetings.splice(position, 0, added);
+    const defaultId = model.greetings.length === 0 ? added.id : model.defaultId;
+    return { ok: true, model: { greetings, defaultId, nextId: model.nextId + 1 }, position };
 }
 
 /**
- * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {GreetingModel} model
  * @param {string} text
- * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, position: number}|{ok: false, reason: string}}
+ * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
  */
 export function opAppend(model, text) {
     const length = model.greetings.length;
@@ -75,11 +91,11 @@ export function opAppend(model, text) {
 }
 
 /**
- * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {GreetingModel} model
  * @param {number} position
  * @param {number} expectedHash
  * @param {string} text
- * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, position: number}|{ok: false, reason: string}}
+ * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
  */
 export function opEdit(model, position, expectedHash, text) {
     if (typeof text !== 'string' || text === '') {
@@ -87,39 +103,37 @@ export function opEdit(model, position, expectedHash, text) {
     }
     const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
     if (!found.ok) {
-        if (positionInBounds(position, model.greetings.length) && model.greetings[position] === text) {
-            return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: model.defaultIndex }, position };
+        if (positionInBounds(position, model.greetings.length) && model.greetings[position].text === text) {
+            return { ok: true, model, position };
         }
         return found;
     }
-    const greetings = model.greetings.slice();
-    greetings[found.position] = text;
-    return { ok: true, model: { greetings, defaultIndex: model.defaultIndex }, position: found.position };
+    const greetings = model.greetings.map((g, i) => (i === found.position ? { id: g.id, text } : g));
+    return { ok: true, model: { ...model, greetings }, position: found.position };
 }
 
 /**
- * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {GreetingModel} model
  * @param {number} position
  * @param {number} expectedHash
- * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, position: number}|{ok: false, reason: string}}
+ * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
  */
 export function opDelete(model, position, expectedHash) {
     const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
     if (!found.ok) return found;
-    const greetings = model.greetings.slice();
-    greetings.splice(found.position, 1);
-    const defaultIndex = reindexDefaultAfterRemoval(model.defaultIndex, found.position);
-    return { ok: true, model: { greetings, defaultIndex }, position: found.position };
+    const gone = model.greetings[found.position];
+    const greetings = model.greetings.filter((_, i) => i !== found.position);
+    return { ok: true, model: { ...model, greetings, defaultId: model.defaultId === gone.id ? null : model.defaultId }, position: found.position };
 }
 
 /**
- * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {GreetingModel} model
  * @param {number} sourcePosition
  * @param {number} expectedHash
  * @param {'before'|'after'} side
  * @param {number} targetPosition
  * @param {number} targetExpectedHash
- * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, sourcePosition: number, targetPosition: number}|{ok: false, reason: string}}
+ * @returns {{ok: true, model: GreetingModel, sourcePosition: number, targetPosition: number}|{ok: false, reason: string}}
  */
 export function opMove(model, sourcePosition, expectedHash, side, targetPosition, targetExpectedHash) {
     const source = findGreeting(model, sourcePosition, expectedHash, GREETING_REASONS);
@@ -132,41 +146,42 @@ export function opMove(model, sourcePosition, expectedHash, side, targetPosition
     if (side !== 'before' && side !== 'after') {
         return { ok: false, reason: 'side must be before or after' };
     }
-    const greetings = model.greetings.slice();
-    const [moved] = greetings.splice(source.position, 1);
-    const anchorIndex = target.position > source.position ? target.position - 1 : target.position;
-    const insertIndex = side === 'before' ? anchorIndex : anchorIndex + 1;
-    greetings.splice(insertIndex, 0, moved);
-    const defaultIndex = reindexDefaultAfterMove(model.defaultIndex, source.position, insertIndex);
-    return { ok: true, model: { greetings, defaultIndex }, sourcePosition: source.position, targetPosition: target.position };
+    const anchor = model.greetings[target.position];
+    const greetings = model.greetings.filter((_, i) => i !== source.position);
+    const at = greetings.indexOf(anchor);
+    greetings.splice(side === 'before' ? at : at + 1, 0, model.greetings[source.position]);
+    return { ok: true, model: { ...model, greetings }, sourcePosition: source.position, targetPosition: target.position };
 }
 
 /**
- * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {GreetingModel} model
  * @param {number} position
  * @param {number} expectedHash
- * @returns {{ok: true, model: import('./greeting-list.js').GreetingsModel, position: number}|{ok: false, reason: string}}
+ * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
  */
 export function opSetDefault(model, position, expectedHash) {
     const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
     if (!found.ok) {
-        if (model.defaultIndex !== null && hashMatches(model, model.defaultIndex, expectedHash)) {
-            return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: model.defaultIndex }, position: model.defaultIndex };
+        const shown = defaultPositionOf(model);
+        if (shown !== null && hashMatches(model, shown, expectedHash)) {
+            return { ok: true, model, position: shown };
         }
         return found;
     }
-    return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: found.position }, position: found.position };
+    return { ok: true, model: { ...model, defaultId: model.greetings[found.position].id }, position: found.position };
 }
 
 /**
- * @param {import('./greeting-list.js').GreetingsModel} model
+ * @param {GreetingModel} model
  * @param {number} expectedDefaultHash
+ * @returns {{ok: true, model: GreetingModel}|{ok: false, reason: string}}
  */
 export function opUnsetDefaultByHash(model, expectedDefaultHash) {
-    if (model.defaultIndex !== null && !hashMatches(model, model.defaultIndex, expectedDefaultHash)) {
+    const shown = defaultPositionOf(model);
+    if (shown !== null && !hashMatches(model, shown, expectedDefaultHash)) {
         return { ok: false, reason: 'default greeting changed since it was loaded' };
     }
-    return { ok: true, model: { greetings: model.greetings.slice(), defaultIndex: null } };
+    return { ok: true, model: { ...model, defaultId: null } };
 }
 
 /**
@@ -180,7 +195,7 @@ export function opUnsetDefaultByHash(model, expectedDefaultHash) {
 
 /**
  * @param {GreetingChange} change
- * @returns {(model: import('./greeting-list.js').GreetingsModel) => any}
+ * @returns {(model: GreetingModel) => any}
  */
 export function greetingOperation(change) {
     switch (change.op) {
@@ -192,36 +207,5 @@ export function greetingOperation(change) {
         case 'move': return model => opMove(model, change.position, change.hash, change.side, change.target, change.targetHash);
         case 'default': return model => opSetDefault(model, change.position, change.hash);
         case 'undefault': return model => opUnsetDefaultByHash(model, change.hash);
-    }
-}
-
-/**
- * @param {GreetingChange} change
- * @param {{position?: number, sourcePosition?: number, targetPosition?: number, model?: import('./greeting-list.js').GreetingsModel}} result
- * @param {number} chosen a session's chosen greeting's place among the card's greetings
- * @returns {number|null} its place after the change; null for the card's default
- */
-export function chosenGreetingAfter(change, result, chosen) {
-    switch (change.op) {
-        case 'add': {
-            const at = /** @type {number} */ (result.position);
-            return chosen >= at ? chosen + 1 : chosen;
-        }
-        case 'edit': return chosen;
-        case 'delete': {
-            const at = /** @type {number} */ (result.position);
-            const left = result.model?.greetings.length ?? 0;
-            if (chosen === at) return left === 0 ? null : Math.min(at, left - 1);
-            return chosen > at ? chosen - 1 : chosen;
-        }
-        case 'move': {
-            const source = /** @type {number} */ (result.sourcePosition);
-            const target = /** @type {number} */ (result.targetPosition);
-            const anchor = target > source ? target - 1 : target;
-            return reindexDefaultAfterMove(chosen, source, change.side === 'before' ? anchor : anchor + 1);
-        }
-        case 'default':
-        case 'undefault':
-            return null;
     }
 }

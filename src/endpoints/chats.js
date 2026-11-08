@@ -1069,8 +1069,8 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
         const chat = await chatOf(request);
         if (!chat) return response.status(404).send({ error: 'unknown chat' });
         const avatar = request.body.group_id ? '' : String(request.body.avatar_url || '');
-        const card = avatar ? await cardGreetingsOf(chat.store, avatar) : { greetings: [], defaultText: null };
-        return response.send(await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.session.reader(), range: { offset, limit }, cardGreetings: card.greetings, cardDefault: card.defaultText }));
+        const card = avatar ? await cardGreetingsOf(chat.store, avatar) : undefined;
+        return response.send(await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.session.reader(), range: { offset, limit }, ...(card ? { card } : {}) }));
     } catch (error) {
         console.error('Error listing openings:', error);
         return response.status(500).send({ error: true });
@@ -1085,7 +1085,11 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
         if (!Number.isInteger(index) || index < 0) return response.status(400).send({ error: 'index must be a non-negative integer' });
         const chat = await chatOf(request, { avatar_url: avatar });
         if (!chat) return response.status(404).send({ error: 'unknown chat' });
-        await chat.store.chats.chooseCardGreeting({ tree: chat.tree, index, actor: chat.session.actor() });
+        const { greetings } = await chat.store.lib.greetingModel(avatar);
+        const text = typeof request.body.text === 'string' ? request.body.text : greetings[index]?.text;
+        const chosen = greetings[index]?.text === text ? greetings[index] : greetings.find(g => g.text === text);
+        if (!chosen) return response.status(409).send({ error: 'no such greeting' });
+        await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greetingId: chosen.id, actor: chat.session.actor() });
         chat.session.answer(response, { moved: true });
         return response.send({ ok: true, ...await openingsForPage(chat, avatar) });
     } catch (error) {
