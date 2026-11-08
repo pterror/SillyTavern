@@ -7,9 +7,17 @@
 #
 # Every check runs against the tree this commit will record (the index git hands the hook, which is
 # GIT_INDEX_FILE's for `commit -a`, `commit <paths>` and caller-supplied temp indexes), checked out
-# into a temp dir. Unstaged edits and untracked files in the work tree are never seen. Configs
-# (tsconfig.precommit.json, .oxlintrc.json, .oxlint-cycle-baseline) are read as staged. The hook
-# never writes to the work tree or the real index.
+# into a snapshot outside the repository. Unstaged edits and untracked files in the work tree are never seen, and
+# importing a workspace package by name (@st/...) sees its staged version. Configs (tsconfig.precommit.json,
+# .oxlintrc.json, .oxlint-cycle-baseline, .eslintrc.cjs, vite.config.ts) are read as staged. The hook never writes to
+# the work tree or the real index.
+#
+# A commit costs what it changes. The hook keeps the trees that passed every check (with the same node_modules and the
+# same hook), and compares the staged tree with HEAD's if it passed, else with the latest that did: a check runs only
+# if the files it reads differ, and reads as little as the difference allows. tsc rechecks the files whose
+# dependencies' types changed (lib/dangling-refs.mjs, an incremental build), eslint lints the changed files and the
+# type-aware ones that reach a change (lib/eslint-scope.mjs), and the export and route scripts parse only the files
+# whose text they haven't seen. With no such tree every check runs over everything.
 #
 # This is deliberately narrow on the type-check side: a full type-check of this codebase produces
 # hundreds of errors (loose `{object}` JSDoc typing, etc.) that aren't worth gating commits on.
@@ -19,142 +27,282 @@
 # mismatch) with clean signal and no noise, so those are the codes this hook enforces. See
 # tsconfig.precommit.json for the check scope.
 #
-# Confirmed empirically (2026-09-08, three live breaks in one session) that these four codes are not
-# interchangeable: a bare undefined identifier is TS2304, importing a name a module never declares at
-# all is TS2305, and importing a name a module declares but doesn't `export` is TS2459 - gating on
-# TS2304 alone (the original version of this hook) missed the TS2459 shape entirely and let a broken
-# commit through to a live server.
+# These four codes are not interchangeable: a bare undefined identifier is TS2304, importing a name a module never
+# declares at all is TS2305, and importing a name a module declares but doesn't `export` is TS2459.
 #
-# Also confirmed empirically, same session: `npx tsc` silently falls through to npm's "you don't have
-# this installed" placeholder when the `typescript` package is missing from node_modules, prints that
-# as normal-looking output, and exits in a way `|| true` swallows - so a hook that just greps the
-# output for error codes sees zero matches and reports success even though no type-checking happened
-# at all. Both tool invocations below verify the tool is real (a version string in the expected shape)
-# before trusting its output, and hard-fail with a loud, specific message if it isn't - never a silent
-# pass.
+# Each tool runs from node_modules/.bin, never through npx, which falls through to an install-prompt placeholder when
+# a package is missing and prints that as normal-looking output. A tool that exits without having checked (an invalid
+# tsconfig, an unreadable oxlint config) blocks the commit.
+#
+# ST_PRECOMMIT_TIMES=1 prints how long each check took.
 #
 # Wiring (one-time, per clone):
 #   git config core.hooksPath .githooks
 
 set -euo pipefail
 
-. "$(dirname "$0")/lib/staged-snapshot.sh"
+hook_dir="$(cd "$(dirname "$0")" && pwd)"
 
-if ! command -v npx >/dev/null 2>&1; then
-    echo "pre-commit: npx not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
+if ! command -v node >/dev/null 2>&1; then
+    echo "pre-commit: node not found on PATH -- enter the project dev shell (direnv/nix develop) first" >&2
     exit 1
 fi
 
-if [ ! -d "$toplevel/node_modules" ]; then
-    echo "pre-commit: blocked -- $toplevel/node_modules does not exist, so tsc/oxlint can't run." >&2
-    echo "Run 'npm install' in this repo and try again." >&2
-    exit 1
+. "$hook_dir/lib/staged-snapshot.sh"
+
+bin="$toplevel/node_modules/.bin"
+for tool in oxlint eslint vp; do
+    if [ ! -x "$bin/$tool" ]; then
+        echo "pre-commit: blocked -- $bin/$tool does not exist, so the checks can't run." >&2
+        echo "Run 'npm install' in this repo and try again." >&2
+        exit 1
+    fi
+done
+
+git_dir="$(git rev-parse --absolute-git-dir)"
+staged="$(staged_tree)"
+
+if [ -f "$toplevel/node_modules/.package-lock.json" ]; then
+    environment="$({
+        readlink -f "$(command -v node)"
+        realpath "$toplevel/node_modules"
+        cat "$toplevel/node_modules/.package-lock.json" "$hook_dir/pre-commit" "$hook_dir"/lib/*
+    } | sha256sum | head -c 64)"
+else
+    environment="unknown-$$-$RANDOM"
 fi
 
-# --- build the staged snapshot ---
-build_staged_snapshot
+# The trees that passed, latest last, as `<environment> <tree>` lines. The one to compare with is HEAD's when it passed
+# (after an amend, a reset or a checkout, the latest is usually further from the staged tree), else the latest.
+passed=""
+head_tree="$(git rev-parse -q --verify 'HEAD^{tree}' || true)"
+if [ -f "$cache/passed" ]; then
+    while read -r passed_environment passed_tree; do
+        [ "$passed_environment" = "$environment" ] || continue
+        if [ "$passed_tree" = "$staged" ]; then
+            exit 0
+        fi
+        [ -n "$head_tree" ] && [ "$passed" = "$head_tree" ] || passed="$passed_tree"
+    done < "$cache/passed"
+    if [ -n "$passed" ] && ! git cat-file -e "$passed^{tree}" 2>/dev/null; then
+        passed=""
+    fi
+fi
 
+record_pass() {
+    { grep -v " $staged\$" "$cache/passed" 2>/dev/null || true; printf '%s %s\n' "$environment" "$staged"; } | tail -n 32 > "$run/passed"
+    mv "$run/passed" "$cache/passed"
+}
+
+# --- what changed since the tree that passed ---
+changed=()
+if [ -n "$passed" ]; then
+    git diff-tree -r --no-renames --name-status -z "$passed" "$staged" > "$run/changes"
+    while IFS= read -r -d '' status && IFS= read -r -d '' file; do
+        changed+=("$file")
+    done < "$run/changes"
+fi
+
+# Whether a file matching one of the patterns (`*` matches `/` too) changed. Without a passed tree everything did.
+# A dotfile at the top (an ignore file, a linter's config or baseline) can change what any check reads.
+touches() {
+    local file pattern
+    [ -n "$passed" ] || return 0
+    for file in "${changed[@]}"; do
+        [[ "$file" == .* && "$file" != */* ]] && return 0
+        for pattern in "$@"; do
+            [[ "$file" == $pattern ]] && return 0
+        done
+    done
+    return 1
+}
+
+shopt -s extglob
+code='*.@(js|mjs|cjs|jsx|ts|tsx|mts|cts|json)'
+
+run_tsc=0 run_cycles=0 run_eslint=0 run_exports=0 run_routes=0 run_packages=0 run_tests=0
+touches "$code" && run_tsc=1 run_cycles=1 run_eslint=1
+touches 'public/*.js' 'public/*.mjs' 'src/*.js' 'src/*.mjs' 'tests/*.js' 'tests/*.mjs' \
+    scripts/public-exports.mjs scripts/file-facts.mjs && run_exports=1
+touches 'public/*.js' 'public/*.mjs' 'public/*.html' 'packages/*.ts' 'packages/*.tsx' 'src/*.js' 'src/*.mjs' \
+    scripts/server-routes.mjs scripts/file-facts.mjs && run_routes=1
+# packages/ leaves itself only through what its lint rule st/declared-imports allows (packages by name) and the files
+# serve-ui builds the page from.
+if git cat-file -e "$staged:packages" 2>/dev/null; then
+    touches 'packages/*' vite.config.ts package.json && run_packages=1
+    touches 'packages/*' vite.config.ts package.json package-lock.json public/lib.js public/live-editor-lib.js && run_tests=1
+fi
+
+if [ $((run_tsc + run_cycles + run_eslint + run_exports + run_routes + run_packages + run_tests)) -eq 0 ]; then
+    record_pass
+    exit 0
+fi
+
+# --- check out the staged tree ---
+update_snapshot "$staged"
+if [ "$(cat "$cache/modules" 2>/dev/null || true)" != "$environment" ] || [ ! -d "$snap_tree/node_modules" ]; then
+    link_modules
+    printf '%s\n' "$environment" > "$cache/modules"
+fi
 cd "$snap_tree"
 
-# --- verify tsc is the real compiler, not npm's install-prompt placeholder ---
-tsc_version="$(npx tsc --version 2>&1 || true)"
-if ! printf '%s\n' "$tsc_version" | grep -qE '^Version [0-9]+\.[0-9]+\.[0-9]+'; then
-    echo "pre-commit: blocked -- 'npx tsc --version' did not return a real TypeScript version:" >&2
-    echo "" >&2
-    printf '%s\n' "$tsc_version" >&2
-    echo "" >&2
-    echo "This usually means the 'typescript' devDependency isn't actually installed (run 'npm install' /" >&2
-    echo "'npm install typescript' in this repo) - npx silently falls through to a placeholder package in" >&2
-    echo "that case, which looks like harmless output but means NO type-checking happened. Refusing to" >&2
-    echo "treat that as a pass." >&2
-    exit 1
-fi
+# --- the checks; each prints why it blocks and fails ---
 
-output="$(npx tsc -p tsconfig.precommit.json --noEmit 2>&1 || true)"
-dangling="$(printf '%s\n' "$output" | grep -E 'error TS(2304|2305|2459|2614):' || true)"
+check_tsc() {
+    local output status=0
+    output="$(node "$hook_dir/lib/dangling-refs.mjs" "$cache/tsc.tsbuildinfo" 2304 2305 2459 2614 2>&1)" || status=$?
+    if [ "$status" -eq 3 ]; then
+        echo "pre-commit: blocked -- dangling import/export reference errors found in the staged snapshot:"
+        echo ""
+        printf '%s\n' "$output"
+        echo ""
+        echo "TS2304 (cannot find name), TS2305 (module has no exported member), TS2459 (declared locally but"
+        echo "not exported), or TS2614 (no default export) - a missing import, a missing/incomplete export, or"
+        echo "a call to something that doesn't exist. Fix them or, if this is a false positive, adjust"
+        echo "tsconfig.precommit.json. (Only staged content was checked - if the fix is in an unstaged file,"
+        echo "stage it too.)"
+        return 1
+    elif [ "$status" -ne 0 ]; then
+        echo "pre-commit: blocked -- the staged snapshot couldn't be type-checked (.githooks/lib/dangling-refs.mjs exited with $status):"
+        printf '%s\n' "$output" | tail -40
+        return 2
+    fi
+}
 
-if [ -n "$dangling" ]; then
-    echo "pre-commit: blocked -- dangling import/export reference errors found in the staged snapshot:" >&2
-    echo "" >&2
-    printf '%s\n' "$dangling" >&2
-    echo "" >&2
-    echo "TS2304 (cannot find name), TS2305 (module has no exported member), TS2459 (declared locally but" >&2
-    echo "not exported), or TS2614 (no default export) - a missing import, a missing/incomplete export, or" >&2
-    echo "a call to something that doesn't exist. Fix them or, if this is a false positive, adjust" >&2
-    echo "tsconfig.precommit.json. (Only staged content was checked - if the fix is in an unstaged file," >&2
-    echo "stage it too.)" >&2
-    exit 1
-fi
-
-# Blocks commits that grow the circular-import count beyond the checked-in
-# baseline (.oxlint-cycle-baseline, as staged).
-#
-# The codebase has 833 pre-existing import cycles (as of 2026-08-23) --
-# not worth blocking every commit on until someone deliberately works
-# through them. But circular imports have caused real TDZ crashes here
-# (FILTER_TYPES in tags.js/filters.js, charactersStore in
-# script.js/character-repository.js), invisible to any static check except
-# this one, so new cycles are worth catching before they ship. This is a
-# ratchet, not a full gate: it only blocks the count going UP. If you fix
-# cycles, lower the number in .oxlint-cycle-baseline to lock in the win.
-
-# --- verify oxlint is the real linter, same reasoning as the tsc check above ---
-oxlint_version="$(npx oxlint --version 2>&1 || true)"
-if ! printf '%s\n' "$oxlint_version" | grep -qE 'Version:? [0-9]+\.[0-9]+\.[0-9]+'; then
-    echo "pre-commit: blocked -- 'npx oxlint --version' did not return a real oxlint version:" >&2
-    echo "" >&2
-    printf '%s\n' "$oxlint_version" >&2
-    echo "" >&2
-    echo "Same failure mode as the tsc check above: if oxlint isn't actually installed, npx can silently" >&2
-    echo "fall through to a placeholder instead of running the real linter. Refusing to treat that as a" >&2
-    echo "pass. Run 'npm install' and try again." >&2
-    exit 1
-fi
-
-baseline="$(cat .oxlint-cycle-baseline 2>/dev/null || echo 0)"
-cycle_output="$(npx oxlint -c .oxlintrc.json -A all -D import/no-cycle 2>&1 || true)"
-cycle_count="$(printf '%s\n' "$cycle_output" | grep -c 'import(no-cycle)' || true)"
-
-if [ "$cycle_count" -gt "$baseline" ]; then
-    echo "pre-commit: blocked -- import/no-cycle count in the staged snapshot went from $baseline to $cycle_count" >&2
-    echo "" >&2
-    echo "This commit appears to introduce a new circular import. Circular imports have caused real TDZ crashes here (ReferenceError: Cannot access '<name>' before initialization) -- run 'npm run lint:cycles' to see the cycle paths and either break the cycle or, if this is intentional/a false positive, raise .oxlint-cycle-baseline to $cycle_count." >&2
-    exit 1
-fi
+# Blocks commits that grow the circular-import count beyond the checked-in baseline (.oxlint-cycle-baseline, as
+# staged). Circular imports have caused real TDZ crashes here (FILTER_TYPES in tags.js/filters.js, charactersStore in
+# script.js/character-repository.js), invisible to any static check except this one. This is a ratchet, not a full
+# gate: it only blocks the count going UP. If you fix cycles, lower the number in .oxlint-cycle-baseline to lock in
+# the win.
+check_cycles() {
+    local baseline count status=0
+    baseline="$(cat .oxlint-cycle-baseline 2>/dev/null || echo 0)"
+    "$bin/oxlint" -c .oxlintrc.json -A all -D import/no-cycle --format json > "$run/cycles.json" 2> "$run/cycles.err" || status=$?
+    if [ "$status" -gt 1 ] || ! count="$(node -e '
+        const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+        if (!(report.number_of_files > 0) || !Array.isArray(report.diagnostics)) process.exit(1);
+        console.log(report.diagnostics.filter(d => d.code === "import(no-cycle)").length);
+    ' "$run/cycles.json" 2>/dev/null)"; then
+        echo "pre-commit: blocked -- oxlint exited with status $status without reporting on the staged snapshot:"
+        head -c 4000 "$run/cycles.json" "$run/cycles.err"
+        return 1
+    fi
+    if [ "$count" -gt "$baseline" ]; then
+        echo "pre-commit: blocked -- import/no-cycle count in the staged snapshot went from $baseline to $count"
+        echo ""
+        echo "This commit appears to introduce a new circular import. Circular imports have caused real TDZ crashes here (ReferenceError: Cannot access '<name>' before initialization) -- run 'npm run lint:cycles' to see the cycle paths and either break the cycle or, if this is intentional/a false positive, raise .oxlint-cycle-baseline to $count."
+        return 1
+    fi
+}
 
 # The server's code passes its eslint rules, the one that keeps every outgoing request on fetchOutgoing() among them.
-if ! eslint_output="$(npx eslint "src/**/*.js" "engine/**/*.js" 2>&1)"; then
-    echo "pre-commit: blocked -- eslint failed on src/ or engine/ in the staged snapshot:" >&2
-    printf '%s\n' "$eslint_output" | tail -40 >&2
-    exit 1
-fi
+# Without a passed tree it lints everything; with one, what `lib/eslint-scope.mjs <$1> ... [$2]` names.
+check_eslint() {
+    local output targets=("src/**/*.js" "engine/**/*.js")
+    if [ -n "$passed" ]; then
+        if ! GIT_DIR="$git_dir" node "$hook_dir/lib/eslint-scope.mjs" "$1" "$snap_tree" "$passed" "$run/changes" "${2:-}" > "$run/eslint-$1"; then
+            echo "pre-commit: blocked -- couldn't tell which files eslint has to lint (.githooks/lib/eslint-scope.mjs failed)."
+            return 1
+        fi
+        if [ "$(cat "$run/eslint-$1")" != "--all" ]; then
+            mapfile -d '' -t targets < "$run/eslint-$1"
+            [ "${#targets[@]}" -gt 0 ] || return 0
+        fi
+    fi
+    if ! output="$("$bin/eslint" "${targets[@]}" 2>&1)"; then
+        echo "pre-commit: blocked -- eslint failed on src/ or engine/ in the staged snapshot:"
+        printf '%s\n' "$output" | tail -40
+        return 1
+    fi
+}
 
 # public/ exports only what the app or its tests import: an export nothing here imports exists for code outside this
 # repository, and upstream's extensions are not supported.
-if ! exports_output="$(GIT_DIR="$(git -C "$toplevel" rev-parse --absolute-git-dir)" GIT_INDEX_FILE="$snapshot/.git-index" GIT_WORK_TREE="$snap_tree" node scripts/public-exports.mjs . 2>&1)"; then
-    echo "pre-commit: blocked -- $exports_output" >&2
-    exit 1
-fi
+check_exports() {
+    local output
+    if ! output="$(GIT_DIR="$git_dir" GIT_INDEX_FILE="$snap_index" GIT_WORK_TREE="$snap_tree" node scripts/public-exports.mjs . --cache "$cache/facts/public-exports" 2>&1)"; then
+        echo "pre-commit: blocked -- $output"
+        return 1
+    fi
+}
 
 # Every server route is called by the app: a route nothing here calls is served for code outside this repository.
-if ! routes_output="$(node scripts/server-routes.mjs . 2>&1)"; then
-    echo "pre-commit: blocked -- $routes_output" >&2
-    exit 1
-fi
+check_routes() {
+    local output
+    if ! output="$(node scripts/server-routes.mjs . --cache "$cache/facts/server-routes" 2>&1)"; then
+        echo "pre-commit: blocked -- $output"
+        return 1
+    fi
+}
 
 # The new code (packages/) is held to all of it: formatting, every lint rule (the st/* rules included) and strict
 # types with no errors at all, and its tests passing. Unlike the old code, there's no baseline to stay under.
-if [ -d packages ]; then
-    if ! packages_output="$(npx vp check packages 2>&1)"; then
-        echo "pre-commit: blocked -- 'vp check packages' failed in the staged snapshot:" >&2
-        printf '%s\n' "$packages_output" | tail -40 >&2
-        exit 1
+check_packages() {
+    local output
+    if ! output="$("$bin/vp" check packages 2>&1)"; then
+        echo "pre-commit: blocked -- 'vp check packages' failed in the staged snapshot:"
+        printf '%s\n' "$output" | tail -40
+        return 1
     fi
-    if ! packages_output="$(npx vp test run 2>&1)"; then
-        echo "pre-commit: blocked -- the packages' tests failed in the staged snapshot:" >&2
-        printf '%s\n' "$packages_output" | tail -40 >&2
-        exit 1
+}
+
+check_tests() {
+    local output
+    if ! output="$("$bin/vp" test run 2>&1)"; then
+        echo "pre-commit: blocked -- the packages' tests failed in the staged snapshot:"
+        printf '%s\n' "$output" | tail -40
+        return 1
     fi
+}
+
+# Runs a check, keeping what it prints in $run/<name>.out and its status in $run/<name>.status. The check doesn't
+# hold the lock: a process it leaves behind can't block the next commit.
+measure() {
+    local name="$1" start="$EPOCHREALTIME" status=0
+    shift
+    "$@" > "$run/$name.out" 2>&1 9>&- || status=$?
+    echo "$status" > "$run/$name.status"
+    if [ -n "${ST_PRECOMMIT_TIMES:-}" ]; then
+        awk -v name="$name" -v start="$start" -v end="$EPOCHREALTIME" 'BEGIN { printf "pre-commit: %s %.2fs\n", name, end - start }' >&2
+    fi
+    return "$status"
+}
+
+pids=()
+[ "$run_eslint" -eq 1 ] && { measure eslint check_eslint changed & pids+=($!); }
+if [ "$run_tsc" -eq 1 ] && [ "$run_eslint" -eq 1 ] && [ -n "$passed" ]; then
+    # The type-aware files eslint lints depend on the graph dangling-refs writes for the staged tree.
+    (
+        measure tsc check_tsc || true
+        graph=""
+        [ "$(cat "$run/tsc.status")" -le 1 ] && graph="$cache/tsc.tsbuildinfo"
+        measure eslint-types check_eslint typed "$graph"
+    ) &
+    pids+=($!)
+elif [ "$run_tsc" -eq 1 ]; then
+    measure tsc check_tsc &
+    pids+=($!)
+fi
+[ "$run_cycles" -eq 1 ] && { measure cycles check_cycles & pids+=($!); }
+[ "$run_exports" -eq 1 ] && { measure exports check_exports & pids+=($!); }
+[ "$run_routes" -eq 1 ] && { measure routes check_routes & pids+=($!); }
+[ "$run_packages" -eq 1 ] && { measure packages check_packages & pids+=($!); }
+[ "$run_tests" -eq 1 ] && { measure tests check_tests & pids+=($!); }
+for pid in "${pids[@]}"; do
+    wait "$pid" || true
+done
+
+blocked=0
+for name in tsc cycles eslint eslint-types exports routes packages tests; do
+    [ -f "$run/$name.status" ] || continue
+    if [ "$(cat "$run/$name.status")" -ne 0 ]; then
+        cat "$run/$name.out" >&2
+        blocked=1
+    fi
+done
+if [ "$blocked" -ne 0 ]; then
+    exit 1
 fi
 
+record_pass
 exit 0

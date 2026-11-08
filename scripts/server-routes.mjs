@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
+import { cacheArgument, fileFacts, uncachedFacts } from './file-facts.mjs';
+
 /** The modules that mount the server's routers on the app. */
 const ENTRY_FILES = ['src/server-main.js', 'src/server-startup.js'];
 
@@ -179,13 +181,40 @@ export function serverRoutes(root) {
  */
 
 /**
+ * A string of a file, and whether it is the path argument of a route's registration (`router.post('/x', ...)`); or a
+ * template, as its head and the literal text after each `${...}`.
+ * @typedef {{ text: string, registration: boolean } | { head: string, spans: string[] }} Literal
+ */
+
+/**
+ * @param {string} file
+ * @param {string} text
+ * @returns {Literal[]}
+ */
+function literalsOf(file, text) {
+    const kind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : file.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+    /** @type {Literal[]} */
+    const literals = [];
+    walk(ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind), node => {
+        if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+            const call = memberCall(node.parent);
+            literals.push({ text: node.text, registration: call !== null && call.args[0] === node && (METHODS.has(call.method) || call.method === 'use') });
+        } else if (ts.isTemplateExpression(node)) {
+            literals.push({ head: node.head.text, spans: node.templateSpans.map(span => span.literal.text) });
+        }
+    });
+    return literals;
+}
+
+/**
  * The paths the app's code names: the page (public/, packages/) and the server, which hands the page URLs of its own.
  * Tests don't count, and neither does a route's own registration. Of the server's templates, a suffix is a URL of
  * another server.
  * @param {string} root
+ * @param {string|null} cache Directory to keep each file's literals in between runs
  * @returns {{ named: Named[], strings: Set<string> }}
  */
-function namedPaths(root) {
+function namedPaths(root, cache) {
     /** @type {Named[]} */
     const named = [];
     const strings = new Set();
@@ -199,24 +228,25 @@ function namedPaths(root) {
         ...sourceFiles(path.join(root, 'packages'), /\.tsx?$/),
         ...sourceFiles(path.join(root, 'src'), /\.m?js$/),
     ];
+    const facts = cache ? fileFacts(cache, `${fs.readFileSync(fileURLToPath(import.meta.url), 'utf8')}\0${ts.version}`) : uncachedFacts();
     for (const file of code) {
         const own = new Set();
-        walk(parse(file), node => {
-            if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-                own.add(node.text);
-                const call = memberCall(node.parent);
-                const registers = file.startsWith(server) && call !== null && call.args[0] === node && (METHODS.has(call.method) || call.method === 'use');
-                if (registers) return;
-                strings.add(node.text);
-                add(node.text, false, own);
-            } else if (ts.isTemplateExpression(node)) {
-                const holes = node.templateSpans.map(span => HOLE + span.literal.text).join('');
-                const suffix = node.head.text === '' && node.templateSpans[0].literal.text.startsWith('/');
-                if (suffix && file.startsWith(server)) return;
-                add(suffix ? holes.slice(1) : node.head.text + holes, suffix, own);
+        const fromServer = file.startsWith(server);
+        for (const literal of facts.factsOf(file, text => literalsOf(file, text))) {
+            if ('text' in literal) {
+                own.add(literal.text);
+                if (fromServer && literal.registration) continue;
+                strings.add(literal.text);
+                add(literal.text, false, own);
+            } else {
+                const holes = literal.spans.map(text => HOLE + text).join('');
+                const suffix = literal.head === '' && literal.spans[0].startsWith('/');
+                if (suffix && fromServer) continue;
+                add(suffix ? holes.slice(1) : literal.head + holes, suffix, own);
             }
-        });
+        }
     }
+    facts.prune();
     for (const file of sourceFiles(path.join(root, 'public'), /\.html$/)) {
         const own = new Set();
         for (const match of fs.readFileSync(file, 'utf8').matchAll(/["'`](\/[^"'`\s<>]*)["'`]/g)) {
@@ -267,10 +297,11 @@ function names(route, name, strings, open) {
 /**
  * Every route nothing in the app calls: one served only for code outside this repository.
  * @param {string} root Repository root
+ * @param {string|null} [cache] Directory to keep each file's literals in between runs
  * @returns {string[]} `METHOD path<TAB>file:line` for each such route
  */
-export function uncalledServerRoutes(root) {
-    const { named, strings } = namedPaths(root);
+export function uncalledServerRoutes(root, cache = null) {
+    const { named, strings } = namedPaths(root, cache);
     const whole = named.filter(n => !n.suffix);
     const suffixes = named.filter(n => n.suffix);
     /** @type {string[]} */
@@ -286,8 +317,9 @@ export function uncalledServerRoutes(root) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    const root = path.resolve(process.argv[2] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
-    const uncalled = uncalledServerRoutes(root);
+    const { cache, rest } = cacheArgument(process.argv.slice(2));
+    const root = path.resolve(rest[0] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
+    const uncalled = uncalledServerRoutes(root, cache);
     if (uncalled.length) {
         console.error('Server routes nothing in the app calls:');
         for (const line of uncalled) console.error(`  ${line.replace('\t', ' (')})`);
