@@ -311,10 +311,12 @@ bookmarks, chats); worldbuilding is their composition plus what is specific to l
 - **Server**: one action per user action, answering with everything the page needs to draw its result; filters
   compile to index reads; a selection is a filter plus exceptions, so a bulk change is one action at any size; looks
   are resolved and sanitized into one stylesheet of per-thing classes. Activation reads keys exactly as before.
-- **Page**: built on interact (`~/git/interact`) and keybinds. Worldbuilding's views are interact components with
-  extensions; the app supplies sources over its server index, so nothing beyond what's on screen is loaded. A gap in
-  interact is fixed as a general extension point there, never as a worldbuilding feature. The page holds only what is
-  on screen. One name renderer
+- **Page**: built on interact's small modules (`~/git/interact/packages/list`) and keybinds, wired by hand.
+  Worldbuilding implements the modules' own abstractions over its server index, so nothing beyond what's on screen is
+  loaded. The overview's answer is the top-level entries near the scroll position, each with its region truncated at
+  every level; nested regions are lists composed inside their head's item. A gap in interact is fixed there as a new
+  module or a general abstraction, never as a worldbuilding feature. The page holds only what is on screen. One name
+  renderer
   draws every name in the app, so a look applies everywhere at once.
 - When this lands, the old World Info drawer (`public/scripts/world-info.js`) and everything only it uses are removed
   in the same change.
