@@ -42,3 +42,29 @@ count is the one it was made under.
 Choices stored as positions (by code before this change) are converted once by
 `scripts/convert-greeting-choices.mjs`, run with the server stopped: each becomes the id of the greeting at that
 position.
+
+## An opening's card greeting
+
+A stored opening that came from a card greeting names that greeting's id in `extra.greeting_id`, written with the
+opening and never worked out again. The tree's openings the server sends carry the id on each card greeting not yet
+stored, so whatever the page stores from one keeps it:
+- the greeting stored with what goes under it, or with a bookmark;
+- the greeting edited in the chat, stored as its edited text;
+- an alternative added to it, and a duplicate of an opening that has one, which keep the id they were made from.
+
+An opening the user wrote with no card greeting under it (their own first message) has none.
+
+The openings are in card order: each card greeting, then the stored openings from it in the order they were stored,
+the one with the greeting's text first; after every card greeting, the openings from no greeting, and those from a
+deleted greeting, in the order they were stored. An edit to a card greeting leaves its openings with it; a delete
+leaves them as history, after the card's greetings.
+
+A chat imported from upstream, and the openings stored before this, name the card greeting whose text their first
+message has when they're imported or converted (`scripts/convert-greeting-choices.mjs`); this is the only time a
+text is matched.
+
+## The greeting character info shows
+
+The greeting the character info pager shows is the tab's view of that card: kept per tab and card by greeting id on
+the server, with the tab's other view state, so it stays through closing the panel and a reload. Paging is one
+request; opening a character answers with it. A shown greeting that's deleted gives way to the card's first.

@@ -19,7 +19,9 @@ setConfigFilePath(path.join(ROOT, 'default', 'config.yaml'));
 const { loadEngine } = await import('../engine/load.js');
 const { LibraryEngine } = await import('../src/library-engine.js');
 const { GREETINGS_BY_ID, STORE_DIR } = await import('../src/user-stores.js');
-const { convertGreetingChoices } = await import('../src/greeting-choice-conversion.js');
+const { convertGreetingChoices, convertOpeningOrigins } = await import('../src/greeting-choice-conversion.js');
+const { ChatEngine } = await import('../src/chat-engine.js');
+const { libraryPeople } = await import('../src/chat-people.js');
 
 const engine = loadEngine().binding;
 const users = fs.readdirSync(dataRoot, { withFileTypes: true })
@@ -27,6 +29,7 @@ const users = fs.readdirSync(dataRoot, { withFileTypes: true })
     .map(d => d.name);
 
 let converted = 0;
+let origins = 0;
 let skipped = 0;
 for (const handle of users) {
     const dir = path.join(dataRoot, handle, STORE_DIR);
@@ -38,10 +41,12 @@ for (const handle of users) {
     const lib = await LibraryEngine.open(engine, dir);
     try {
         converted += await convertGreetingChoices(lib, handle);
+        const chats = await ChatEngine.open(lib.store, libraryPeople(lib), await lib.nextIds());
+        origins += await convertOpeningOrigins(lib, chats, handle);
     } finally {
         await lib.close();
     }
     fs.writeFileSync(marker, '');
 }
 
-console.log(`Users: ${users.length} (${skipped} already converted). Remembered greetings now kept by greeting id: ${converted}.`);
+console.log(`Users: ${users.length} (${skipped} already converted). Remembered greetings now kept by greeting id: ${converted}. Openings now naming their card greeting: ${origins}.`);

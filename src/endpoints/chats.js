@@ -16,6 +16,8 @@ import { triggerAutoSave } from './settings.js';
 import { readAllSettings, writeSettingsKeys } from '../settings-store.js';
 import { readUserSettings, settingsContextOf } from '../settings-reads.js';
 import { cardGreetingsOf, openingState } from '../opening-state.js';
+import { shownGreeting } from '../tab-views.js';
+import { hashGreetingText } from '../greeting-ops.js';
 import { applyPageWrites } from '../page-writes.js';
 import { storedMessagesOf } from '../stored-messages.js';
 import { requestStore } from '../user-stores.js';
@@ -559,7 +561,7 @@ async function saveCompatChat(request, response, chat, name, chatData) {
     const isOwn = name === '' || name === own || (found !== null && await isOwnChat(chat, found));
 
     if (!isOwn && found === null) {
-        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages, metadata, actor });
+        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages, metadata, actor, ...await importedCard(chat) });
         if (!imported.ok) return { status: 400, body: { error: imported.reason } };
         if (!unique) await chats.goTo({ tree: chat.tree, node_id: imported.node_ids[imported.node_ids.length - 1] ?? null, actor });
         chat.session.answer(response, { moved: !unique });
@@ -583,7 +585,7 @@ async function saveCompatChat(request, response, chat, name, chatData) {
         : found !== null && 'bookmark' in found ? await chats.bookmarkChatId(chat.tree, found.bookmark) : await chats.conversationName(String(found?.session), String(found?.session), chat.tree);
 
     if (at === null && isOwn && messages.length > 0) {
-        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name: null, messages, metadata, actor, bookmark: false });
+        const imported = await chats.importChat({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, name: null, messages, metadata, actor, bookmark: false, ...await importedCard(chat) });
         if (!imported.ok) return { status: 400, body: { error: imported.reason } };
         const last = imported.node_ids.length ? imported.node_ids[imported.node_ids.length - 1] : null;
         await chats.goTo({ tree: chat.tree, node_id: last, actor });
@@ -715,6 +717,29 @@ async function openingsAnswerOf(request, chat) {
 
 /**
  * @param {import('../chat-request.js').ChatContext} chat
+ * @param {string} avatar
+ * @returns {Promise<{ position: number, hash: number } | null>} where the greeting the tab's character info shows is on the card
+ */
+async function greetingShownOf(chat, avatar) {
+    const tab = chat.session.header;
+    if (!tab || tab === 'none') return null;
+    const id = await shownGreeting(chat.store.lib, tab, avatar);
+    if (id === null) return null;
+    const { greetings } = await chat.store.lib.greetingModel(avatar);
+    const position = greetings.findIndex(g => g.id === id);
+    return position < 0 ? null : { position, hash: hashGreetingText(greetings[position].text) };
+}
+
+/**
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @returns {Promise<{ card?: import('../chat-engine.js').CardGreetings }>}
+ */
+async function importedCard(chat) {
+    return chat.avatar === null ? {} : { card: await cardGreetingsOf(chat.store, chat.avatar) };
+}
+
+/**
+ * @param {import('../chat-request.js').ChatContext} chat
  * @param {unknown[]} nodeIds
  */
 async function touchesOpening(chat, nodeIds) {
@@ -789,6 +814,7 @@ async function openChatAnswer(request, response, body) {
             ...common,
             ...(character ? { character } : {}),
             ...await openingsForPage(chat, String(avatar)),
+            greeting_shown: await greetingShownOf(chat, String(avatar)),
             ...await recordLastOpened(request, { character: avatar, group: null }),
         },
     };
@@ -1310,7 +1336,7 @@ async function importChatText(chat, chatText, name) {
     const lines = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
     const header = lines.length && !('mes' in lines[0]) ? lines.shift() : null;
     const imported = await chat.store.chats.importChat({
-        tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages: lines, metadata: header?.chat_metadata, actor: chat.session.actor(),
+        tree: chat.tree, treeSpeaker: chat.treeSpeaker, name, messages: lines, metadata: header?.chat_metadata, actor: chat.session.actor(), ...await importedCard(chat),
     });
     return imported.ok ? chat.store.chats.bookmarkChatId(chat.tree, /** @type {bigint} */ (imported.bookmark)) : null;
 }

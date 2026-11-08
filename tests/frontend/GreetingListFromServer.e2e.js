@@ -403,7 +403,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const stored = await page.evaluate(async ({ avatar, name, texts }) => {
             // @ts-ignore
             const headers = stTest.context().getRequestHeaders();
-            const contents = texts.map(mes => ({ name, is_user: false, is_system: false, send_date: Date.now(), mes, extra: {} }));
+            const contents = texts.map((mes, i) => ({ name, is_user: false, is_system: false, send_date: Date.now(), mes, extra: { greeting_id: i } }));
             const selected = await fetch('/api/chats/message/select', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, opening: { refs: ['opening'], messages: [contents[0]] } }) });
             if (!selected.ok) return false;
             const first = (await selected.json()).stored.find((/** @type {any} */ x) => x.ref === 'opening').node_id;
@@ -561,11 +561,10 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[2], y);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[1]]);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[1]]);
         const opening = await openingSwipes(page);
-        expect(isStoredId(opening.nodeIds[0])).toBe(true);
-        expect(opening.nodeIds.slice(1).every(id => !isStoredId(id))).toBe(true);
-        expect(opening.swipe_id).toBe(0);
+        expect(opening.nodeIds.map(isStoredId)).toEqual([false, true, false]);
+        expect(opening.swipe_id).toBe(1);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y);
     });
 
@@ -586,8 +585,8 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[2], y);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[1]]);
-        expect(isStoredId((await openingSwipes(page)).nodeIds[0])).toBe(true);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[1]]);
+        expect(isStoredId((await openingSwipes(page)).nodeIds[1])).toBe(true);
     });
 
     test('a greeting swiped to, edited in the chat, then the same greeting on the card edited to match: one alternative, shown at once, no hole', async ({ page }) => {
@@ -604,10 +603,10 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[1], y);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[2]]);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[2]]);
         const opening = await openingSwipes(page);
-        expect(opening.swipe_id).toBe(0);
-        expect(isStoredId(opening.nodeIds[0])).toBe(true);
+        expect(opening.swipe_id).toBe(1);
+        expect(isStoredId(opening.nodeIds[1])).toBe(true);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y);
     });
 
@@ -623,7 +622,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[2], `${y}\n`);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([y, g[0], g[1]]);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[1]]);
     });
 
     test('list delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {

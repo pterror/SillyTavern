@@ -777,44 +777,53 @@ export class ChatEngine {
     }
 
     /**
-     * @param {{ message: Record<string, any> }[]} rows
-     * @param {Record<string, any>[]} cardGreetings
+     * @param {{ id: bigint, stored: any, message: Record<string, any> }[]} rows
+     * @param {CardGreetings} card
+     * @returns {({ row: { id: bigint, stored: any, message: Record<string, any> } } | { greeting: Record<string, any> })[]}
      */
-    unstoredGreetings(rows, cardGreetings) {
+    openingsInOrder(rows, card) {
         const shownIdentity = (/** @type {Record<string, any>} */ m) => identityOf({ ...m, mes: typeof m?.mes === 'string' ? m.mes.trim() : m?.mes });
+        const groupOf = new Map(card.ids.map((id, k) => [id, k]));
         const seen = new Set(rows.map(r => shownIdentity(r.message)));
-        const out = [];
-        for (const greeting of Array.isArray(cardGreetings) ? cardGreetings : []) {
+        /** @type {{ group: number, rank: number, seq: number, entry: any }[]} */
+        const entries = rows.map((row, seq) => {
+            const from = row.message?.extra?.greeting_id;
+            const group = groupOf.get(from) ?? Infinity;
+            const own = group !== Infinity && shownIdentity(row.message) === shownIdentity(card.greetings[group]);
+            return { group, rank: own ? 0 : 1, seq, entry: { row } };
+        });
+        card.greetings.forEach((greeting, group) => {
             const o = storedForm(greeting);
             const key = shownIdentity(o);
-            if (seen.has(key)) continue;
+            if (seen.has(key)) return;
             seen.add(key);
-            out.push(o);
-        }
-        return out;
+            o.extra = { ...(o.extra ?? {}), greeting_id: card.ids[group] };
+            entries.push({ group, rank: 0, seq: -1, entry: { greeting: o } });
+        });
+        entries.sort((x, y) => x.group - y.group || x.rank - y.rank || x.seq - y.seq);
+        return entries.map(e => e.entry);
     }
 
     /**
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Actor} p.actor
-     * @param {{ offset?: number, limit?: number }} [p.range]
+     * @param {{ offset?: number, limit?: number, unstored?: boolean }} [p.range] unstored: every card greeting no stored opening holds, each with its `index`
      * @param {CardGreetings} [p.card]
      */
     async openingAlternatives({ tree, actor, range = {}, card = NO_GREETINGS }) {
         const hasSavedChats = (await this.store.chatRead('children', { tree, limit: 1 })).ids.length > 0;
         const rows = await this.openings(tree);
-        const virtual = this.unstoredGreetings(rows, card.greetings);
+        const order = this.openingsInOrder(rows, card);
         const { user, session } = await this.knownActorIds(actor);
         const lands = await this.store.chatRead('landing', { tree, ...(session === null ? {} : { session }), ...(user === null ? {} : { user }) });
-        const all = [
-            ...rows.map(r => ({ ...alternativeEntry(this.externalId(r.stored), r.message, false), is_system: !!r.message?.is_system })),
-            ...virtual.map(o => alternativeEntry(/** @type {any} */ (null), o, false)),
-        ];
+        const all = order.map(e => ('row' in e
+            ? { ...alternativeEntry(this.externalId(e.row.stored), e.row.message, false), is_system: !!e.row.message?.is_system }
+            : alternativeEntry(/** @type {any} */ (null), e.greeting, false)));
         let defaultIndex = -1;
         if (lands !== null) {
             const shown = (await this.store.chatRead('path', { tree, at: lands }))[0];
-            defaultIndex = rows.findIndex(r => r.id === shown);
+            defaultIndex = order.findIndex(e => 'row' in e && e.row.id === shown);
         } else {
             const chosen = session === null ? null : await this.cardChoice(session, tree);
             const kept = chosen !== null && chosen.epoch === card.defaultEpoch && card.ids.includes(chosen.id);
@@ -822,21 +831,18 @@ export class ChatEngine {
             if (at >= 0) defaultIndex = all.findIndex(o => o.mes === card.greetings[at].mes);
         }
         if (defaultIndex < 0) defaultIndex = 0;
+        const flagged = (/** @type {Record<string, any>} */ entry, /** @type {number} */ i) => {
+            const e = order[i];
+            return 'row' in e && e.row.stored.itemized ? { ...entry, extra: { ...(entry.extra && typeof entry.extra === 'object' ? entry.extra : {}), [ITEMIZED_PROMPT_FLAG]: true } } : entry;
+        };
+        const answer = { has_saved_chats: hasSavedChats, total: all.length, stored: rows.length, default_index: defaultIndex };
+        if (range.unstored === true) {
+            return { ...answer, alternatives: all.flatMap((entry, index) => ('greeting' in order[index] ? [{ ...entry, index }] : [])) };
+        }
         const width = Number.isInteger(range.limit) ? /** @type {number} */ (range.limit) : 11;
         const from = Number.isInteger(range.offset) ? Math.max(0, /** @type {number} */ (range.offset)) : Math.max(0, defaultIndex - Math.floor(width / 2));
         const to = Math.min(all.length, from + width);
-        const alternatives = all.slice(from, to).map((entry, i) => {
-            const row = rows[from + i];
-            return row?.stored.itemized ? { ...entry, extra: { ...(entry.extra && typeof entry.extra === 'object' ? entry.extra : {}), [ITEMIZED_PROMPT_FLAG]: true } } : entry;
-        });
-        return {
-            has_saved_chats: hasSavedChats,
-            total: all.length,
-            stored: rows.length,
-            default_index: defaultIndex,
-            offset: from,
-            alternatives,
-        };
+        return { ...answer, offset: from, alternatives: all.slice(from, to).map((entry, k) => flagged(entry, from + k)) };
     }
 
     /**
@@ -1732,9 +1738,16 @@ export class ChatEngine {
      * @param {Record<string, unknown>} [p.metadata]
      * @param {Actor} p.actor
      * @param {boolean} [p.bookmark]
+     * @param {CardGreetings} [p.card] the character's greetings: a first message with one's text is stored as from it
      * @returns {Promise<{ ok: true, bookmark: bigint | null, name: string | null, node_ids: string[] } | { ok: false, reason: string }>}
      */
-    async importChat({ tree, treeSpeaker, name, messages, metadata, actor, bookmark = true }) {
+    async importChat({ tree, treeSpeaker, name, messages, metadata, actor, bookmark = true, card = NO_GREETINGS }) {
+        const fromCard = (/** @type {Record<string, any>} */ content) => {
+            if (content?.is_user || Number.isInteger(content?.extra?.greeting_id)) return content;
+            const text = typeof content?.mes === 'string' ? content.mes.trim() : null;
+            const at = text === null ? -1 : card.greetings.findIndex(g => g.mes.trim() === text);
+            return at < 0 ? content : { ...content, extra: { ...(content.extra ?? {}), greeting_id: card.ids[at] } };
+        };
         const shown = await this.serialized(tree, async () => {
             const records = [];
             const { user } = await this.actorIds({ user: actor.user }, records);
@@ -1746,7 +1759,8 @@ export class ChatEngine {
             let written = 0;
             for (const msg of messages) {
                 const level = await this.level(tree, parent);
-                const { contents, selected } = alternativesOf(msg);
+                const { contents: given, selected } = alternativesOf(msg);
+                const contents = parent === null ? given.map(fromCard) : given;
                 /** @type {bigint | null} */
                 let pick = null;
                 for (const [k, content] of contents.entries()) {

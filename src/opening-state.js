@@ -49,10 +49,9 @@ export async function cardGreetingsOf(store, avatar) {
  */
 export async function openingState({ store, tree, actor, avatar }) {
     const card = await cardGreetingsOf(store, avatar);
-    const read = (/** @type {{ offset?: number, limit?: number }} */ range) => store.chats.openingAlternatives({ tree, actor, range, card });
+    const read = (/** @type {{ offset?: number, limit?: number, unstored?: boolean }} */ range) => store.chats.openingAlternatives({ tree, actor, range, card });
     const openings = await read({});
-    const cardOnly = openings.total - openings.stored;
-    const cardOpenings = cardOnly > 0 ? await read({ offset: openings.stored, limit: cardOnly }) : null;
+    const cardOpenings = openings.total > openings.stored ? await read({ unstored: true }) : null;
     return { openings, card_openings: cardOpenings };
 }
 

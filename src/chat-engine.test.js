@@ -323,7 +323,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 }
 
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
-    test(`${kind}: a tree shows the opening the session landed on, else the card greeting it chose by id, else the card's default`, async () => {
+    test(`${kind}: a tree's openings follow their card greetings; it shows the one the session landed on, else the greeting it chose by id, else the default`, async () => {
         const store = await engine.Store.open(path.join(root, `engine-shown-opening-${kind}`));
         const chats = await ChatEngine.open(store, ivyPeople);
         const t = ivy.id;
@@ -356,9 +356,22 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 
         const [said] = (await chats.appendMessages({ tree: t, treeSpeaker: ivy, after: null, contents: [{ name: 'You', is_user: true, is_system: false, send_date: '2025-10-10T10:09:00.000Z', mes: 'hello', extra: {} }], actor })).node_ids;
         const landed = await chats.openingAlternatives({ tree: t, actor, card });
-        assert.deepEqual(landed.alternatives.map(a => a.mes), ['hello', 'Greeting 1', 'Greeting 2', 'Greeting 3']);
+        assert.deepEqual(landed.alternatives.map(a => a.mes), ['Greeting 1', 'Greeting 2', 'Greeting 3', 'hello']);
         assert.equal(landed.stored, 1);
         assert.equal(landed.alternatives[landed.default_index].node_id, said);
+        assert.deepEqual(landed.alternatives.slice(0, 3).map(a => a.extra.greeting_id), [5, 7, 9]);
+
+        const from = (/** @type {number} */ id, /** @type {string} */ mes) => ({ ...g(0), mes, extra: { greeting_id: id } });
+        for (const content of [from(9, 'Greeting 3, edited in the chat'), from(5, 'Greeting 1'), from(7, 'Greeting 2, said again'), from(4, 'From a deleted greeting')]) {
+            await chats.appendMessages({ tree: t, treeSpeaker: ivy, after: null, contents: [content], actor: { user: actor.user } });
+        }
+        const grouped = await chats.openingAlternatives({ tree: t, actor: { user: actor.user }, range: { limit: 20 }, card });
+        assert.deepEqual(grouped.alternatives.map(a => a.mes), [
+            'Greeting 1', 'Greeting 2', 'Greeting 2, said again', 'Greeting 3', 'Greeting 3, edited in the chat', 'hello', 'From a deleted greeting',
+        ]);
+        assert.deepEqual(grouped.alternatives.map(a => a.node_id === null), [false, true, false, true, false, false, false]);
+        const unstored = await chats.openingAlternatives({ tree: t, actor: { user: actor.user }, range: { unstored: true }, card });
+        assert.deepEqual(unstored.alternatives.map(a => [a.index, a.mes]), [[1, 'Greeting 2'], [3, 'Greeting 3']]);
 
         await store.close();
     });

@@ -44,11 +44,11 @@ async function createCharacter(page, name, greetings) {
  * @param {string[]} texts
  * @returns {Promise<string[]>}
  */
-async function storeOpenings(page, avatar, name, texts) {
-    return page.evaluate(async ({ avatar, name, texts }) => {
+async function storeOpenings(page, avatar, name, texts, origins = []) {
+    return page.evaluate(async ({ avatar, name, texts, origins }) => {
         // @ts-ignore
         const headers = stTest.context().getRequestHeaders();
-        const contents = texts.map(mes => ({ name, is_user: false, is_system: false, send_date: Date.now(), mes, extra: {} }));
+        const contents = texts.map((mes, i) => ({ name, is_user: false, is_system: false, send_date: Date.now(), mes, extra: Number.isInteger(origins[i]) ? { greeting_id: origins[i] } : {} }));
         const post = async (url, body) => {
             const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
             if (!response.ok) throw new Error(`${url} failed: ${response.status}`);
@@ -59,7 +59,7 @@ async function storeOpenings(page, avatar, name, texts) {
         if (contents.length === 1) return [first];
         const added = await post('/api/chats/message/alternative', { avatar_url: avatar, sibling_node_id: first, contents: contents.slice(1) });
         return [first, ...added.node_ids];
-    }, { avatar, name, texts });
+    }, { avatar, name, texts, origins });
 }
 
 /**
@@ -352,7 +352,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         const name = `ProvStoredDefault-${s}`;
         const [d, a, b] = [`Default ${s}`, `Alpha ${s}`, `Beta ${s}`];
         const avatar = await createCharacter(page, name, [d, a, b]);
-        const [dId] = await storeOpenings(page, avatar, name, [d]);
+        const [dId] = await storeOpenings(page, avatar, name, [d], [0]);
         const storedBefore = await fetchOpenings(page, avatar);
         expect(storedBefore.stored).toBe(1);
 
@@ -393,9 +393,9 @@ test.describe('provisional greeting follows greeting saves', () => {
 
         await openCharacter(page, avatar);
         const loaded = await openingState(page);
-        expect(loaded.swipes).toEqual([stored, g0, a, b]);
+        expect(loaded.swipes).toEqual([g0, a, b, stored]);
 
-        await showSwipe(page, 2, a);
+        await showSwipe(page, 1, a);
         expect((await openingState(page)).node_id.startsWith('card:')).toBe(true);
 
         const requests = recordChatRequests(page);
@@ -406,8 +406,8 @@ test.describe('provisional greeting follows greeting saves', () => {
         const after = await openingState(page);
         expect(after.length).toBe(1);
         expect(after.mes).toBe(stored);
-        expect(after.swipe_id).toBe(0);
-        expect(after.swipes).toEqual([stored, g0, b]);
+        expect(after.swipe_id).toBe(2);
+        expect(after.swipes).toEqual([g0, b, stored]);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(stored);
 
         expect(requests.writes).toEqual([]);
@@ -431,7 +431,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         const loaded = await openingState(page);
         expect(loaded.swipes).toHaveLength(62);
 
-        await showSwipe(page, 61, a);
+        await showSwipe(page, 1, a);
         const showing = await openingState(page);
         expect(showing.node_id.startsWith('card:')).toBe(true);
         expect(showing.swipes[30]).toBeNull();
@@ -444,10 +444,10 @@ test.describe('provisional greeting follows greeting saves', () => {
         const after = await openingState(page);
         expect(after.length).toBe(1);
         expect(after.mes).toBe(target);
-        expect(after.swipe_id).toBe(30);
+        expect(after.swipe_id).toBe(31);
         expect(after.swipes).toHaveLength(61);
-        expect(after.swipes[30]).toBe(target);
-        expect(after.swipes[60]).toBe(g0);
+        expect(after.swipes[31]).toBe(target);
+        expect(after.swipes[0]).toBe(g0);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(target);
 
         expect(requests.writes).toEqual([]);

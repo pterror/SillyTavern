@@ -237,3 +237,21 @@ test('an open answers each part the page asked for, the same as the part\'s own 
     assert.deepEqual((await open({ avatar_url: 'Parts.png' })).body.parts, {});
     writeAllSettings(directories, { username: 'Tester' });
 });
+
+test('a character opens with the greeting its character info shows in this tab, kept by id through other greetings\' changes', async () => {
+    await writeCharacter('Shown.png', 'Shown', 'First', { alternateGreetings: ['Second', 'Third'] });
+    const tab = newSessionKey();
+    const { showGreeting } = await import('../tab-views.js');
+    const { hashGreetingText } = await import('../greeting-ops.js');
+    assert.equal((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, null);
+    const { greetings } = await user.store.lib.greetingModel('Shown.png');
+    await showGreeting(user.store.lib, tab, 'Shown.png', greetings[2].id);
+    assert.deepEqual((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, { position: 2, hash: hashGreetingText('Third') });
+    assert.equal((await open({ avatar_url: 'Shown.png' }, newSessionKey())).body.greeting_shown, null, 'another tab has its own');
+
+    const { changeGreetings } = await import('./characters.js');
+    await changeGreetings({ directories, store: user.store, actor: null, avatar: 'Shown.png', change: { op: 'delete', position: 0, hash: hashGreetingText('First') } });
+    assert.deepEqual((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, { position: 1, hash: hashGreetingText('Third') });
+    await changeGreetings({ directories, store: user.store, actor: null, avatar: 'Shown.png', change: { op: 'delete', position: 1, hash: hashGreetingText('Third') } });
+    assert.equal((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, null, 'a deleted greeting gives way to the first');
+});

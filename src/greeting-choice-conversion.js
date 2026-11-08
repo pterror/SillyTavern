@@ -52,3 +52,37 @@ export async function convertGreetingChoices(lib, handle) {
     }
     return rewritten;
 }
+
+/**
+ * A stored first message is read as from the card greeting whose text it has, as code before origins stored none.
+ * @param {import('./library-engine.js').LibraryEngine} lib
+ * @param {import('./chat-engine.js').ChatEngine} chats
+ * @param {string} handle
+ * @returns {Promise<number>} how many openings were given their card greeting
+ */
+export async function convertOpeningOrigins(lib, chats, handle) {
+    let named = 0;
+    /** @type {string | undefined} */
+    let cursor;
+    for (;;) {
+        const page = await lib.query({ sortField: 'name', limit: PAGE, cursor, wantRows: false, wantTotal: false, wantHashes: true, includeGroups: false });
+        const avatars = /** @type {{ id: string }[]} */ (page.hashRows).map(r => r.id);
+        for (const avatar of avatars) {
+            const entity = await lib.entity(TYPE.character, avatar);
+            if (!entity) continue;
+            const greetings = greetingModelOf(entity).greetings.filter(g => g.text !== '');
+            if (!greetings.length) continue;
+            const edits = [];
+            for (const { message, stored } of await chats.openings(entity.id)) {
+                if (message?.is_user || Number.isInteger(message?.extra?.greeting_id) || typeof message?.mes !== 'string') continue;
+                const from = greetings.find(g => g.text.trim() === message.mes.trim());
+                if (from) edits.push({ node_id: chats.externalId(stored), patch: { extra: { ...(message.extra ?? {}), greeting_id: from.id } } });
+            }
+            if (!edits.length) continue;
+            const done = await chats.editMessages({ tree: entity.id, treeSpeaker: null, edits, actor: { user: handle } });
+            named += edits.length - done.refused.length;
+        }
+        if (typeof page.cursor !== 'string' || avatars.length === 0) return named;
+        cursor = page.cursor;
+    }
+}

@@ -181,17 +181,17 @@ test('a greeting that a stored opening holds is history: changing or deleting th
     const { storedForm } = await import('../src/chat-engine.js');
     await chats.appendMessages({
         tree, treeSpeaker: null, after: null,
-        contents: [storedForm({ name: 'Teller', is_user: false, mes: 'Once', extra: {}, send_date: Date.now() }), storedForm({ name: 'You', is_user: true, mes: 'go on', extra: {}, send_date: Date.now() })],
+        contents: [storedForm({ name: 'Teller', is_user: false, mes: 'Once', extra: { greeting_id: 0 }, send_date: Date.now() }), storedForm({ name: 'You', is_user: true, mes: 'go on', extra: {}, send_date: Date.now() })],
         actor: { user: user.user.profile.handle, session },
     });
     const card = await post('greetings/add', { avatar_url: 'Teller.png', append: true, text: 'Twice' }, session);
     expect(card.body.openings).toMatchObject({ total: 2, stored: 1 });
 
     const edited = await post('greetings/edit', { avatar_url: 'Teller.png', position: 0, expected_hash: card.body.hashes[0], text: 'Once upon a time' }, session);
-    expect(edited.body.openings.alternatives.map((/** @type {any} */ a) => a.mes)).toEqual(['Once', 'Once upon a time', 'Twice']);
+    expect(edited.body.openings.alternatives.map((/** @type {any} */ a) => a.mes)).toEqual(['Once upon a time', 'Once', 'Twice']);
     expect(edited.body.openings.stored).toBe(1);
 
     const deleted = await post('greetings/delete', { avatar_url: 'Teller.png', position: 0, expected_hash: edited.body.hashes[0] }, session);
-    expect(deleted.body.openings.alternatives.map((/** @type {any} */ a) => a.mes)).toEqual(['Once', 'Twice']);
+    expect(deleted.body.openings.alternatives.map((/** @type {any} */ a) => a.mes)).toEqual(['Twice', 'Once']);
     expect(shownText(deleted.body)).toBe('Once');
 });

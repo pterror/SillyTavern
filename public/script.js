@@ -214,7 +214,7 @@ import { getFocusedField, getMountedTextarea } from './scripts/live-editor/regis
 import { initChatBoxEditor, initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
-import { selectedGreetingIndex } from './scripts/greeting-pager-selection.js';
+import { pagerSelection, selectedGreetingIndex } from './scripts/greeting-pager-selection.js';
 import { initPresetManager } from './scripts/preset-manager.js';
 import { getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
@@ -5675,6 +5675,7 @@ export function chatOpenAsk(body) {
  */
 export function takeChatOpenAnswer(body, answer) {
     if (answer.group) holdGroup(answer.group);
+    if (body.avatar_url) takeShownGreeting(String(body.avatar_url), answer.greeting_shown ?? null);
     takeChatOpenParts(answer.chat, answer.parts);
     takeViews(answer.ui_views);
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
@@ -8243,7 +8244,7 @@ function setGreetingPagerGreetings(owner, greetings, defaultIndex, hashes, selec
         return;
     }
     const { index } = greetingPagerState;
-    const shown = selected ?? { owner: greetingPagerState.owner, index, hash: greetingPagerState.hashes[index] };
+    const shown = selected ?? pagerSelection({ owner: greetingPagerState.owner, index, hash: greetingPagerState.hashes[index] }, owner, owner === null ? undefined : shownGreetings.get(owner));
     greetingPagerState.owner = owner;
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
     greetingPagerState.defaults = greetings.length > 0 ? greetings.map((_, i) => i === defaultIndex) : [true];
@@ -8267,10 +8268,33 @@ function renderGreetingPager() {
  * @param {number} newIndex
  */
 function navigateGreetingPager(newIndex) {
-    const { greetings, index } = greetingPagerState;
+    const { greetings, index, owner, hashes } = greetingPagerState;
     greetings[index] = String($('#greeting_field').val());
-    greetingPagerState.index = ((newIndex % greetings.length) + greetings.length) % greetings.length;
+    const shown = ((newIndex % greetings.length) + greetings.length) % greetings.length;
+    greetingPagerState.index = shown;
     renderGreetingPager();
+    const hash = hashes[shown];
+    if (owner === null || !Number.isFinite(hash)) return;
+    shownGreetings.set(owner, { index: shown, hash });
+    void fetch('/api/characters/greetings/show', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar_url: owner, position: shown, expected_hash: hash }),
+    }).then(response => {
+        if (!response.ok) console.warn('[greetings] The shown greeting was not kept:', response.status);
+    }, error => console.warn('[greetings] The shown greeting was not kept:', error));
+}
+
+/** @type {Map<string, { index: number, hash: number }>} */
+const shownGreetings = new Map();
+
+/**
+ * @param {string} avatar
+ * @param {{ position: number, hash: number } | null} shown
+ */
+function takeShownGreeting(avatar, shown) {
+    if (shown) shownGreetings.set(avatar, { index: shown.position, hash: shown.hash });
+    else shownGreetings.delete(avatar);
 }
 
 /**

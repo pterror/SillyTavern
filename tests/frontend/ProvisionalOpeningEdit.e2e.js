@@ -89,12 +89,12 @@ test.describe('editing a card greeting in the chat', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(edited, { timeout: 10000 });
 
         await expect.poll(() => storedOpenings(page, avatar), { timeout: 10000 }).toEqual([
-            { stored: true, mes: edited },
             { stored: false, mes: g[0] },
+            { stored: true, mes: edited },
             { stored: false, mes: g[1] },
             { stored: false, mes: g[2] },
         ]);
-        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([edited, g[0], g[1], g[2]]);
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([g[0], edited, g[1], g[2]]);
         const now = await opening(page);
         expect(now.mes).toBe(edited);
         expect(now.node_id.startsWith('card:')).toBe(false);
@@ -105,7 +105,7 @@ test.describe('editing a card greeting in the chat', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(edited, { timeout: 10000 });
         const reloaded = await opening(page);
         expect(reloaded.node_id).toBe(now.node_id);
-        expect(reloaded.swipes).toEqual([edited, g[0], g[1], g[2]]);
+        expect(reloaded.swipes).toEqual([g[0], edited, g[1], g[2]]);
     });
 });
 
@@ -179,14 +179,14 @@ test.describe('editing the opening to a card greeting\'s text', () => {
         const avatar = await createCharacter(page, `DedupeStored-${s}`, g);
         await openCharacter(page, avatar);
         await editOpening(page, `Own ${s}`);
-        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([`Own ${s}`, g[0], g[1], g[2]]);
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([g[0], `Own ${s}`, g[1], g[2]]);
         await editOpening(page, g[1]);
         await expect.poll(() => storedOpenings(page, avatar), { timeout: 10000 }).toEqual([
-            { stored: true, mes: g[1] },
             { stored: false, mes: g[0] },
+            { stored: true, mes: g[1] },
             { stored: false, mes: g[2] },
         ]);
-        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([g[1], g[0], g[2]]);
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([g[0], g[1], g[2]]);
         expect((await opening(page)).mes).toBe(g[1]);
     });
 });

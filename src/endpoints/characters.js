@@ -35,7 +35,8 @@ import { savedViewsEvents } from '../saved-views.js';
 import { getAtPath, getStringHash, normalizeFav, setAtPath } from '../../public/scripts/hash-utils.js';
 import { applyGreetingsModelToCard } from '../greeting-list.js';
 import { defaultPositionOf, greetingOperation, hashGreetingText } from '../greeting-ops.js';
-import { openingState } from '../opening-state.js';
+import { cardGreetingsOf, openingState } from '../opening-state.js';
+import { showGreeting } from '../tab-views.js';
 import { withSearchTiming } from '../search-timing.js';
 import { requestStore, userStore } from '../user-stores.js';
 import { FIELD, HASH, TYPE } from '../library-engine.js';
@@ -590,7 +591,7 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
                 const chatText = ByafParser.getChatFromScenario(scenario, request.body.user_name, card.name, byafData.chatBackgrounds);
                 const [header, ...messages] = chatText.split('\n').map(line => tryParse(line)).filter(x => x);
                 const saved = await store.chats.importChat({
-                    tree: /** @type {bigint} */ (tree), treeSpeaker, name: chatName, messages, metadata: header?.chat_metadata, actor,
+                    tree: /** @type {bigint} */ (tree), treeSpeaker, name: chatName, messages, metadata: header?.chat_metadata, actor, card: await cardGreetingsOf(store, avatar),
                 });
                 if (!saved.ok) throw new Error(`The chat "${chatName}" in the BYAF file could not be stored.`);
                 if (firstChatEnd === undefined) firstChatEnd = saved.node_ids.length ? saved.node_ids[saved.node_ids.length - 1] : null;
@@ -1302,6 +1303,26 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
         return await sendGreetingChange(request, response, { op: 'delete', position, hash: expectedHash });
     } catch (error) {
         console.error('Error deleting greeting:', error);
+        return response.status(500).send({ ok: false, reason: 'internal error' });
+    }
+});
+
+router.post('/greetings/show', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        const position = Number(request.body.position);
+        const expectedHash = Number(request.body.expected_hash);
+        if (!avatar || !Number.isInteger(position) || !Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'avatar_url, position and expected_hash are required' });
+        const tab = sessionHeaderOf(request);
+        if (tab === undefined || tab === 'none') return response.status(400).send({ ok: false, reason: 'the tab has no session' });
+        const store = await requestStore(request);
+        const { greetings } = await store.lib.greetingModel(avatar);
+        const shown = greetings[position] && hashGreetingText(greetings[position].text) === expectedHash ? greetings[position] : greetings.find(g => hashGreetingText(g.text) === expectedHash);
+        if (!shown) return response.status(409).send({ ok: false, reason: 'greeting at position changed since it was loaded' });
+        await showGreeting(store.lib, tab, avatar, shown.id);
+        return response.send({ ok: true });
+    } catch (error) {
+        console.error('Error keeping the greeting shown:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
     }
 });

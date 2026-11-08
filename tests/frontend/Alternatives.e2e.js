@@ -514,7 +514,7 @@ test.describe('the alternatives of a message', () => {
         await expect.poll(async () => (await pageModel(page, avatar)).greetings).toEqual([`One edited ${s}`, g[2], g[0]]);
     });
 
-    test('a swipe added to a greeting no chat has stored is stored as its own opening: the greeting stays the card\'s, it survives a reload, and editing the greeting leaves no duplicate', async ({ page }) => {
+    test('a swipe added to a greeting no chat has stored is stored as its own opening after that greeting: the greeting stays the card\'s, it survives a reload, and editing the greeting leaves no duplicate', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`];
         const avatar = await createCharacter(page, `AltAddSwipe-${s}`, g);
@@ -531,7 +531,7 @@ test.describe('the alternatives of a message', () => {
             const answer = await response.json();
             return { stored: answer.stored, texts: answer.alternatives.map((/** @type {any} */ a) => a.mes) };
         }, avatar);
-        await expect.poll(openings).toEqual({ stored: 1, texts: [added, g[0], g[1]] });
+        await expect.poll(openings).toEqual({ stored: 1, texts: [g[0], added, g[1]] });
 
         await page.reload();
         await testSetup.awaitST({ page });
@@ -548,7 +548,7 @@ test.describe('the alternatives of a message', () => {
             return response.status;
         }, { avatar, text: `Zero edited ${s}`, hash: hashGreetingText(g[0]) });
         expect(status).toBe(200);
-        expect(await openings()).toEqual({ stored: 1, texts: [added, `Zero edited ${s}`, g[1]] });
+        expect(await openings()).toEqual({ stored: 1, texts: [`Zero edited ${s}`, added, g[1]] });
     });
 
     test('a greeting is shown in the chat from the list when that character\'s chat is open; otherwise it says why not', async ({ page }) => {

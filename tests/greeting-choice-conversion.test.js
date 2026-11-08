@@ -70,3 +70,21 @@ test('a store from before greeting ids is refused until the conversion script ha
         fs.rmSync(dataRoot, { recursive: true, force: true });
     }
 });
+
+test('a stored first message with a card greeting\'s text is given that greeting, once; one the user wrote is not', async () => {
+    const { lib, chats } = user.store;
+    const { convertOpeningOrigins } = await import('../src/greeting-choice-conversion.js');
+    await lib.writeCard(user.directories, 'r.png', JSON.stringify({
+        spec: 'chara_card_v2', spec_version: '2.0', name: 'R',
+        data: { name: 'R', description: '', first_mes: 'Hello', alternate_greetings: ['Bye'], extensions: {} },
+    }));
+    const [tree] = await user.store.people.trees([{ avatar: 'r.png' }]);
+    for (const content of [{ name: 'You', is_user: true, mes: 'Hello', extra: {} }, { name: 'R', is_user: false, mes: ' Bye ', extra: {} }, { name: 'R', is_user: false, mes: 'Mine', extra: {} }]) {
+        await chats.appendMessages({ tree, treeSpeaker: null, after: null, contents: [content], actor: { user: 'u' } });
+    }
+    expect(await convertOpeningOrigins(lib, chats, 'u')).toBe(1);
+    const { greetings } = await lib.greetingModel('r.png');
+    const origins = (await chats.openings(tree)).map(o => [o.message.mes, o.message.extra?.greeting_id ?? null]);
+    expect(origins).toEqual([['Hello', null], [' Bye ', greetings[1].id], ['Mine', null]]);
+    expect(await convertOpeningOrigins(lib, chats, 'u')).toBe(0);
+});

@@ -22,3 +22,13 @@ export function selectedGreetingIndex(selected, owner, hashes, length) {
     }
     return Math.max(0, Math.min(index, length - 1));
 }
+
+/**
+ * @param {GreetingSelection} current what the pager shows now
+ * @param {string|null} owner the card the pager is filled with
+ * @param {{ index: number, hash: number } | undefined} kept the greeting the tab keeps shown for that card
+ * @returns {GreetingSelection}
+ */
+export function pagerSelection(current, owner, kept) {
+    return current.owner !== owner && kept ? { owner, ...kept } : current;
+}

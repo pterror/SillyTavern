@@ -7,6 +7,7 @@
  * @property {string|number} [send_date]
  * @property {Record<string, unknown>} [extra]
  * @property {string|null} [node_id]
+ * @property {number} [index] its place among the tree's openings, in a list of the card's unstored greetings
  */
 
 /**
@@ -62,7 +63,7 @@ export function openingView(state, page) {
      * @param {number} start
      */
     const place = (window, start) => (window?.alternatives ?? []).forEach((alt, k) => {
-        const at = start + k;
+        const at = Number.isInteger(alt.index) ? /** @type {number} */ (alt.index) : start + k;
         if (at < 0 || at >= total) return;
         const name = alt.name ?? page.speaker;
         swipes[at] = alt.mes;
