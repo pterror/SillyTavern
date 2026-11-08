@@ -14,17 +14,28 @@ const KEPT = new Set(['public/scripts/char-data.js\tdefault']);
 const SKIPPED_DIRECTORIES = new Set(['node_modules', 'lib', '.git', 'data', 'dist', 'backups', '.claude']);
 
 /**
- * The .js and .mjs files git tracks under `dir`, so what isn't the repository's (an installed extension) isn't read.
+ * The work tree's files that git tracks, so what isn't the repository's (an installed extension) isn't read.
+ * @type {import('./file-facts.mjs').Files}
+ */
+const workTree = {
+    list(dir) {
+        if (!fs.existsSync(dir)) return [];
+        const listed = execFileSync('git', ['ls-files', '-z', '--', '.'], { cwd: dir, encoding: 'utf8', maxBuffer: 1 << 28 });
+        return listed.split('\0').filter(Boolean).map(file => path.join(dir, file)).filter(file => fs.existsSync(file));
+    },
+    read: file => fs.readFileSync(file, 'utf8'),
+    exists: file => fs.existsSync(file),
+};
+
+/**
+ * The .js and .mjs files under `dir`.
  * @param {string} dir
+ * @param {import('./file-facts.mjs').Files} [files]
  * @returns {string[]}
  */
-export function jsFiles(dir) {
-    if (!fs.existsSync(dir)) return [];
-    const listed = execFileSync('git', ['ls-files', '-z', '--', '.'], { cwd: dir, encoding: 'utf8', maxBuffer: 1 << 28 });
-    return listed.split('\0')
-        .filter(file => /\.m?js$/.test(file) && !path.dirname(file).split('/').some(part => SKIPPED_DIRECTORIES.has(part)))
-        .map(file => path.join(dir, file))
-        .filter(file => fs.existsSync(file));
+export function jsFiles(dir, files = workTree) {
+    return files.list(dir)
+        .filter(file => /\.m?js$/.test(file) && !path.dirname(path.relative(dir, file)).split(path.sep).some(part => SKIPPED_DIRECTORIES.has(part)));
 }
 
 /**
@@ -168,12 +179,13 @@ function moduleFacts(source) {
 
 /**
  * @param {string} root Repository root
- * @param {string|null} [cache] Directory to keep each file's facts in between runs
+ * @param {{ cache?: string|null, files?: import('./file-facts.mjs').Files }} [options] `cache`: a directory to keep each
+ *   file's facts in between runs
  */
-function analyze(root, cache = null) {
+function analyze(root, { cache = null, files: source = workTree } = {}) {
     const publicDirectory = path.join(root, 'public');
-    const files = [...jsFiles(publicDirectory), ...jsFiles(path.join(root, 'src')), ...jsFiles(path.join(root, 'tests'))];
-    const facts = cache ? fileFacts(cache, `${fs.readFileSync(fileURLToPath(import.meta.url), 'utf8')}\0${espree.version}`) : uncachedFacts();
+    const files = [...jsFiles(publicDirectory, source), ...jsFiles(path.join(root, 'src'), source), ...jsFiles(path.join(root, 'tests'), source)];
+    const facts = cache ? fileFacts(cache, `${source.read(fileURLToPath(import.meta.url))}\0${espree.version}`) : uncachedFacts();
 
     /**
      * @param {string} from
@@ -186,14 +198,14 @@ function analyze(root, cache = null) {
             target = path.join(publicDirectory, specifier);
         } else if (specifier.startsWith('.')) {
             target = path.resolve(path.dirname(from), specifier);
-            if (from.startsWith(path.join(root, 'tests', 'frontend')) && !fs.existsSync(target.split('?')[0])) {
+            if (from.startsWith(path.join(root, 'tests', 'frontend')) && !source.exists(target.split('?')[0])) {
                 target = path.join(publicDirectory, specifier);
             }
         } else {
             return null;
         }
         target = target.split('?')[0];
-        return fs.existsSync(target + '.js') && !fs.existsSync(target) ? target + '.js' : target;
+        return source.exists(target + '.js') && !source.exists(target) ? target + '.js' : target;
     };
 
     /** @type {Map<string, Set<string>>} */
@@ -215,7 +227,7 @@ function analyze(root, cache = null) {
     };
 
     for (const file of files) {
-        const module = facts.factsOf(file, moduleFacts);
+        const module = facts.factsOf(file, source.read(file), moduleFacts);
         if (!module) continue;
         importer = file;
         for (const [specifier, name] of module.uses) use(resolve(file, specifier), name);
@@ -301,22 +313,37 @@ export function danglingPublicImports(root, analysis = analyze(root)) {
     return dangling.sort();
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    const { cache, rest } = cacheArgument(process.argv.slice(2));
-    const root = path.resolve(rest[0] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
-    const analysis = analyze(root, cache);
+/**
+ * What `public/` exports that nothing imports, and imports of what it doesn't export, as lines to print.
+ * @param {string} root Repository root
+ * @param {{ cache?: string|null, files?: import('./file-facts.mjs').Files }} [options]
+ * @returns {string[]}
+ */
+export function publicExportProblems(root, options) {
+    const analysis = analyze(root, options);
+    const lines = [];
     const unused = unusedPublicExports(root, analysis);
     if (unused.length) {
-        console.error('Exports of public/ that nothing in the app or its tests imports:');
-        for (const line of unused) console.error(`  ${line.replace('\t', ': ')}`);
+        lines.push('Exports of public/ that nothing in the app or its tests imports:');
+        for (const line of unused) lines.push(`  ${line.replace('\t', ': ')}`);
     }
     const dangling = danglingPublicImports(root, analysis);
     if (dangling.length) {
-        console.error('Names imported from public/ that the module does not export:');
+        lines.push('Names imported from public/ that the module does not export:');
         for (const line of dangling) {
             const [file, name, from] = line.split('\t');
-            console.error(`  ${file}: ${name} (imported by ${from})`);
+            lines.push(`  ${file}: ${name} (imported by ${from})`);
         }
     }
-    if (unused.length || dangling.length) process.exit(1);
+    return lines;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    const { cache, rest } = cacheArgument(process.argv.slice(2));
+    const root = path.resolve(rest[0] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
+    const lines = publicExportProblems(root, { cache });
+    if (lines.length) {
+        console.error(lines.join('\n'));
+        process.exitCode = 1;
+    }
 }

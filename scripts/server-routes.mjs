@@ -19,37 +19,54 @@ const SKIPPED = new Set(['node_modules', 'lib', '.git', '.claude', 'data', 'dist
 const HOLE = '\0';
 
 /**
- * @param {string} dir
- * @param {RegExp} pattern
- * @param {string[]} [out]
- * @returns {string[]}
+ * The work tree's files, without what SKIPPED names.
+ * @type {import('./file-facts.mjs').Files}
  */
-function sourceFiles(dir, pattern, out = []) {
-    if (!fs.existsSync(dir)) return out;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-            if (!SKIPPED.has(entry.name)) sourceFiles(full, pattern, out);
-        } else if (pattern.test(entry.name) && !/\.(test|e2e)\.[jt]sx?$/.test(entry.name)) {
-            out.push(full);
+const workTree = {
+    list(dir) {
+        if (!fs.existsSync(dir)) return [];
+        /** @type {string[]} */
+        const out = [];
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (!SKIPPED.has(entry.name)) out.push(...workTree.list(full));
+            } else {
+                out.push(full);
+            }
         }
-    }
-    return out;
-}
-
-/** @type {Map<string, ts.SourceFile>} */
-const parsed = new Map();
+        return out;
+    },
+    read: file => fs.readFileSync(file, 'utf8'),
+    exists: file => fs.existsSync(file),
+};
 
 /**
+ * @param {import('./file-facts.mjs').Files} files
+ * @param {string} dir
+ * @param {RegExp} pattern
+ * @returns {string[]}
+ */
+function sourceFiles(files, dir, pattern) {
+    return files.list(dir).filter(file => !path.relative(dir, file).split(path.sep).slice(0, -1).some(part => SKIPPED.has(part))
+        && pattern.test(path.basename(file)) && !/\.(test|e2e)\.[jt]sx?$/.test(path.basename(file)));
+}
+
+/** @type {WeakMap<import('./file-facts.mjs').Files, Map<string, ts.SourceFile>>} */
+const parsed = new WeakMap();
+
+/**
+ * @param {import('./file-facts.mjs').Files} files
  * @param {string} file
  * @returns {ts.SourceFile}
  */
-function parse(file) {
-    let source = parsed.get(file);
+function parse(files, file) {
+    if (!parsed.has(files)) parsed.set(files, new Map());
+    let source = parsed.get(files).get(file);
     if (!source) {
         const kind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : file.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS;
-        source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, kind);
-        parsed.set(file, source);
+        source = ts.createSourceFile(file, files.read(file), ts.ScriptTarget.Latest, true, kind);
+        parsed.get(files).set(file, source);
     }
     return source;
 }
@@ -93,11 +110,12 @@ function segmentsOf(p) {
 
 /**
  * The names a module binds to `express.Router()`.
+ * @param {import('./file-facts.mjs').Files} files
  * @param {string} file
  */
-function routersOf(file) {
+function routersOf(files, file) {
     const names = new Set();
-    walk(parse(file), node => {
+    walk(parse(files, file), node => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
             && ts.isCallExpression(node.initializer) && node.initializer.expression.getText() === 'express.Router') {
             names.add(node.name.text);
@@ -116,21 +134,22 @@ function routersOf(file) {
 
 /**
  * The routes `router` of `file` registers under `prefix`, the routers it mounts included.
+ * @param {import('./file-facts.mjs').Files} files
  * @param {string} file
  * @param {string} router
  * @param {string} prefix
  * @param {Route[]} out
  */
-function routesOfRouter(file, router, prefix, out) {
-    const source = parse(file);
-    const local = routersOf(file);
+function routesOfRouter(files, file, router, prefix, out) {
+    const source = parse(files, file);
+    const local = routersOf(files, file);
     walk(source, node => {
         const call = memberCall(node);
         if (!call || call.object !== router || call.first === null) return;
         if (METHODS.has(call.method)) {
             out.push({ method: call.method.toUpperCase(), path: joinPath(prefix, call.first), file, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
         } else if (call.method === 'use' && call.args[1] && ts.isIdentifier(call.args[1]) && local.has(call.args[1].text)) {
-            routesOfRouter(file, call.args[1].text, joinPath(prefix, call.first), out);
+            routesOfRouter(files, file, call.args[1].text, joinPath(prefix, call.first), out);
         }
     });
 }
@@ -139,14 +158,15 @@ function routesOfRouter(file, router, prefix, out) {
  * Every route the server serves: each one the app registers, and each one of a router a module exports by name and the
  * app mounts. Middleware the app `use`s is not a route.
  * @param {string} root Repository root
+ * @param {import('./file-facts.mjs').Files} [files]
  * @returns {Route[]}
  */
-export function serverRoutes(root) {
+export function serverRoutes(root, files = workTree) {
     /** @type {Route[]} */
     const routes = [];
     for (const entry of ENTRY_FILES) {
         const file = path.join(root, entry);
-        const source = parse(file);
+        const source = parse(files, file);
         /** @type {Map<string, { file: string, name: string }>} */
         const imported = new Map();
         for (const statement of source.statements) {
@@ -164,7 +184,7 @@ export function serverRoutes(root) {
                 routes.push({ method: call.method.toUpperCase(), path: call.first, file, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
             } else if (call.method === 'use' && call.args[1] && ts.isIdentifier(call.args[1])) {
                 const router = imported.get(call.args[1].text);
-                if (router && fs.existsSync(router.file) && routersOf(router.file).has(router.name)) routesOfRouter(router.file, router.name, call.first, routes);
+                if (router && files.exists(router.file) && routersOf(files, router.file).has(router.name)) routesOfRouter(files, router.file, router.name, call.first, routes);
             }
         });
     }
@@ -212,9 +232,10 @@ function literalsOf(file, text) {
  * another server.
  * @param {string} root
  * @param {string|null} cache Directory to keep each file's literals in between runs
+ * @param {import('./file-facts.mjs').Files} files
  * @returns {{ named: Named[], strings: Set<string> }}
  */
-function namedPaths(root, cache) {
+function namedPaths(root, cache, files) {
     /** @type {Named[]} */
     const named = [];
     const strings = new Set();
@@ -224,15 +245,15 @@ function namedPaths(root, cache) {
         if (p.startsWith('/') && !p.startsWith('//')) named.push({ segments: segmentsOf(p), suffix, strings: own });
     };
     const code = [
-        ...sourceFiles(path.join(root, 'public'), /\.m?js$/),
-        ...sourceFiles(path.join(root, 'packages'), /\.tsx?$/),
-        ...sourceFiles(path.join(root, 'src'), /\.m?js$/),
+        ...sourceFiles(files, path.join(root, 'public'), /\.m?js$/),
+        ...sourceFiles(files, path.join(root, 'packages'), /\.tsx?$/),
+        ...sourceFiles(files, path.join(root, 'src'), /\.m?js$/),
     ];
-    const facts = cache ? fileFacts(cache, `${fs.readFileSync(fileURLToPath(import.meta.url), 'utf8')}\0${ts.version}`) : uncachedFacts();
+    const facts = cache ? fileFacts(cache, `${files.read(fileURLToPath(import.meta.url))}\0${ts.version}`) : uncachedFacts();
     for (const file of code) {
         const own = new Set();
         const fromServer = file.startsWith(server);
-        for (const literal of facts.factsOf(file, text => literalsOf(file, text))) {
+        for (const literal of facts.factsOf(file, files.read(file), text => literalsOf(file, text))) {
             if ('text' in literal) {
                 own.add(literal.text);
                 if (fromServer && literal.registration) continue;
@@ -247,9 +268,9 @@ function namedPaths(root, cache) {
         }
     }
     facts.prune();
-    for (const file of sourceFiles(path.join(root, 'public'), /\.html$/)) {
+    for (const file of sourceFiles(files, path.join(root, 'public'), /\.html$/)) {
         const own = new Set();
-        for (const match of fs.readFileSync(file, 'utf8').matchAll(/["'`](\/[^"'`\s<>]*)["'`]/g)) {
+        for (const match of files.read(file).matchAll(/["'`](\/[^"'`\s<>]*)["'`]/g)) {
             own.add(match[1]);
             strings.add(match[1]);
             add(match[1], false, own);
@@ -297,16 +318,17 @@ function names(route, name, strings, open) {
 /**
  * Every route nothing in the app calls: one served only for code outside this repository.
  * @param {string} root Repository root
- * @param {string|null} [cache] Directory to keep each file's literals in between runs
+ * @param {{ cache?: string|null, files?: import('./file-facts.mjs').Files }} [options] `cache`: a directory to keep each
+ *   file's literals in between runs
  * @returns {string[]} `METHOD path<TAB>file:line` for each such route
  */
-export function uncalledServerRoutes(root, cache = null) {
-    const { named, strings } = namedPaths(root, cache);
+export function uncalledServerRoutes(root, { cache = null, files = workTree } = {}) {
+    const { named, strings } = namedPaths(root, cache, files);
     const whole = named.filter(n => !n.suffix);
     const suffixes = named.filter(n => n.suffix);
     /** @type {string[]} */
     const uncalled = [];
-    for (const route of serverRoutes(root)) {
+    for (const route of serverRoutes(root, files)) {
         const segments = segmentsOf(route.path);
         const called = whole.some(n => names(segments, n.segments, n.strings, true))
             || suffixes.some(n => segments.some((_, k) => k > 0 && strings.has('/' + segments.slice(0, k).join('/'))
@@ -316,13 +338,23 @@ export function uncalledServerRoutes(root, cache = null) {
     return uncalled.sort();
 }
 
+/**
+ * The routes nothing in the app calls, as lines to print.
+ * @param {string} root Repository root
+ * @param {{ cache?: string|null, files?: import('./file-facts.mjs').Files }} [options]
+ * @returns {string[]}
+ */
+export function serverRouteProblems(root, options) {
+    const uncalled = uncalledServerRoutes(root, options);
+    return uncalled.length ? ['Server routes nothing in the app calls:', ...uncalled.map(line => `  ${line.replace('\t', ' (')})`)] : [];
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const { cache, rest } = cacheArgument(process.argv.slice(2));
     const root = path.resolve(rest[0] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
-    const uncalled = uncalledServerRoutes(root, cache);
-    if (uncalled.length) {
-        console.error('Server routes nothing in the app calls:');
-        for (const line of uncalled) console.error(`  ${line.replace('\t', ' (')})`);
-        process.exit(1);
+    const lines = serverRouteProblems(root, { cache });
+    if (lines.length) {
+        console.error(lines.join('\n'));
+        process.exitCode = 1;
     }
 }

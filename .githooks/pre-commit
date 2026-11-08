@@ -6,17 +6,19 @@
 # failure in packages/ (the new code).
 #
 # Every check runs against the tree this commit will record (the index git hands the hook, which is
-# GIT_INDEX_FILE's for `commit -a`, `commit <paths>` and caller-supplied temp indexes), checked out
-# into a snapshot outside the repository. Unstaged edits and untracked files in the work tree are never seen, and
-# importing a workspace package by name (@st/...) sees its staged version. Configs (tsconfig.precommit.json,
-# .oxlintrc.json, .oxlint-cycle-baseline, .eslintrc.cjs, vite.config.ts) are read as staged. The hook never writes to
-# the work tree or the real index.
+# GIT_INDEX_FILE's for `commit -a`, `commit <paths>` and caller-supplied temp indexes), read from git without checking
+# it out (lib/staged-files.mjs): tsc and eslint get its files through their APIs, and the export and route scripts run
+# as staged (lib/run-staged.mjs) over its files. A file's text is read from the work tree only when it hashes to the
+# staged blob. Importing a workspace package by name (@st/...) reads its staged files. Configs (tsconfig.precommit.json,
+# .eslintrc.cjs, .oxlint-cycle-baseline) are read as staged. oxlint, vp and vitest read only the disk, so they run in
+# the work tree and block the commit when a file they read there isn't what's staged. The hook never writes to the
+# work tree or the real index.
 #
 # A commit costs what it changes. The hook keeps the trees that passed every check (with the same node_modules and the
 # same hook), and compares the staged tree with HEAD's if it passed, else with the latest that did: a check runs only
 # if the files it reads differ, and reads as little as the difference allows. tsc rechecks the files whose
 # dependencies' types changed (lib/dangling-refs.mjs, an incremental build), eslint lints the changed files and the
-# type-aware ones that reach a change (lib/eslint-scope.mjs), and the export and route scripts parse only the files
+# type-aware ones that reach a change (lib/eslint-staged.mjs), and the export and route scripts parse only the files
 # whose text they haven't seen. With no such tree every check runs over everything.
 #
 # This is deliberately narrow on the type-check side: a full type-check of this codebase produces
@@ -24,8 +26,8 @@
 # TS2304/TS2305/TS2306/TS2459/TS2614 specifically catch real ReferenceError/SyntaxError bugs (a name used
 # but never defined or imported; an import naming something the target module doesn't export at all;
 # an import of a file that exports nothing; an import naming something the target module defines locally but
-# doesn't export; a default-import mismatch) with clean signal and no noise, so those are the codes this hook enforces. See
-# tsconfig.precommit.json for the check scope.
+# doesn't export; a default-import mismatch) with clean signal and no noise, so those are the codes this hook
+# enforces. See tsconfig.precommit.json for the check scope.
 #
 # These codes are not interchangeable: a bare undefined identifier is TS2304, importing a name a module never
 # declares at all is TS2305, importing from a file that lost its last `export` is TS2306, and importing a name a
@@ -49,7 +51,7 @@ if ! command -v node >/dev/null 2>&1; then
     exit 1
 fi
 
-. "$hook_dir/lib/staged-snapshot.sh"
+. "$hook_dir/lib/staged-tree.sh"
 
 bin="$toplevel/node_modules/.bin"
 for tool in oxlint eslint vp; do
@@ -139,35 +141,60 @@ if [ $((run_tsc + run_cycles + run_eslint + run_exports + run_routes + run_packa
     exit 0
 fi
 
-# --- check out the staged tree ---
-update_snapshot "$staged"
-if [ "$(cat "$cache/modules" 2>/dev/null || true)" != "$environment" ] || [ ! -d "$snap_tree/node_modules" ]; then
-    link_modules
-    printf '%s\n' "$environment" > "$cache/modules"
-fi
-cd "$snap_tree"
-
 # --- the checks; each prints why it blocks and fails ---
 
 check_tsc() {
     local output status=0
-    output="$(node "$hook_dir/lib/dangling-refs.mjs" "$cache/tsc.tsbuildinfo" 2304 2305 2306 2459 2614 2>&1)" || status=$?
+    output="$(node "$hook_dir/lib/dangling-refs.mjs" "$cache/tsc.tsbuildinfo" "$staged" 2304 2305 2306 2459 2614 2>&1)" || status=$?
     if [ "$status" -eq 3 ]; then
-        echo "pre-commit: blocked -- dangling import/export reference errors found in the staged snapshot:"
+        echo "pre-commit: blocked -- dangling import/export reference errors found in the staged tree:"
         echo ""
         printf '%s\n' "$output"
         echo ""
         echo "TS2304 (cannot find name), TS2305 (module has no exported member), TS2306 (file is not a module),"
         echo "TS2459 (declared locally but not exported), or TS2614 (no default export) - a missing import, a"
         echo "missing/incomplete export, or a call to something that doesn't exist. Fix them or, if this is a"
-        echo "false positive, adjust"
-        echo "tsconfig.precommit.json. (Only staged content was checked - if the fix is in an unstaged file,"
-        echo "stage it too.)"
+        echo "false positive, adjust tsconfig.precommit.json. (Only staged content was checked - if the fix is"
+        echo "in an unstaged file, stage it too.)"
         return 1
     elif [ "$status" -ne 0 ]; then
-        echo "pre-commit: blocked -- the staged snapshot couldn't be type-checked (.githooks/lib/dangling-refs.mjs exited with $status):"
+        echo "pre-commit: blocked -- the staged tree couldn't be type-checked (.githooks/lib/dangling-refs.mjs exited with $status):"
         printf '%s\n' "$output" | tail -40
         return 2
+    fi
+}
+
+# oxlint, vp and vitest read files only from disk, so they run in the work tree, and only when what they read there is
+# what's staged. Prints, NUL-separated, the files matching the patterns that aren't, untracked ones under the
+# directories after --untracked included.
+differing() {
+    local file pattern
+    local -a patterns=() untracked=()
+    while [ $# -gt 0 ] && [ "$1" != --untracked ]; do patterns+=("$1"); shift; done
+    [ "${1:-}" = --untracked ] && shift && untracked=("$@")
+    while IFS= read -r -d '' file; do
+        for pattern in "${patterns[@]}"; do
+            if [[ "$file" == $pattern ]]; then
+                printf '%s\0' "$file"
+                break
+            fi
+        done
+    done < "$run/unstaged"
+    if [ "${#untracked[@]}" -gt 0 ]; then
+        git ls-files --others --exclude-standard -z -- "${untracked[@]}"
+    fi
+}
+
+# Blocks with the files a disk-reading tool would see differently from the staged tree, if any.
+require_staged() {
+    local tool="$1" list
+    shift
+    list="$(differing "$@" | tr '\0' '\n')"
+    if [ -n "$list" ]; then
+        echo "pre-commit: blocked -- $tool reads the work tree, and these files there aren't what's staged:"
+        printf '%s\n' "$list" | head -20 | sed 's/^/  /'
+        echo "Stage them, or make the work tree match what's staged, and commit again."
+        return 1
     fi
 }
 
@@ -176,21 +203,27 @@ check_tsc() {
 # script.js/character-repository.js), invisible to any static check except this one. This is a ratchet, not a full
 # gate: it only blocks the count going UP. If you fix cycles, lower the number in .oxlint-cycle-baseline to lock in
 # the win.
+#
+# oxlint lints the staged code files; files in the work tree that aren't staged (untracked, or deleted from the index)
+# can only add imports to the graph it walks, so the count it reports is never below the staged tree's.
 check_cycles() {
     local baseline count status=0
-    baseline="$(cat .oxlint-cycle-baseline 2>/dev/null || echo 0)"
-    "$bin/oxlint" -c .oxlintrc.json -A all -D import/no-cycle --format json > "$run/cycles.json" 2> "$run/cycles.err" || status=$?
+    local -a files=()
+    require_staged oxlint "$code" .oxlintrc.json || return 1
+    baseline="$(git cat-file blob "$staged:.oxlint-cycle-baseline" 2>/dev/null || echo 0)"
+    mapfile -d '' -t files < <(git ls-tree -r -z --name-only "$staged" | grep -zE '\.(js|mjs|cjs|jsx|ts|tsx|mts|cts)$')
+    "$bin/oxlint" -c .oxlintrc.json -A all -D import/no-cycle --format json "${files[@]}" > "$run/cycles.json" 2> "$run/cycles.err" || status=$?
     if [ "$status" -gt 1 ] || ! count="$(node -e '
         const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
         if (!(report.number_of_files > 0) || !Array.isArray(report.diagnostics)) process.exit(1);
         console.log(report.diagnostics.filter(d => d.code === "import(no-cycle)").length);
     ' "$run/cycles.json" 2>/dev/null)"; then
-        echo "pre-commit: blocked -- oxlint exited with status $status without reporting on the staged snapshot:"
+        echo "pre-commit: blocked -- oxlint exited with status $status without reporting on the staged files:"
         head -c 4000 "$run/cycles.json" "$run/cycles.err"
         return 1
     fi
     if [ "$count" -gt "$baseline" ]; then
-        echo "pre-commit: blocked -- import/no-cycle count in the staged snapshot went from $baseline to $count"
+        echo "pre-commit: blocked -- import/no-cycle count in the staged tree went from $baseline to $count"
         echo ""
         echo "This commit appears to introduce a new circular import. Circular imports have caused real TDZ crashes here (ReferenceError: Cannot access '<name>' before initialization) -- run 'npm run lint:cycles' to see the cycle paths and either break the cycle or, if this is intentional/a false positive, raise .oxlint-cycle-baseline to $count."
         return 1
@@ -198,21 +231,16 @@ check_cycles() {
 }
 
 # The server's code passes its eslint rules, the one that keeps every outgoing request on fetchOutgoing() among them.
-# Without a passed tree it lints everything; with one, what `lib/eslint-scope.mjs <$1> ... [$2]` names.
+# Without a passed tree it lints everything; with one, what `lib/eslint-staged.mjs <$1> ... [$2]` picks.
 check_eslint() {
-    local output targets=("src/**/*.js" "engine/**/*.js")
+    local output status=0
     if [ -n "$passed" ]; then
-        if ! GIT_DIR="$git_dir" node "$hook_dir/lib/eslint-scope.mjs" "$1" "$snap_tree" "$passed" "$run/changes" "${2:-}" > "$run/eslint-$1"; then
-            echo "pre-commit: blocked -- couldn't tell which files eslint has to lint (.githooks/lib/eslint-scope.mjs failed)."
-            return 1
-        fi
-        if [ "$(cat "$run/eslint-$1")" != "--all" ]; then
-            mapfile -d '' -t targets < "$run/eslint-$1"
-            [ "${#targets[@]}" -gt 0 ] || return 0
-        fi
+        output="$(GIT_DIR="$git_dir" node "$hook_dir/lib/eslint-staged.mjs" "$1" "$staged" "$passed" "$run/changes" "${2:-}" 2>&1)" || status=$?
+    else
+        output="$(node "$hook_dir/lib/eslint-staged.mjs" all "$staged" 2>&1)" || status=$?
     fi
-    if ! output="$("$bin/eslint" "${targets[@]}" 2>&1)"; then
-        echo "pre-commit: blocked -- eslint failed on src/ or engine/ in the staged snapshot:"
+    if [ "$status" -ne 0 ]; then
+        echo "pre-commit: blocked -- eslint failed on src/ or engine/ in the staged tree:"
         printf '%s\n' "$output" | tail -40
         return 1
     fi
@@ -222,7 +250,7 @@ check_eslint() {
 # repository, and upstream's extensions are not supported.
 check_exports() {
     local output
-    if ! output="$(GIT_DIR="$git_dir" GIT_INDEX_FILE="$snap_index" GIT_WORK_TREE="$snap_tree" node scripts/public-exports.mjs . --cache "$cache/facts/public-exports" 2>&1)"; then
+    if ! output="$(node "$hook_dir/lib/run-staged.mjs" "$staged" scripts/public-exports.mjs publicExportProblems "$cache/facts/public-exports" 2>&1)"; then
         echo "pre-commit: blocked -- $output"
         return 1
     fi
@@ -231,7 +259,7 @@ check_exports() {
 # Every server route is called by the app: a route nothing here calls is served for code outside this repository.
 check_routes() {
     local output
-    if ! output="$(node scripts/server-routes.mjs . --cache "$cache/facts/server-routes" 2>&1)"; then
+    if ! output="$(node "$hook_dir/lib/run-staged.mjs" "$staged" scripts/server-routes.mjs serverRouteProblems "$cache/facts/server-routes" 2>&1)"; then
         echo "pre-commit: blocked -- $output"
         return 1
     fi
@@ -239,10 +267,13 @@ check_routes() {
 
 # The new code (packages/) is held to all of it: formatting, every lint rule (the st/* rules included) and strict
 # types with no errors at all, and its tests passing. Unlike the old code, there's no baseline to stay under.
+packages_inputs=('packages/*' vite.config.ts package.json package-lock.json public/lib.js public/live-editor-lib.js '.*' --untracked packages)
+
 check_packages() {
     local output
+    require_staged 'vp check' "${packages_inputs[@]}" || return 1
     if ! output="$("$bin/vp" check packages 2>&1)"; then
-        echo "pre-commit: blocked -- 'vp check packages' failed in the staged snapshot:"
+        echo "pre-commit: blocked -- 'vp check packages' failed in the staged tree:"
         printf '%s\n' "$output" | tail -40
         return 1
     fi
@@ -250,8 +281,9 @@ check_packages() {
 
 check_tests() {
     local output
+    require_staged 'vp test' "${packages_inputs[@]}" || return 1
     if ! output="$("$bin/vp" test run 2>&1)"; then
-        echo "pre-commit: blocked -- the packages' tests failed in the staged snapshot:"
+        echo "pre-commit: blocked -- the packages' tests failed in the staged tree:"
         printf '%s\n' "$output" | tail -40
         return 1
     fi
@@ -269,6 +301,10 @@ measure() {
     fi
     return "$status"
 }
+
+if [ $((run_cycles + run_packages + run_tests)) -gt 0 ]; then
+    unstaged_files > "$run/unstaged"
+fi
 
 pids=()
 [ "$run_eslint" -eq 1 ] && { measure eslint check_eslint changed & pids+=($!); }

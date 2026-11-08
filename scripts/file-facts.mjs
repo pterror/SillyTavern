@@ -8,7 +8,7 @@ import path from 'node:path';
  * @template T
  * @param {string} directory
  * @param {string} version
- * @returns {{ factsOf: (file: string, compute: (source: string) => T) => T, prune: () => void }}
+ * @returns {{ factsOf: (file: string, source: string, compute: (source: string) => T) => T, prune: () => void }}
  */
 export function fileFacts(directory, version) {
     const root = path.join(directory, crypto.createHash('sha256').update(version).digest('hex').slice(0, 16));
@@ -19,8 +19,7 @@ export function fileFacts(directory, version) {
     const stored = new Set(fs.readdirSync(root));
     const used = new Set();
     return {
-        factsOf(file, compute) {
-            const source = fs.readFileSync(file, 'utf8');
+        factsOf(file, source, compute) {
             const key = crypto.createHash('sha256').update(path.extname(file)).update('\0').update(source).digest('hex');
             used.add(key);
             if (stored.has(key)) return JSON.parse(fs.readFileSync(path.join(root, key), 'utf8'));
@@ -39,11 +38,19 @@ export function fileFacts(directory, version) {
 
 /**
  * @template T
- * @returns {{ factsOf: (file: string, compute: (source: string) => T) => T, prune: () => void }}
+ * @returns {{ factsOf: (file: string, source: string, compute: (source: string) => T) => T, prune: () => void }}
  */
 export function uncachedFacts() {
-    return { factsOf: (file, compute) => compute(fs.readFileSync(file, 'utf8')), prune() {} };
+    return { factsOf: (file, source, compute) => compute(source), prune() {} };
 }
+
+/**
+ * Where a script reads the repository's files: the work tree by default, or the tree a commit records.
+ * @typedef {object} Files
+ * @property {(directory: string) => string[]} list Every file under the directory, as absolute paths
+ * @property {(file: string) => string} read
+ * @property {(file: string) => boolean} exists A file or a directory
+ */
 
 /**
  * @param {string[]} argv
