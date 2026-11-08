@@ -8,16 +8,21 @@ use super::commit_checks;
 use super::derive::{Out, View};
 use super::kinds::{key, text_value};
 use super::library::{entity_by_key, entity_info};
-use super::world_order_tree::{self as tree, LayeredWrites, OrderKey, ReadDerived};
+use super::world_order_tree::{self as tree, CountedSlot, LayeredWrites, OrderKey, ReadDerived};
 use crate::keyspace::val::{counter_value, get_bytes, get_u64, put_bytes, put_u64};
 use crate::log::format::FieldRef;
 
 pub const RELATIONS_OF_ENTRY: u64 = 228;
-pub const MEMBERS_BY_TARGET: u64 = 229;
-pub const MEMBER_COUNT: u64 = 230;
+pub const RELATIONS_BY_TARGET: u64 = 229;
+pub const RELATION_COUNT_BY_KIND_AND_TARGET: u64 = 230;
+pub const DELETION_IN_PROGRESS_BY_KEY: u64 = 232;
+pub const DELETION_IN_PROGRESS_BY_ENTITY: u64 = 233;
+pub const RELATIONS_REMOVED_BY_DELETION: u64 = 234;
+pub const KINDS_BEING_MERGED: u64 = 235;
 
 pub const RELATIONS_FIELD: &[u8] = b"\x01relations";
 pub const RELATION_KIND_FIELD_PREFIX: &[u8] = b"\x01relationKind:";
+pub const RELATION_KIND_MERGE_FIELD_PREFIX: &[u8] = b"\x01relationKindMergingInto:";
 
 pub fn is_relations_field(field: &FieldRef) -> bool {
     matches!(field, FieldRef::Key(stored_key) if stored_key.as_slice() == RELATIONS_FIELD)
@@ -31,6 +36,23 @@ pub fn relation_kind_field(kind: u64) -> FieldRef {
     let mut stored_key = RELATION_KIND_FIELD_PREFIX.to_vec();
     stored_key.extend_from_slice(kind.to_string().as_bytes());
     FieldRef::Key(stored_key)
+}
+
+pub fn relation_kind_merge_field(kind: u64) -> FieldRef {
+    let mut stored_key = RELATION_KIND_MERGE_FIELD_PREFIX.to_vec();
+    stored_key.extend_from_slice(kind.to_string().as_bytes());
+    FieldRef::Key(stored_key)
+}
+
+pub fn kind_of_relation_kind_merge_field(field: &FieldRef) -> Option<u64> {
+    let FieldRef::Key(field_name) = field else {
+        return None;
+    };
+    whole_id(field_name.strip_prefix(RELATION_KIND_MERGE_FIELD_PREFIX)?)
+}
+
+pub fn merge_target_of_text(text: &[u8]) -> Option<u64> {
+    whole_id(text)
 }
 
 pub fn kind_of_relation_kind_field(field: &FieldRef) -> Option<u64> {
@@ -70,6 +92,7 @@ fn corrupt(why: &str) -> StoreError {
 pub struct Relation {
     pub position: Vec<u8>,
     pub weak: bool,
+    pub item: Vec<u8>,
 }
 
 pub type RelationSet = BTreeMap<(u64, Vec<u8>), Relation>;
@@ -124,106 +147,251 @@ fn relation_of_entry_key(entity: u64, kind: u64, target_key: &[u8]) -> Vec<u8> {
 
 fn relation_value(relation: &Relation) -> Vec<u8> {
     let mut value = vec![u8::from(relation.weak)];
-    value.extend_from_slice(&relation.position);
+    put_bytes(&mut value, &relation.position);
+    value.extend_from_slice(&relation.item);
     value
 }
 
 fn relation_of_value(stored: &[u8]) -> Result<Relation, StoreError> {
-    match stored.split_first() {
-        Some((&weak_byte, position)) if weak_byte <= 1 => Ok(Relation {
-            position: position.to_vec(),
-            weak: weak_byte == 1,
-        }),
-        _ => Err(corrupt("a relation's value doesn't decode")),
+    let bad = || corrupt("a relation's value doesn't decode");
+    let (&weak_byte, rest) = stored.split_first().ok_or_else(bad)?;
+    if weak_byte > 1 {
+        return Err(bad());
     }
+    let mut read_at = 0;
+    let position = get_bytes(rest, &mut read_at).ok_or_else(bad)?;
+    Ok(Relation {
+        position,
+        weak: weak_byte == 1,
+        item: rest[read_at..].to_vec(),
+    })
 }
 
-pub fn pointing_at_prefix(book: u64, target_key: &[u8]) -> Vec<u8> {
-    let mut stored_key = key::id(MEMBERS_BY_TARGET, book);
+pub fn relations_targeting_prefix(book: u64, target_key: &[u8]) -> Vec<u8> {
+    let mut stored_key = key::id(RELATIONS_BY_TARGET, book);
     put_bytes(&mut stored_key, target_key);
     stored_key
 }
 
-pub fn group_members_prefix(book: u64, kind: u64, target_key: &[u8]) -> Vec<u8> {
-    let mut stored_key = pointing_at_prefix(book, target_key);
+pub fn relations_of_kind_targeting_prefix(book: u64, kind: u64, target_key: &[u8]) -> Vec<u8> {
+    let mut stored_key = relations_targeting_prefix(book, target_key);
     put_u64(&mut stored_key, kind);
     stored_key
 }
 
-fn member_key(book: u64, kind: u64, target_key: &[u8], position: &[u8], entity: u64) -> Vec<u8> {
-    let mut stored_key = group_members_prefix(book, kind, target_key);
+fn relation_by_target_key(
+    book: u64,
+    kind: u64,
+    target_key: &[u8],
+    position: &[u8],
+    source: u64,
+) -> Vec<u8> {
+    let mut stored_key = relations_of_kind_targeting_prefix(book, kind, target_key);
     put_bytes(&mut stored_key, position);
-    put_u64(&mut stored_key, entity);
+    put_u64(&mut stored_key, source);
     stored_key
 }
 
-pub fn member_of_group_key(prefix: &[u8], stored_key: &[u8]) -> Result<(Vec<u8>, u64), StoreError> {
+pub fn position_and_source_of_relation_of_kind_targeting(
+    prefix: &[u8],
+    stored_key: &[u8],
+) -> Result<(Vec<u8>, u64), StoreError> {
     let mut read_at = prefix.len();
-    let bad = || corrupt("a member key doesn't decode");
+    let bad = || corrupt("a relation-by-target key doesn't decode");
     let position = get_bytes(stored_key, &mut read_at).ok_or_else(bad)?;
-    let entity = get_u64(stored_key, &mut read_at).ok_or_else(bad)?;
-    Ok((position, entity))
+    let source = get_u64(stored_key, &mut read_at).ok_or_else(bad)?;
+    Ok((position, source))
 }
 
-fn member_of_pointing_key(prefix: &[u8], stored_key: &[u8]) -> Result<u64, StoreError> {
+pub fn kind_and_source_of_relation_targeting(
+    prefix: &[u8],
+    stored_key: &[u8],
+) -> Result<(u64, u64), StoreError> {
     let mut read_at = prefix.len();
-    let bad = || corrupt("a member key doesn't decode");
-    get_u64(stored_key, &mut read_at).ok_or_else(bad)?;
+    let bad = || corrupt("a relation-by-target key doesn't decode");
+    let kind = get_u64(stored_key, &mut read_at).ok_or_else(bad)?;
     get_bytes(stored_key, &mut read_at).ok_or_else(bad)?;
-    get_u64(stored_key, &mut read_at).ok_or_else(bad)
+    let source = get_u64(stored_key, &mut read_at).ok_or_else(bad)?;
+    Ok((kind, source))
 }
 
-fn kind_prefix_of_counts(book: u64, kind: u64) -> Vec<u8> {
-    let mut stored_key = key::id(MEMBER_COUNT, book);
+pub fn relation_counts_of_kind_prefix(book: u64, kind: u64) -> Vec<u8> {
+    let mut stored_key = key::id(RELATION_COUNT_BY_KIND_AND_TARGET, book);
     put_u64(&mut stored_key, kind);
     stored_key
 }
 
-pub fn member_count_key(book: u64, kind: u64, target_key: &[u8]) -> Vec<u8> {
-    let mut stored_key = kind_prefix_of_counts(book, kind);
+pub fn relation_count_key(book: u64, kind: u64, target_key: &[u8]) -> Vec<u8> {
+    let mut stored_key = relation_counts_of_kind_prefix(book, kind);
     put_bytes(&mut stored_key, target_key);
     stored_key
 }
 
-pub fn member_count(
+pub fn count_of_relations_of_kind_targeting(
     reader: &impl ReadDerived,
     book: u64,
     kind: u64,
     target_key: &[u8],
 ) -> Result<u64, StoreError> {
-    match reader.read(&member_count_key(book, kind, target_key))? {
+    match reader.read(&relation_count_key(book, kind, target_key))? {
         Some(stored) => counter_value(&stored)
             .and_then(|count| u64::try_from(count).ok())
-            .ok_or_else(|| corrupt("a member count doesn't decode")),
+            .ok_or_else(|| corrupt("a relation count doesn't decode")),
         None => Ok(0),
     }
 }
 
-fn any_under(view: &View, prefix: &[u8]) -> Result<bool, StoreError> {
-    Ok(!view.scan(prefix, &key::prefix_end(prefix), 1)?.is_empty())
+fn first_under(reader: &impl ReadDerived, prefix: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+    Ok(reader.read_first_under(prefix)?.map(|(stored_key, _)| stored_key))
 }
 
-pub fn anything_points_at(view: &View, book: u64, target_key: &[u8]) -> Result<bool, StoreError> {
-    any_under(view, &pointing_at_prefix(book, target_key))
+pub fn any_relation_targets(
+    reader: &impl ReadDerived,
+    book: u64,
+    target_key: &[u8],
+) -> Result<bool, StoreError> {
+    Ok(first_under(reader, &relations_targeting_prefix(book, target_key))?.is_some())
 }
 
 pub fn relation_kind_in_use(view: &View, book: u64, kind: u64) -> Result<bool, StoreError> {
-    any_under(view, &kind_prefix_of_counts(book, kind))
+    Ok(first_under(view, &relation_counts_of_kind_prefix(book, kind))?.is_some())
 }
 
-fn count_by(
+pub fn kinds_of_relations_targeting(
+    reader: &impl ReadDerived,
+    book: u64,
+    target_key: &[u8],
+) -> Result<Vec<u64>, StoreError> {
+    let prefix = relations_targeting_prefix(book, target_key);
+    let mut kinds = Vec::new();
+    let mut from = prefix.clone();
+    while let Some((stored_key, _)) = reader.read_first_in(&from, &key::prefix_end(&prefix))? {
+        let (kind, _) = kind_and_source_of_relation_targeting(&prefix, &stored_key)?;
+        kinds.push(kind);
+        from = key::prefix_end(&relations_of_kind_targeting_prefix(book, kind, target_key));
+    }
+    Ok(kinds)
+}
+
+fn deletion_in_progress_key(book: u64, target_key: &[u8]) -> Vec<u8> {
+    let mut stored_key = key::id(DELETION_IN_PROGRESS_BY_KEY, book);
+    put_bytes(&mut stored_key, target_key);
+    stored_key
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeletionInProgress {
+    pub entity: u64,
+    pub order_value: u64,
+}
+
+pub fn deletion_in_progress(
+    reader: &impl ReadDerived,
+    book: u64,
+    target_key: &[u8],
+) -> Result<Option<DeletionInProgress>, StoreError> {
+    let Some(stored) = reader.read(&deletion_in_progress_key(book, target_key))? else {
+        return Ok(None);
+    };
+    let mut read_at = 0;
+    let bad = || corrupt("a deletion in progress doesn't decode");
+    let entity = get_u64(&stored, &mut read_at).ok_or_else(bad)?;
+    let order_value = get_u64(&stored, &mut read_at).ok_or_else(bad)?;
+    Ok(Some(DeletionInProgress {
+        entity,
+        order_value,
+    }))
+}
+
+fn deletion_in_progress_of_entity_key(entity: u64) -> Vec<u8> {
+    key::id(DELETION_IN_PROGRESS_BY_ENTITY, entity)
+}
+
+pub fn deleted_entry_key_in_progress(
+    reader: &impl ReadDerived,
+    entity: u64,
+) -> Result<Option<(u64, Vec<u8>)>, StoreError> {
+    let Some(stored) = reader.read(&deletion_in_progress_of_entity_key(entity))? else {
+        return Ok(None);
+    };
+    let mut read_at = 0;
+    let bad = || corrupt("a deletion in progress doesn't decode");
+    let book = get_u64(&stored, &mut read_at).ok_or_else(bad)?;
+    let target_key = get_bytes(&stored, &mut read_at).ok_or_else(bad)?;
+    Ok(Some((book, target_key)))
+}
+
+pub fn removed_by_deletion_prefix(book: u64, deleted: u64) -> Vec<u8> {
+    let mut stored_key = key::id(RELATIONS_REMOVED_BY_DELETION, book);
+    put_u64(&mut stored_key, deleted);
+    stored_key
+}
+
+fn removed_by_deletion_key(book: u64, deleted: u64, source: u64, kind: u64) -> Vec<u8> {
+    let mut stored_key = removed_by_deletion_prefix(book, deleted);
+    put_u64(&mut stored_key, source);
+    put_u64(&mut stored_key, kind);
+    stored_key
+}
+
+pub fn source_and_kind_of_removed_by_deletion(
+    prefix: &[u8],
+    stored_key: &[u8],
+) -> Result<(u64, u64), StoreError> {
+    let mut read_at = prefix.len();
+    let bad = || corrupt("a relation removed by a deletion doesn't decode");
+    let source = get_u64(stored_key, &mut read_at).ok_or_else(bad)?;
+    let kind = get_u64(stored_key, &mut read_at).ok_or_else(bad)?;
+    Ok((source, kind))
+}
+
+fn change_relation_count(
     writes: &mut LayeredWrites,
     book: u64,
     kind: u64,
     target_key: &[u8],
     change: i64,
 ) -> Result<(), StoreError> {
-    let count_key = member_count_key(book, kind, target_key);
-    if member_count(writes, book, kind, target_key)? as i64 + change == 0 {
+    let count_key = relation_count_key(book, kind, target_key);
+    let after = count_of_relations_of_kind_targeting(writes, book, kind, target_key)? as i64 + change;
+    if after == 0 {
         writes.del(count_key);
     } else {
         writes.add(count_key, change);
     }
+    if after == 0
+        && let Some(deleting) = deletion_in_progress(writes, book, target_key)?
+    {
+        let order_key = tree::order_key(deleting.order_value, deleting.entity);
+        let book_tree = order_tree_space(book);
+        tree::add_held(
+            writes,
+            &book_tree,
+            &order_key,
+            CountedSlot::DeletedEntryPlaceForKind(kind),
+            -1,
+        )?;
+        if !any_relation_targets(writes, book, target_key)? {
+            finish_deletion(writes, book, target_key, deleting)?;
+        }
+    }
+    Ok(())
+}
+
+fn finish_deletion(
+    writes: &mut LayeredWrites,
+    book: u64,
+    target_key: &[u8],
+    deleting: DeletionInProgress,
+) -> Result<(), StoreError> {
+    tree::remove_entry(
+        writes,
+        &order_tree_space(book),
+        &tree::order_key(deleting.order_value, deleting.entity),
+        &[CountedSlot::DeletedWhileRelationsTargetIt],
+    )?;
+    writes.del(deletion_in_progress_key(book, target_key));
+    writes.del(deletion_in_progress_of_entity_key(deleting.entity));
     Ok(())
 }
 
@@ -271,6 +439,32 @@ pub fn strong_kinds(set: &RelationSet) -> Vec<u64> {
     kinds_held.into_iter().collect()
 }
 
+fn held_slots(set: &RelationSet) -> Vec<CountedSlot> {
+    strong_kinds(set)
+        .into_iter()
+        .map(CountedSlot::HeldByKind)
+        .collect()
+}
+
+fn remove_relation(
+    writes: &mut LayeredWrites,
+    book: u64,
+    source: u64,
+    kind: u64,
+    target_key: &[u8],
+    relation: &Relation,
+) -> Result<(), StoreError> {
+    writes.del(relation_by_target_key(
+        book,
+        kind,
+        target_key,
+        &relation.position,
+        source,
+    ));
+    writes.del(relation_of_entry_key(source, kind, target_key));
+    change_relation_count(writes, book, kind, target_key, -1)
+}
+
 pub fn relations_field_written(
     view: &View,
     out: &mut Out,
@@ -286,10 +480,9 @@ pub fn relations_field_written(
     }
     let mut writes = LayeredWrites::new(view);
     for ((kind, target_key), relation) in &was {
-        let pair = (*kind, target_key.clone());
-        match now.get(&pair) {
-            Some(now_relation) if now_relation.position == relation.position => continue,
-            Some(_) => writes.del(member_key(
+        match now.get(&(*kind, target_key.clone())) {
+            Some(now_relation) if now_relation.position == relation.position => {}
+            Some(_) => writes.del(relation_by_target_key(
                 book,
                 *kind,
                 target_key,
@@ -297,15 +490,13 @@ pub fn relations_field_written(
                 entity,
             )),
             None => {
-                writes.del(member_key(
-                    book,
-                    *kind,
-                    target_key,
-                    &relation.position,
-                    entity,
-                ));
-                count_by(&mut writes, book, *kind, target_key, -1)?;
-                writes.del(relation_of_entry_key(entity, *kind, target_key));
+                if let Some(deleting) = deletion_in_progress(&writes, book, target_key)? {
+                    writes.put(
+                        removed_by_deletion_key(book, deleting.entity, entity, *kind),
+                        relation.item.clone(),
+                    );
+                }
+                remove_relation(&mut writes, book, entity, *kind, target_key, relation)?;
             }
         }
     }
@@ -316,7 +507,7 @@ pub fn relations_field_written(
         }
         if before.is_none_or(|before_relation| before_relation.position != relation.position) {
             writes.put(
-                member_key(book, *kind, target_key, &relation.position, entity),
+                relation_by_target_key(book, *kind, target_key, &relation.position, entity),
                 Vec::new(),
             );
         }
@@ -325,25 +516,36 @@ pub fn relations_field_written(
             relation_value(relation),
         );
         if before.is_none() {
-            count_by(&mut writes, book, *kind, target_key, 1)?;
+            change_relation_count(&mut writes, book, *kind, target_key, 1)?;
             commit_checks::require_target(&mut writes, book, target_key);
             commit_checks::require_relation_kind(&mut writes, book, *kind);
+            if let Some(target) =
+                entity_by_key(view, ENTRY, &entry_key(book, &EntryKey::parse(target_key)))?
+            {
+                writes.del(removed_by_deletion_key(book, target, entity, *kind));
+            }
         }
     }
     let (old_held, new_held) = (strong_kinds(&was), strong_kinds(&now));
     let book_tree = order_tree_space(book);
     let order_key = order_key_of_entry(view, entity, own_key)?;
-    for kind_id in old_held
-        .iter()
-        .filter(|kind_id| !new_held.contains(kind_id))
-    {
-        tree::add_held(&mut writes, &book_tree, &order_key, *kind_id, -1)?;
+    for kind_id in old_held.iter().filter(|kind_id| !new_held.contains(kind_id)) {
+        tree::add_held(
+            &mut writes,
+            &book_tree,
+            &order_key,
+            CountedSlot::HeldByKind(*kind_id),
+            -1,
+        )?;
     }
-    for kind_id in new_held
-        .iter()
-        .filter(|kind_id| !old_held.contains(kind_id))
-    {
-        tree::add_held(&mut writes, &book_tree, &order_key, *kind_id, 1)?;
+    for kind_id in new_held.iter().filter(|kind_id| !old_held.contains(kind_id)) {
+        tree::add_held(
+            &mut writes,
+            &book_tree,
+            &order_key,
+            CountedSlot::HeldByKind(*kind_id),
+            1,
+        )?;
     }
     writes.finish(out);
     Ok(())
@@ -356,13 +558,53 @@ pub fn entry_created(
     entity: u64,
     own_key: &EntryKey,
 ) -> Result<(), StoreError> {
+    let target_key = own_key.text();
     let mut writes = LayeredWrites::new(view);
-    tree::insert_entry(
-        &mut writes,
-        &order_tree_space(book),
-        &order_key_of_entry(view, entity, own_key)?,
-        &[],
-    )?;
+    match deletion_in_progress(view, book, &target_key)? {
+        Some(deleting) if deleting.entity == entity => {
+            let order_key = tree::order_key(deleting.order_value, entity);
+            let book_tree = order_tree_space(book);
+            tree::add_held(
+                &mut writes,
+                &book_tree,
+                &order_key,
+                CountedSlot::DeletedWhileRelationsTargetIt,
+                -1,
+            )?;
+            for kind in kinds_of_relations_targeting(view, book, &target_key)? {
+                tree::add_held(
+                    &mut writes,
+                    &book_tree,
+                    &order_key,
+                    CountedSlot::DeletedEntryPlaceForKind(kind),
+                    -1,
+                )?;
+            }
+            writes.del(deletion_in_progress_key(book, &target_key));
+            writes.del(deletion_in_progress_of_entity_key(entity));
+            if order_key != order_key_of_entry(view, entity, own_key)? {
+                tree::remove_entry(&mut writes, &book_tree, &order_key, &[])?;
+                tree::insert_entry(
+                    &mut writes,
+                    &book_tree,
+                    &order_key_of_entry(view, entity, own_key)?,
+                    &[],
+                )?;
+            }
+        }
+        Some(_) => {
+            return Err(StoreError::Refused(format!(
+                "entry {} of book {book} is still being deleted: its key can't be taken yet",
+                String::from_utf8_lossy(&target_key)
+            )));
+        }
+        None => tree::insert_entry(
+            &mut writes,
+            &order_tree_space(book),
+            &order_key_of_entry(view, entity, own_key)?,
+            &[],
+        )?,
+    }
     writes.finish(out);
     Ok(())
 }
@@ -375,26 +617,84 @@ pub fn entry_deleted(
     own_key: &EntryKey,
 ) -> Result<(), StoreError> {
     let was = relations_of_entry(view, entity)?;
+    let target_key = own_key.text();
+    let book_tree = order_tree_space(book);
+    let order_key = order_key_of_entry(view, entity, own_key)?;
     let mut writes = LayeredWrites::new(view);
-    tree::remove_entry(
-        &mut writes,
-        &order_tree_space(book),
-        &order_key_of_entry(view, entity, own_key)?,
-        &strong_kinds(&was),
-    )?;
-    for ((kind, target_key), relation) in &was {
-        writes.del(member_key(
-            book,
-            *kind,
-            target_key,
-            &relation.position,
-            entity,
-        ));
-        count_by(&mut writes, book, *kind, target_key, -1)?;
-        writes.del(relation_of_entry_key(entity, *kind, target_key));
+    for ((kind, own_target_key), relation) in &was {
+        remove_relation(&mut writes, book, entity, *kind, own_target_key, relation)?;
     }
-    commit_checks::require_target(&mut writes, book, &own_key.text());
+    let targeting_kinds = kinds_of_relations_targeting(&writes, book, &target_key)?;
+    if targeting_kinds.is_empty() {
+        tree::remove_entry(&mut writes, &book_tree, &order_key, &held_slots(&was))?;
+    } else {
+        for slot in held_slots(&was) {
+            tree::add_held(&mut writes, &book_tree, &order_key, slot, -1)?;
+        }
+        tree::add_held(
+            &mut writes,
+            &book_tree,
+            &order_key,
+            CountedSlot::DeletedWhileRelationsTargetIt,
+            1,
+        )?;
+        for kind in targeting_kinds {
+            tree::add_held(
+                &mut writes,
+                &book_tree,
+                &order_key,
+                CountedSlot::DeletedEntryPlaceForKind(kind),
+                1,
+            )?;
+        }
+        let mut in_progress = Vec::new();
+        put_u64(&mut in_progress, entity);
+        put_u64(&mut in_progress, u64::from_be_bytes(order_key[..8].try_into().expect("8 bytes")));
+        writes.put(deletion_in_progress_key(book, &target_key), in_progress);
+        let mut of_entity = Vec::new();
+        put_u64(&mut of_entity, book);
+        put_bytes(&mut of_entity, &target_key);
+        writes.put(deletion_in_progress_of_entity_key(entity), of_entity);
+    }
+    commit_checks::require_target(&mut writes, book, &target_key);
     writes.finish(out);
+    Ok(())
+}
+
+pub fn deleted_entry_erased(
+    view: &View,
+    out: &mut Out,
+    entity: u64,
+) -> Result<(), StoreError> {
+    let mut writes = LayeredWrites::new(view);
+    if let Some((book, target_key)) = deleted_entry_key_in_progress(view, entity)?
+        && let Some(deleting) = deletion_in_progress(view, book, &target_key)?
+    {
+        let order_key = tree::order_key(deleting.order_value, entity);
+        let book_tree = order_tree_space(book);
+        let mut slots = vec![CountedSlot::DeletedWhileRelationsTargetIt];
+        for kind in kinds_of_relations_targeting(view, book, &target_key)? {
+            slots.push(CountedSlot::DeletedEntryPlaceForKind(kind));
+        }
+        tree::remove_entry(&mut writes, &book_tree, &order_key, &slots)?;
+        writes.del(deletion_in_progress_key(book, &target_key));
+        writes.del(deletion_in_progress_of_entity_key(entity));
+        commit_checks::require_target(&mut writes, book, &target_key);
+    }
+    writes.finish(out);
+    Ok(())
+}
+
+pub fn removed_by_deletion_of_erased(
+    view: &View,
+    out: &mut Out,
+    book: u64,
+    entity: u64,
+) -> Result<(), StoreError> {
+    let prefix = removed_by_deletion_prefix(book, entity);
+    for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+        out.del(stored_key);
+    }
     Ok(())
 }
 
@@ -414,7 +714,7 @@ pub fn display_index_changed(
     if old_order == new_order {
         return Ok(());
     }
-    let held = strong_kinds(&relations_of_entry(view, entity)?);
+    let held = held_slots(&relations_of_entry(view, entity)?);
     let book_tree = order_tree_space(book);
     let mut writes = LayeredWrites::new(view);
     tree::remove_entry(
@@ -512,7 +812,7 @@ fn items_of(json: &[u8]) -> Option<Vec<Item>> {
             parser.space();
             let start = parser.offset;
             let item_value = parser.value(1)?;
-            items.push(item_of(item_value, start..parser.offset)?);
+            items.push(item_of(item_value, start..parser.offset, &json[start..parser.offset])?);
             if parser.eat(b']').is_some() {
                 break;
             }
@@ -523,7 +823,7 @@ fn items_of(json: &[u8]) -> Option<Vec<Item>> {
     (parser.offset == json.len()).then_some(items)
 }
 
-fn item_of(value: Json, span: Range<usize>) -> Option<Item> {
+fn item_of(value: Json, span: Range<usize>, raw: &[u8]) -> Option<Item> {
     let Json::Obj(fields) = value else {
         return None;
     };
@@ -540,7 +840,7 @@ fn item_of(value: Json, span: Range<usize>) -> Option<Item> {
     let target = match get("target") {
         Some(Json::Str(text)) if !text.is_empty() => EntryKey::parse(text).text(),
         Some(Json::Num(number)) => match EntryKey::parse(number) {
-            field_name @ EntryKey::Int(_) => field_name.text(),
+            parsed_key @ EntryKey::Int(_) => parsed_key.text(),
             EntryKey::Text(_) => return None,
         },
         _ => return None,
@@ -557,7 +857,11 @@ fn item_of(value: Json, span: Range<usize>) -> Option<Item> {
     Some(Item {
         kind,
         target,
-        relation: Relation { position, weak },
+        relation: Relation {
+            position,
+            weak,
+            item: raw.to_vec(),
+        },
         span,
     })
 }
@@ -598,10 +902,13 @@ fn item_json(kind: u64, target: &[u8], relation: &Relation) -> Vec<u8> {
     json
 }
 
+#[derive(Default)]
 struct ItemChange {
+    kind: Option<u64>,
     target: Option<Vec<u8>>,
     position: Option<Vec<u8>>,
     weak: Option<bool>,
+    added_fields: Vec<Vec<u8>>,
 }
 
 fn target_json(target: &[u8]) -> Vec<u8> {
@@ -613,50 +920,59 @@ fn target_json(target: &[u8]) -> Vec<u8> {
     json
 }
 
-fn item_rewritten(field_json: &[u8], item: &Item, change: &ItemChange) -> Vec<u8> {
-    let item_bytes = &field_json[item.span.clone()];
+fn object_fields(object: &[u8]) -> Vec<(Vec<u8>, Range<usize>)> {
     let mut parser = Parser {
-        bytes: item_bytes,
+        bytes: object,
         offset: 0,
     };
-    let members = parser.members().expect("an item that parsed is an object");
+    parser
+        .object_fields()
+        .expect("a relation that parsed is an object")
+}
+
+fn object_rewritten(object: &[u8], change: &ItemChange) -> Vec<u8> {
     let mut parts: Vec<Vec<u8>> = Vec::new();
     let mut weak_written = false;
-    for (name, span) in members {
-        let member = |value: Vec<u8>| {
-            let mut out = Vec::new();
-            json_string(&mut out, &name);
-            out.push(b':');
-            out.extend_from_slice(&value);
-            out
-        };
-        match (
-            name.as_slice(),
-            &change.target,
-            &change.position,
-            change.weak,
-        ) {
-            (b"target", Some(target), _, _) => parts.push(member(target_json(target))),
-            (b"position", _, Some(position), _) => {
+    let field = |name: &[u8], value: Vec<u8>| {
+        let mut out = Vec::new();
+        json_string(&mut out, name);
+        out.push(b':');
+        out.extend_from_slice(&value);
+        out
+    };
+    for (name, span) in object_fields(object) {
+        match name.as_slice() {
+            b"kind" if change.kind.is_some() => {
+                parts.push(field(&name, change.kind.expect("some").to_string().into_bytes()));
+            }
+            b"target" if change.target.is_some() => {
+                parts.push(field(&name, target_json(change.target.as_deref().expect("some"))));
+            }
+            b"position" if change.position.is_some() => {
                 let mut value = Vec::new();
-                json_string(&mut value, position);
-                parts.push(member(value));
+                json_string(&mut value, change.position.as_deref().expect("some"));
+                parts.push(field(&name, value));
             }
-            (b"weak", _, _, Some(false)) => {}
-            (b"weak", _, _, Some(true)) => {
+            b"weak" if change.weak == Some(false) => {}
+            b"weak" if change.weak == Some(true) => {
                 weak_written = true;
-                parts.push(member(b"true".to_vec()));
+                parts.push(field(&name, b"true".to_vec()));
             }
-            _ => parts.push(item_bytes[span].to_vec()),
+            _ => parts.push(object[span].to_vec()),
         }
     }
     if change.weak == Some(true) && !weak_written {
         parts.push(br#""weak":true"#.to_vec());
     }
+    parts.extend(change.added_fields.iter().cloned());
     let mut out = b"{".to_vec();
     out.extend_from_slice(&parts.join(&b","[..]));
     out.push(b'}');
     out
+}
+
+fn item_rewritten(field_json: &[u8], item: &Item, change: &ItemChange) -> Vec<u8> {
+    object_rewritten(&field_json[item.span.clone()], change)
 }
 
 fn rewritten(
@@ -688,37 +1004,308 @@ fn text_js(text: Option<Vec<u8>>) -> Js {
     text.map_or(Js::Null, Js::Text)
 }
 
-pub fn relations_without(view: &View, book: u64, keys: &[Vec<u8>]) -> Result<Js, StoreError> {
-    let gone: BTreeSet<Vec<u8>> = keys
+fn rewrite_js(source: u64, before: Option<Vec<u8>>, json: Vec<u8>) -> Js {
+    Js::Obj(vec![
+        ("entity", Js::Big(source)),
+        ("before", text_js(before)),
+        ("json", Js::Text(json)),
+    ])
+}
+
+fn chunk_js(rewrites: Vec<Js>, more: bool) -> Js {
+    Js::Obj(vec![("rewrites", Js::Arr(rewrites)), ("more", Js::Bool(more))])
+}
+
+fn live_entry_field(view: &View, book: u64, entity: u64) -> Result<Option<Vec<u8>>, StoreError> {
+    if entry_key_in(view, book, entity)?.is_none() {
+        return Ok(None);
+    }
+    written_field(view, entity)
+}
+
+pub fn rewrites_removing_relations_targeting(
+    view: &View,
+    book: u64,
+    keys: &[Vec<u8>],
+    limit: usize,
+) -> Result<Js, StoreError> {
+    let removed: BTreeSet<Vec<u8>> = keys
         .iter()
         .map(|stored_key| EntryKey::parse(stored_key).text())
         .collect();
-    let mut pointers = BTreeSet::new();
-    for target_key in &gone {
-        let prefix = pointing_at_prefix(book, target_key);
-        for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
-            pointers.insert(member_of_pointing_key(&prefix, &stored_key)?);
+    let mut sources = BTreeSet::new();
+    let mut more = false;
+    'targets: for target_key in &removed {
+        let prefix = relations_targeting_prefix(book, target_key);
+        let mut from = prefix.clone();
+        loop {
+            let page = view.scan(&from, &key::prefix_end(&prefix), 256)?;
+            for (stored_key, _) in &page {
+                let (_, source) = kind_and_source_of_relation_targeting(&prefix, stored_key)?;
+                if !sources.contains(&source) && sources.len() == limit {
+                    more = true;
+                    break 'targets;
+                }
+                sources.insert(source);
+            }
+            match page.last() {
+                Some((last, _)) if page.len() == 256 => {
+                    from = last.clone();
+                    from.push(0);
+                }
+                _ => break,
+            }
         }
     }
-    let mut out = Vec::new();
-    for pointer in pointers {
-        let Some(before) = written_field(view, pointer)? else {
-            return Err(corrupt("a member has no relations field"));
+    let mut rewrites = Vec::new();
+    for source in sources {
+        let Some(before) = written_field(view, source)? else {
+            return Err(corrupt("an entry with relations has no relations field"));
         };
-        let items = items_of(&before).ok_or_else(|| corrupt("a member's relations don't parse"))?;
+        let items = items_of(&before)
+            .ok_or_else(|| corrupt("an entry's indexed relations don't parse"))?;
         let json = rewritten(
             &before,
             &items,
-            |item| (!gone.contains(&item.target)).then_some(None),
+            |item| (!removed.contains(&item.target)).then_some(None),
             &[],
         );
-        out.push(Js::Obj(vec![
-            ("entity", Js::Big(pointer)),
-            ("before", Js::Text(before)),
-            ("json", Js::Text(json)),
+        rewrites.push(rewrite_js(source, Some(before), json));
+    }
+    Ok(chunk_js(rewrites, more))
+}
+
+pub fn rewrites_restoring_relations_removed_by_deletion(
+    view: &View,
+    book: u64,
+    restored: u64,
+    limit: usize,
+) -> Result<Js, StoreError> {
+    let Some(restored_key) = entry_key_in(view, book, restored)? else {
+        return Ok(chunk_js(Vec::new(), false));
+    };
+    let restored_key = restored_key.text();
+    let prefix = removed_by_deletion_prefix(book, restored);
+    let mut by_source: BTreeMap<u64, Vec<(u64, Vec<u8>)>> = BTreeMap::new();
+    let mut more = false;
+    for (stored_key, item) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+        let (source, kind) = source_and_kind_of_removed_by_deletion(&prefix, &stored_key)?;
+        if relation_kind_name(view, book, kind)?.is_none()
+            || view
+                .get(&relation_of_entry_key(source, kind, &restored_key))?
+                .is_some()
+            || entry_key_in(view, book, source)?.is_none()
+        {
+            continue;
+        }
+        if !by_source.contains_key(&source) && by_source.len() == limit {
+            more = true;
+            break;
+        }
+        by_source.entry(source).or_default().push((kind, item));
+    }
+    let mut rewrites = Vec::new();
+    for (source, removed_items) in by_source {
+        let before = live_entry_field(view, book, source)?;
+        let base = before.clone().unwrap_or_else(|| b"[]".to_vec());
+        let Some(items) = items_of(&base) else {
+            continue;
+        };
+        let added: Vec<Vec<u8>> = removed_items
+            .iter()
+            .map(|(_, item)| {
+                object_rewritten(
+                    item,
+                    &ItemChange {
+                        target: Some(restored_key.clone()),
+                        ..ItemChange::default()
+                    },
+                )
+            })
+            .collect();
+        let json = rewritten(&base, &items, |_| Some(None), &added);
+        rewrites.push(rewrite_js(source, before, json));
+    }
+    Ok(chunk_js(rewrites, more))
+}
+
+pub fn relation_kind_being_merged_into(
+    view: &View,
+    book: u64,
+    kind: u64,
+) -> Result<Option<u64>, StoreError> {
+    Ok(text_value(view, book, &relation_kind_merge_field(kind))?
+        .and_then(|digits| whole_id(&digits)))
+}
+
+pub fn rewrites_merging_relation_kind(
+    view: &View,
+    book: u64,
+    merged: u64,
+    into: u64,
+    limit: usize,
+) -> Result<Js, StoreError> {
+    let counts = relation_counts_of_kind_prefix(book, merged);
+    let mut sources = BTreeSet::new();
+    let mut more = false;
+    'targets: for (count_key, _) in view.scan(&counts, &key::prefix_end(&counts), usize::MAX)? {
+        let mut read_at = counts.len();
+        let target_key = get_bytes(&count_key, &mut read_at)
+            .ok_or_else(|| corrupt("a relation count key doesn't decode"))?;
+        let prefix = relations_of_kind_targeting_prefix(book, merged, &target_key);
+        for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+            let (_, source) = position_and_source_of_relation_of_kind_targeting(&prefix, &stored_key)?;
+            if !sources.contains(&source) && sources.len() == limit {
+                more = true;
+                break 'targets;
+            }
+            sources.insert(source);
+        }
+    }
+    let mut rewrites = Vec::new();
+    for source in sources {
+        let Some(before) = written_field(view, source)? else {
+            return Err(corrupt("an entry with relations has no relations field"));
+        };
+        let items = items_of(&before)
+            .ok_or_else(|| corrupt("an entry's indexed relations don't parse"))?;
+        let mut merged_into: BTreeMap<usize, (bool, Vec<Vec<u8>>)> = BTreeMap::new();
+        for item in items.iter().filter(|item| item.kind == merged) {
+            if let Some(kept) = items
+                .iter()
+                .find(|kept| kept.kind == into && kept.target == item.target)
+            {
+                let kept_names: BTreeSet<Vec<u8>> = object_fields(&before[kept.span.clone()])
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect();
+                let item_bytes = &before[item.span.clone()];
+                let added: Vec<Vec<u8>> = object_fields(item_bytes)
+                    .into_iter()
+                    .filter(|(name, _)| !kept_names.contains(name))
+                    .map(|(_, span)| item_bytes[span].to_vec())
+                    .collect();
+                let entry = merged_into
+                    .entry(kept.span.start)
+                    .or_insert((kept.relation.weak, Vec::new()));
+                entry.0 = entry.0 && item.relation.weak;
+                entry.1.extend(added);
+            }
+        }
+        let json = rewritten(
+            &before,
+            &items,
+            |item| {
+                if item.kind == merged {
+                    let has_twin = items
+                        .iter()
+                        .any(|kept| kept.kind == into && kept.target == item.target);
+                    return (!has_twin).then(|| {
+                        Some(item_rewritten(
+                            &before,
+                            item,
+                            &ItemChange {
+                                kind: Some(into),
+                                ..ItemChange::default()
+                            },
+                        ))
+                    });
+                }
+                match merged_into.get(&item.span.start) {
+                    Some((weak, added_fields)) => Some(Some(item_rewritten(
+                        &before,
+                        item,
+                        &ItemChange {
+                            weak: Some(*weak),
+                            added_fields: added_fields.clone(),
+                            ..ItemChange::default()
+                        },
+                    ))),
+                    None => Some(None),
+                }
+            },
+            &[],
+        );
+        rewrites.push(rewrite_js(source, Some(before), json));
+    }
+    Ok(chunk_js(rewrites, more))
+}
+
+pub fn pending_worldbuilding_jobs(view: &View) -> Result<Js, StoreError> {
+    let mut deletions = Vec::new();
+    let prefix = key::of(DELETION_IN_PROGRESS_BY_ENTITY);
+    for (stored_key, value) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+        let mut read_at = prefix.len();
+        let entity = get_u64(&stored_key, &mut read_at)
+            .ok_or_else(|| corrupt("a deletion in progress doesn't decode"))?;
+        let mut read_at = 0;
+        let book = get_u64(&value, &mut read_at)
+            .ok_or_else(|| corrupt("a deletion in progress doesn't decode"))?;
+        let target_key = get_bytes(&value, &mut read_at)
+            .ok_or_else(|| corrupt("a deletion in progress doesn't decode"))?;
+        deletions.push(Js::Obj(vec![
+            ("book", Js::Big(book)),
+            ("entity", Js::Big(entity)),
+            ("key", Js::Text(target_key)),
         ]));
     }
-    Ok(Js::Arr(out))
+    let mut restorations = Vec::new();
+    let prefix = key::of(RELATIONS_REMOVED_BY_DELETION);
+    let mut from = prefix.clone();
+    while let Some((stored_key, _)) = view.scan(&from, &key::prefix_end(&prefix), 1)?.pop() {
+        let mut read_at = prefix.len();
+        let bad = || corrupt("a relation removed by a deletion doesn't decode");
+        let book = get_u64(&stored_key, &mut read_at).ok_or_else(bad)?;
+        let deleted = get_u64(&stored_key, &mut read_at).ok_or_else(bad)?;
+        if entry_key_in(view, book, deleted)?.is_some() {
+            restorations.push(Js::Obj(vec![
+                ("book", Js::Big(book)),
+                ("entity", Js::Big(deleted)),
+            ]));
+        }
+        from = key::prefix_end(&removed_by_deletion_prefix(book, deleted));
+    }
+    let mut merges = Vec::new();
+    let prefix = key::of(KINDS_BEING_MERGED);
+    for (stored_key, value) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+        let mut read_at = prefix.len();
+        let bad = || corrupt("a kind being merged doesn't decode");
+        let book = get_u64(&stored_key, &mut read_at).ok_or_else(bad)?;
+        let merged = get_u64(&stored_key, &mut read_at).ok_or_else(bad)?;
+        let into = get_u64(&value, &mut 0).ok_or_else(bad)?;
+        merges.push(Js::Obj(vec![
+            ("book", Js::Big(book)),
+            ("kind", Js::Num(merged as f64)),
+            ("into", Js::Num(into as f64)),
+        ]));
+    }
+    Ok(Js::Obj(vec![
+        ("deletions", Js::Arr(deletions)),
+        ("restorations", Js::Arr(restorations)),
+        ("merges", Js::Arr(merges)),
+    ]))
+}
+
+pub fn some_kind_is_being_merged_into(view: &View, book: u64, into: u64) -> Result<bool, StoreError> {
+    let prefix = key::id(KINDS_BEING_MERGED, book);
+    for (_, value) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+        if get_u64(&value, &mut 0) == Some(into) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub fn kind_being_merged_key(book: u64, kind: u64) -> Vec<u8> {
+    let mut stored_key = key::id(KINDS_BEING_MERGED, book);
+    put_u64(&mut stored_key, kind);
+    stored_key
+}
+
+pub fn kind_being_merged_value(into: u64) -> Vec<u8> {
+    let mut value = Vec::new();
+    put_u64(&mut value, into);
+    value
 }
 
 pub fn relations_kept(view: &View, book: u64, entity: u64) -> Result<Js, StoreError> {
@@ -868,57 +1455,57 @@ fn neighbour_positions(
                 view.scan_vals(&start, &stop, 2)?
             };
             for (stored_key, _) in found {
-                let (position, member) = member_of_group_key(prefix, &stored_key)?;
-                if member != moving {
+                let (position, source) = position_and_source_of_relation_of_kind_targeting(prefix, &stored_key)?;
+                if source != moving {
                     return Ok(Some(position));
                 }
             }
             Ok(None)
         };
-    let key_of = |member: u64, position: &[u8]| {
+    let key_of = |neighbour: u64, position: &[u8]| {
         let mut stored_key = prefix.to_vec();
         put_bytes(&mut stored_key, position);
-        put_u64(&mut stored_key, member);
+        put_u64(&mut stored_key, neighbour);
         stored_key
     };
-    let read_at = |member: u64| -> Result<Result<Vec<u8>, String>, StoreError> {
-        if member == moving {
+    let read_at = |neighbour: u64| -> Result<Result<Vec<u8>, String>, StoreError> {
+        if neighbour == moving {
             return Ok(Err("An entry can't be placed next to itself.".into()));
         }
-        Ok(position_of(member)?.ok_or_else(|| format!("Entry {member} isn't in that group.")))
+        Ok(position_of(neighbour)?.ok_or_else(|| format!("Entry {neighbour} has no relation of this kind to this target.")))
     };
     Ok(Ok(match (after, before) {
         (None, None) => (others(prefix.to_vec(), end, true)?, None),
-        (Some(after_member), None) => {
-            let after_position = match read_at(after_member)? {
+        (Some(after_neighbour), None) => {
+            let after_position = match read_at(after_neighbour)? {
                 Ok(position) => position,
                 Err(why) => return Ok(Err(why)),
             };
-            let mut from = key_of(after_member, &after_position);
+            let mut from = key_of(after_neighbour, &after_position);
             from.push(0);
             (Some(after_position), others(from, end, false)?)
         }
-        (None, Some(before_member)) => {
-            let before_position = match read_at(before_member)? {
+        (None, Some(before_neighbour)) => {
+            let before_position = match read_at(before_neighbour)? {
                 Ok(position) => position,
                 Err(why) => return Ok(Err(why)),
             };
             (
                 others(
                     prefix.to_vec(),
-                    key_of(before_member, &before_position),
+                    key_of(before_neighbour, &before_position),
                     true,
                 )?,
                 Some(before_position),
             )
         }
-        (Some(after_member), Some(before_member)) => {
+        (Some(after_neighbour), Some(before_neighbour)) => {
             let (after_position, before_position) =
-                match (read_at(after_member)?, read_at(before_member)?) {
+                match (read_at(after_neighbour)?, read_at(before_neighbour)?) {
                     (Ok(after_position), Ok(before_position)) => (after_position, before_position),
                     (Err(why), _) | (_, Err(why)) => return Ok(Err(why)),
                 };
-            if key_of(after_member, &after_position) >= key_of(before_member, &before_position) {
+            if key_of(after_neighbour, &after_position) >= key_of(before_neighbour, &before_position) {
                 return Ok(Err(
                     "The entry to go after comes after the one to go before.".into(),
                 ));
@@ -934,6 +1521,13 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
     };
     if relation_kind_name(view, book, edit.kind)?.is_none() {
         return Ok(refusal("This world has no such relation kind."));
+    }
+    if matches!(edit.change, RelationChange::Add { .. })
+        && relation_kind_being_merged_into(view, book, edit.kind)?.is_some()
+    {
+        return Ok(refusal(
+            "This relation kind is being merged into another; pick that one.",
+        ));
     }
     let Some(target) = entry_key_in(view, book, edit.target)? else {
         return Ok(refusal("The target isn't an entry of this world."));
@@ -964,7 +1558,7 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
     };
     let current = pos_of(edit.kind, &target);
     let placed = |target_key: &[u8]| -> Result<Result<Vec<u8>, String>, StoreError> {
-        let prefix = group_members_prefix(book, edit.kind, target_key);
+        let prefix = relations_of_kind_targeting_prefix(book, edit.kind, target_key);
         let target_key = target_key.to_vec();
         let found = neighbour_positions(
             view,
@@ -972,9 +1566,9 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
             edit.entry,
             edit.after,
             edit.before,
-            |member| {
+            |neighbour| {
                 Ok(
-                    relation_of_entry_stored(view, member, edit.kind, &target_key)?
+                    relation_of_entry_stored(view, neighbour, edit.kind, &target_key)?
                         .map(|relation| relation.position),
                 )
             },
@@ -1003,6 +1597,7 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
                 &Relation {
                     position,
                     weak: *weak,
+                    item: Vec::new(),
                 },
             );
             rewritten(&base, &items, |_| Some(None), &[replacement])
@@ -1018,9 +1613,8 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
                 return Ok(refusal("The entry has no such relation."));
             }
             let change = ItemChange {
-                target: None,
-                position: None,
                 weak: Some(*weak),
+                ..ItemChange::default()
             };
             rewritten(
                 &base,
@@ -1047,7 +1641,7 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
             let change = ItemChange {
                 target: Some(new_target_key),
                 position: Some(position),
-                weak: None,
+                ..ItemChange::default()
             };
             rewritten(
                 &base,
@@ -1124,6 +1718,9 @@ pub fn unreached_among(
                         &entry_key(book, &EntryKey::parse(&target_key)),
                     )?
                     else {
+                        if deletion_in_progress(view, book, &target_key)?.is_some() {
+                            reached = true;
+                        }
                         continue;
                     };
                     if seen.insert(target) {
@@ -1184,11 +1781,11 @@ impl Parser<'_> {
             .then(|| self.offset += word_bytes.len())
     }
 
-    fn members(&mut self) -> Option<Vec<(Vec<u8>, Range<usize>)>> {
+    fn object_fields(&mut self) -> Option<Vec<(Vec<u8>, Range<usize>)>> {
         self.eat(b'{')?;
-        let mut members = Vec::new();
+        let mut fields = Vec::new();
         if self.eat(b'}').is_some() {
-            return Some(members);
+            return Some(fields);
         }
         loop {
             self.space();
@@ -1196,9 +1793,9 @@ impl Parser<'_> {
             let name = self.string()?;
             self.eat(b':')?;
             self.value(1)?;
-            members.push((name, start..self.offset));
+            fields.push((name, start..self.offset));
             if self.eat(b'}').is_some() {
-                return Some(members);
+                return Some(fields);
             }
             self.eat(b',')?;
         }

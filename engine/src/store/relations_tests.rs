@@ -5,7 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::books::{BOOK, ENTRY, EntryKey};
 use super::chat_read::Js;
-use super::relations::{self, MEMBER_COUNT, MEMBERS_BY_TARGET, RELATIONS_OF_ENTRY};
+use super::relations::{
+    self, DELETION_IN_PROGRESS_BY_ENTITY, DELETION_IN_PROGRESS_BY_KEY, KINDS_BEING_MERGED,
+    RELATION_COUNT_BY_KIND_AND_TARGET, RELATIONS_BY_TARGET, RELATIONS_OF_ENTRY,
+    RELATIONS_REMOVED_BY_DELETION,
+};
 use super::world_order_tree::{self as tree, ORDER_TREE_COUNT, ORDER_TREE_EDGE, ORDER_TREE_HELD};
 use super::*;
 use crate::log::format::{FieldRef, Record, Value, kind_by_name};
@@ -148,7 +152,7 @@ fn read<T>(store: &Store, field: impl FnOnce(&derive::View) -> StoreResult<T>) -
 
 const B: u64 = 1;
 
-type Members = Vec<(Vec<u8>, u64)>;
+type SourcesByPosition = Vec<(Vec<u8>, u64)>;
 
 #[derive(Clone, Default)]
 struct Ent {
@@ -194,7 +198,7 @@ impl Model {
         ordered.into_iter().map(|(_, entity)| entity).collect()
     }
 
-    fn groups(&self) -> BTreeMap<(u64, Vec<u8>), Members> {
+    fn groups(&self) -> BTreeMap<(u64, Vec<u8>), SourcesByPosition> {
         let mut groups_by_target: BTreeMap<_, Vec<_>> = BTreeMap::new();
         for entity in self.entries.keys() {
             for ((kind, target), relation) in self.set(*entity) {
@@ -204,8 +208,8 @@ impl Model {
                     .push((relation.position, *entity));
             }
         }
-        for members in groups_by_target.values_mut() {
-            members.sort();
+        for sources in groups_by_target.values_mut() {
+            sources.sort();
         }
         groups_by_target
     }
@@ -262,20 +266,21 @@ impl Model {
         }
         let groups = self.groups();
         read(store, |view| {
-            for ((kind, target), members) in &groups {
+            for ((kind, target), sources) in &groups {
                 assert_eq!(
-                    relations::member_count(view, B, *kind, target)?,
-                    members.len() as u64
+                    relations::count_of_relations_of_kind_targeting(view, B, *kind, target)?,
+                    sources.len() as u64
                 );
-                let prefix = relations::group_members_prefix(B, *kind, target);
+                let prefix = relations::relations_of_kind_targeting_prefix(B, *kind, target);
                 let got: Vec<u64> = view
                     .scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)?
                     .iter()
                     .map(|(key, _)| {
-                        relations::member_of_group_key(&prefix, key).map(|(_, entity)| entity)
+                        relations::position_and_source_of_relation_of_kind_targeting(&prefix, key)
+                            .map(|(_, source)| source)
                     })
                     .collect::<Result<_, _>>()?;
-                let want: Vec<u64> = members.iter().map(|(_, entity)| *entity).collect();
+                let want: Vec<u64> = sources.iter().map(|(_, entity)| *entity).collect();
                 assert_eq!(got, want);
             }
             for entity in self.entries.keys() {
@@ -378,8 +383,12 @@ fn dump(store: &Store) -> Vec<(Vec<u8>, Vec<u8>)> {
         ORDER_TREE_COUNT.id(),
         ORDER_TREE_HELD.id(),
         RELATIONS_OF_ENTRY,
-        MEMBERS_BY_TARGET,
-        MEMBER_COUNT,
+        RELATIONS_BY_TARGET,
+        RELATION_COUNT_BY_KIND_AND_TARGET,
+        DELETION_IN_PROGRESS_BY_KEY,
+        DELETION_IN_PROGRESS_BY_ENTITY,
+        RELATIONS_REMOVED_BY_DELETION,
+        KINDS_BEING_MERGED,
         commit_checks::COMMIT_CHECK,
     ] {
         let prefix = kinds::key::of(structure);
@@ -449,14 +458,6 @@ fn step(store: &Store, model: &mut Model, rng: &mut Rng, next: &mut u64) {
                 .map(|(pointer, json)| set_json(*pointer, relations_field_of(), json))
                 .collect();
             records.push(rec("entityDelete", vec![Value::Id(entity)]));
-            if !rewrites.is_empty() {
-                assert!(
-                    store
-                        .commit_wait(vec![rec("entityDelete", vec![Value::Id(entity)])])
-                        .is_err(),
-                    "a delete that leaves relations pointing at it is refused"
-                );
-            }
             store.commit_wait(records).unwrap();
             for (pointer, json) in rewrites {
                 model.entries.get_mut(&pointer).unwrap().rels = Some(json);
@@ -601,25 +602,17 @@ fn a_value_that_isnt_a_list_of_relations_holds_none_and_a_repeated_pair_counts_o
               {"kind":7,"target":"Inn","position":"é😀","weak":true} ] "#
             .as_bytes(),
     );
-    let want: relations::RelationSet = [
-        (
-            (1, b"3".to_vec()),
-            relations::Relation {
-                position: b"b".to_vec(),
-                weak: false,
-            },
-        ),
-        (
-            (7, b"Inn".to_vec()),
-            relations::Relation {
-                position: "é😀".as_bytes().to_vec(),
-                weak: true,
-            },
-        ),
-    ]
-    .into_iter()
-    .collect();
-    assert_eq!(got, want);
+    let got: Vec<(u64, Vec<u8>, Vec<u8>, bool)> = got
+        .into_iter()
+        .map(|((kind, target), relation)| (kind, target, relation.position, relation.weak))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (1, b"3".to_vec(), b"b".to_vec(), false),
+            (7, b"Inn".to_vec(), "é😀".as_bytes().to_vec(), true),
+        ]
+    );
 }
 
 #[test]
@@ -732,49 +725,56 @@ fn history_writes_restores_and_a_target_written_before_it_exists_keep_the_groups
     );
     let mut del = vec![Value::Id(11)];
     del.extend(meta(4));
-    assert!(
-        store
-            .commit_wait(vec![rec("histEntityDelete", del.clone())])
-            .is_err()
-    );
-    let rewrites = read(&store, |view| {
-        relations::relations_without(view, B, &[b"2".to_vec()])
-    });
-    let Js::Arr(rewrites) = rewrites else {
-        panic!()
-    };
-    assert_eq!(rewrites.len(), 1);
-    let mut del = vec![Value::Id(11)];
-    del.extend(meta(5));
     store
-        .commit_wait(vec![hist_set(6, 10, "[]"), rec("histEntityDelete", del)])
+        .commit_wait(vec![rec("histEntityDelete", del)])
+        .unwrap();
+    assert_eq!(top(&store), vec![11, 12], "the deleted entry's place holds what still targets it");
+    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"2")).is_some());
+    let chunk = read(&store, |view| {
+        relations::rewrites_removing_relations_targeting(view, B, &[b"2".to_vec()], 1)
+    });
+    let (rewrites, more) = rewrites_of(&chunk);
+    assert_eq!((rewrites.len(), more), (1, false));
+    assert_eq!(rewrites[0].0, 10);
+    store
+        .commit_wait(vec![hist_set(5, 10, &rewrites[0].1)])
         .unwrap();
     assert_eq!(top(&store), vec![10, 12]);
+    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"2")).is_none());
     assert_eq!(
-        read(&store, |view| relations::member_count(view, B, IN, b"2")),
-        0
+        read(&store, |view| relations::count_of_relations_of_kind_targeting(view, B, IN, b"1")),
+        0,
+        "the deleted entry's own relations went with it"
     );
-    assert_eq!(
-        read(&store, |view| relations::member_count(view, B, IN, b"1")),
-        0
-    );
-    let kept = read(&store, |view| relations::relations_kept(view, B, 11));
-    assert_eq!(kept, Js::Null, "its target 1 is still there");
     let mut restore = vec![
         Value::Id(11),
         Value::UInt(ENTRY),
         text("1:2"),
         Value::F64(0.0),
     ];
-    restore.extend(meta(7));
+    restore.extend(meta(6));
     store
         .commit_wait(vec![rec("histRestore", restore)])
         .unwrap();
     assert_eq!(top(&store), vec![10, 12]);
+    let chunk = read(&store, |view| {
+        relations::rewrites_restoring_relations_removed_by_deletion(view, B, 11, 10)
+    });
+    let (rewrites, more) = rewrites_of(&chunk);
+    assert_eq!((rewrites.len(), more), (1, false));
     assert_eq!(
-        read(&store, |view| relations::member_count(view, B, IN, b"1")),
-        1
+        relations::parse_relations_field(rewrites[0].1.as_bytes()),
+        relations::parse_relations_field(strong(&[(IN, 2, "c")]).as_bytes()),
+        "the restore puts back the relation as it was"
     );
+    store
+        .commit_wait(vec![hist_set(7, 10, &rewrites[0].1)])
+        .unwrap();
+    assert_eq!(top(&store), vec![12]);
+    let (rewrites, _) = rewrites_of(&read(&store, |view| {
+        relations::rewrites_restoring_relations_removed_by_deletion(view, B, 11, 10)
+    }));
+    assert!(rewrites.is_empty(), "nothing is left to restore");
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }
@@ -810,15 +810,21 @@ fn a_commit_that_ends_with_a_relation_to_a_missing_entry_or_kind_is_refused_and_
     store
         .commit_wait(vec![drop_value(B, relations::relation_kind_field(OWES))])
         .expect("a kind nothing uses goes");
-    assert!(refused(
-        store.commit_wait(vec![rec("entityDelete", vec![Value::Id(10)])])
-    ));
     store
-        .commit_wait(vec![
-            rec("entityDelete", vec![Value::Id(10)]),
-            rec("entityDelete", vec![Value::Id(11)]),
-        ])
-        .expect("a loop erased in one commit");
+        .commit_wait(vec![rec("entityDelete", vec![Value::Id(10)])])
+        .expect("a delete is never refused for what targets the entry");
+    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"1")).is_some());
+    assert!(
+        refused(store.commit_wait(vec![create(13, ENTRY, "1:1")])),
+        "the key of an entry still being deleted can't be taken"
+    );
+    store
+        .commit_wait(vec![rec("entityDelete", vec![Value::Id(11)])])
+        .expect("the last relation targeting it goes with its source");
+    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"1")).is_none());
+    store
+        .commit_wait(vec![create(13, ENTRY, "1:1")])
+        .expect("then its key is free");
     assert!(
         dump(&store)
             .iter()
@@ -1041,6 +1047,28 @@ fn the_loop_check_finds_an_entry_only_a_loop_holds_and_says_nothing_past_its_lim
     let _ = fs::remove_dir_all(&dir);
 }
 
+fn rewrites_of(chunk: &Js) -> (Vec<(u64, String)>, bool) {
+    let Js::Obj(fields) = chunk else {
+        panic!("not a chunk: {chunk:?}")
+    };
+    let field = |name: &str| &fields.iter().find(|(key_name, _)| *key_name == name).unwrap().1;
+    let Js::Arr(rewrites) = field("rewrites") else {
+        panic!()
+    };
+    let rewrites = rewrites
+        .iter()
+        .map(|rewrite| {
+            let Js::Obj(parts) = rewrite else { panic!() };
+            let part = |name: &str| &parts.iter().find(|(key_name, _)| *key_name == name).unwrap().1;
+            let (Js::Big(entity), Js::Text(json)) = (part("entity"), part("json")) else {
+                panic!()
+            };
+            (*entity, String::from_utf8(json.clone()).unwrap())
+        })
+        .collect();
+    (rewrites, field("more") == &Js::Bool(true))
+}
+
 fn derive_job<T: Send + 'static>(
     store: &Store,
     field: impl FnOnce(&derive::View, &mut derive::Out) -> StoreResult<T> + Send + 'static,
@@ -1080,8 +1108,8 @@ fn the_conversion_builds_for_a_store_written_before_the_tree_what_its_writes_wou
             ORDER_TREE_COUNT.id(),
             ORDER_TREE_HELD.id(),
             RELATIONS_OF_ENTRY,
-            MEMBERS_BY_TARGET,
-            MEMBER_COUNT,
+            RELATIONS_BY_TARGET,
+            RELATION_COUNT_BY_KIND_AND_TARGET,
         ] {
             let prefix = kinds::key::of(structure);
             for (kind, _) in view.scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)? {
@@ -1110,6 +1138,184 @@ fn the_conversion_builds_for_a_store_written_before_the_tree_what_its_writes_wou
     });
     assert_eq!(dump(&store), want);
     model.check(&store);
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn history_meta(change: u64) -> Vec<Value> {
+    vec![
+        Value::Id(change),
+        Value::Time(1_700_000_000_000 + change as i64),
+        Value::Absent,
+        Value::Id(1),
+    ]
+}
+
+fn history_user(store: &Store) {
+    store
+        .commit_wait(vec![rec(
+            "keyMap",
+            vec![Value::Sel(chat::KEYED_USER, 1), Value::Bytes(b"user-1".to_vec())],
+        )])
+        .unwrap();
+}
+
+fn top_of(store: &Store, kind: Option<u64>) -> Vec<u64> {
+    let book_tree = relations::order_tree_space(B);
+    read(store, |view| {
+        Ok(tree::top_level_from_rank(view, &book_tree, kind, 0, usize::MAX)?
+            .iter()
+            .map(tree::entity_of_order_key)
+            .collect())
+    })
+}
+
+#[test]
+fn a_large_delete_goes_at_once_and_its_relations_go_in_chunks_and_a_restore_midway_puts_back_what_went() {
+    let dir = temp_dir("chunked");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    history_user(&store);
+    book(&store, B, "one");
+    let mut records = vec![create(10, ENTRY, "1:1")];
+    for source in 11..16 {
+        records.push(create(source, ENTRY, &format!("1:{}", source - 9)));
+        records.push(set_json(
+            source,
+            relations::relations_field(),
+            &json_of(&[(IN, 1, "a", false), (OWES, 1, "b", true)]),
+        ));
+    }
+    store.commit_wait(records).unwrap();
+    assert_eq!(top_of(&store, Some(IN)), vec![10]);
+    let mut delete = vec![Value::Id(10)];
+    delete.extend(history_meta(1));
+    store
+        .commit_wait(vec![rec("histEntityDelete", delete)])
+        .unwrap();
+    assert_eq!(top_of(&store, Some(IN)), vec![10], "the place of the deleted entry holds them");
+    assert_eq!(top_of(&store, Some(OWES)), vec![10, 11, 12, 13, 14, 15]);
+    assert_eq!(top_of(&store, None), vec![11, 12, 13, 14, 15], "ungrouped, it is gone");
+    let chunk = |store: &Store| {
+        rewrites_of(&read(store, |view| {
+            relations::rewrites_removing_relations_targeting(view, B, &[b"1".to_vec()], 2)
+        }))
+    };
+    let (first, more) = chunk(&store);
+    assert_eq!((first.len(), more), (2, true));
+    store
+        .commit_wait(
+            first
+                .iter()
+                .map(|(source, json)| set_json(*source, relations::relations_field(), json))
+                .collect(),
+        )
+        .unwrap();
+    assert_eq!(top_of(&store, Some(IN)), vec![10, 11, 12]);
+    let mut restore = vec![Value::Id(10), Value::UInt(ENTRY), text("1:1"), Value::F64(0.0)];
+    restore.extend(history_meta(2));
+    store
+        .commit_wait(vec![rec("histRestore", restore)])
+        .unwrap();
+    assert!(read(&store, |view| relations::deletion_in_progress(view, B, b"1")).is_none());
+    assert_eq!(top_of(&store, Some(IN)), vec![10, 11, 12]);
+    assert_eq!(top_of(&store, None), vec![10, 11, 12, 13, 14, 15]);
+    let (back, more) = rewrites_of(&read(&store, |view| {
+        relations::rewrites_restoring_relations_removed_by_deletion(view, B, 10, 100)
+    }));
+    assert_eq!((back.len(), more), (2, false));
+    store
+        .commit_wait(
+            back.iter()
+                .map(|(source, json)| set_json(*source, relations::relations_field(), json))
+                .collect(),
+        )
+        .unwrap();
+    assert_eq!(top_of(&store, Some(IN)), vec![10]);
+    assert_eq!(
+        read(&store, |view| relations::relations_of_entry(view, 11)),
+        relations::parse_relations_field(
+            json_of(&[(IN, 1, "a", false), (OWES, 1, "b", true)]).as_bytes()
+        ),
+        "the relations of both kinds came back as they were"
+    );
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn merging_a_kind_rewrites_its_relations_in_chunks_folding_twins_into_one_and_then_the_kind_can_go() {
+    let dir = temp_dir("merge");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, B, "one");
+    let mut records = vec![create(10, ENTRY, "1:1"), create(11, ENTRY, "1:2")];
+    records.push(create(12, ENTRY, "1:3"));
+    records.push(set_json(
+        12,
+        relations::relations_field(),
+        r#"[{"kind":2,"target":1,"position":"a","note":"kept"},{"kind":1,"target":1,"position":"b","weak":true}]"#,
+    ));
+    records.push(create(13, ENTRY, "1:4"));
+    records.push(set_json(13, relations::relations_field(), &json_of(&[(OWES, 2, "a", false)])));
+    store.commit_wait(records).unwrap();
+    store
+        .commit_wait(vec![set_text(B, relations::relation_kind_merge_field(OWES), "1")])
+        .unwrap();
+    let edit = relations::RelationEdit {
+        entry: 11,
+        kind: OWES,
+        target: 10,
+        change: relations::RelationChange::Add { weak: false },
+        after: None,
+        before: None,
+    };
+    let refused = read(&store, |view| relations::relation_edit(view, B, &edit));
+    assert!(
+        matches!(&refused, Js::Obj(fields) if fields.iter().any(|(name, _)| *name == "refused")),
+        "a kind being merged can't be picked for a new relation"
+    );
+    let pending = read(&store, relations::pending_worldbuilding_jobs);
+    assert!(format!("{pending:?}").contains("merges\", Arr([Obj"));
+    let mut rounds = 0;
+    loop {
+        let (rewrites, more) = rewrites_of(&read(&store, |view| {
+            relations::rewrites_merging_relation_kind(view, B, OWES, IN, 1)
+        }));
+        if rewrites.is_empty() {
+            break;
+        }
+        rounds += 1;
+        store
+            .commit_wait(
+                rewrites
+                    .iter()
+                    .map(|(source, json)| set_json(*source, relations::relations_field(), json))
+                    .collect(),
+            )
+            .unwrap();
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(rounds, 2);
+    assert!(!read(&store, |view| relations::relation_kind_in_use(view, B, OWES)));
+    let folded = read(&store, |view| relations::relations_of_entry(view, 12));
+    assert_eq!(folded.len(), 1);
+    let relation = &folded[&(IN, b"1".to_vec())];
+    assert!(!relation.weak, "a strong relation folded into a weak twin keeps it held");
+    assert!(String::from_utf8_lossy(&relation.item).contains(r#""note":"kept""#));
+    assert!(read(&store, |view| relations::relations_of_entry(view, 13)).contains_key(&(IN, b"2".to_vec())));
+    assert!(matches!(
+        store.commit_wait(vec![drop_value(B, relations::relation_kind_field(IN))]),
+        Err(StoreError::Refused(_))
+    ));
+    store
+        .commit_wait(vec![
+            drop_value(B, relations::relation_kind_field(OWES)),
+            drop_value(B, relations::relation_kind_merge_field(OWES)),
+        ])
+        .unwrap();
+    let pending = read(&store, relations::pending_worldbuilding_jobs);
+    assert!(format!("{pending:?}").contains("merges\", Arr([])"));
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }

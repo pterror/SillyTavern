@@ -4,7 +4,7 @@ use super::StoreError;
 use super::derive::{AddMapKind, Out, View, apply};
 use super::kinds::key;
 use crate::keyspace::Entries;
-use crate::keyspace::val::{Val, get_u64, map_counts, put_u64};
+use crate::keyspace::val::{Val, map_counts, put_u64};
 
 pub const ORDER_TREE_EDGE: u64 = 225;
 pub const ORDER_TREE_COUNT: AddMapKind = AddMapKind::new(226);
@@ -31,6 +31,11 @@ pub fn entity_of_order_key(entry: &OrderKey) -> u64 {
 pub trait ReadDerived {
     fn read(&self, stored_key: &[u8]) -> Result<Option<Vec<u8>>, StoreError>;
     fn read_under(&self, prefix: &[u8]) -> Result<Entries, StoreError>;
+    fn read_first_in(&self, start: &[u8], end: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>, StoreError>;
+
+    fn read_first_under(&self, prefix: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>, StoreError> {
+        self.read_first_in(prefix, &key::prefix_end(prefix))
+    }
 }
 
 impl ReadDerived for View<'_> {
@@ -40,6 +45,10 @@ impl ReadDerived for View<'_> {
 
     fn read_under(&self, prefix: &[u8]) -> Result<Entries, StoreError> {
         self.scan(prefix, &key::prefix_end(prefix), usize::MAX)
+    }
+
+    fn read_first_in(&self, start: &[u8], end: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>, StoreError> {
+        Ok(self.scan(start, end, 1)?.pop())
     }
 }
 
@@ -98,6 +107,10 @@ impl ReadDerived for LayeredWrites<'_, '_> {
         let value = self.view.with_layer(&self.written_so_far);
         value.scan(prefix, &key::prefix_end(prefix), usize::MAX)
     }
+
+    fn read_first_in(&self, start: &[u8], end: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>, StoreError> {
+        Ok(self.view.with_layer(&self.written_so_far).scan(start, end, 1)?.pop())
+    }
 }
 
 fn node_key(book_tree: &[u8], node_prefix: &[u8]) -> Vec<u8> {
@@ -119,9 +132,29 @@ fn held_prefix(book_tree: &[u8], node_prefix: &[u8]) -> Vec<u8> {
     stored_key
 }
 
-fn held_key(book_tree: &[u8], node_prefix: &[u8], kind: u64) -> Vec<u8> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CountedSlot {
+    HeldByKind(u64),
+    DeletedWhileRelationsTargetIt,
+    DeletedEntryPlaceForKind(u64),
+}
+
+impl CountedSlot {
+    fn bytes(self) -> Vec<u8> {
+        let (tag, kind) = match self {
+            CountedSlot::HeldByKind(kind) => (0, kind),
+            CountedSlot::DeletedWhileRelationsTargetIt => (1, 0),
+            CountedSlot::DeletedEntryPlaceForKind(kind) => (2, kind),
+        };
+        let mut out = vec![tag];
+        put_u64(&mut out, kind);
+        out
+    }
+}
+
+fn held_key(book_tree: &[u8], node_prefix: &[u8], slot: CountedSlot) -> Vec<u8> {
     let mut stored_key = held_prefix(book_tree, node_prefix);
-    put_u64(&mut stored_key, kind);
+    stored_key.extend_from_slice(&slot.bytes());
     stored_key
 }
 
@@ -188,12 +221,12 @@ fn add_along_edge(
     book_tree: &[u8],
     node_prefix: &[u8],
     digit: u8,
-    held: &[u64],
+    held: &[CountedSlot],
     amount: i64,
 ) {
     writes.add_at_digit(count_key(book_tree, node_prefix), digit, amount);
-    for kind in held {
-        writes.add_at_digit(held_key(book_tree, node_prefix, *kind), digit, amount);
+    for slot in held {
+        writes.add_at_digit(held_key(book_tree, node_prefix, *slot), digit, amount);
     }
 }
 
@@ -202,13 +235,11 @@ fn held_under_edge(
     book_tree: &[u8],
     node_prefix: &[u8],
     digit: u8,
-) -> Result<Vec<(u64, u64)>, StoreError> {
+) -> Result<Vec<(Vec<u8>, u64)>, StoreError> {
     let prefix = held_prefix(book_tree, node_prefix);
     let mut out = Vec::new();
     for (stored_key, value) in reader.read_under(&prefix)? {
-        let mut read_at = prefix.len();
-        let kind = get_u64(&stored_key, &mut read_at)
-            .ok_or_else(|| corrupt("a held key doesn't decode"))?;
+        let slot_bytes = stored_key[prefix.len()..].to_vec();
         let held_by_digit: Vec<(u8, u64)> = map_counts(&value)
             .ok_or_else(|| corrupt("a held map doesn't decode"))?
             .into_iter()
@@ -220,7 +251,7 @@ fn held_under_edge(
             .collect();
         let amount = count_at_digit(&held_by_digit, digit);
         if amount > 0 {
-            out.push((kind, amount));
+            out.push((slot_bytes, amount));
         }
     }
     Ok(out)
@@ -230,7 +261,7 @@ pub fn insert_entry(
     writes: &mut LayeredWrites,
     book_tree: &[u8],
     entry: &OrderKey,
-    held: &[u64],
+    held: &[CountedSlot],
 ) -> Result<(), StoreError> {
     let mut node_prefix: Vec<u8> = Vec::new();
     loop {
@@ -266,9 +297,11 @@ pub fn insert_entry(
             child[shared],
             entries_under_edge as i64,
         );
-        for (kind, amount) in under_held {
+        for (slot_bytes, amount) in under_held {
+            let mut split_held_key = held_prefix(book_tree, &split_node);
+            split_held_key.extend_from_slice(&slot_bytes);
             writes.add_at_digit(
-                held_key(book_tree, &split_node, kind),
+                split_held_key,
                 child[shared],
                 amount as i64,
             );
@@ -319,7 +352,7 @@ pub fn remove_entry(
     writes: &mut LayeredWrites,
     book_tree: &[u8],
     entry: &OrderKey,
-    held: &[u64],
+    held: &[CountedSlot],
 ) -> Result<(), StoreError> {
     let path = path_to(writes, book_tree, entry)?
         .ok_or_else(|| corrupt("an entry removed that isn't in the tree"))?;
@@ -354,13 +387,13 @@ pub fn add_held(
     writes: &mut LayeredWrites,
     book_tree: &[u8],
     entry: &OrderKey,
-    kind: u64,
+    slot: CountedSlot,
     amount: i64,
 ) -> Result<(), StoreError> {
     let path = path_to(writes, book_tree, entry)?
-        .ok_or_else(|| corrupt("a held kind on an entry that isn't in the tree"))?;
+        .ok_or_else(|| corrupt("a counted slot on an entry that isn't in the tree"))?;
     for (node_prefix, digit) in path {
-        writes.add_at_digit(held_key(book_tree, &node_prefix, kind), digit, amount);
+        writes.add_at_digit(held_key(book_tree, &node_prefix, slot), digit, amount);
     }
     Ok(())
 }
@@ -372,15 +405,21 @@ fn not_held_under(
     kind: Option<u64>,
 ) -> Result<Vec<(u8, u64)>, StoreError> {
     let mut not_held = digit_counts(reader, &count_key(book_tree, node_prefix))?;
-    if let Some(kind) = kind {
-        let held_counts = digit_counts(reader, &held_key(book_tree, node_prefix, kind))?;
-        for (digit, amount) in &mut not_held {
-            *amount = amount
-                .checked_sub(count_at_digit(&held_counts, *digit))
-                .ok_or_else(|| corrupt("more entries held than in the tree"))?;
-        }
-        not_held.retain(|(_, amount)| *amount > 0);
+    let counted = |slot| digit_counts(reader, &held_key(book_tree, node_prefix, slot));
+    let deleted = counted(CountedSlot::DeletedWhileRelationsTargetIt)?;
+    let (held, places) = match kind {
+        Some(kind) => (
+            counted(CountedSlot::HeldByKind(kind))?,
+            counted(CountedSlot::DeletedEntryPlaceForKind(kind))?,
+        ),
+        None => (Vec::new(), Vec::new()),
+    };
+    for (digit, amount) in &mut not_held {
+        let shown = (*amount + count_at_digit(&places, *digit))
+            .checked_sub(count_at_digit(&held, *digit) + count_at_digit(&deleted, *digit));
+        *amount = shown.ok_or_else(|| corrupt("more entries held or deleted than in the tree"))?;
     }
+    not_held.retain(|(_, amount)| *amount > 0);
     Ok(not_held)
 }
 

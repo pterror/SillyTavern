@@ -1221,6 +1221,8 @@ pub fn erase(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<bool, StoreE
             if id(&was, 1) == ENTRY {
                 let (book, _) = books::parse_entry_key(bytes(&was, 2))?;
                 out.del(deleted_key(book, e));
+                super::relations::deleted_entry_erased(view, out, e)?;
+                super::relations::removed_by_deletion_of_erased(view, out, book, e)?;
             }
             out.del(key::id(GONE, e));
             made

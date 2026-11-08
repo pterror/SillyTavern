@@ -2911,10 +2911,57 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
         }
         "worldbuildingRelationsWithout" => {
             use crate::store::relations;
-            let (book, keys) = (req_integer(a, "book")?, byte_list(a, "keys")?);
+            let (book, keys, limit) = (
+                req_integer(a, "book")?,
+                byte_list(a, "keys")?,
+                req_integer(a, "limit")? as usize,
+            );
             Box::new(move |store| {
                 store
-                    .chat_read(|view| relations::relations_without(view, book, &keys))
+                    .chat_read(|view| {
+                        relations::rewrites_removing_relations_targeting(view, book, &keys, limit)
+                    })
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingRelationsToRestore" => {
+            use crate::store::relations;
+            let (book, entity, limit) = (
+                req_integer(a, "book")?,
+                req_integer(a, "entity")?,
+                req_integer(a, "limit")? as usize,
+            );
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| {
+                        relations::rewrites_restoring_relations_removed_by_deletion(
+                            view, book, entity, limit,
+                        )
+                    })
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingKindMergeRewrites" => {
+            use crate::store::relations;
+            let (book, merged, into, limit) = (
+                req_integer(a, "book")?,
+                req_integer(a, "kind")?,
+                req_integer(a, "into")?,
+                req_integer(a, "limit")? as usize,
+            );
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| {
+                        relations::rewrites_merging_relation_kind(view, book, merged, into, limit)
+                    })
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingPendingJobs" => {
+            use crate::store::relations;
+            Box::new(move |store| {
+                store
+                    .chat_read(relations::pending_worldbuilding_jobs)
                     .map(JsTree)
             })
         }

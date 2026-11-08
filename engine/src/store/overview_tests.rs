@@ -83,10 +83,10 @@ fn list_of(value: &Js) -> &[Js] {
 
 fn outline(item: &Js, out: &mut Vec<String>) {
     let occurrence = text_of(field_of(item, "occurrence"));
-    if text_of(field_of(item, "cell")) == "more" {
+    if text_of(field_of(item, "cell")) == "notShownTile" {
         out.push(format!(
             "{occurrence}={}",
-            number_of(field_of(item, "moreCount"))
+            number_of(field_of(item, "groupingKindRelationsTargetingRegionEntryNotShown"))
         ));
         return;
     }
@@ -221,7 +221,7 @@ fn the_overview_is_the_top_with_each_region_cut_short_a_count_per_cut_and_repeat
     );
     let lantern_house = &list_of(field_of(&overview_read, "entries"))[1];
     assert_eq!(number_of(field_of(lantern_house, "topLevelRank")), 1.0);
-    assert_eq!(number_of(field_of(lantern_house, "memberCount")), 5.0);
+    assert_eq!(number_of(field_of(lantern_house, "groupingKindRelationsTargetingThis")), 5.0);
     assert_eq!(
         text_of(field_of(lantern_house, "title")),
         "The Lantern House"
@@ -232,8 +232,8 @@ fn the_overview_is_the_top_with_each_region_cut_short_a_count_per_cut_and_repeat
         list_of(field_of(lantern_house, "keys")),
         [Js::Text(b"lantern".to_vec())]
     );
-    let first_member = &list_of(field_of(lantern_house, "region"))[0];
-    let relations_line = list_of(field_of(first_member, "relations"));
+    let first_related = &list_of(field_of(lantern_house, "region"))[0];
+    let relations_line = list_of(field_of(first_related, "relations"));
     assert_eq!(text_of(field_of(&relations_line[0], "kind")), "1");
     assert_eq!(text_of(field_of(&relations_line[0], "kindName")), "in");
     assert_eq!(text_of(field_of(&relations_line[0], "target")), "101");
@@ -403,12 +403,34 @@ fn a_move_steps_through_reading_order_across_top_level_entries_and_hops_to_paren
         relations::relations_field(),
         &strong(&[(OWES, 8, "a")]),
     ));
-    records.push(rec("entityDelete", vec![Value::Id(101)]));
-    assert!(
-        store
-            .commit_wait(vec![rec("entityDelete", vec![Value::Id(101)])])
-            .is_err()
+    store
+        .commit_wait(vec![rec("entityDelete", vec![Value::Id(101)])])
+        .unwrap();
+    let while_deleting = read(&store, |view| {
+        overview::read_overview(view, IN, &LAYOUT, 0, 10, None)
+    });
+    let mut outline_while_deleting = Vec::new();
+    for entry_cell in list_of(field_of(&while_deleting, "entries")) {
+        outline(entry_cell, &mut outline_while_deleting);
+    }
+    assert_eq!(
+        outline_while_deleting,
+        [
+            "111",
+            "101",
+            "101/102",
+            "101/102/106",
+            "101/103",
+            "101/104",
+            "101/+=2",
+            "108",
+            "108/109",
+            "108/109/109!",
+        ],
+        "until their relations are removed, what targeted the deleted entry shows in its place"
     );
+    let place = &list_of(field_of(&while_deleting, "entries"))[1];
+    assert_eq!(text_of(field_of(place, "cell")), "placeOfDeletedEntry");
     store.commit_wait(records).unwrap();
     let overview_read = read(&store, |view| {
         overview::read_overview(view, IN, &LAYOUT, 0, 10, None)

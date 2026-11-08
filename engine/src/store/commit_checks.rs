@@ -73,9 +73,10 @@ pub fn run(view: &View, checks: &[Vec<u8>]) -> Result<(), StoreError> {
         match what {
             TARGET_EXISTS => {
                 let target_key = get_bytes(check, &mut read_at).ok_or_else(corrupt)?;
-                if relations::anything_points_at(view, book, &target_key)?
+                if relations::any_relation_targets(view, book, &target_key)?
                     && entity_by_key(view, ENTRY, &entry_key(book, &EntryKey::parse(&target_key)))?
                         .is_none()
+                    && relations::deletion_in_progress(view, book, &target_key)?.is_none()
                 {
                     return Err(StoreError::Refused(format!(
                         "an entry of book {book} still has a relation to entry {}, which doesn't exist: remove it in the same commit",
@@ -85,11 +86,12 @@ pub fn run(view: &View, checks: &[Vec<u8>]) -> Result<(), StoreError> {
             }
             RELATION_KIND_EXISTS => {
                 let kind = get_u64(check, &mut read_at).ok_or_else(corrupt)?;
-                if relations::relation_kind_in_use(view, book, kind)?
+                if (relations::relation_kind_in_use(view, book, kind)?
+                    || relations::some_kind_is_being_merged_into(view, book, kind)?)
                     && relations::relation_kind_name(view, book, kind)?.is_none()
                 {
                     return Err(StoreError::Refused(format!(
-                        "an entry of book {book} still has a relation of kind {kind}, which the book doesn't have: remove it in the same commit"
+                        "an entry of book {book} still has a relation of kind {kind}, or a kind being merged into it, which the book doesn't have"
                     )));
                 }
             }

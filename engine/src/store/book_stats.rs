@@ -165,6 +165,18 @@ fn owned_value_changed(
             super::commit_checks::relation_kind_check_key(e, kind),
             Vec::new(),
         );
+    } else if let Some(kind) = super::relations::kind_of_relation_kind_merge_field(f) {
+        let merging_key = super::relations::kind_being_merged_key(e, kind);
+        match new.and_then(super::relations::merge_target_of_text).filter(|_| !json) {
+            Some(into) => {
+                out.put(merging_key, super::relations::kind_being_merged_value(into));
+                out.put(
+                    super::commit_checks::relation_kind_check_key(e, into),
+                    Vec::new(),
+                );
+            }
+            None => out.del(merging_key),
+        }
     }
     let old = field_stat(view, e, f, json)?;
     let now = match new {

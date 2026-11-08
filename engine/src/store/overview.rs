@@ -40,14 +40,15 @@ struct DrawnEntry {
     entity: u64,
     own_key: EntryKey,
     occurrence: String,
-    member_count: u64,
+    grouping_kind_relations_targeting_this: u64,
+    place_of_deleted_entry: bool,
     already_open_above: bool,
     cells: Vec<RegionCell>,
 }
 
 enum RegionCell {
-    Member(DrawnEntry),
-    MoreTile { occurrence: String, more: u64 },
+    RelatedEntry(DrawnEntry),
+    NotShownTile { occurrence: String, not_shown: u64 },
 }
 
 fn refused(why: String) -> StoreError {
@@ -78,14 +79,20 @@ fn draw_entry(
     path: &mut Vec<u64>,
 ) -> Result<DrawnEntry, StoreError> {
     let entity = *path.last().expect("a drawn entry is on its path");
-    let own_key = uid_in(view, grouping.book, entity)?
-        .ok_or_else(|| StoreError::Entry(format!("member {entity} isn't an entry")))?;
+    let (own_key, place_of_deleted_entry) = match uid_in(view, grouping.book, entity)? {
+        Some(own_key) => (own_key, false),
+        None => match relations::deleted_entry_key_in_progress(view, entity)? {
+            Some((book, target_key)) if book == grouping.book => (EntryKey::parse(&target_key), true),
+            _ => return Err(StoreError::Entry(format!("{entity} isn't an entry of this world"))),
+        },
+    };
     let occurrence = occurrence_key(path);
     let already_open_above = path[..path.len() - 1].contains(&entity);
     let mut drawn = DrawnEntry {
         entity,
         occurrence,
-        member_count: 0,
+        grouping_kind_relations_targeting_this: 0,
+        place_of_deleted_entry,
         already_open_above,
         cells: Vec::new(),
         own_key,
@@ -94,34 +101,37 @@ fn draw_entry(
         return Ok(drawn);
     };
     let target_key = drawn.own_key.text();
-    drawn.member_count = relations::member_count(view, grouping.book, kind, &target_key)?;
+    drawn.grouping_kind_relations_targeting_this =
+        relations::count_of_relations_of_kind_targeting(view, grouping.book, kind, &target_key)?;
     let level = path.len() - 1;
     let Some(region) = layout.get(level) else {
         return Ok(drawn);
     };
-    if already_open_above || drawn.member_count == 0 {
+    if already_open_above || drawn.grouping_kind_relations_targeting_this == 0 {
         return Ok(drawn);
     }
     let cells = region.columns.saturating_mul(region.rows);
     if cells == 0 {
         return Ok(drawn);
     }
-    let shown = if drawn.member_count <= cells {
-        drawn.member_count
+    let shown = if drawn.grouping_kind_relations_targeting_this <= cells {
+        drawn.grouping_kind_relations_targeting_this
     } else {
         cells - 1
     };
-    let prefix = relations::group_members_prefix(grouping.book, kind, &target_key);
+    let prefix = relations::relations_of_kind_targeting_prefix(grouping.book, kind, &target_key);
     for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), shown as usize)? {
-        path.push(relations::member_of_group_key(&prefix, &stored_key)?.1);
-        let member = draw_entry(view, grouping, layout, path);
+        let (_, source) =
+            relations::position_and_source_of_relation_of_kind_targeting(&prefix, &stored_key)?;
+        path.push(source);
+        let related = draw_entry(view, grouping, layout, path);
         path.pop();
-        drawn.cells.push(RegionCell::Member(member?));
+        drawn.cells.push(RegionCell::RelatedEntry(related?));
     }
-    if drawn.member_count > shown {
-        drawn.cells.push(RegionCell::MoreTile {
+    if drawn.grouping_kind_relations_targeting_this > shown {
+        drawn.cells.push(RegionCell::NotShownTile {
             occurrence: format!("{}/+", drawn.occurrence),
-            more: drawn.member_count - shown,
+            not_shown: drawn.grouping_kind_relations_targeting_this - shown,
         });
     }
     Ok(drawn)
@@ -131,8 +141,8 @@ fn reading_order(drawn: &DrawnEntry, out: &mut Vec<String>) {
     out.push(drawn.occurrence.clone());
     for cell in &drawn.cells {
         match cell {
-            RegionCell::Member(member) => reading_order(member, out),
-            RegionCell::MoreTile { occurrence, .. } => out.push(occurrence.clone()),
+            RegionCell::RelatedEntry(related) => reading_order(related, out),
+            RegionCell::NotShownTile { occurrence, .. } => out.push(occurrence.clone()),
         }
     }
 }
@@ -142,11 +152,11 @@ fn find_occurrence<'d>(drawn: &'d DrawnEntry, occurrence_wanted: &str) -> Option
         return Some(drawn);
     }
     drawn.cells.iter().find_map(|cell| match cell {
-        RegionCell::Member(member)
-            if occurrence_wanted.starts_with(&format!("{}/", member.occurrence))
-                || member.occurrence == occurrence_wanted =>
+        RegionCell::RelatedEntry(related)
+            if occurrence_wanted.starts_with(&format!("{}/", related.occurrence))
+                || related.occurrence == occurrence_wanted =>
         {
-            find_occurrence(member, occurrence_wanted)
+            find_occurrence(related, occurrence_wanted)
         }
         _ => None,
     })
@@ -187,7 +197,23 @@ fn top_level_rank_of(
     entity: u64,
 ) -> Result<Option<u64>, StoreError> {
     let Some(own_key) = uid_in(view, grouping.book, entity)? else {
-        return Ok(None);
+        let Some((book, target_key)) = relations::deleted_entry_key_in_progress(view, entity)? else {
+            return Ok(None);
+        };
+        let (Some(kind), Some(deleting)) = (
+            grouping.kind,
+            relations::deletion_in_progress(view, book, &target_key)?,
+        ) else {
+            return Ok(None);
+        };
+        if book != grouping.book
+            || relations::count_of_relations_of_kind_targeting(view, book, kind, &target_key)? == 0
+        {
+            return Ok(None);
+        }
+        let order_key = tree::order_key(deleting.order_value, entity);
+        let book_tree = relations::order_tree_space(book);
+        return tree::top_level_rank(view, &book_tree, &order_key, grouping.kind).map(Some);
     };
     if let Some(kind) = grouping.kind
         && relations::strong_kinds(&relations::relations_of_entry(view, entity)?).contains(&kind)
@@ -303,8 +329,8 @@ pub fn step_in_reading_order(
             let first = find_occurrence(&drawn, &occurrence)
                 .and_then(|drawn| drawn.cells.first())
                 .map(|cell| match cell {
-                    RegionCell::Member(member) => member.occurrence.clone(),
-                    RegionCell::MoreTile { occurrence, .. } => occurrence.clone(),
+                    RegionCell::RelatedEntry(related) => related.occurrence.clone(),
+                    RegionCell::NotShownTile { occurrence, .. } => occurrence.clone(),
                 });
             Ok(step_landing(first.unwrap_or(occurrence), rank))
         }
@@ -377,6 +403,18 @@ fn card(
     keys_list: Option<u64>,
     drawn: &DrawnEntry,
 ) -> Result<Vec<(&'static str, Js)>, StoreError> {
+    if drawn.place_of_deleted_entry {
+        return Ok(vec![
+            ("cell", Js::Text(b"placeOfDeletedEntry".to_vec())),
+            ("occurrence", Js::Text(drawn.occurrence.clone().into_bytes())),
+            ("entryKey", Js::Text(drawn.own_key.text())),
+            (
+                "groupingKindRelationsTargetingThis",
+                Js::Num(drawn.grouping_kind_relations_targeting_this as f64),
+            ),
+            ("alreadyOpenAbove", Js::Bool(drawn.already_open_above)),
+        ]);
+    }
     let content = text_value(view, drawn.entity, &FieldRef::Code(CONTENT))?.unwrap_or_default();
     let (text, text_cut) = cut_text(&content, layout.card_text_characters);
     let mut keys = Vec::new();
@@ -402,6 +440,10 @@ fn card(
                 "kindName",
                 relations::relation_kind_name(view, grouping.book, kind)?
                     .map_or(Js::Null, Js::Text),
+            ),
+            (
+                "targetBeingDeleted",
+                Js::Bool(relations::deletion_in_progress(view, grouping.book, &target_key)?.is_some()),
             ),
             ("targetKey", Js::Text(target_key)),
             (
@@ -431,7 +473,7 @@ fn card(
         ("textCut", Js::Bool(text_cut)),
         ("keys", Js::Arr(keys)),
         ("relations", Js::Arr(relations_line)),
-        ("memberCount", Js::Num(drawn.member_count as f64)),
+        ("groupingKindRelationsTargetingThis", Js::Num(drawn.grouping_kind_relations_targeting_this as f64)),
         ("alreadyOpenAbove", Js::Bool(drawn.already_open_above)),
     ])
 }
@@ -447,11 +489,14 @@ fn drawn_js(
     let mut cells = Vec::new();
     for cell in &drawn.cells {
         cells.push(match cell {
-            RegionCell::Member(member) => drawn_js(view, grouping, layout, keys_list, member)?,
-            RegionCell::MoreTile { occurrence, more } => Js::Obj(vec![
-                ("cell", Js::Text(b"more".to_vec())),
+            RegionCell::RelatedEntry(related) => drawn_js(view, grouping, layout, keys_list, related)?,
+            RegionCell::NotShownTile {
+                occurrence,
+                not_shown,
+            } => Js::Obj(vec![
+                ("cell", Js::Text(b"notShownTile".to_vec())),
                 ("occurrence", Js::Text(occurrence.clone().into_bytes())),
-                ("moreCount", Js::Num(*more as f64)),
+                ("groupingKindRelationsTargetingRegionEntryNotShown", Js::Num(*not_shown as f64)),
             ]),
         });
     }
