@@ -6,6 +6,7 @@ pub mod chat;
 pub mod chat_read;
 pub mod chat_search;
 pub mod choices;
+pub mod counted;
 pub mod derive;
 pub mod history;
 pub mod kinds;
@@ -14,8 +15,10 @@ pub mod library_read;
 pub mod library_search;
 pub mod local_import;
 pub mod lock;
+pub mod overview;
 pub mod prune;
 pub mod references;
+pub mod relations;
 pub mod searched;
 pub mod sessions;
 pub mod state;
@@ -783,6 +786,24 @@ impl Store {
     pub fn pairs_mode(&self) -> StoreResult<u64> {
         self.derived(|v| Ok(crate::search::pairs::state(v)?.0))
     }
+    pub fn world_order_cutover(
+        &self,
+        after: Option<Vec<u8>>,
+        batch: usize,
+        done: Box<dyn FnOnce(StoreResult<Option<Vec<u8>>>) + Send>,
+    ) {
+        let next = Arc::new(Mutex::new(None));
+        let found = next.clone();
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| {
+                *found.lock().unwrap() =
+                    relations::cutover_step(view, out, after.as_deref(), batch)?;
+                Ok(())
+            }),
+            Box::new(move |r| done(r.map(|()| next.lock().unwrap().take()))),
+        ));
+    }
+
 
     pub fn tag_pass(&self) -> StoreResult<tags::PassStatus> {
         self.derived(tags::pass_status)
@@ -1933,7 +1954,11 @@ mod library_search_diff_tests;
 #[cfg(test)]
 mod library_tests;
 #[cfg(test)]
+mod overview_tests;
+#[cfg(test)]
 mod references_tests;
+#[cfg(test)]
+mod relations_tests;
 #[cfg(test)]
 mod searched_tests;
 #[cfg(test)]

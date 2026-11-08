@@ -1447,6 +1447,28 @@ impl Store {
         Ok(promise)
     }
 
+    #[napi(
+        ts_args_type = "after: Buffer | null, batch: number",
+        ts_return_type = "Promise<Buffer | null>"
+    )]
+    pub fn world_order_cutover<'env>(
+        &self,
+        env: &'env Env,
+        after: Option<Buffer>,
+        batch: u32,
+    ) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.world_order_cutover(
+            after.map(|b| b.to_vec()),
+            batch.max(1) as usize,
+            Box::new(move |r| match r {
+                Ok(next) => deferred.resolve(move |_| Ok(next.map(Buffer::from))),
+                Err(e) => deferred.reject(store_error(e)),
+            }),
+        );
+        Ok(promise)
+    }
+
     #[napi(ts_return_type = "Promise<number>")]
     pub fn pairs_mode<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         derived(env, &self.store, |s| s.pairs_mode().map(|m| m as u32))
@@ -2729,6 +2751,66 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                 s.chat_read(|v| crate::store::choices::choices(v, &holders))
                     .map(JsTree)
             })
+        }
+        "overview" | "overviewMove" => {
+            use crate::store::overview as o;
+            let book = req_integer(a, "book")?;
+            let text = |name: &str| -> Result<Option<String>> {
+                match a.get::<Unknown>(name)? {
+                    Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
+                        String::from_utf8(string(name, v)?)
+                            .map(Some)
+                            .map_err(|_| invalid(format!("{name} isn't text")))
+                    }
+                    _ => Ok(None),
+                }
+            };
+            let relation = text("relation")?;
+            if op == "overview" {
+                let (from, to, active) = (
+                    req_integer(a, "from")?,
+                    req_integer(a, "to")?,
+                    text("active")?,
+                );
+                Box::new(move |s| {
+                    s.chat_read(|v| {
+                        let g = o::Grouping {
+                            book,
+                            relation: relation.as_deref().map(str::as_bytes),
+                        };
+                        o::window(v, g, from, to, active.as_deref())
+                    })
+                    .map(JsTree)
+                })
+            } else {
+                let from = text("from")?;
+                let by = match a.get::<Unknown>("by")? {
+                    Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => {
+                        Some(signed("by", v)?)
+                    }
+                    _ => None,
+                };
+                let how =
+                    match (by, text("to")?.as_deref()) {
+                        (Some(n), None) => o::Move::By(n),
+                        (None, Some("parent")) => o::Move::Parent,
+                        (None, Some("child")) => o::Move::Child,
+                        _ => return Err(invalid(
+                            "overviewMove takes `by` (a whole number) or `to` (parent or child)"
+                                .into(),
+                        )),
+                    };
+                Box::new(move |s| {
+                    s.chat_read(|v| {
+                        let g = o::Grouping {
+                            book,
+                            relation: relation.as_deref().map(str::as_bytes),
+                        };
+                        o::moved(v, g, from.as_deref(), how)
+                    })
+                    .map(JsTree)
+                })
+            }
         }
         "resolving" => {
             let book = req_integer(a, "book")?;

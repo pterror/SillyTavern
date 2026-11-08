@@ -682,7 +682,7 @@ pub static PRODUCED: [std::sync::atomic::AtomicU64; 256] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 256];
 
 impl Out {
-    fn push(&mut self, key: Vec<u8>, v: Val) {
+    pub(super) fn push(&mut self, key: Vec<u8>, v: Val) {
         #[cfg(feature = "measure")]
         if let Some(s) = crate::keyspace::val::get_u64(&key, &mut 0)
             && let Some(c) = PRODUCED.get(s as usize)

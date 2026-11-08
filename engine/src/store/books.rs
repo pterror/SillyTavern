@@ -376,6 +376,21 @@ impl Deriver for EntryIndex {
                 )));
             }
         }
+        if let Some((b, uid)) = super::book_stats::counted_entry(view, entry)? {
+            let new = match rec.values[2] {
+                Value::F64(x) => Some(x),
+                _ => None,
+            };
+            super::relations::index_moved(
+                view,
+                out,
+                b,
+                entry,
+                &uid,
+                entry_index(view, entry)?,
+                new,
+            )?;
+        }
         drop_index(view, out, entry)?;
         if let Value::F64(x) = rec.values[2] {
             out.put(index_key(book, x, entry), Vec::new());

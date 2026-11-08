@@ -29,7 +29,7 @@ pub fn unindexable(text: &[u8]) -> bool {
     regex_shape || tokens(text).is_empty() || text.windows(2).any(|w| w == b"{{")
 }
 
-fn key_list(view: &View, book: u64) -> Result<Option<u64>, StoreError> {
+pub fn key_list(view: &View, book: u64) -> Result<Option<u64>, StoreError> {
     Ok(match entity_info(view, book)? {
         Some((BOOK, _, _)) => Some(WORLD_KEYS),
         Some((OWNED, bk, _)) if bk.ends_with(b":c") => Some(OWNED_KEYS),
