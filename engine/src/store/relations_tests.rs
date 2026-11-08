@@ -939,6 +939,24 @@ fn relation_edits_place_keep_other_items_as_written_and_refuse_what_cant_be() {
     .unwrap();
     let set = relations::parse_relations_field(moved.as_bytes());
     assert!(set.contains_key(&(IN, b"2".to_vec())) && !set.contains_key(&(IN, b"1".to_vec())));
+    let owes = |change| relations::RelationEdit {
+        kind: OWES,
+        target: 11,
+        ..base(change)
+    };
+    let weak_kept = edit(&store, owes(relations::RelationChange::SetWeak(true))).unwrap();
+    assert!(
+        weak_kept.contains(r#"{"kind":2,"target":2,"position":"a","note":"kept","weak":true}"#),
+        "{weak_kept}"
+    );
+    let moved_kept = edit(
+        &store,
+        owes(relations::RelationChange::Move { new_target: 12 }),
+    )
+    .unwrap();
+    let moved_set = relations::parse_relations_field(moved_kept.as_bytes());
+    assert!(moved_set.contains_key(&(OWES, b"3".to_vec())));
+    assert!(moved_kept.contains(r#""note":"kept""#), "{moved_kept}");
     let removed = edit(&store, base(relations::RelationChange::Remove)).unwrap();
     assert_eq!(
         removed,
@@ -978,24 +996,28 @@ fn the_loop_check_finds_an_entry_only_a_loop_holds_and_says_nothing_past_its_lim
     records.push(set_json(12, relations_field_of(), &strong(&[(IN, 1, "a")])));
     records.push(set_json(13, relations_field_of(), &strong(&[(IN, 1, "a")])));
     store.commit_wait(records).unwrap();
-    let unreached = |entity, limit| {
+    let unreached = |entities: &[u64], limit| {
         read(&store, |view| {
-            relations::unreached_from(view, B, entity, IN, limit)
+            relations::unreached_among(view, B, entities, limit)
         })
+        .into_iter()
+        .map(|found| {
+            let mut entries = found.entries;
+            entries.sort();
+            (found.entry, found.kind, entries)
+        })
+        .collect::<Vec<_>>()
     };
+    assert_eq!(unreached(&[13], 10), vec![(13, IN, vec![10, 11, 12, 13])]);
     assert_eq!(
-        unreached(13, 10).map(|mut view| {
-            view.sort();
-            view
-        }),
-        Some(vec![10, 11, 12, 13])
+        unreached(&[13, 10, 11], 10),
+        vec![(13, IN, vec![10, 11, 12, 13])],
+        "the entries the first walk found aren't walked again"
     );
-    assert_eq!(unreached(13, 3), None);
     assert_eq!(
-        read(&store, |view| relations::unreached_from(
-            view, B, 13, OWES, 10
-        )),
-        None
+        unreached(&[13], 3),
+        vec![],
+        "past the limit it says nothing"
     );
     store
         .commit_wait(vec![set_json(
@@ -1004,7 +1026,7 @@ fn the_loop_check_finds_an_entry_only_a_loop_holds_and_says_nothing_past_its_lim
             &json_of(&[(IN, 1, "a", true)]),
         )])
         .unwrap();
-    assert_eq!(unreached(13, 10), None, "the weak one is at the top");
+    assert_eq!(unreached(&[13], 10), vec![], "the weak one is at the top");
     let book_tree = relations::order_tree_space(B);
     let top: Vec<u64> = read(&store, |view| {
         Ok(

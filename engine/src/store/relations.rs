@@ -598,6 +598,67 @@ fn item_json(kind: u64, target: &[u8], relation: &Relation) -> Vec<u8> {
     json
 }
 
+struct ItemChange {
+    target: Option<Vec<u8>>,
+    position: Option<Vec<u8>>,
+    weak: Option<bool>,
+}
+
+fn target_json(target: &[u8]) -> Vec<u8> {
+    let mut json = Vec::new();
+    match EntryKey::parse(target) {
+        EntryKey::Int(number) => json.extend_from_slice(number.to_string().as_bytes()),
+        EntryKey::Text(text_key) => json_string(&mut json, &text_key),
+    }
+    json
+}
+
+fn item_rewritten(field_json: &[u8], item: &Item, change: &ItemChange) -> Vec<u8> {
+    let item_bytes = &field_json[item.span.clone()];
+    let mut parser = Parser {
+        bytes: item_bytes,
+        offset: 0,
+    };
+    let members = parser.members().expect("an item that parsed is an object");
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    let mut weak_written = false;
+    for (name, span) in members {
+        let member = |value: Vec<u8>| {
+            let mut out = Vec::new();
+            json_string(&mut out, &name);
+            out.push(b':');
+            out.extend_from_slice(&value);
+            out
+        };
+        match (
+            name.as_slice(),
+            &change.target,
+            &change.position,
+            change.weak,
+        ) {
+            (b"target", Some(target), _, _) => parts.push(member(target_json(target))),
+            (b"position", _, Some(position), _) => {
+                let mut value = Vec::new();
+                json_string(&mut value, position);
+                parts.push(member(value));
+            }
+            (b"weak", _, _, Some(false)) => {}
+            (b"weak", _, _, Some(true)) => {
+                weak_written = true;
+                parts.push(member(b"true".to_vec()));
+            }
+            _ => parts.push(item_bytes[span].to_vec()),
+        }
+    }
+    if change.weak == Some(true) && !weak_written {
+        parts.push(br#""weak":true"#.to_vec());
+    }
+    let mut out = b"{".to_vec();
+    out.extend_from_slice(&parts.join(&b","[..]));
+    out.push(b'}');
+    out
+}
+
 fn rewritten(
     json: &[u8],
     items: &[Item],
@@ -953,28 +1014,25 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
             rewritten(&base, &items, |item| (!same(item)).then_some(None), &[])
         }
         RelationChange::SetWeak(weak) => {
-            let Some(relation) = current else {
+            if current.is_none() {
                 return Ok(refusal("The entry has no such relation."));
+            }
+            let change = ItemChange {
+                target: None,
+                position: None,
+                weak: Some(*weak),
             };
-            let replacement = item_json(
-                edit.kind,
-                &target,
-                &Relation {
-                    weak: *weak,
-                    ..relation
-                },
-            );
             rewritten(
                 &base,
                 &items,
-                |item| Some(same(item).then(|| replacement.clone())),
+                |item| Some(same(item).then(|| item_rewritten(&base, item, &change))),
                 &[],
             )
         }
         RelationChange::Move { new_target } => {
-            let Some(relation) = current else {
+            if current.is_none() {
                 return Ok(refusal("The entry has no such relation."));
-            };
+            }
             let Some(new_target_key) = entry_key_in(view, book, *new_target)? else {
                 return Ok(refusal("The new target isn't an entry of this world."));
             };
@@ -986,18 +1044,15 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
                 Ok(position) => position,
                 Err(why) => return Ok(refusal(why)),
             };
-            let replacement = item_json(
-                edit.kind,
-                &new_target_key,
-                &Relation {
-                    position,
-                    weak: relation.weak,
-                },
-            );
+            let change = ItemChange {
+                target: Some(new_target_key),
+                position: Some(position),
+                weak: None,
+            };
             rewritten(
                 &base,
                 &items,
-                |item| Some(same(item).then(|| replacement.clone())),
+                |item| Some(same(item).then(|| item_rewritten(&base, item, &change))),
                 &[],
             )
         }
@@ -1019,38 +1074,76 @@ fn relation_of_entry_stored(
         .transpose()
 }
 
-pub fn unreached_from(
+pub struct UnreachedLoop {
+    pub entry: u64,
+    pub kind: u64,
+    pub entries: Vec<u64>,
+}
+
+pub fn unreached_among(
     view: &View,
     book: u64,
-    entity: u64,
-    kind: u64,
+    changed: &[u64],
     limit: usize,
-) -> Result<Option<Vec<u64>>, StoreError> {
-    let mut seen = BTreeSet::from([entity]);
-    let mut found = vec![entity];
-    let mut next = 0;
-    while next < found.len() {
-        let visiting = found[next];
-        next += 1;
-        let held_by = strong_relations_of_kind(view, visiting, kind)?;
-        if held_by.is_empty() {
-            return Ok(None);
+) -> Result<Vec<UnreachedLoop>, StoreError> {
+    let mut known_reached: BTreeSet<(u64, u64)> = BTreeSet::new();
+    let mut known_unreached: BTreeSet<(u64, u64)> = BTreeSet::new();
+    let mut visits = 0;
+    let mut found_loops = Vec::new();
+    for &entry in changed {
+        if entry_key_in(view, book, entry)?.is_none() {
+            continue;
         }
-        for target_key in held_by {
-            let Some(target) =
-                entity_by_key(view, ENTRY, &entry_key(book, &EntryKey::parse(&target_key)))?
-            else {
+        for kind in strong_kinds(&relations_of_entry(view, entry)?) {
+            if known_reached.contains(&(kind, entry)) || known_unreached.contains(&(kind, entry)) {
                 continue;
-            };
-            if seen.insert(target) {
-                if seen.len() > limit {
-                    return Ok(None);
+            }
+            let mut seen = BTreeSet::from([entry]);
+            let mut walked = vec![entry];
+            let mut next = 0;
+            let mut reached = false;
+            while next < walked.len() && !reached {
+                let visiting = walked[next];
+                next += 1;
+                visits += 1;
+                if visits > limit {
+                    return Ok(found_loops);
                 }
-                found.push(target);
+                if visiting != entry && known_unreached.contains(&(kind, visiting)) {
+                    continue;
+                }
+                let held_by = strong_relations_of_kind(view, visiting, kind)?;
+                if held_by.is_empty() || known_reached.contains(&(kind, visiting)) {
+                    reached = true;
+                    break;
+                }
+                for target_key in held_by {
+                    let Some(target) = entity_by_key(
+                        view,
+                        ENTRY,
+                        &entry_key(book, &EntryKey::parse(&target_key)),
+                    )?
+                    else {
+                        continue;
+                    };
+                    if seen.insert(target) {
+                        walked.push(target);
+                    }
+                }
+            }
+            if reached {
+                known_reached.insert((kind, entry));
+            } else {
+                known_unreached.extend(walked.iter().map(|walked_entry| (kind, *walked_entry)));
+                found_loops.push(UnreachedLoop {
+                    entry,
+                    kind,
+                    entries: walked,
+                });
             }
         }
     }
-    Ok(Some(found))
+    Ok(found_loops)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1089,6 +1182,26 @@ impl Parser<'_> {
         self.bytes[self.offset..]
             .starts_with(word_bytes)
             .then(|| self.offset += word_bytes.len())
+    }
+
+    fn members(&mut self) -> Option<Vec<(Vec<u8>, Range<usize>)>> {
+        self.eat(b'{')?;
+        let mut members = Vec::new();
+        if self.eat(b'}').is_some() {
+            return Some(members);
+        }
+        loop {
+            self.space();
+            let start = self.offset;
+            let name = self.string()?;
+            self.eat(b':')?;
+            self.value(1)?;
+            members.push((name, start..self.offset));
+            if self.eat(b'}').is_some() {
+                return Some(members);
+            }
+            self.eat(b',')?;
+        }
     }
 
     fn value(&mut self, depth: usize) -> Option<Json> {

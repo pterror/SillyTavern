@@ -2867,28 +2867,45 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
-        "worldbuildingUnreached" => {
+        "worldbuildingUnreachedAmong" => {
             use crate::store::chat_read::Js;
             use crate::store::relations;
-            let (book, entry, kind, limit) = (
+            let (book, changed, limit) = (
                 req_integer(a, "book")?,
-                req_integer(a, "entry")?,
-                req_integer(a, "kind")?,
+                integers(a, "entries")?,
                 req_integer(a, "limit")? as usize,
             );
+            let id_text = |entity: u64| Js::Text(entity.to_string().into_bytes());
             Box::new(move |store| {
                 store
                     .chat_read(|view| {
-                        Ok(match relations::unreached_from(view, book, entry, kind, limit)? {
-                            Some(found) => Js::Arr(
-                                found
-                                    .into_iter()
-                                    .map(|entity| Js::Text(entity.to_string().into_bytes()))
-                                    .collect(),
-                            ),
-                            None => Js::Null,
-                        })
+                        let found = relations::unreached_among(view, book, &changed, limit)?;
+                        Ok(Js::Arr(
+                            found
+                                .into_iter()
+                                .map(|unreached| {
+                                    Js::Obj(vec![
+                                        ("entry", id_text(unreached.entry)),
+                                        ("kind", id_text(unreached.kind)),
+                                        (
+                                            "entries",
+                                            Js::Arr(unreached.entries.into_iter().map(id_text).collect()),
+                                        ),
+                                    ])
+                                })
+                                .collect(),
+                        ))
                     })
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingRelationKindInUse" => {
+            use crate::store::chat_read::Js;
+            use crate::store::relations;
+            let (book, kind) = (req_integer(a, "book")?, req_integer(a, "kind")?);
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| Ok(Js::Bool(relations::relation_kind_in_use(view, book, kind)?)))
                     .map(JsTree)
             })
         }
