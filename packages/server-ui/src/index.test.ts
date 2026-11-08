@@ -26,6 +26,7 @@ const area = defineArea({
         'count.fail': v.object({}),
         'parts.touch': v.object({}),
         'both.touch': v.object({}),
+        'count.show': v.object({}),
     },
     views: {
         count: async ({ user, chat }) => ({ count: counts.get(user.handle) ?? 0, chat: chat?.tree ?? null }),
@@ -49,6 +50,7 @@ const area = defineArea({
         'count.refuse': async () => ({ refused: 'not now' }),
         'parts.touch': async () => ({ changed: ['parts'] }),
         'both.touch': async () => ({ changed: ['slow', 'parts'] }),
+        'count.show': async () => ({ changed: [], opens: ['count'] }),
         'count.fail': async ({ user }) => {
             counts.set(user.handle, (counts.get(user.handle) ?? 0) + 100);
             throw new Error('failed after writing');
@@ -101,6 +103,19 @@ test("opening a view answers it; an action answers the views it changed to its o
     expect(pushes.a1).toEqual([]);
     expect(pushes.a2).toMatchObject([{ type: 'views', views: [{ key: 'count', value: { count: 2 } }] }]);
     expect(pushes.b1).toEqual([]);
+});
+
+test('an action that opens a view answers it in the same request, and the view is then pushed like any other', async () => {
+    const fresh = '00000000-0000-4000-8000-000000000009';
+    const heard: ViewPush[] = [];
+    const stop = ui.attach(bob, fresh, (push) => heard.push(push));
+    expect((await send(fresh, 'count.add', { by: 1 }, 'bob')).answer).toEqual({ ok: true, views: [] });
+    const shown = await send(fresh, 'count.show', {}, 'bob');
+    expect(shown.answer).toMatchObject({ ok: true, views: [{ key: 'count', value: { count: 1 } }] });
+    await send(sessions.b1, 'count.add', { by: 1 }, 'bob');
+    expect(heard).toMatchObject([{ type: 'views', views: [{ key: 'count', value: { count: 2 } }] }]);
+    stop();
+    pushes.b1.length = 0;
 });
 
 test('a later view always has a higher version', async () => {
