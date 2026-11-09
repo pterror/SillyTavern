@@ -202,10 +202,10 @@ export class References {
     /**
      * @param {bigint} book
      * @param {bigint} entry
-     * @param {{ cursor?: string, limit?: number }} [page]
-     * @returns {Promise<{ references: Reference[], unlinked: { entry: bigint, name: string }[], scanned: boolean, unresolved: string[], next: string | null } | null>}
+     * @param {{ cursor?: string, limit?: number, withText?: boolean }} [page] withText: each reference also carries its source's text.
+     * @returns {Promise<{ references: (Reference & { text?: string })[], unlinked: { entry: bigint, name: string }[], scanned: boolean, unresolved: string[], next: string | null } | null>}
      */
-    async to(book, entry, { cursor, limit = 100 } = {}) {
+    async to(book, entry, { cursor, limit = 100, withText = false } = {}) {
         const { id: after, position: from } = parseCursor(cursor);
         const owned = await this.owned(book);
         if (owned === null) return null;
@@ -233,7 +233,7 @@ export class References {
             }
             for (const id of found) candidates.add(id);
         }
-        /** @type {Reference[]} */
+        /** @type {(Reference & { text?: string })[]} */
         const references = [];
         /** @type {{ entry: bigint, name: string }[]} */
         const unlinked = [];
@@ -243,7 +243,7 @@ export class References {
             for (const name of names) {
                 const m = mention(source.content, name, target, this.defaults);
                 if (m.linked) {
-                    references.push({ entry: source.id, name, spans: m.spans });
+                    references.push({ entry: source.id, name, spans: m.spans, ...(withText ? { text: source.content } : {}) });
                     linkedName = name;
                     break;
                 }

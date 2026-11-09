@@ -361,8 +361,16 @@ One area, `@st/worldbuilding`. Views:
 - `worldbuilding.overview`: the book, the grouping kind, the top-level count, the range's first rank and its entries,
   each with its drawn region, and where the last step landed with its top-level rank.
 - `worldbuilding.relationKinds`: the world's kinds, `{id, name, mergingInto}` in id order.
-- `worldbuilding.lastChange`: what the session's last change left to say: the kind it created, and the relation whose
-  change left its entry unreached with the entries the check found.
+- `worldbuilding.lastChange`: what the session's last change left to say: the kind it created, the relation whose
+  change left its entry unreached with the entries the check found, the entry it made, the entry it deleted (with its
+  label, for Restore), the entry it moved to another world (and the entry it became there).
+- `worldbuilding.entry`: the session's open entry: its label, title, keys (each a name or a trigger, with how many other
+  live entries of the world have it), text, relations line (each target a label), placement (every upstream field but
+  `key`, `comment` and `content`, as stored, missing ones at upstream's defaults, `public/scripts/world-info-entry-defaults.js`,
+  and whether any differs from them), its text in tokens as the chosen connection counts them, and what mentions it:
+  the first page of the references to it (`src/world-info/references.js`), each source's label with the sentence
+  around its first mention, and the pages `showMoreMentions` added. A deleted entry shows as deleted, under the label
+  it was last shown with.
 
 Actions:
 
@@ -381,9 +389,26 @@ Actions:
   relation rewrites only its `target`, `position` and `weak` fields, keeping every other field of its object and every
   other relation as written.
 
+- `worldbuilding.openEntry` (book, entry; opens the entry view), `closeEntry`, `showMoreMentions` (cursor);
+- `worldbuilding.setEntryText`, `setEntryTitle` (empty clears it), `addKey` (as a name or a trigger, on any entry of
+  the world), `setKeyAs`, `removeKey`, `setPlacement` (a partial set of placement fields, each checked by its own
+  schema), each naming its book and entry, each a write of the entry as it is stored at that moment (last write wins);
+- `worldbuilding.createEntry` (after an entry or last, optionally named, optionally with a relation, optionally opened):
+  one commit. It goes right after `after` in the world's order: between its order value and the next entry's, a whole
+  number when one fits, else the middle (`entry_page::place_after`). When the next entry has the same order value, the
+  entries with that value after `after` (at most 1,000) move to a value between it and the entry after them, and the
+  new entry takes `after`'s value; past 1,000, or with no value between, it takes `after`'s value and lands after them.
+  Last is one more than the last numbered entry's value, rounded down. A new entry has upstream's fields at their
+  defaults; with a name, the name is its one key and its one name; its relation goes last among its kind's to its
+  target (`relations::relations_of_new_entry`);
+- `worldbuilding.deleteEntry` (the chunked delete, through `apply`), `restoreEntry`, `moveEntryToWorld` (a transplant
+  that deletes the original; its relations drop; an open entry follows it).
+
 The engine answers each read in one snapshot (`overview.rs`: `read_overview`, `step_in_reading_order`;
-`relations.rs`: `relation_edit`, `unreached_among`). A relation action is one commit of the entry's own field, then the
-check, in the same request.
+`relations.rs`: `relation_edit`, `unreached_among`; `entry_page.rs`: `read_entry`, `labels`, `place_after`). A relation
+action is one commit of the entry's own field, then the check, in the same request. The entry view is the engine's read
+of the entry, then the entry's stored fields for its placement, its count and the references to it, in the same
+request (`src/world-info/worldbuilding-entries.js`).
 
 Opening a view from an action is a gap the core had: a view was only answered once the tab had sent `view.open`, so
 opening the overview at a range would have been two requests. An action's result may name views it `opensViews`

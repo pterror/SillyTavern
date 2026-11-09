@@ -1216,22 +1216,145 @@ export class WorldInfoEngine {
             const [id] = await this.lib.ids(TYPE.entry, [`${found.id}:${k}`]);
             const [e] = id === null ? [null] : await this.lib.entities([id]);
             if (!e) return 'no entry';
-            const entry = { ...data, uid: /** @type {any} */ (entryObject(e, false)).uid };
-            const targets = await this.relationTargets(found.id, [entry], [e], new Map([[k, e.id]]), new Set());
-            /** @type {object[]} */
-            const keyed = [];
-            const records = valueRecords(e.id, e, entryValues(entry, k, false, { targets, stored: e }), historyWrites(await this.stamper(actor, keyed)));
-            const index = /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
-            if (!Object.is(index, e.entryIndex)) records.push({ kind: 'entryIndex', entry: e.id, book: found.id, ...(index === undefined ? {} : { index }) });
-            if (records.length > 0) await this.store.commit([...keyed, ...records]);
+            const { entry, records } = await this.writeEntry(found.id, e, data, actor);
             return { entry, unreachedLoops: await this.unreachedLoops(found.id, records) };
         });
     }
 
     /**
+     * @param {bigint} book
+     * @param {import('./entity-values.js').StoredEntity} e
+     * @param {object} fields
+     * @param {Actor | null} actor
+     * @returns {Promise<{ entry: object, records: object[] }>}
+     */
+    async writeEntry(book, e, fields, actor) {
+        const k = e.key.slice(e.key.indexOf(':') + 1);
+        const entry = { ...fields, uid: /** @type {any} */ (entryObject(e, false)).uid };
+        const targets = await this.relationTargets(book, [entry], [e], new Map([[k, e.id]]), new Set());
+        /** @type {object[]} */
+        const keyed = [];
+        const records = valueRecords(e.id, e, entryValues(entry, k, false, { targets, stored: e }), historyWrites(await this.stamper(actor, keyed)));
+        const index = /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
+        if (!Object.is(index, e.entryIndex)) records.push({ kind: 'entryIndex', entry: e.id, book, ...(index === undefined ? {} : { index }) });
+        if (records.length > 0) await this.store.commit([...keyed, ...records]);
+        return { entry, records };
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {bigint} entry
+     * @returns {Promise<import('./entity-values.js').StoredEntity | null>}
+     */
+    async entryIn(book, entry) {
+        const [e] = await this.lib.entities([entry]);
+        return e && e.type === TYPE.entry && e.key.startsWith(`${book}:`) ? e : null;
+    }
+
+    /**
+     * Changes one entry of a world, named by entity ids, as `edit` says, from the entry as stored now.
+     * @param {bigint} book
+     * @param {bigint} entry
+     * @param {(current: Record<string, unknown>) => Record<string, unknown> | { refused: string }} edit
+     * @param {Actor | null} [actor]
+     * @returns {Promise<'ok' | 'missing' | 'no entry' | { refused: string }>}
+     */
+    editEntryById(book, entry, edit, actor = null) {
+        return this.inWorld(book, async () => {
+            const e = await this.entryIn(book, entry);
+            if (!e) return 'no entry';
+            const next = edit(/** @type {Record<string, unknown>} */ (entryObject(e, false)));
+            if (typeof next.refused === 'string') return { refused: next.refused };
+            await this.writeEntry(book, e, next, actor);
+            return 'ok';
+        });
+    }
+
+    /**
+     * Makes an entry right after `after` in the world's order (last without one), with `relation` if given, in one
+     * commit. Entries that share `after`'s place in the order and come after it move to make room.
+     * @param {bigint} book
+     * @param {{ after: bigint | null, entry: Record<string, unknown>, relation: { kind: number, target: bigint } | null }} made
+     * @param {number} loopCheckLimit
+     * @param {Actor | null} [actor]
+     * @returns {Promise<{ entry: bigint, uid: string, unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing'>}
+     */
+    createEntryIn(book, { after, entry, relation }, loopCheckLimit, actor = null) {
+        return this.inWorld(book, async () => {
+            const numbers = await this.store.worldRead('numbers', { book });
+            if (numbers.freeKey >= MAX_UID) return { refused: 'This world has no free entry number left.' };
+            /** @type {{ refused: string } | { displayIndex: number, moved: { entry: bigint, displayIndex: number }[] }} */
+            const placed = await this.store.worldRead('worldbuildingPlaceAfter', { book, after });
+            if ('refused' in placed) return { refused: placed.refused };
+            /** @type {unknown[]} */
+            let relations = [];
+            if (relation) {
+                /** @type {{ refused: string } | { json: string }} */
+                const made = await this.store.worldRead('worldbuildingRelationsOfNewEntry', { book, kind: relation.kind, target: relation.target });
+                if ('refused' in made) return { refused: made.refused };
+                relations = JSON.parse(made.json);
+            }
+            const k = String(numbers.freeKey);
+            const id = this.lib.nextId++;
+            const extensions = isPlainObject(entry.extensions) ? /** @type {Record<string, unknown>} */ (entry.extensions) : {};
+            const written = {
+                ...entry,
+                uid: numbers.freeKey,
+                displayIndex: placed.displayIndex,
+                ...(relations.length > 0 ? { extensions: { ...extensions, relations } } : {}),
+            };
+            const liveAfter = new Set([String(id), ...(relation ? [String(relation.target)] : [])]);
+            /** @type {object[]} */
+            const records = [];
+            const stamp = await this.stamper(actor, records);
+            records.push(
+                ...valueRecords(id, null, entryValues(written, k, false, { targets: { entityOfKey: new Map([[k, id]]), liveAfter }, stored: null }), historyWrites(stamp)),
+                { kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 },
+                { kind: 'itemPlace', entity: book, list: 0, item: id, position: (numbers.lastPosition ?? 0) + POSITION_GAP },
+                { kind: 'entryIndex', entry: id, book, index: placed.displayIndex },
+            );
+            const moving = await this.lib.entities(placed.moved.map(m => m.entry));
+            const stored = moving.flatMap(e => (e ? [e] : []));
+            const nexts = placed.moved.map((m, i) => ({ ...(/** @type {Record<string, unknown>} */ (moving[i] ? entryObject(moving[i], false) : {})), displayIndex: m.displayIndex }));
+            const targets = await this.relationTargets(book, nexts, stored, new Map(stored.map(e => [e.key.slice(e.key.indexOf(':') + 1), e.id])), new Set());
+            placed.moved.forEach((m, i) => {
+                const e = moving[i];
+                if (!e) return;
+                const movedKey = e.key.slice(e.key.indexOf(':') + 1);
+                pushAll(records, valueRecords(e.id, e, entryValues(nexts[i], movedKey, false, { targets, stored: e }), historyWrites(stamp)));
+                records.push({ kind: 'entryIndex', entry: e.id, book, index: m.displayIndex });
+            });
+            await this.store.commit(records);
+            return { entry: id, uid: k, unreachedLoops: await this.unreachedLoops(book, records, [], loopCheckLimit) };
+        });
+    }
+
+    /**
+     * Deletes one entry of a world, named by entity ids, as it is stored now (apply's delete).
+     * @param {bigint} book
+     * @param {bigint} entry
+     * @param {Actor | null} [actor]
+     * @returns {Promise<{ unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing' | 'no entry'>}
+     */
+    async deleteEntryById(book, entry, actor = null) {
+        const [bookEntity] = await this.lib.entities([book]);
+        if (!bookEntity || bookEntity.type !== TYPE.book) return 'missing';
+        for (let tries = 0; tries < 3; tries++) {
+            const e = await this.entryIn(book, entry);
+            if (!e) return 'no entry';
+            const current = entryObject(e, false, await this.keysOfTargets(book, [e]));
+            const uid = e.key.slice(e.key.indexOf(':') + 1);
+            const result = await this.apply(bookEntity.key, [{ uid, base_hash: jsonHash(current), data: null }], [], actor);
+            if (result === null || result === 'card copy') return 'missing';
+            if (result.deleted.length > 0) return { unreachedLoops: result.unreachedLoops };
+        }
+        return { refused: 'The entry changed while it was being deleted; delete it again.' };
+    }
+
+    /**
      * @param {{ source: string, target: string, uid: string | number, deleteOriginal: boolean }} args
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ entry: object, unreachedLoops: UnreachedLoop[] } | 'no source' | 'no target' | 'no entry' | 'full'>}
+     * @returns {Promise<{ entry: object, id: bigint, unreachedLoops: UnreachedLoop[] } | 'no source' | 'no target' | 'no entry' | 'full'>}
      */
     transplant({ source, target, uid, deleteOriginal }, actor = null) {
         return this.lane([bookKey(source), bookKey(target)], async () => {
@@ -1268,7 +1391,7 @@ export class WorldInfoEngine {
             if (deleteOriginal) records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
             await this.store.commit(records);
             if (deleteOriginal) this.jobs.start(from.id);
-            return { entry, unreachedLoops: await this.unreachedLoops(from.id, records, sources) };
+            return { entry, id: nid, unreachedLoops: await this.unreachedLoops(from.id, records, sources) };
         });
     }
 

@@ -5,6 +5,7 @@ export const OVERVIEW_VIEW = 'worldbuilding.overview';
 export const RELATION_KINDS_VIEW = 'worldbuilding.relationKinds';
 export const LAST_CHANGE_VIEW = 'worldbuilding.lastChange';
 export const LOOPS_LEFT_BY_JOBS_VIEW = 'worldbuilding.loopsLeftByJobs';
+export const ENTRY_VIEW = 'worldbuilding.entry';
 
 export const READS_PER_REQUEST = 24_000;
 // A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
@@ -86,11 +87,88 @@ export type LoopsLeftByJobsView = { book: string | null; unreachedLoops: Unreach
 
 export type ChangedRelation = { book: string; entry: string; kind: string; target: string };
 
+export type EntryAt = { book: string; entry: string };
+
 export type LastChangeView = {
     createdKind: { book: string; kind: string } | null;
     changedRelation: ChangedRelation | null;
+    createdEntry: EntryAt | null;
+    deletedEntry: (EntryAt & { label: Named }) | null;
+    movedEntry: (EntryAt & { toBook: string; newEntry: string }) | null;
     unreachedLoops: UnreachedLoop[];
 };
+
+export type KeyOfEntry = { text: string; isName: boolean; alsoBringsUp: number };
+
+export type Sentence = { before: string; mention: string; after: string };
+
+export type MentionedIn = { entries: { from: Named; sentence: Sentence }[]; next: string | null };
+
+export const TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet'] as const;
+
+const wholeNumber = v.pipe(v.number(), v.integer());
+const atLeastZero = v.pipe(wholeNumber, v.minValue(0));
+const finiteNumber = v.pipe(v.number(), v.finite());
+
+export const placementFields = {
+    keysecondary: v.array(v.string()),
+    constant: v.boolean(),
+    vectorized: v.boolean(),
+    selective: v.boolean(),
+    selectiveLogic: v.picklist([0, 1, 2, 3]),
+    addMemo: v.boolean(),
+    order: finiteNumber,
+    position: v.picklist([0, 1, 2, 3, 4, 5, 6, 7]),
+    disable: v.boolean(),
+    ignoreBudget: v.boolean(),
+    excludeRecursion: v.boolean(),
+    preventRecursion: v.boolean(),
+    matchPersonaDescription: v.boolean(),
+    matchCharacterDescription: v.boolean(),
+    matchCharacterPersonality: v.boolean(),
+    matchCharacterDepthPrompt: v.boolean(),
+    matchScenario: v.boolean(),
+    matchCreatorNotes: v.boolean(),
+    delayUntilRecursion: v.union([v.boolean(), atLeastZero]),
+    probability: v.pipe(finiteNumber, v.minValue(0), v.maxValue(100)),
+    useProbability: v.boolean(),
+    depth: v.pipe(atLeastZero, v.maxValue(1000)),
+    outletName: v.string(),
+    group: v.string(),
+    groupOverride: v.boolean(),
+    groupWeight: v.pipe(wholeNumber, v.minValue(1), v.maxValue(10_000)),
+    scanDepth: v.nullable(v.pipe(atLeastZero, v.maxValue(1000))),
+    caseSensitive: v.nullable(v.boolean()),
+    matchWholeWords: v.nullable(v.boolean()),
+    useGroupScoring: v.nullable(v.boolean()),
+    automationId: v.string(),
+    role: v.picklist([0, 1, 2]),
+    sticky: v.nullable(atLeastZero),
+    cooldown: v.nullable(atLeastZero),
+    delay: v.nullable(atLeastZero),
+    triggers: v.array(v.picklist(TRIGGERS)),
+    characterFilter: v.object({ isExclude: v.boolean(), names: v.array(v.string()), tags: v.array(v.string()) }),
+};
+
+export type Placement = v.InferOutput<v.ObjectSchema<typeof placementFields, undefined>>;
+
+export type OpenEntryView = EntryAt & {
+    deleted: false;
+    entryKey: string;
+    label: Named;
+    title: string | null;
+    keys: KeyOfEntry[];
+    text: string;
+    relations: RelationOnCard[];
+    placement: Placement;
+    placementDiffersFromDefaults: boolean;
+    tokens: number | null;
+    mentionedIn: MentionedIn;
+};
+
+export type DeletedEntryView = EntryAt & { deleted: true; label: Named | null };
+
+export type EntryView = OpenEntryView | DeletedEntryView | { book: null };
 
 export function cardsPerTopLevelEntry(levels: RegionLayout[]): number {
     let cards = 1;
@@ -130,6 +208,10 @@ export const READ_REFUSAL = `A read draws at most ${MAX_CARDS_PER_READ} cards: f
 const betweenMembers = { after: v.nullable(entityId), before: v.nullable(entityId) };
 const relationNamed = { book: entityId, entry: entityId, kind: kindId, target: entityId };
 
+const entryNamed = { book: entityId, entry: entityId };
+const keyText = v.pipe(v.string(), v.trim(), v.minLength(1));
+const keyAs = v.picklist(['name', 'trigger']);
+
 export const actions = {
     'worldbuilding.openOverview': v.pipe(
         v.object({
@@ -165,4 +247,30 @@ export const actions = {
     }),
     'worldbuilding.removeRelation': v.object({ ...relationNamed, loopCheckLimit }),
     'worldbuilding.setRelationWeak': v.object({ ...relationNamed, weak: v.boolean(), loopCheckLimit }),
+    'worldbuilding.openEntry': v.object(entryNamed),
+    'worldbuilding.closeEntry': v.object({}),
+    'worldbuilding.showMoreMentions': v.object({ cursor: v.pipe(v.string(), v.minLength(1)) }),
+    'worldbuilding.setEntryText': v.object({ ...entryNamed, text: v.string() }),
+    'worldbuilding.setEntryTitle': v.object({ ...entryNamed, title: v.string() }),
+    'worldbuilding.addKey': v.object({ ...entryNamed, key: keyText, as: keyAs }),
+    'worldbuilding.setKeyAs': v.object({ ...entryNamed, key: keyText, as: keyAs }),
+    'worldbuilding.removeKey': v.object({ ...entryNamed, key: keyText }),
+    'worldbuilding.setPlacement': v.object({
+        ...entryNamed,
+        fields: v.pipe(
+            v.partial(v.strictObject(placementFields)),
+            v.check((fields: object) => Object.keys(fields).length > 0, 'Name at least one field.'),
+        ),
+    }),
+    'worldbuilding.createEntry': v.object({
+        book: entityId,
+        after: v.nullable(entityId),
+        name: v.nullable(keyText),
+        relation: v.nullable(v.object({ kind: kindId, target: entityId })),
+        open: v.boolean(),
+        loopCheckLimit,
+    }),
+    'worldbuilding.deleteEntry': v.object(entryNamed),
+    'worldbuilding.restoreEntry': v.object(entryNamed),
+    'worldbuilding.moveEntryToWorld': v.object({ ...entryNamed, toBook: entityId }),
 } satisfies ActionSchemas;

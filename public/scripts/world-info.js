@@ -14,7 +14,7 @@ import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { renderCountBasis } from './tokenizer-notices.js';
 import { power_user, personaStore } from './power-user.js';
 import { findTagsByNames, readTagsForIds, searchTagsByName, tagsStore } from './tags.js';
-import { debounce_timeout, GENERATION_TYPE_TRIGGERS } from './constants.js';
+import { debounce_timeout } from './constants.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
@@ -34,6 +34,7 @@ import { character_world_link, resolveCharacterWorldLink } from './character-wor
 import { bindFieldDraft, clearDraftsUnder, clearThingDrafts, hasFieldDrafts, readFieldDraft, revertChanges, writeFieldDraft } from './field-drafts.js';
 import { isUserEvent } from './live-editor/registry.js';
 import { WORLD_INFO_GLOBAL_DEFAULTS } from './world-info-globals.js';
+import { DEFAULT_DEPTH, DEFAULT_WEIGHT, MAX_SCAN_DEPTH, newWorldInfoEntryDefinition, newWorldInfoEntryTemplate, world_info_logic } from './world-info-entry-defaults.js';
 
 /**
  * @returns {boolean}
@@ -48,12 +49,6 @@ const world_info_insertion_strategy = {
     global_first: 2,
 };
 
-const world_info_logic = {
-    AND_ANY: 0,
-    NOT_ALL: 1,
-    NOT_ANY: 2,
-    AND_ALL: 3,
-};
 
 const WI_ENTRY_HEADER_TEMPLATE = $('#entry_edit_template .world_entry');
 const WI_ENTRY_EDIT_TEMPLATE = $('#entry_edit_template .world_entry_edit');
@@ -163,9 +158,6 @@ const worldInfoFilter = new FilterHelper(() => updateEditor());
 const SORT_ORDER_KEY = 'world_info_sort_order';
 export const METADATA_KEY = 'world_info';
 
-const DEFAULT_DEPTH = 4;
-const DEFAULT_WEIGHT = 100;
-const MAX_SCAN_DEPTH = 1000;
 const MAX_COMMENT_LENGTH = 100;
 const KNOWN_DECORATORS = ['@@activate', '@@dont_activate'];
 
@@ -243,13 +235,6 @@ const KNOWN_DECORATORS = ['@@activate', '@@dont_activate'];
  * @property {Set<any>} allActivatedEntries All entries.
  */
 
-/**
- * @typedef {object} WIEntryFieldDefinition
- * @property {any} default - Default value for the field
- * @property {string} type - Type of the field, can be 'string', 'number', 'boolean', 'array', 'enum'
- * @property {boolean} [excludeFromTemplate=false] - Whether to exclude this field from the template
- * @property {(value: any) => boolean} [arrayFilter] - Optional filter function for array fields to filter out unwanted values
- */
 // End typedef area
 
 /**
@@ -4271,61 +4256,6 @@ async function deleteWorldInfoEntry(data, uid, { silent = false } = {}) {
     return true;
 }
 
-/**
- * Definitions of types for new WI entries
- *
- * Use `newEntryTemplate` if you just need the template that contains default values
- *
- * @type {{[key: string]: WIEntryFieldDefinition}}
- */
-const newWorldInfoEntryDefinition = {
-    key: { default: [], type: 'array' },
-    keysecondary: { default: [], type: 'array' },
-    comment: { default: '', type: 'string' },
-    content: { default: '', type: 'string' },
-    constant: { default: false, type: 'boolean' },
-    vectorized: { default: false, type: 'boolean' },
-    selective: { default: true, type: 'boolean' },
-    selectiveLogic: { default: world_info_logic.AND_ANY, type: 'enum' },
-    addMemo: { default: false, type: 'boolean' },
-    order: { default: 100, type: 'number' },
-    position: { default: 0, type: 'number' },
-    disable: { default: false, type: 'boolean' },
-    ignoreBudget: { default: false, type: 'boolean' },
-    excludeRecursion: { default: false, type: 'boolean' },
-    preventRecursion: { default: false, type: 'boolean' },
-    matchPersonaDescription: { default: false, type: 'boolean' },
-    matchCharacterDescription: { default: false, type: 'boolean' },
-    matchCharacterPersonality: { default: false, type: 'boolean' },
-    matchCharacterDepthPrompt: { default: false, type: 'boolean' },
-    matchScenario: { default: false, type: 'boolean' },
-    matchCreatorNotes: { default: false, type: 'boolean' },
-    delayUntilRecursion: { default: 0, type: 'number' },
-    probability: { default: 100, type: 'number' },
-    useProbability: { default: true, type: 'boolean' },
-    depth: { default: DEFAULT_DEPTH, type: 'number' },
-    outletName: { default: '', type: 'string' },
-    group: { default: '', type: 'string' },
-    groupOverride: { default: false, type: 'boolean' },
-    groupWeight: { default: DEFAULT_WEIGHT, type: 'number' },
-    scanDepth: { default: null, type: 'number?' },
-    caseSensitive: { default: null, type: 'boolean?' },
-    matchWholeWords: { default: null, type: 'boolean?' },
-    useGroupScoring: { default: null, type: 'boolean?' },
-    automationId: { default: '', type: 'string' },
-    role: { default: 0, type: 'enum' },
-    sticky: { default: null, type: 'number?' },
-    cooldown: { default: null, type: 'number?' },
-    delay: { default: null, type: 'number?' },
-    characterFilterNames: { default: [], type: 'array', excludeFromTemplate: true },
-    characterFilterTags: { default: [], type: 'array', excludeFromTemplate: true },
-    characterFilterExclude: { default: false, type: 'boolean', excludeFromTemplate: true },
-    triggers: { default: [], type: 'array', arrayFilter: (value) => GENERATION_TYPE_TRIGGERS.includes(value) },
-};
-
-const newWorldInfoEntryTemplate = Object.fromEntries(
-    Object.entries(newWorldInfoEntryDefinition).filter(([_, value]) => !value.excludeFromTemplate).map(([key, value]) => [key, value.default]),
-);
 
 /**
  * Creates a new world info entry from template, under the lowest uid free in `data` ({@link getFreeWorldEntryUid}).

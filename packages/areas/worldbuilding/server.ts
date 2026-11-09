@@ -1,6 +1,7 @@
 import {
     actions,
     cardsPerTopLevelEntry,
+    ENTRY_VIEW,
     LAST_CHANGE_VIEW,
     LOOPS_LEFT_BY_JOBS_VIEW,
     MAX_CARDS_PER_READ,
@@ -10,8 +11,13 @@ import {
     RELATION_KINDS_VIEW,
 } from './protocol.ts';
 import type {
+    EntryView,
     LastChangeView,
     LoopsLeftByJobsView,
+    MentionedIn,
+    Named,
+    OpenEntryView,
+    Placement,
     OverviewLayout,
     OverviewView,
     RelationKind,
@@ -44,6 +50,27 @@ export type RelationChange = { entry: string; kind: string; target: string } & (
 
 export type RelationChangeAnswer = { refused: string } | { unreachedLoops: UnreachedLoop[] } | 'missing';
 
+export type EntryRead =
+    | (Omit<OpenEntryView, 'book' | 'entry' | 'mentionedIn'> & { mentionedIn: MentionedIn })
+    | { deleted: true }
+    | null;
+
+export type EntryEdit =
+    | { change: 'text'; text: string }
+    | { change: 'title'; title: string }
+    | { change: 'addKey'; key: string; as: 'name' | 'trigger' }
+    | { change: 'setKeyAs'; key: string; as: 'name' | 'trigger' }
+    | { change: 'removeKey'; key: string }
+    | { change: 'placement'; fields: Partial<Placement> };
+
+export type EntryCreation = {
+    after: string | null;
+    name: string | null;
+    relation: { kind: string; target: string } | null;
+};
+
+export type EntryWriteRefusal = 'missing' | 'no entry' | { refused: string };
+
 export type Ports = {
     readOverview(user: User, query: ShownOverview): Promise<Omit<OverviewView, 'book' | 'groupBy'> | null>;
     stepOverview(user: User, query: Grouping & { layout: OverviewLayout } & OverviewStep): Promise<StepLanding | null>;
@@ -68,6 +95,30 @@ export type Ports = {
         change: RelationChange,
         loopCheckLimit: number,
     ): Promise<RelationChangeAnswer>;
+    readEntry(user: User, book: string, entry: string, mentionPages: string[]): Promise<EntryRead>;
+    editEntry(who: Who, book: string, entry: string, edit: EntryEdit): Promise<'ok' | EntryWriteRefusal>;
+    createEntry(
+        who: Who,
+        book: string,
+        creation: EntryCreation,
+        loopCheckLimit: number,
+    ): Promise<{ entry: string; unreachedLoops: UnreachedLoop[] } | 'missing' | { refused: string }>;
+    deleteEntry(
+        who: Who,
+        book: string,
+        entry: string,
+    ): Promise<{ label: Named; unreachedLoops: UnreachedLoop[] } | EntryWriteRefusal>;
+    restoreEntry(
+        who: Who,
+        book: string,
+        entry: string,
+    ): Promise<{ unreachedLoops: UnreachedLoop[] } | EntryWriteRefusal>;
+    moveEntryToWorld(
+        who: Who,
+        book: string,
+        entry: string,
+        toBook: string,
+    ): Promise<{ entry: string; unreachedLoops: UnreachedLoop[] } | EntryWriteRefusal>;
 };
 
 const SESSIONS_REMEMBERED = 32;
@@ -81,12 +132,26 @@ const NO_OVERVIEW: OverviewView = {
     stepLanding: null,
 };
 
-const NOTHING_CHANGED: LastChangeView = { createdKind: null, changedRelation: null, unreachedLoops: [] };
+const NOTHING_CHANGED: LastChangeView = {
+    createdKind: null,
+    changedRelation: null,
+    createdEntry: null,
+    deletedEntry: null,
+    movedEntry: null,
+    unreachedLoops: [],
+};
+
+const NO_ENTRY: EntryView = { book: null };
+
+// The views that show how many entries a world has; an action that adds or takes away an entry answers them all.
+const VIEWS_COUNTING_ENTRIES = [OVERVIEW_VIEW];
 
 const NO_WORLD_SHOWN = 'No world is shown.';
 const WORLD_GONE = 'That world no longer exists.';
 const NO_SUCH_KIND = 'This world has no such relation kind.';
 const BEING_MERGED = 'That kind is being merged, or another kind is being merged into it.';
+const NO_SUCH_ENTRY = "That entry isn't in this world.";
+const NO_ENTRY_OPEN = 'No entry is open.';
 
 export function rangeAround(rank: number, firstRank: number, endRank: number): { firstRank: number; endRank: number } {
     if (rank >= firstRank && rank < endRank) return { firstRank, endRank };
@@ -94,9 +159,18 @@ export function rangeAround(rank: number, firstRank: number, endRank: number): {
     return { firstRank: start, endRank: start + (endRank - firstRank) };
 }
 
-type SessionState = { overview: ShownOverview | null; kindsOfBook: string | null; lastChange: LastChangeView };
+export type OpenEntry = { book: string; entry: string; label: Named | null; mentionPages: string[] };
 
-const NO_SESSION_STATE: SessionState = { overview: null, kindsOfBook: null, lastChange: NOTHING_CHANGED };
+type SessionState = {
+    overview: ShownOverview | null;
+    kindsOfBook: string | null;
+    entry: OpenEntry | null;
+    lastChange: LastChangeView;
+};
+
+const NO_SESSION_STATE: SessionState = { overview: null, kindsOfBook: null, entry: null, lastChange: NOTHING_CHANGED };
+
+const opened = (book: string, entry: string): OpenEntry => ({ book, entry, label: null, mentionPages: [] });
 
 export function worldbuildingArea(ports: Ports) {
     const bySession = new Map<string, SessionState>();
@@ -132,12 +206,41 @@ export function worldbuildingArea(ports: Ports) {
         const target = change.change === 'move' ? change.newTarget : change.target;
         remember(context.session, {
             lastChange: {
-                createdKind: null,
+                ...NOTHING_CHANGED,
                 changedRelation: { book, entry: change.entry, kind: change.kind, target },
                 unreachedLoops: answer.unreachedLoops,
             },
         });
-        return { changed: [OVERVIEW_VIEW, LAST_CHANGE_VIEW] };
+        return { changed: [OVERVIEW_VIEW, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+    };
+
+    const refusedWrite = (refusal: EntryWriteRefusal): ActionResult => {
+        if (refusal === 'missing') return { refused: WORLD_GONE };
+        if (refusal === 'no entry') return { refused: NO_SUCH_ENTRY, changed: [OVERVIEW_VIEW, ENTRY_VIEW] };
+        return { refused: refusal.refused };
+    };
+
+    const entryEdited = async (
+        context: ActionContext,
+        book: string,
+        entry: string,
+        edit: EntryEdit,
+    ): Promise<ActionResult> => {
+        const done = await ports.editEntry(who(context), book, entry, edit);
+        return done === 'ok' ? { changed: [OVERVIEW_VIEW, ENTRY_VIEW] } : refusedWrite(done);
+    };
+
+    const readEntryView = async (context: ViewContext): Promise<EntryView> => {
+        const shown = stateOf(context.session).entry;
+        if (!shown) return NO_ENTRY;
+        const read = await ports.readEntry(context.user, shown.book, shown.entry, shown.mentionPages);
+        if (read === null) return NO_ENTRY;
+        if (read.deleted) return { book: shown.book, entry: shown.entry, deleted: true, label: shown.label };
+        const current = stateOf(context.session).entry;
+        if (current?.book === shown.book && current.entry === shown.entry) {
+            bySession.set(context.session, { ...stateOf(context.session), entry: { ...current, label: read.label } });
+        }
+        return { book: shown.book, entry: shown.entry, ...read };
     };
 
     return defineArea({
@@ -154,6 +257,7 @@ export function worldbuildingArea(ports: Ports) {
                 const kinds = book === null ? null : await ports.readRelationKinds(context.user, book);
                 return kinds && book !== null ? { book, kinds } : { book: null, kinds: [] };
             },
+            [ENTRY_VIEW]: readEntryView,
             [LAST_CHANGE_VIEW]: async (context: ViewContext): Promise<LastChangeView> =>
                 stateOf(context.session).lastChange,
             [LOOPS_LEFT_BY_JOBS_VIEW]: async (context: ViewContext): Promise<LoopsLeftByJobsView> => {
@@ -253,6 +357,87 @@ export function worldbuildingArea(ports: Ports) {
                 relationChanged(context, { change: 'remove', ...relation }),
             'worldbuilding.setRelationWeak': (context, relation) =>
                 relationChanged(context, { change: 'setWeak', ...relation }),
+            'worldbuilding.openEntry': async (context, { book, entry }) => {
+                remember(context.session, { entry: opened(book, entry) });
+                return { changed: [], opensViews: [ENTRY_VIEW] };
+            },
+            'worldbuilding.closeEntry': async (context) => {
+                remember(context.session, { entry: null });
+                return { changed: [ENTRY_VIEW] };
+            },
+            'worldbuilding.showMoreMentions': async (context, { cursor }) => {
+                const shown = stateOf(context.session).entry;
+                if (!shown) return { refused: NO_ENTRY_OPEN };
+                if (!shown.mentionPages.includes(cursor)) {
+                    remember(context.session, { entry: { ...shown, mentionPages: [...shown.mentionPages, cursor] } });
+                }
+                return { changed: [ENTRY_VIEW] };
+            },
+            'worldbuilding.setEntryText': (context, { book, entry, text }) =>
+                entryEdited(context, book, entry, { change: 'text', text }),
+            'worldbuilding.setEntryTitle': (context, { book, entry, title }) =>
+                entryEdited(context, book, entry, { change: 'title', title }),
+            'worldbuilding.addKey': (context, { book, entry, key, as }) =>
+                entryEdited(context, book, entry, { change: 'addKey', key, as }),
+            'worldbuilding.setKeyAs': (context, { book, entry, key, as }) =>
+                entryEdited(context, book, entry, { change: 'setKeyAs', key, as }),
+            'worldbuilding.removeKey': (context, { book, entry, key }) =>
+                entryEdited(context, book, entry, { change: 'removeKey', key }),
+            'worldbuilding.setPlacement': (context, { book, entry, fields }) =>
+                entryEdited(context, book, entry, { change: 'placement', fields }),
+            'worldbuilding.createEntry': async (context, { book, after, name, relation, open, loopCheckLimit }) => {
+                const made = await ports.createEntry(who(context), book, { after, name, relation }, loopCheckLimit);
+                if (made === 'missing') return { refused: WORLD_GONE };
+                if ('refused' in made) return { refused: made.refused };
+                remember(context.session, {
+                    ...(open ? { entry: opened(book, made.entry) } : {}),
+                    lastChange: {
+                        ...NOTHING_CHANGED,
+                        createdEntry: { book, entry: made.entry },
+                        unreachedLoops: made.unreachedLoops,
+                    },
+                });
+                return open
+                    ? { changed: [...VIEWS_COUNTING_ENTRIES, LAST_CHANGE_VIEW], opensViews: [ENTRY_VIEW] }
+                    : { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+            },
+            'worldbuilding.deleteEntry': async (context, { book, entry }) => {
+                const done = await ports.deleteEntry(who(context), book, entry);
+                if (typeof done === 'string' || 'refused' in done) return refusedWrite(done);
+                const shown = stateOf(context.session).entry;
+                remember(context.session, {
+                    ...(shown?.book === book && shown.entry === entry
+                        ? { entry: { ...shown, label: done.label } }
+                        : {}),
+                    lastChange: {
+                        ...NOTHING_CHANGED,
+                        deletedEntry: { book, entry, label: done.label },
+                        unreachedLoops: done.unreachedLoops,
+                    },
+                });
+                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+            },
+            'worldbuilding.restoreEntry': async (context, { book, entry }) => {
+                const done = await ports.restoreEntry(who(context), book, entry);
+                if (typeof done === 'string' || 'refused' in done) return refusedWrite(done);
+                remember(context.session, { lastChange: { ...NOTHING_CHANGED, unreachedLoops: done.unreachedLoops } });
+                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+            },
+            'worldbuilding.moveEntryToWorld': async (context, { book, entry, toBook }) => {
+                if (toBook === book) return { refused: 'The entry is in that world already.' };
+                const moved = await ports.moveEntryToWorld(who(context), book, entry, toBook);
+                if (typeof moved === 'string' || 'refused' in moved) return refusedWrite(moved);
+                const shown = stateOf(context.session).entry;
+                remember(context.session, {
+                    ...(shown?.book === book && shown.entry === entry ? { entry: opened(toBook, moved.entry) } : {}),
+                    lastChange: {
+                        ...NOTHING_CHANGED,
+                        movedEntry: { book, entry, toBook, newEntry: moved.entry },
+                        unreachedLoops: moved.unreachedLoops,
+                    },
+                });
+                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+            },
         },
     });
 }

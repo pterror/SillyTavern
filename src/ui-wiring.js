@@ -10,6 +10,8 @@ import { activationsArea } from '@st/activations/server';
 import { referencesArea } from '@st/references/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
 import { References } from './world-info/references.js';
+import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
+import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
 import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
 import { readUserSettings } from './settings-reads.js';
@@ -546,6 +548,18 @@ onUserStoreOpened(({ events, root, handle }) => {
 
 /** @type {import('@st/worldbuilding/server').Ports} */
 const worldbuildingPorts = {
+    ...worldbuildingEntryPorts({
+        libOf,
+        referencesOf,
+        async countTokens(user, texts) {
+            try {
+                return (await countWithConnection(directoriesOf(user), {}, texts))?.counts ?? null;
+            } catch (error) {
+                console.error('Could not count the entry\'s text:', error);
+                return null;
+            }
+        },
+    }),
     async readLoopsLeftByJobs(user, book) {
         return (await libOf(user)).books.jobs.loopsLeft(BigInt(book));
     },

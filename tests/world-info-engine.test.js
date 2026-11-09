@@ -261,7 +261,8 @@ describe.each(['native', 'wasm'])('%s', (kind) => {
                     want = { entry: json(moved), unreachedLoops: [] };
                     target.entries[k] = json(moved);
                     if (deleteOriginal) delete current.entries[uid];
-                    got = await books.transplant({ source: name, target: name === 'A' ? 'B' : 'A', uid, deleteOriginal });
+                    const transplanted = await books.transplant({ source: name, target: name === 'A' ? 'B' : 'A', uid, deleteOriginal });
+                    got = typeof transplanted === 'object' ? { entry: transplanted.entry, unreachedLoops: transplanted.unreachedLoops } : transplanted;
                 } else if (op === 3) {
                     const entries = [];
                     for (const u of uids.slice(0, 3)) {
