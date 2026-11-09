@@ -308,7 +308,12 @@ function world(
             const found = worlds.get(book);
             return found ? made(`${found.name} (1)`) : 'missing';
         },
-        deleteWorld: async (_w, book) => (worlds.delete(book) ? 'ok' : 'missing'),
+        deleteWorld: async (_w, book) => {
+            const listed = await ports.readWorlds(user);
+            const at = listed.findIndex((listedWorld) => listedWorld.id === book);
+            if (!worlds.delete(book)) return 'missing';
+            return { next: (listed[at + 1] ?? listed[at - 1])?.id ?? null };
+        },
         importWorld: async (_w, file) => {
             asked.imported.push(file);
             return file.name.endsWith('.txt') ? { refused: "This file isn't a world." } : made(file.name.slice(0, -5));
@@ -749,10 +754,46 @@ test('duplicating a world opens the copy; importing a file opens what it made, a
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '11' });
 });
 
-test('deleting a world opens the worlds list and every tab that showed it shows no world', async () => {
+test('deleting the shown world opens the one the list orders after it, else before it, at the range it showed', async () => {
+    const w = world(3, { worlds: ['1', '2', '3'] });
+    await w.act('worldbuilding.openOverview', { ...open, book: '2', firstRank: 5, endRank: 15 });
+    await w.act('worldbuilding.openEntry', { book: '2', entry: '7', pointingAt });
+    await w.other('worldbuilding.openOverview', { ...open, book: '2' });
+    expect(await w.act('worldbuilding.deleteWorld', { book: '2' })).toEqual({
+        changed: [RESULTS_VIEW, FOUND_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, WORLDS_VIEW],
+        opensViews: WORLD_VIEWS,
+    });
+    expect(w.asked.opened.at(-1)).toBe('3');
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '3' });
+    await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect(w.asked.overview.at(-1)).toMatchObject({ book: '3', groupBy: null, firstRank: 0, endRank: 10 });
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
+    expect(await w.otherView<WorldView>(WORLD_VIEW)).toEqual({ id: null });
+
+    await w.act('worldbuilding.deleteWorld', { book: '3' });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '1' });
+    expect(await w.act('worldbuilding.deleteWorld', { book: '1' })).toEqual({
+        changed: [
+            RESULTS_VIEW,
+            FOUND_VIEW,
+            ENTRY_VIEW,
+            POINTING_AT_VIEW,
+            OVERVIEW_VIEW,
+            RELATION_KINDS_VIEW,
+            LAST_CHANGE_VIEW,
+            LOOPS_LEFT_BY_JOBS_VIEW,
+            SELECTION_VIEW,
+            BULK_JOBS_VIEW,
+        ],
+        opensViews: [WORLD_VIEW, WORLDS_VIEW],
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toEqual({ id: null });
+    expect(await listedNames(w)).toEqual([]);
+});
+
+test('deleting a world another tab shows leaves that tab with no world, and this one where it was', async () => {
     const w = world(3);
-    await w.act('worldbuilding.openOverview', open);
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    await w.act('worldbuilding.openOverview', { ...open, book: '2' });
     await w.other('worldbuilding.openOverview', open);
     expect(await w.act('worldbuilding.deleteWorld', { book: '1' })).toEqual({
         changed: [
@@ -769,12 +810,10 @@ test('deleting a world opens the worlds list and every tab that showed it shows 
         ],
         opensViews: [WORLDS_VIEW],
     });
-    for (const view of [w.view, w.otherView]) {
-        expect(await view<WorldView>(WORLD_VIEW)).toEqual({ id: null });
-        expect(await view<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null });
-        expect(await view<RelationKindsView>(RELATION_KINDS_VIEW)).toEqual({ book: null, kinds: [] });
-    }
-    expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
+    expect(await w.otherView<WorldView>(WORLD_VIEW)).toEqual({ id: null });
+    expect(await w.otherView<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null });
+    expect(await w.otherView<RelationKindsView>(RELATION_KINDS_VIEW)).toEqual({ book: null, kinds: [] });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '2' });
     expect(await listedNames(w)).toEqual(['World 2']);
     expect(await w.act('worldbuilding.deleteWorld', { book: '1' })).toEqual({
         refused: 'That world no longer exists.',

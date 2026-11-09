@@ -221,11 +221,14 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
             const lib = await libOf(user);
             const key = await worldKey(lib, BigInt(book));
             if (key === null) return 'missing';
+            const worlds = await worldsOf(lib);
+            const at = worlds.findIndex(w => w.key === key);
+            const next = worlds[at + 1] ?? worlds[at - 1] ?? null;
             const { deleted } = await booksChanged(user, async () => {
                 const gone = await lib.books.delete(key);
                 return { deleted: gone !== null, choosers: gone?.choosers ?? [] };
             });
-            return deleted ? 'ok' : 'missing';
+            return deleted ? { next: next === null ? null : String(next.id) } : 'missing';
         },
         async importWorld(who, file) {
             const read = worldFromFile(await fs.promises.readFile(file.path));

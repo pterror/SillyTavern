@@ -147,7 +147,8 @@ export type Ports = {
     createWorld(who: Who, name: string): Promise<NewWorld>;
     renameWorld(who: Who, book: string, name: string): Promise<'ok' | 'missing' | { refused: string }>;
     duplicateWorld(who: Who, book: string): Promise<NewWorld | 'missing'>;
-    deleteWorld(who: Who, book: string): Promise<'ok' | 'missing'>;
+    // `next`: the world the worlds list orders after it, else before it; null when it was the only one.
+    deleteWorld(who: Who, book: string): Promise<{ next: string | null } | 'missing'>;
     importWorld(who: Who, file: Upload): Promise<NewWorld>;
     exportWorld(user: User, book: string): Promise<ExportedWorld | null>;
     setUsedInEveryChat(who: Who, book: string, used: boolean): Promise<'ok' | 'missing'>;
@@ -847,9 +848,27 @@ export function worldbuildingArea(ports: Ports) {
             'worldbuilding.duplicateWorld': async (context, { book, overview }) =>
                 newWorldShown(context, await ports.duplicateWorld(who(context), book), overview),
             'worldbuilding.deleteWorld': async (context, { book }) => {
+                const shown = stateOf(context.session).overview;
                 const done = await ports.deleteWorld(who(context), book);
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 forgetWorld(book);
+                if (shown?.book === book) {
+                    const { layout, firstRank, endRank } = shown;
+                    const opened = await showWorld(context, done.next, {
+                        groupBy: null,
+                        firstRank: 0,
+                        endRank: endRank - firstRank,
+                        layout,
+                        around: null,
+                    });
+                    const changed = [RESULTS_VIEW, FOUND_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, WORLDS_VIEW];
+                    return {
+                        changed: [...new Set([...changed, ...opened.changed])].filter(
+                            (view) => !opened.opensViews.includes(view),
+                        ),
+                        opensViews: opened.opensViews,
+                    };
+                }
                 return {
                     changed: [
                         OVERVIEW_VIEW,

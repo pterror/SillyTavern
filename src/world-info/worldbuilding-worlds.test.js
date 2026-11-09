@@ -102,14 +102,18 @@ test('the world opened is the one asked for, else the last opened, else the firs
     assert.deepEqual(await ports.renameWorld(who, lantern.id, 'a:b'), { refused: NAME_REFUSAL });
     assert.equal(await ports.renameWorld(who, '999999', 'x'), 'missing');
 
-    assert.equal(await ports.deleteWorld(who, lantern.id), 'ok');
+    const kiln = bookOf(await ports.createWorld(who, 'Kiln'));
+    const listed = await ports.readWorlds(uiUser);
+    assert.deepEqual(listed.slice(-2).map(w => w.id), [kiln, lantern.id]);
+    assert.deepEqual(await ports.deleteWorld(who, kiln), { next: lantern.id }, 'the next world is the one the list orders after');
+    assert.deepEqual(await ports.deleteWorld(who, lantern.id), { next: listed[listed.length - 3].id }, 'the last world\'s next is the one before it');
     assert.equal(await ports.readWorld(uiUser, lantern.id), null);
     assert.equal(await ports.openWorld(who, null), first.id);
     assert.equal(await ports.deleteWorld(who, lantern.id), 'missing');
 });
 
 test('being used in every chat is the global selection, written by id and gone with its world', async () => {
-    const [one, two] = await ports.readWorlds(uiUser);
+    const [one, two, three] = await ports.readWorlds(uiUser);
     changes.length = 0;
     assert.equal(await ports.setUsedInEveryChat(who, one.id, true), 'ok');
     assert.equal(await ports.setUsedInEveryChat(who, two.id, true), 'ok');
@@ -120,7 +124,7 @@ test('being used in every chat is the global selection, written by id and gone w
     assert.equal(await ports.setUsedInEveryChat(who, one.id, false), 'ok');
     assert.deepEqual((await readChoices(lib, [holder])).get(holder)?.get(CHOICE.selected), [two.name]);
     changes.length = 0;
-    assert.equal(await ports.deleteWorld(who, two.id), 'ok');
+    assert.deepEqual(await ports.deleteWorld(who, two.id), { next: three.id });
     assert.ok(changes[0].some(c => c.holder === holder && c.slot === CHOICE.selected), 'the delete names the user as a chooser');
     assert.deepEqual((await readChoices(lib, [holder])).get(holder)?.get(CHOICE.selected) ?? [], []);
     assert.equal(await ports.setUsedInEveryChat(who, two.id, true), 'missing');
