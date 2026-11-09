@@ -12,10 +12,12 @@ export const STORE_DIR = 'store';
 export const GREETINGS_BY_ID = 'greetings-by-id';
 export const GREETING_LINKS = 'greeting-links';
 export const GREETINGS_UNIQUE = 'greetings-unique';
+export const WORLDBUILDING_INDEXED = 'worldbuilding-indexed';
 
 const CONVERSIONS = Object.freeze([
     { markers: [GREETINGS_BY_ID, GREETING_LINKS], script: 'convert-greeting-choices.mjs', why: 'has chats whose greetings aren\'t kept by greeting id yet' },
     { markers: [GREETINGS_UNIQUE], script: 'convert-greeting-duplicates.mjs', why: 'has cards with the same greeting twice' },
+    { markers: [WORLDBUILDING_INDEXED], script: 'convert-lorebooks-to-worldbuilding.mjs', why: 'has lorebooks whose entries aren\'t yet ordered, linked and counted for worldbuilding' },
 ]);
 
 /**

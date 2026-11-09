@@ -669,20 +669,25 @@ its hits as labels; no words find nothing.
 ## Existing stores
 
 Entries written before the tree aren't in it, and a later `entryIndex` write or deletion of one is refused (the tree
-never guesses). `scripts/convert-lorebooks-to-worldbuilding.mjs` does two things, in steps, idempotently, run once with
-the server stopped, then deleted with what only it uses:
+never guesses). The server refuses a store until `scripts/convert-lorebooks-to-worldbuilding.mjs` has run on it: it
+names the script and doesn't start, as for the greeting conversions (`CONVERSIONS` in `src/user-stores.js`). The
+script, run once with the server stopped and deleted later with what only it uses, does two things per store, in
+steps, then writes the store's marker (`store/worldbuilding-indexed`); a new store gets the marker when it is made, and
+the script skips a store that has it:
 
 1. Rewrites every relations field still naming targets by key (`"target"`) to name them by entity id
    (`"targetEntry"`), as a history edit of that field, leaving out relations whose key names no entry of the world
    (`WorldInfoEngine.relationsByEntity`). No stored world has any relation yet, so this finds nothing today; it is
    there so the format can't be met half-converted.
 2. Puts every entry of every counted book in its world's order and indexes its relations, their trees of sources
-   included (`relations::world_order_conversion_step`).
+   included (`relations::world_order_conversion_step`). A relation indexed before the trees of sources existed gets
+   its place in its tree, and the counts per (world, kind, target) those trees replaced are deleted.
 
 Its first step also deletes every `KEY_ITEMS_BY_TEXT` count, and each step counts the keys of the entries it passes, so
 a run counts every key again from nothing. Each step also sets each entry's names offer state (The imported-book
 offer) from its fields, counting only what differs from the state stored, so a store written before the offer gets
-its counts from the run and a second run changes nothing. It prints only totals. Running it twice changes nothing.
+its counts from the run. It prints only totals. The steps change nothing on a store they have already converted, so a
+run on a store converted before the marker existed only fills in what that run didn't build.
 
 ## Open
 

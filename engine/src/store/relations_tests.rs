@@ -1237,3 +1237,52 @@ fn the_conversion_builds_for_a_store_written_before_the_tree_what_its_writes_wou
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_conversion_places_relations_indexed_before_the_trees_of_sources_and_drops_the_counts_they_replaced() {
+    let dir = temp_dir("conversion-sources");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, B, "one");
+    let mut model = Model::default();
+    let mut rng = Rng(91);
+    let mut next = 100;
+    for _ in 0..120 {
+        step(&store, &mut model, &mut rng, &mut next);
+    }
+    let want = dump(&store);
+    let sources_prefix = kinds::key::of(SOURCES_ORDER_EDGE);
+    let held_sources = |store: &Store| {
+        read(store, |view| view.scan(&sources_prefix, &kinds::key::prefix_end(&sources_prefix), usize::MAX)).len()
+    };
+    assert!(held_sources(&store) > 0, "the rounds leave relations in use");
+    let old_counts = kinds::key::of(230);
+    derive_job(&store, |view, out| {
+        for structure in [SOURCES_ORDER_EDGE, SOURCES_ORDER_COUNT.id()] {
+            let prefix = kinds::key::of(structure);
+            for (stored_key, _) in view.scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)? {
+                out.del(stored_key);
+            }
+        }
+        let mut count_key = kinds::key::id(230, B);
+        crate::keyspace::val::put_u64(&mut count_key, 1);
+        crate::keyspace::val::put_u64(&mut count_key, 11);
+        out.put(count_key, vec![1]);
+        Ok(())
+    });
+    assert_eq!(held_sources(&store), 0);
+    for _ in 0..2 {
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let from = after.clone();
+            after = derive_job(&store, move |view, out| relations::world_order_conversion_step(view, out, from.as_deref(), 3));
+            if after.is_none() {
+                break;
+            }
+        }
+        assert_eq!(dump(&store), want);
+        assert!(read(&store, |view| view.scan(&old_counts, &kinds::key::prefix_end(&old_counts), usize::MAX)).is_empty());
+    }
+    model.check(&store);
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}

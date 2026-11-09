@@ -22,6 +22,7 @@ pub const KINDS_BEING_MERGED: u64 = 235;
 pub const KEPT_RELATIONS_BY_KIND: u64 = 236;
 pub const RELATIONS_OF_DELETED_ENTRIES_BY_KIND: u64 = 237;
 pub const KIND_MERGE_RECORDS_DUE: u64 = 238;
+const RELATION_COUNT_BEFORE_SOURCES_TREES: u64 = 230;
 pub const SOURCES_ORDER_EDGE: u64 = 240;
 pub const SOURCES_ORDER_COUNT: AddMapKind = AddMapKind::new(241);
 
@@ -1105,6 +1106,22 @@ pub fn display_index_changed(
     Ok(())
 }
 
+fn sources_of_entry_placed(view: &View, out: &mut Out, book: u64, source: u64) -> Result<(), StoreError> {
+    let mut writes = LayeredWrites::new(view);
+    for ((kind, target), stored) in stored_relations_of_entry(view, source)? {
+        if stored.state != RelationState::InUse {
+            continue;
+        }
+        let sources = sources_tree(book, kind, target);
+        let leaf = source_leaf(&stored.relation.position, source);
+        if !tree::holds_entry(&writes, &sources, &leaf)? {
+            tree::insert_entry(&mut writes, &sources, &leaf, &[])?;
+        }
+    }
+    writes.finish(out);
+    Ok(())
+}
+
 pub fn world_order_conversion_step(
     view: &View,
     out: &mut Out,
@@ -1126,6 +1143,10 @@ pub fn world_order_conversion_step(
     if after.is_none() {
         let mut cleared = Out::default();
         super::references::key_items_cleared(view, &mut cleared)?;
+        let counts = key::of(RELATION_COUNT_BEFORE_SOURCES_TREES);
+        for (stored_key, _) in view.scan(&counts, &key::prefix_end(&counts), usize::MAX)? {
+            cleared.del(stored_key);
+        }
         out.entries.extend(cleared.entries.iter().cloned());
         cleared.apply(&mut local);
     }
@@ -1161,6 +1182,11 @@ pub fn world_order_conversion_step(
             &own_key,
             json.as_deref(),
         )?;
+        out.entries.extend(derived.entries.iter().cloned());
+        derived.apply(&mut local);
+        let layered_view = view.with_layer(&local);
+        let mut derived = Out::default();
+        sources_of_entry_placed(&layered_view, &mut derived, book, entity)?;
         out.entries.extend(derived.entries.iter().cloned());
         derived.apply(&mut local);
         let layered_view = view.with_layer(&local);

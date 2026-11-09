@@ -67,6 +67,8 @@ test('a store from before greeting ids is refused until the conversion script ha
         expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-duplicates.mjs');
         expect(run()).toContain('Users: 1 (1 already converted)');
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-duplicates.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Greetings removed as copies of an earlier one: 0.');
+        expect(await stores.oldFormatLine({ root })).toContain('convert-lorebooks-to-worldbuilding.mjs');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-lorebooks-to-worldbuilding.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted).');
         expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });
@@ -124,6 +126,8 @@ test('a store converted by the first version of the script gets the links when i
         expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-duplicates.mjs');
         expect(run()).toContain('Users: 1 (1 already converted)');
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-duplicates.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Greetings removed as copies of an earlier one: 0.');
+        expect(await stores.oldFormatLine({ root })).toContain('convert-lorebooks-to-worldbuilding.mjs');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-lorebooks-to-worldbuilding.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted).');
         expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });
