@@ -1,4 +1,4 @@
-import { STATEMENT_PREFIX } from './library-codes.js';
+import { LOOK_FIELD, STATEMENT_PREFIX } from './library-codes.js';
 import { textEdit } from './text-edit.js';
 
 /**
@@ -17,6 +17,16 @@ export function pushAll(list, items) {
 export function withoutStatements(entity) {
     if (!entity) return entity;
     return { ...entity, values: entity.values.filter(v => !(typeof v.field === 'string' && v.field.startsWith(STATEMENT_PREFIX))) };
+}
+
+/**
+ * @template {{ values: { field: number | string }[] } | null} T
+ * @param {T} entity
+ * @returns {T}
+ */
+export function withoutLook(entity) {
+    if (!entity) return entity;
+    return { ...entity, values: entity.values.filter(v => v.field !== LOOK_FIELD) };
 }
 
 export function itemField(list, item) {

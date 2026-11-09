@@ -4,7 +4,8 @@
     "type": "module",
     "exports": {
         ".": "./src/index.ts",
-        "./search": "./src/search.ts"
+        "./search": "./src/search.ts",
+        "./looks": "./src/looks.ts"
     },
     "dependencies": {
         "valibot": "1.5.0"

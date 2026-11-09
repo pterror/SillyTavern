@@ -1,0 +1,19 @@
+{
+    "name": "@st/looks",
+    "private": true,
+    "type": "module",
+    "exports": {
+        "./look": "./look.ts",
+        "./protocol": "./protocol.ts",
+        "./server": "./server.ts"
+    },
+    "dependencies": {
+        "@adobe/css-tools": "^4.4.4",
+        "@st/protocol": "*",
+        "@st/server-ui": "*",
+        "valibot": "1.5.0"
+    },
+    "devDependencies": {
+        "vite-plus": "1.1.0"
+    }
+}

@@ -12,6 +12,7 @@ import { searchClauses } from './search-clauses.js';
 import { SPACE, actorIds, idOf } from './actor-ids.js';
 import { humanizedDateTime, humanizedTail } from '../public/scripts/humanized-date.js';
 import { hashGreetingText } from './greeting-ops.js';
+import { bookmarkLookDeletes } from './bookmark-looks.js';
 
 export { SPACE };
 
@@ -1574,6 +1575,7 @@ export class ChatEngine {
                 if (!page.more) break;
                 after = page.rows[page.rows.length - 1].id;
             }
+            records.push(...(await bookmarkLookDeletes(this.store, rootBookmarks.map(b => b.id))));
             return { roots: await this.children(tree, null), records, root: true, rootBookmarks };
         });
     }
@@ -2505,7 +2507,7 @@ export class ChatEngine {
             if (!b) return { ok: false, reason: 'unknown bookmark' };
             const records = [];
             let name = b.name;
-            if (change.delete) records.push({ kind: 'positionDelete', id: b.id });
+            if (change.delete) records.push({ kind: 'positionDelete', id: b.id }, ...(await bookmarkLookDeletes(this.store, [b.id])));
             else {
                 if (change.name !== undefined && change.name !== b.name) {
                     if (change.name === null || change.name.trim() === '') return { ok: false, reason: 'a chat needs a name' };

@@ -8,6 +8,8 @@ import { settingsArea } from '@st/settings/server';
 import { alternativesArea } from '@st/alternatives/server';
 import { activationsArea } from '@st/activations/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
+import { looksArea } from '@st/looks/server';
+import { looksPorts } from './looks-store.js';
 import { References } from './world-info/references.js';
 import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
 import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
@@ -517,6 +519,8 @@ onUserStoreOpened(({ events, root, handle }) => {
     });
 });
 
+const looks = looksArea(looksPorts({ libOf }));
+
 /** @type {import('@st/worldbuilding/server').Ports} */
 const worldbuildingPorts = {
     ...worldbuildingWorldPorts({
@@ -608,7 +612,7 @@ const worldbuildingPorts = {
     },
 };
 
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts)], {
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts), looks.area], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);

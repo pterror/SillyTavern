@@ -19,6 +19,7 @@ import { router as currentTokenizersRouter } from './endpoints/tokenizers-curren
 import { router as presetsRouter } from './endpoints/presets.js';
 import { router as secretsRouter } from './endpoints/secrets.js';
 import { router as thumbnailRouter } from './endpoints/thumbnails.js';
+import { router as fontsRouter } from './endpoints/fonts.js';
 import { router as novelAiRouter } from './endpoints/novelai.js';
 import { router as filesRouter } from './endpoints/files.js';
 import { router as charactersRouter } from './endpoints/characters.js';
@@ -71,6 +72,7 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/presets', presetsRouter);
     app.use('/api/secrets', secretsRouter);
     app.use('/thumbnail', thumbnailRouter);
+    app.use('/fonts', fontsRouter);
     app.use('/api/novelai', novelAiRouter);
     app.use('/api/files', filesRouter);
     app.use('/api/characters', charactersRouter);

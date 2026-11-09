@@ -4,7 +4,7 @@ export const TYPE = Object.freeze({
     connection: 18, connectionProfile: 19, proxy: 20, persona: 21, theme: 22, quickReplySet: 23, quickReply: 24,
     regexScript: 25, regexPreset: 26, globalVariable: 27, dataBankFile: 28, modelTemplateBinding: 29,
     movingUiPreset: 31, serverHistory: 32, movingUiLayout: 33, device: 34, background: 35, personaImage: 36,
-    userImage: 37, tabView: 38,
+    userImage: 37, tabView: 38, look: 39,
 });
 
 export const HASH = Object.freeze({ identity: 0, content: 1, avatarIdentity: 3, animated: 4 });
@@ -33,6 +33,9 @@ export const FIELD = Object.freeze({
     folder_type: 40,
     defined: 41,
 });
+
+// On a character or a persona, written only by the looks' own actions and kept by every other write.
+export const LOOK_FIELD = '\u0001look';
 
 export const TAG_KEY_PREFIX = 'tag:';
 

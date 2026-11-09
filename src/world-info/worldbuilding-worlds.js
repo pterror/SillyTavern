@@ -7,6 +7,7 @@ import { bookKey } from '../world-info-keys.js';
 import { CHOICE, chooseRecord } from '../settings-model/book-choices.js';
 import { EMBEDDED_WORLD_NAME } from './candidate-resolution.js';
 import { worldFromFile } from './world-files.js';
+import { fontRecords, fontsOfBook, putFontsOfFile, worldFontsForFile } from '../looks-store.js';
 
 const PAGE = 1000;
 
@@ -124,6 +125,15 @@ export async function freeWorldName(lib, wanted) {
 }
 
 /**
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {bigint} book
+ * @param {{ id: string, name: string }[]} fonts
+ */
+async function withFonts(lib, book, fonts) {
+    if (fonts.length > 0) await lib.books.inWorld(book, () => lib.store.commit(fontRecords(book, fonts)));
+}
+
+/**
  * The world actions and the worlds views of the worldbuilding area, over the store.
  * @param {WorldPortsWiring} wiring
  * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readWorlds' | 'readWorld' | 'openWorld' | 'createWorld' | 'renameWorld' | 'duplicateWorld' | 'deleteWorld' | 'importWorld' | 'exportWorld' | 'setUsedInEveryChat' | 'markTitleKeysAsNames' | 'declineNamesOffer' | 'undoMarkTitleKeysAsNames'>}
@@ -215,7 +225,9 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
             const key = await worldKey(lib, BigInt(book));
             const data = key === null ? null : await lib.books.read(key);
             if (key === null || data === null) return 'missing';
-            return writeNew(who, key, data);
+            const made = await writeNew(who, key, data);
+            if ('book' in made) await withFonts(lib, BigInt(made.book), fontsOfBook((await lib.entities([BigInt(book)]))[0]));
+            return made;
         },
         async deleteWorld({ user }, book) {
             const lib = await libOf(user);
@@ -235,14 +247,19 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
             if ('refused' in read) return read;
             const name = path.parse(file.name).name.trim();
             if (name === '') return { refused: 'The file needs a name for the world to take.' };
-            return writeNew(who, name, read.world);
+            const { fonts, ...world } = read.world;
+            const kept = await putFontsOfFile(who.user.directories.root, fonts);
+            const made = await writeNew(who, name, world);
+            if ('book' in made) await withFonts(await libOf(who.user), BigInt(made.book), kept);
+            return made;
         },
         async exportWorld(user, book) {
             const lib = await libOf(user);
             const key = await worldKey(lib, BigInt(book));
             const data = key === null ? null : await lib.books.read(key);
             if (key === null || data === null) return null;
-            return { fileName: `${key}.json`, json: JSON.stringify(data) };
+            const fonts = await worldFontsForFile(lib, user.directories.root, BigInt(book));
+            return { fileName: `${key}.json`, json: JSON.stringify(fonts.length > 0 ? { ...data, fonts } : data) };
         },
         async markTitleKeysAsNames({ user }, book) {
             return (await libOf(user)).books.markTitleKeysAsNames(BigInt(book));

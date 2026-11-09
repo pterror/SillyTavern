@@ -1,4 +1,5 @@
-import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '../entity-values.js';
+import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords, withoutLook } from '../entity-values.js';
+import { LOOK_FIELD } from '../library-codes.js';
 import { NO_PLACEHOLDER, PART_LISTS, REF_ARRAYS, REF_LISTS, REF_VALUES } from './refs.js';
 
 const EMPTY_LIST = 'list:';
@@ -118,7 +119,7 @@ export async function writeDrafts(lib, drafts, { actor = null, warnings = [], re
             const texts = items.map(item => (refType !== undefined ? refText(refType, item) : item));
             lists.set(Number(list), /** @type {string[]} */ (texts.filter(text => text !== undefined)).map(String));
         }
-        pushAll(records, valueRecords(id, was ? /** @type {StoredEntity} */ (withoutPartLists(was)) : null, { values, lists }, writes));
+        pushAll(records, valueRecords(id, was ? /** @type {StoredEntity} */ (withoutPartLists(withoutLook(was))) : null, { values, lists }, writes));
 
         for (const [list, partType] of Object.entries(PART_LISTS[d.type] ?? {})) {
             const listNumber = Number(list);
@@ -186,7 +187,7 @@ async function draftOf(lib, entity) {
             continue;
         }
         const value = v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json));
-        if (v.field === DEFINED) continue;
+        if (v.field === DEFINED || v.field === LOOK_FIELD) continue;
         if (typeof v.field === 'string' && v.field.startsWith(EMPTY_LIST)) {
             emptyLists.push(Number(v.field.slice(EMPTY_LIST.length)));
             continue;

@@ -1,10 +1,11 @@
 import { jsonHash } from '../public/scripts/hash-utils.js';
 import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from './entity-values.js';
 import { LINKS, storedLinks } from './character-links.js';
-import { TYPE } from './library-codes.js';
+import { LOOK_FIELD, TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
 import { LOOP_CHECK_VISITS_PER_WRITE, RELATION_CHANGES_PER_STEP, WALK_STEPS_PER_READ } from '@st/worldbuilding/protocol';
 import { WorldbuildingJobs } from './world-info/worldbuilding-jobs.js';
+import { SHARED_LOOK_ID, SHARED_LOOK_NAME_AT_MOST, storedLook } from '@st/looks/look';
 import { filterClauses } from './world-info/worldbuilding-search.js';
 
 const ENTRY_KEYS = Object.freeze([
@@ -182,6 +183,61 @@ const isBulkJobField = (/** @type {unknown} */ field) => typeof field === 'strin
 const relationKindField = (/** @type {number} */ id) => `${RELATION_KIND_FIELD}${id}`;
 const relationKindMergeField = (/** @type {number} */ id) => `${RELATION_KIND_MERGE_FIELD}${id}`;
 const isWholeId = (/** @type {unknown} */ n) => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
+
+const LOOK = 'look';
+const SHARED_LOOKS = 'sharedLooks';
+export const SHARED_LOOK_FIELD = `${EXTENSION_MARK}sharedLook:`;
+export const FONT_FIELD = `${EXTENSION_MARK}font:`;
+const isFontField = (/** @type {unknown} */ field) => typeof field === 'string' && field.startsWith(FONT_FIELD);
+
+/**
+ * A look as it is stored: what passes the sanitizer; a value of another shape is kept as written and holds no look.
+ * @param {unknown} value
+ */
+export const lookToStore = value => storedLook(value, 'any').look ?? value;
+
+/**
+ * @typedef {{ id: string, name: string, look: unknown }} SharedLook
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {SharedLook[] | null}
+ */
+function sharedLooksOf(value) {
+    if (!Array.isArray(value)) return null;
+    const seen = new Set();
+    for (const shared of value) {
+        if (!isPlainObject(shared) || typeof shared.id !== 'string' || !SHARED_LOOK_ID.test(shared.id) || seen.has(shared.id)) return null;
+        if (typeof shared.name !== 'string' || shared.name.trim() === '' || shared.name.length > SHARED_LOOK_NAME_AT_MOST) return null;
+        if (Object.keys(shared).some(field => field !== 'id' && field !== 'name' && field !== 'look')) return null;
+        seen.add(shared.id);
+    }
+    return /** @type {SharedLook[]} */ (value);
+}
+
+/**
+ * @param {{ field: number | string, json?: string }[]} values
+ * @returns {SharedLook[]}
+ */
+export function sharedLooksOfFields(values) {
+    /** @type {SharedLook[]} */
+    const found = [];
+    for (const value of values) {
+        if (typeof value.field !== 'string' || !value.field.startsWith(SHARED_LOOK_FIELD) || value.json === undefined) continue;
+        const { name, look } = JSON.parse(value.json);
+        found.push({ id: value.field.slice(SHARED_LOOK_FIELD.length), name, look });
+    }
+    return found.sort((one, other) => (one.name < other.name ? -1 : one.name > other.name ? 1 : one.id < other.id ? -1 : 1));
+}
+
+/**
+ * @param {unknown} value
+ * @returns {boolean} whether it is a world file's fonts, which only an export and an import carry
+ */
+export function isFontList(value) {
+    return Array.isArray(value) && value.every(font => isPlainObject(font) && typeof font.id === 'string' && typeof font.name === 'string');
+}
 
 /**
  * @typedef {{ id: number, name: string, mergingInto?: number }} RelationKind
@@ -406,7 +462,7 @@ function storedTargetsOf(stored) {
  */
 function withBookOwnFields(next, stored) {
     for (const value of stored?.values ?? []) {
-        if ((value.field === NAMES_OFFER_FIELD || isBulkJobField(value.field)) && value.text !== undefined) {
+        if ((value.field === NAMES_OFFER_FIELD || isBulkJobField(value.field) || isFontField(value.field)) && value.text !== undefined) {
             next.values.set(value.field, { text: value.text });
             continue;
         }
@@ -486,7 +542,7 @@ export function entryValues(entry, key, owned, relationsFrom) {
             const ext = /** @type {Record<string, unknown>} */ (v);
             const extKeys = Object.keys(ext).filter(x => ext[x] !== undefined);
             values.set(EXTENSIONS, { json: '' });
-            for (const x of extKeys) values.set(EXTENSION_CODE.get(x) ?? EXTENSION_MARK + x, put(ext[x]));
+            for (const x of extKeys) values.set(EXTENSION_CODE.get(x) ?? EXTENSION_MARK + x, put(x === LOOK ? lookToStore(ext[x]) : ext[x]));
             const extOrder = orderValue(extKeys, extensionCanonical(extKeys));
             if (extOrder !== null) values.set(EXTENSION_ORDER, { text: extOrder });
             continue;
@@ -594,6 +650,16 @@ function bookValues(book, defined) {
     for (const k of keys) {
         if (k === 'entries') continue;
         if (k === 'originalData' && defined && isEntryList(book[k])) continue;
+        if (k === LOOK) {
+            values.set(LOOK_FIELD, put(lookToStore(book[k])));
+            continue;
+        }
+        const shared = k === SHARED_LOOKS ? sharedLooksOf(book[k]) : null;
+        if (shared) {
+            for (const { id, name, look } of shared) values.set(SHARED_LOOK_FIELD + id, { json: JSON.stringify({ name, look: lookToStore(look ?? {}) }) });
+            continue;
+        }
+        if (k === 'fonts' && isFontList(book[k])) continue;
         const kinds = k === RELATION_KINDS ? relationKindsOf(book[k]) : null;
         if (kinds) {
             for (const { id, name, mergingInto } of kinds) {
@@ -2242,11 +2308,14 @@ function assembleBook(s, world) {
             continue;
         }
         if (typeof v.field !== 'string') continue;
-        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD) || v.field === NAMES_OFFER_FIELD || isBulkJobField(v.field)) && v.text !== undefined) continue;
-        found.set(ownKeyOfField(v.field), v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
+        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD) || v.field === NAMES_OFFER_FIELD || isBulkJobField(v.field) || isFontField(v.field)) && v.text !== undefined) continue;
+        if (v.field.startsWith(SHARED_LOOK_FIELD)) continue;
+        found.set(v.field === LOOK_FIELD ? LOOK : ownKeyOfField(v.field), v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
     }
     const kinds = relationKindsOfFields(s.entity?.values ?? []);
     if (kinds.length > 0) found.set(RELATION_KINDS, kinds);
+    const shared = sharedLooksOfFields(s.entity?.values ?? []);
+    if (shared.length > 0) found.set(SHARED_LOOKS, shared);
     if (s.original) found.set('originalData', assembleBook(s.original, false));
     const list = [...s.entries.values()].sort((a, b) => a.position - b.position);
     if (world) {

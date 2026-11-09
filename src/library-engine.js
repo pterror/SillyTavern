@@ -6,11 +6,11 @@ import { parseCreateDateToEpochMs } from './util.js';
 import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
-import { itemField, pushAll, storedValues, valueRecords, withoutStatements } from './entity-values.js';
+import { itemField, pushAll, storedValues, valueRecords, withoutLook, withoutStatements } from './entity-values.js';
 import { GREETING_LIST, greetingModelOf, greetingRecords, greetingTextsOf, hasSameGreetings, matchedGreetings, withUniqueGreetings } from './greeting-items.js';
 import { SPACE, actorIds } from './actor-ids.js';
 import { LINKS, characterLinks, linkList, linkListRecords } from './character-links.js';
-import { FIELD, HASH, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
+import { FIELD, HASH, LOOK_FIELD, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
 import { assignThumbnails, cropOf, thumbnailsOf } from './thumbnail-urls.js';
 import { imageThumbnails, userImageKey } from './image-entities.js';
 import { avatarRefString } from './avatar-refs.js';
@@ -189,7 +189,7 @@ export function cardParts(entity) {
     const { values, lists } = storedValues(entity);
     for (const [field, v] of values) {
         if (typeof field === 'string') {
-            if (field.startsWith(STATEMENT_PREFIX)) continue;
+            if (field.startsWith(STATEMENT_PREFIX) || field === LOOK_FIELD) continue;
             if (field.startsWith(EXTENSION_PREFIX)) parts.extensions.push({ key: field.slice(EXTENSION_PREFIX.length), value: /** @type {string} */ (v.json) });
             else parts.extra.push({ path: field, value: v.json === '' ? null : /** @type {string} */ (v.json) });
             continue;
@@ -527,7 +527,7 @@ export class LibraryEngine {
             const byId = greetingRecords(id, stored, model);
             next.lists.delete(GREETING_LIST);
             for (const [field, value] of byId.values) next.values.set(field, value);
-            records.push(...valueRecords(id, withoutGreetingItems(withoutStatements(stored)), next));
+            records.push(...valueRecords(id, withoutGreetingItems(withoutLook(withoutStatements(stored))), next));
             records.push(...byId.records);
             const { getCharaCardV2 } = await import('./character-card-normalize.js');
             const normalized = getCharaCardV2(structuredClone(card), directories, false);
