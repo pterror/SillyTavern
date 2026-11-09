@@ -366,3 +366,18 @@ describe('a greeting keeps its id', () => {
         expect(ops.opSetDefault(abc, 2, h('c')).model.defaultId).toBe(9);
     });
 });
+
+describe('a card has each greeting text once', () => {
+    const ab = { greetings: [{ id: 0, text: 'a' }, { id: 1, text: 'b' }], defaultId: 0, nextId: 2 };
+
+    test('an add or an edit to another greeting\'s text is refused, naming that greeting', () => {
+        expect(ops.opAdd(ab, 2, 2, 'a')).toEqual({ ok: false, reason: 'same as greeting 1', same: 0 });
+        expect(ops.opAppend(ab, 'b')).toEqual({ ok: false, reason: 'same as greeting 2', same: 1 });
+        expect(ops.opEdit(ab, 1, h('b'), 'a')).toEqual({ ok: false, reason: 'same as greeting 1', same: 0 });
+    });
+
+    test('whitespace makes a different text; an edit to its own text is no change', () => {
+        expect(ops.opAppend(ab, 'a ').ok).toBe(true);
+        expect(ops.opEdit(ab, 0, h('a'), 'a')).toEqual({ ok: true, model: ab, position: 0 });
+    });
+});

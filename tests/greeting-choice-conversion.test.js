@@ -64,8 +64,10 @@ test('a store from before greeting ids is refused until the conversion script ha
         expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-choices.mjs');
         const run = () => execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-choices.mjs'), '--data-root', dataRoot], { encoding: 'utf8' });
         expect(run()).toContain('Users: 1 (0 already converted)');
-        expect(await stores.oldFormatLine({ root })).toBeNull();
+        expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-duplicates.mjs');
         expect(run()).toContain('Users: 1 (1 already converted)');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-duplicates.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Greetings removed as copies of an earlier one: 0.');
+        expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -119,9 +121,49 @@ test('a store converted by the first version of the script gets the links when i
         const run = () => execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-choices.mjs'), '--data-root', dataRoot], { encoding: 'utf8' });
         expect(run()).toContain('Users: 1 (0 already converted)');
         expect(fs.existsSync(path.join(dir, stores.GREETING_LINKS))).toBe(true);
-        expect(await stores.oldFormatLine({ root })).toBeNull();
+        expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-duplicates.mjs');
         expect(run()).toContain('Users: 1 (1 already converted)');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-duplicates.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Greetings removed as copies of an earlier one: 0.');
+        expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });
     }
+});
+
+test('a card stored with the same greeting twice keeps the first copy, and what named the other copy names it', async () => {
+    const { lib, chats } = user.store;
+    const { convertDuplicateGreetings } = await import('../src/greeting-choice-conversion.js');
+    const { itemField } = await import('../src/entity-values.js');
+    const { FIELD, TYPE } = await import('../src/library-codes.js');
+    const { showGreeting, shownGreeting } = await import('../src/tab-views.js');
+    await lib.writeCard(user.directories, 'twice.png', JSON.stringify({
+        spec: 'chara_card_v2', spec_version: '2.0', name: 'Twice',
+        data: { name: 'Twice', description: '', first_mes: 'Same', alternate_greetings: ['Other'], extensions: {} },
+    }));
+    const entity = await lib.entity(TYPE.character, 'twice.png');
+    await lib.store.commit([
+        { kind: 'itemPlace', entity: entity.id, list: 0, item: 7, position: 2 ** 30 },
+        { kind: 'textValue', entity: entity.id, field: itemField(0, 7), text: 'Same' },
+        { kind: 'jsonValue', entity: entity.id, field: FIELD.greeting_next_item, json: '8' },
+    ]);
+    expect((await lib.greetingModel('twice.png')).greetings.map(g => [g.id, g.text])).toEqual([[0, 'Same'], [1, 'Other'], [7, 'Same']]);
+    const [tree] = await user.store.people.trees([{ avatar: 'twice.png' }]);
+    const session = '0190a1b2-0000-7000-8000-0000000000b7';
+    await chats.chooseCardGreeting({ tree, greetingId: 7, actor: { user: 'u', session } });
+    await showGreeting(lib, session, 'twice.png', 7);
+    const { ChatEngine } = await import('../src/chat-engine.js');
+    const unlinked = await ChatEngine.open(lib.store, { ...user.store.people, greetings: undefined }, await lib.nextIds());
+    await unlinked.appendMessages({ tree, treeSpeaker: null, after: null, contents: [{ name: 'Twice', is_user: false, mes: 'Same', extra: { greeting_id: 7 } }], actor: { user: 'u' } });
+
+    const { libraryPeople } = await import('../src/chat-people.js');
+    const after = await ChatEngine.open(lib.store, libraryPeople(lib), await lib.nextIds());
+    expect(await convertDuplicateGreetings(lib, after, 'u', user.directories)).toBe(1);
+    const model = await lib.greetingModel('twice.png');
+    expect(model.greetings.map(g => [g.id, g.text])).toEqual([[0, 'Same'], [1, 'Other']]);
+    expect(model.defaultId).toBe(0);
+    const [sid] = await lib.store.chatRead('ids', { space: 1, keys: [session] });
+    expect(await after.cardChoice(sid, tree)).toEqual({ id: 0, epoch: model.defaultEpoch });
+    expect(await shownGreeting(lib, session, 'twice.png')).toBe(0);
+    expect((await after.openings(tree)).map(o => o.message.extra.greeting_id)).toEqual([0]);
+    expect(await convertDuplicateGreetings(lib, after, 'u', user.directories)).toBe(0);
 });

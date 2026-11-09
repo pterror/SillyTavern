@@ -5,6 +5,11 @@ whole number unique within the card and never given to another greeting of it. E
 refers to its id: the default, and each session's remembered choice of the greeting a tree shows. Nothing stores a
 greeting's position, so nothing is reindexed when greetings are added, deleted or moved.
 
+No two greetings of a card have the same text; texts that differ only in whitespace are different. An add or an edit
+to another greeting's text is refused with that greeting's position (`same_position`), and the page keeps the field
+open, unsaved, saying which greeting it is the same as, with a link that pages to it. The create form checks the same
+before the card is saved.
+
 ## In the store
 
 On the character's entity:
@@ -23,7 +28,8 @@ The card the page gets, the PNG an export writes and the JSON a card is shared a
 `alternate_greetings` and `extensions.greeting_default_position`. They carry no ids. Upstream reads `first_mes` and
 `alternate_greetings` and keeps the extension.
 
-A card file written into the store gets its ids there:
+A card file written into the store keeps the first copy of each text (the default moves to the kept copy) and gets
+its ids there:
 - A new character: its greetings get ids 0, 1, 2, … in order.
 - Over an existing character (a re-import, a rescan of its file): each greeting whose text the character already has
   keeps that greeting's id, each stored greeting matched once and in order; any other text gets a new id; a stored
@@ -52,6 +58,7 @@ with what goes under it, an in-chat edit of it, an alternative added to it, a du
 Texts are compared only when a first message is written (stored, edited, imported or converted): one whose text is a
 card greeting's is that greeting, linked with its id and `extra.greeting_hash`, the hash of the text it had. Any other
 keeps the greeting it came from, unlinked. A user's own first message with a greeting's text is that greeting too.
+The exact text is matched first, then the text without surrounding whitespace.
 
 A card greeting is left out of the openings exactly when a stored opening links to it with its current text's hash:
 editing the card greeting offers its new text again beside the opening that had the old one.
@@ -68,3 +75,19 @@ Chats imported from upstream are linked as they are written. Openings stored bef
 The greeting the character info pager shows is the tab's view of that card: kept per tab and card by greeting id on
 the server, with the tab's other view state, so it stays through closing the panel and a reload. Paging is one
 request; opening a character answers with it. A shown greeting that's deleted gives way to the card's first.
+
+The pager and the chat keep separate positions; two actions copy one to the other, each one request whose answer is the
+resulting state:
+- "Use in chat", beside the pager number, makes the shown greeting the open chat's opening, as swiping to it would: the
+  stored opening that holds it, with what is under it, or the card greeting itself. The opening the chat had keeps its
+  replies. It answers with the chat as opening it does. It is disabled unless a chat with this character is open.
+- "Show in character info", in the opening's message menu, pages the pager to the greeting the opening is linked to,
+  by id and the hash of the text it had, and opens character info on it. It answers with where that greeting is. It is
+  disabled when the opening has no live link: it was edited, or its greeting was changed or deleted.
+
+## Converting cards with the same greeting twice
+
+Cards stored before greetings were unique are converted once by `scripts/convert-greeting-duplicates.mjs`, run with
+the server stopped: each later copy of a text is removed, and the default, each session's remembered choice, each
+tab's shown greeting and each opening's `greeting_id` that named a removed copy name the kept one. The openings'
+`greeting_hash` still matches, the text being the same. The server refuses a store that hasn't been converted.

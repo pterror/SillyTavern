@@ -370,16 +370,6 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(opening).toEqual({ mes: g[0], swipe_id: 0, swipes: [g[0], g[1], g[2]] });
     });
 
-    test('the shown greeting now has another greeting\'s text: the chat stays on it, both greetings offered', async ({ page }) => {
-        const s = stamp();
-        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
-        const opening = await chatAfterOtherSession(page, {
-            name: `SlotCopy-${s}`, g, shown: 2, expected: g[0],
-            otherSession: avatar => otherSessionOp(page, 'edit', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g[2]), text: g[0] }),
-        });
-        expect(opening).toEqual({ mes: g[0], swipe_id: 2, swipes: [g[0], g[1], g[0], g[3]] });
-    });
-
     test('several openings changed around the shown greeting: the chat shows that greeting, edited, where it now is', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`, `Four ${s}`];

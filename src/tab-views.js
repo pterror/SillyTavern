@@ -1,6 +1,6 @@
 import { TYPE } from './library-codes.js';
 
-const GREETING_SHOWN = 'greeting shown:';
+export const GREETING_SHOWN = 'greeting shown:';
 
 /**
  * @param {import('./library-engine.js').LibraryEngine} lib

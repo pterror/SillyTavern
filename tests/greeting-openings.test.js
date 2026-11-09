@@ -224,3 +224,52 @@ test('an opening written with a card greeting\'s text is that greeting; a card e
     const now = await openingState({ store: user.store, tree, actor: { user: user.user.profile.handle, session }, avatar: 'Twins.png' });
     expect(now.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.node_id !== null])).toEqual([['Zero', false], ['Shared', true], ['One', true], ['Shared', false]]);
 });
+
+test('an add or an edit to another greeting\'s exact text is refused and names that greeting; the card is left as it was', async () => {
+    const session = '0190a1b2-0000-7000-8000-0000000000f5';
+    expect((await post('create', { ch_name: 'Echo', first_mes: 'Hello', file_name: 'Echo' }, session)).status).toBe(200);
+    const two = await post('greetings/add', { avatar_url: 'Echo.png', append: true, text: 'Bye' }, session);
+    const added = await post('greetings/add', { avatar_url: 'Echo.png', append: true, text: 'Hello' }, session);
+    expect(added).toEqual({ status: 409, body: { ok: false, reason: 'same as greeting 1', same_position: 0 } });
+    const edited = await post('greetings/edit', { avatar_url: 'Echo.png', position: 1, expected_hash: two.body.hashes[1], text: 'Hello' }, session);
+    expect(edited.body).toMatchObject({ ok: false, same_position: 0 });
+    expect((await user.store.lib.greetingModel('Echo.png')).greetings.map(g => g.text)).toEqual(['Hello', 'Bye']);
+    expect((await post('greetings/add', { avatar_url: 'Echo.png', append: true, text: 'Hello ' }, session)).status).toBe(200);
+});
+
+test('a greeting is shown in character info by its id while its text is the one the opening has, and the answer says where it is', async () => {
+    const session = '0190a1b2-0000-7000-8000-0000000000f6';
+    expect((await post('create', { ch_name: 'Shower', first_mes: 'First', file_name: 'Shower' }, session)).status).toBe(200);
+    const second = await post('greetings/add', { avatar_url: 'Shower.png', append: true, text: 'Second' }, session);
+    const { greetings } = await user.store.lib.greetingModel('Shower.png');
+    const shown = await post('greetings/show', { avatar_url: 'Shower.png', greeting_id: greetings[1].id, expected_hash: second.body.hashes[1] }, session);
+    expect(shown.body).toEqual({ ok: true, greeting_shown: { position: 1, hash: second.body.hashes[1] } });
+    const stale = await post('greetings/show', { avatar_url: 'Shower.png', greeting_id: greetings[1].id, expected_hash: second.body.hashes[0] }, session);
+    expect(stale.status).toBe(409);
+});
+
+test('using a card greeting in the chat goes to the opening that holds it, with what is under it, or to the greeting itself', async () => {
+    const session = '0190a1b2-0000-7000-8000-0000000000f7';
+    const actor = { user: user.user.profile.handle, session };
+    expect((await post('create', { ch_name: 'User', first_mes: 'Alpha', file_name: 'UseIt' }, session)).status).toBe(200);
+    await post('greetings/add', { avatar_url: 'UseIt.png', append: true, text: 'Beta' }, session);
+    const { chats, people } = user.store;
+    const { storedForm } = await import('../src/chat-engine.js');
+    const { cardGreetingsOf } = await import('../src/opening-state.js');
+    const [tree] = await people.trees([{ avatar: 'UseIt.png' }]);
+    const written = await chats.appendMessages({
+        tree, treeSpeaker: null, after: null,
+        contents: [storedForm({ name: 'User', is_user: false, mes: 'Beta', extra: {}, send_date: Date.now() }), storedForm({ name: 'You', is_user: true, mes: 'reply', extra: {}, send_date: Date.now() })],
+        actor,
+    });
+    const card = await cardGreetingsOf(user.store, 'UseIt.png');
+
+    expect(await chats.useCardGreeting({ tree, card, greetingId: card.ids[0], actor })).toEqual({ ok: true });
+    expect(await chats.landingOf(tree, actor)).toBeNull();
+    expect(await chats.cardChoice((await chats.knownActorIds(actor)).session, tree)).toEqual({ id: card.ids[0], epoch: card.defaultEpoch });
+
+    expect(await chats.useCardGreeting({ tree, card, greetingId: card.ids[1], actor })).toEqual({ ok: true });
+    expect(await chats.landingOf(tree, actor)).toBe(written.node_ids[1]);
+
+    expect(await chats.useCardGreeting({ tree, card, greetingId: 99, actor })).toEqual({ ok: false, reason: 'no such greeting' });
+});

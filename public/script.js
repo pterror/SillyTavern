@@ -212,7 +212,7 @@ import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
 import { initChatBoxEditor, initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
-import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
+import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, discardFieldEdit, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
 import { pagerSelection, selectedGreetingIndex } from './scripts/greeting-pager-selection.js';
 import { initPresetManager } from './scripts/preset-manager.js';
@@ -7520,6 +7520,7 @@ export async function updateSwipeCounter(mesId, { message = undefined, messageEl
         .attr('role', canOpenSwipePicker ? 'button' : null)
         .attr('title', canJumpToSwipe ? t`Click to jump to a swipe` : canOpenSwipePicker ? t`Click to view swipe history` : null);
     swipePickerButton.toggle(canOpenSwipePicker);
+    refreshOpeningActions(messageElement, mesId);
 
     if (!canOpenSwipePicker) {
         swipeCounter.removeAttr('tabindex');
@@ -7666,6 +7667,7 @@ export function refreshSwipeButtons(updateCounters = false, fade = true) {
             div.classList.remove('swipes_visible', 'last_swipe');
             $(div).find('.mes_swipe_picker').toggle(canOpenSwipePickerForMessage(messageId));
         }
+        refreshOpeningActions($(div), messageId);
     });
 }
 /**
@@ -8036,7 +8038,7 @@ function hashGreetingText(text) {
 /**
  * @param {string} opName
  * @param {object} body
- * @returns {Promise<GreetingOpResult|{ok: false, status?: number, reason?: string}>}
+ * @returns {Promise<GreetingOpResult|{ok: false, status?: number, reason?: string, same?: number}>}
  */
 async function postGreetingOp(opName, body) {
     try {
@@ -8051,7 +8053,7 @@ async function postGreetingOp(opName, body) {
             takeCardCounts(payload.card_token_counts);
             return { ok: true, greetings: payload.greetings, hashes: payload.hashes, defaultPosition: payload.default_position, position: payload.position, openings: payload };
         }
-        return { ok: false, status: response.status, reason: payload?.reason };
+        return { ok: false, status: response.status, reason: payload?.reason, same: Number.isInteger(payload?.same_position) ? payload.same_position : undefined };
     } catch (error) {
         console.error(`Greeting op "${opName}" request failed`, error);
         return { ok: false, reason: 'network error' };
@@ -8092,6 +8094,7 @@ async function applyGreetingOpSuccess(character, result) {
     }
     run.character = character;
     await takeOpenings(character.avatar, result.openings);
+    refreshOpeningActions(chatElement.children('.mes[mesid="0"]'), 0);
 }
 
 /**
@@ -8195,6 +8198,7 @@ function beginGreetingPagerEdit() {
 }
 
 function endGreetingPagerEdit() {
+    clearSameGreeting();
     const edit = greetingPagerEdit;
     greetingPagerEdit = null;
     if (!edit) return;
@@ -8261,7 +8265,122 @@ function renderGreetingPager() {
     $('.greeting-pager-input').val(index + 1).css('--greeting-pager-digits', String(String(greetings.length).length));
     $('.greeting-pager-total').text(`/${greetings.length}`);
     $('.greeting-pager-delete').toggleClass('disabled', greetings.length === 1 && greetings[0] === '');
+    refreshUseInChat();
     countCharTokensWhenShown();
+}
+
+function canUseShownGreetingInChat() {
+    const { owner, index, hashes } = greetingPagerState;
+    return owner !== null && !selected_group && getCurrentCharacter()?.avatar === owner && Number.isFinite(hashes[index]);
+}
+
+function refreshUseInChat() {
+    const usable = canUseShownGreetingInChat();
+    $('.greeting-pager-use').toggleClass('disabled', !usable).attr('aria-disabled', String(!usable));
+}
+
+async function useShownGreetingInChat() {
+    if (!canUseShownGreetingInChat() || blockWhileFieldEditing()) return;
+    if (is_send_press) {
+        toastr.warning(t`Wait for the reply to finish first.`);
+        return;
+    }
+    const { owner, index, hashes } = greetingPagerState;
+    const avatar = /** @type {string} */ (owner);
+    let answer = null;
+    try {
+        const response = await fetch('/api/chats/openings/use-greeting', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, position: index, expected_hash: hashes[index], ...chatOpenAsk({ avatar_url: avatar }) }),
+        });
+        answer = response.ok ? await response.json() : null;
+    } catch (error) {
+        console.error('[greetings] Could not use the greeting in the chat:', error);
+    }
+    if (!answer?.opened) {
+        toastr.error(t`The greeting could not be used in the chat. Reopen the character to see its current greetings.`, t`Greeting not used`);
+        return;
+    }
+    if (selected_group || getCurrentCharacter()?.avatar !== avatar) return;
+    await clearChat({ clearData: true });
+    setChatMetadata({});
+    _resetMetadataSaveSnapshot();
+    await openCharacterConversation({ opened: takeChatOpenAnswer({ avatar_url: avatar }, answer.opened) });
+}
+
+/**
+ * The card greeting a message is, when it is the opening of a character's chat and still that greeting.
+ * @param {number} mesId
+ * @returns {{ avatar: string, id: number, hash: number } | null}
+ */
+function openingGreetingLink(mesId) {
+    if (mesId !== 0 || selected_group) return null;
+    const message = chat[0];
+    const character = getCurrentCharacter();
+    const id = message?.extra?.greeting_id;
+    if (!character?.avatar || !Number.isInteger(id)) return null;
+    const hash = isStoredNodeId(message.node_id) ? message.extra?.greeting_hash : hashGreetingText(String(message.mes ?? ''));
+    if (!Number.isFinite(hash)) return null;
+    const live = cardToGreetingsModel(character).greetings.some(text => hashGreetingText(text) === hash);
+    return live ? { avatar: character.avatar, id, hash } : null;
+}
+
+/**
+ * @param {JQuery<HTMLElement>} messageElement
+ * @param {number} mesId
+ */
+function refreshOpeningActions(messageElement, mesId) {
+    const button = messageElement.find('.mes_show_greeting');
+    const isOpening = mesId === 0 && !selected_group;
+    button.toggle(isOpening);
+    if (!isOpening) return;
+    const live = openingGreetingLink(mesId) !== null;
+    button.toggleClass('disabled', !live).attr('aria-disabled', String(!live));
+}
+
+/**
+ * @param {number} mesId
+ */
+async function showOpeningInCharacterInfo(mesId) {
+    const link = openingGreetingLink(mesId);
+    if (!link || blockWhileFieldEditing()) return;
+    let answer = null;
+    try {
+        const response = await fetch('/api/characters/greetings/show', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: link.avatar, greeting_id: link.id, expected_hash: link.hash }),
+        });
+        answer = response.ok ? await response.json() : null;
+    } catch (error) {
+        console.error('[greetings] Could not show the greeting in character info:', error);
+    }
+    if (!answer?.greeting_shown) {
+        toastr.error(t`This opening's greeting could not be shown. It may have changed meanwhile.`, t`Greeting not shown`);
+        return;
+    }
+    takeShownGreeting(link.avatar, answer.greeting_shown);
+    if (getCurrentCharacter()?.avatar !== link.avatar) return;
+    if (menu_type !== 'character_edit' || greetingPagerState.owner !== link.avatar) {
+        selected_button = 'character_edit';
+        select_selected_character(link.avatar);
+    }
+    const { position, hash } = answer.greeting_shown;
+    greetingPagerState.index = selectedGreetingIndex({ owner: link.avatar, index: position, hash }, link.avatar, greetingPagerState.hashes, greetingPagerState.greetings.length);
+    renderGreetingPager();
+    const tab = document.querySelector('#charInfoTabs input[name="charInfoTabs_tab"][value="greeting"]');
+    if (tab instanceof HTMLInputElement && !tab.checked) {
+        tab.checked = true;
+        tab.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const panel = document.getElementById('right-nav-panel');
+    if (panel && !$(panel).is(':visible')) {
+        $('#rightNavDrawerIcon').trigger('click');
+    } else if (panel && isDrawerCovered(panel)) {
+        raiseDrawer(panel);
+        drawerStackChanged();
+    }
 }
 
 /**
@@ -8289,6 +8408,19 @@ function navigateGreetingPager(newIndex) {
 const shownGreetings = new Map();
 
 /**
+ * Says, under the greeting field, that what it holds is another greeting's text; the field stays open and unsaved.
+ * @param {number} position the other greeting's place in the pager
+ */
+function showSameGreeting(position) {
+    const link = $('<a href="#" class="greeting_same_link"></a>').text(String(position + 1)).data('position', position);
+    $('#greeting_same_note').empty().append(document.createTextNode(`${t`Same as greeting`} `), link).removeClass('displayNone');
+}
+
+function clearSameGreeting() {
+    $('#greeting_same_note').empty().addClass('displayNone');
+}
+
+/**
  * @param {string} avatar
  * @param {{ position: number, hash: number } | null} shown
  */
@@ -8314,6 +8446,10 @@ async function saveGreetingPagerEdit(avatar, character, position, expectedHash, 
         await applyGreetingOpSuccess(character, result);
         return { position: landed, hash: result.hashes[landed] };
     }
+    if (result.same !== undefined) {
+        showSameGreeting(result.same);
+        return null;
+    }
     console.error('Greeting save failed', { avatar, position, status: result.status, reason: result.reason });
     if (result.status === 409) {
         toastr.error(t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`, t`Greeting not saved`);
@@ -8330,13 +8466,19 @@ async function saveGreetingPagerEdit(avatar, character, position, expectedHash, 
  */
 async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
     const { index } = greetingPagerState;
-    greetingPagerState.greetings[index] = value;
     if (menu_type === 'create') {
+        const same = value === '' ? -1 : greetingPagerState.greetings.findIndex((greeting, i) => i !== index && greeting === value);
+        if (same >= 0) {
+            showSameGreeting(same);
+            return false;
+        }
+        greetingPagerState.greetings[index] = value;
         const fields = greetingsModelToCardFields({ greetings: greetingPagerState.greetings, defaultIndex: pagerDefaultIndex() });
         create_save.first_message = fields.firstMes;
         create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager create-mode input');
         return true;
     }
+    greetingPagerState.greetings[index] = value;
     const avatar = $('.open_alternate_greetings').data('avatar');
     const character = avatar ? charactersStore.get(avatar) : null;
     if (!character) return false;
@@ -8379,6 +8521,10 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
                 edit.hash = result.hashes[target.position];
             }
             return true;
+        }
+        if (result.same !== undefined) {
+            showSameGreeting(result.same);
+            return false;
         }
         console.error('Greeting add failed', { avatar, position: target.position, status: result.status, reason: result.reason });
         toastr.error(t`Failed to save the new greeting. It's still shown here - confirm it again to retry.`, t`Greeting not saved`);
@@ -10296,6 +10442,23 @@ jQuery(async function () {
     $('.greeting-pager-input').on('blur', function () {
         jumpGreetingPager();
     });
+
+    $('#greeting_same_note').on('click', '.greeting_same_link', function (event) {
+        event.preventDefault();
+        const position = Number($(this).data('position'));
+        if (!discardFieldEdit('greeting_field')) return;
+        navigateGreetingPager(position);
+    });
+
+    $('#greeting_field').on('input', clearSameGreeting);
+
+    $('.greeting-pager-use').on('click', () => void useShownGreetingInChat());
+
+    $(document).on('click', '.mes_show_greeting', function () {
+        void showOpeningInCharacterInfo(Number($(this).closest('.mes').attr('mesid')));
+    });
+
+    eventSource.on(event_types.CHAT_CHANGED, refreshUseInChat);
 
 
     $('#favorite_button').on('click', async function () {

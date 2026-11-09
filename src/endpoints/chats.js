@@ -1127,6 +1127,28 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
     }
 });
 
+router.post('/openings/use-greeting', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const avatar = String(request.body.avatar_url || '');
+        if (!avatar) return response.status(400).send({ error: 'avatar_url is required' });
+        const { position, expected_hash: expectedHash } = request.body;
+        if (!Number.isInteger(position) || position < 0) return response.status(400).send({ error: 'position must be a non-negative integer' });
+        const chat = await chatOf(request, { avatar_url: avatar });
+        if (!chat) return response.status(404).send({ error: 'unknown chat' });
+        const { greetings } = await chat.store.lib.greetingModel(avatar);
+        const greeting = position < greetings.length ? greetings[position] : null;
+        if (greeting === null || hashGreetingText(greeting.text) !== expectedHash) return response.status(409).send({ ok: false, reason: 'the greeting changed' });
+        const used = await chat.store.chats.useCardGreeting({ tree: chat.tree, card: await cardGreetingsOf(chat.store, avatar), greetingId: greeting.id, actor: chat.session.actor() });
+        if (!used.ok) return response.status(409).send(used);
+        chat.session.answer(response, { moved: true });
+        const { answer } = await openChatAnswer(request, response, { avatar_url: avatar, send_keys: request.body.send_keys, parts: request.body.parts });
+        return response.send({ ok: true, opened: answer });
+    } catch (error) {
+        console.error('Error using a greeting in the chat:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
 router.post('/message/alternative', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const opening = request.body.opening === true;

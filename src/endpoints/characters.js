@@ -1144,7 +1144,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
  * @param {(model: import('../greeting-items.js').GreetingModel) => {ok: boolean, reason?: string, model?: import('../greeting-items.js').GreetingModel, position?: number, sourcePosition?: number, targetPosition?: number}} op
- * @returns {Promise<{ok: boolean, reason?: string, status?: number, greetings?: string[], hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
+ * @returns {Promise<{ok: boolean, reason?: string, status?: number, same?: number, greetings?: string[], hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
  */
 export function applyGreetingOperation(directories, avatar, op) {
     const key = `${directories.root}\u0000${avatar}`;
@@ -1176,7 +1176,7 @@ async function runGreetingOperation(directories, avatar, op) {
     const model = await (await userStore(directories)).lib.greetingModel(avatar);
     const result = op(model);
     if (!result.ok) {
-        return { ok: false, reason: result.reason, status: 409 };
+        return { ok: false, reason: result.reason, status: 409, ...(Number.isInteger(result.same) ? { same: result.same } : {}) };
     }
     const answer = {
         ok: true,
@@ -1226,7 +1226,7 @@ async function sendGreetingChange(request, response, change) {
     const actor = await sessionActorOf(request, store, avatar);
     const { result, opening } = await changeGreetings({ directories: request.user.directories, store, actor, avatar, change });
     if (!result.ok) {
-        return response.status(result.status ?? 409).send({ ok: false, reason: result.reason });
+        return response.status(result.status ?? 409).send({ ok: false, reason: result.reason, ...(Number.isInteger(result.same) ? { same_position: result.same } : {}) });
     }
     const counts = await savedCardCounts(request, avatar);
     /** @type {Record<string, unknown>} */
@@ -1310,17 +1310,20 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
 router.post('/greetings/show', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
+        const byId = Number.isInteger(request.body.greeting_id);
         const position = Number(request.body.position);
         const expectedHash = Number(request.body.expected_hash);
-        if (!avatar || !Number.isInteger(position) || !Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'avatar_url, position and expected_hash are required' });
+        if (!avatar || !(byId || Number.isInteger(position)) || !Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'avatar_url, position or greeting_id, and expected_hash are required' });
         const tab = sessionHeaderOf(request);
         if (tab === undefined || tab === 'none') return response.status(400).send({ ok: false, reason: 'the tab has no session' });
         const store = await requestStore(request);
         const { greetings } = await store.lib.greetingModel(avatar);
-        const shown = greetings[position] && hashGreetingText(greetings[position].text) === expectedHash ? greetings[position] : greetings.find(g => hashGreetingText(g.text) === expectedHash);
-        if (!shown) return response.status(409).send({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        await showGreeting(store.lib, tab, avatar, shown.id);
-        return response.send({ ok: true });
+        const at = byId
+            ? greetings.findIndex(g => g.id === request.body.greeting_id && hashGreetingText(g.text) === expectedHash)
+            : greetings[position] && hashGreetingText(greetings[position].text) === expectedHash ? position : greetings.findIndex(g => hashGreetingText(g.text) === expectedHash);
+        if (at < 0) return response.status(409).send({ ok: false, reason: byId ? 'the greeting changed or is gone' : 'greeting at position changed since it was loaded' });
+        await showGreeting(store.lib, tab, avatar, greetings[at].id);
+        return response.send({ ok: true, greeting_shown: { position: at, hash: expectedHash } });
     } catch (error) {
         console.error('Error keeping the greeting shown:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });

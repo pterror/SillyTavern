@@ -1,6 +1,7 @@
 import { FIELD } from './library-codes.js';
 import { POSITION_GAP, itemField, storedValues } from './entity-values.js';
 import { textEdit } from './text-edit.js';
+import { applyGreetingsModelToCard, cardToGreetingsModel } from './greeting-list.js';
 
 export const GREETING_LIST = 0;
 export const DEFAULT_POSITION_VALUE = 'ext:greeting_default_position';
@@ -167,4 +168,25 @@ export function greetingRecords(entity, stored, model) {
     const epoch = (was.defaultEpoch ?? 0) + (stored && was.defaultId !== model.defaultId && !defaultGone ? 1 : 0);
     if (epoch > 0) values.set(FIELD.greeting_default_epoch, { json: JSON.stringify(epoch) });
     return { records, values };
+}
+
+/**
+ * @param {any} card a card as written, upstream's format
+ * @returns {any} the card with each greeting's text once: the first copy kept, the default on it
+ */
+export function withUniqueGreetings(card) {
+    const { greetings, defaultIndex } = cardToGreetingsModel(card);
+    if (new Set(greetings).size === greetings.length) return card;
+    const kept = greetings.filter((text, i) => greetings.indexOf(text) === i);
+    const copy = structuredClone(card);
+    applyGreetingsModelToCard(copy, { greetings: kept, defaultIndex: defaultIndex === null ? null : kept.indexOf(greetings[defaultIndex]) });
+    return copy;
+}
+
+/**
+ * @param {GreetingModel} model
+ * @returns {boolean}
+ */
+export function hasSameGreetings(model) {
+    return new Set(model.greetings.map(g => g.text)).size !== model.greetings.length;
 }

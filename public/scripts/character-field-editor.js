@@ -522,6 +522,19 @@ async function confirmEdit() {
     if (saved) forgetDraft(edit.id);
 }
 
+/**
+ * Ends the edit of a field, putting back its saved text whatever the autosave setting.
+ * @param {string} id
+ * @returns {boolean} whether that field was in edit and is no longer
+ */
+export function discardFieldEdit(id) {
+    if (!isFieldInEdit(id) || activeEdit.saving) return false;
+    getTextarea(id).val(activeEdit.original);
+    forgetDraft(id);
+    endEdit();
+    return true;
+}
+
 function cancelEdit() {
     if (!activeEdit || activeEdit.saving) {
         return;

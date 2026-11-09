@@ -85,3 +85,20 @@ describe('a card\'s greetings in the store', () => {
         }
     });
 });
+
+describe('a card written with the same greeting twice', () => {
+    test('keeps the first copy, the default on it', async () => {
+        const card = JSON.parse(cardJson(['x', 'y', 'x', 'z'], 2));
+        await user.store.lib.writeCard(user.directories, 'dupes.png', JSON.stringify(card));
+        const model = await user.store.lib.greetingModel('dupes.png');
+        expect(model.greetings.map(g => g.text)).toEqual(['x', 'y', 'z']);
+        expect(model.greetings.find(g => g.id === model.defaultId)?.text).toBe('x');
+        const [stored] = await user.store.lib.cards(['dupes.png']);
+        expect(greetingList.cardToGreetingsModel(stored)).toEqual({ greetings: ['x', 'y', 'z'], defaultIndex: 0 });
+    });
+
+    test('given greetings with the same text twice are refused', async () => {
+        await expect(write('dupes2.png', ['x', 'x'], 0, { greetings: [{ id: 0, text: 'x' }, { id: 1, text: 'x' }], defaultId: 0, nextId: 2 }))
+            .rejects.toThrow(/same text twice|aren't the card's/);
+    });
+});

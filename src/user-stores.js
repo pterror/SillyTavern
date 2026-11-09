@@ -11,6 +11,19 @@ import { markUpstreamImportPending } from './upstream-import.js';
 export const STORE_DIR = 'store';
 export const GREETINGS_BY_ID = 'greetings-by-id';
 export const GREETING_LINKS = 'greeting-links';
+export const GREETINGS_UNIQUE = 'greetings-unique';
+
+const CONVERSIONS = Object.freeze([
+    { markers: [GREETINGS_BY_ID, GREETING_LINKS], script: 'convert-greeting-choices.mjs', why: 'has chats whose greetings aren\'t kept by greeting id yet' },
+    { markers: [GREETINGS_UNIQUE], script: 'convert-greeting-duplicates.mjs', why: 'has cards with the same greeting twice' },
+]);
+
+/**
+ * @param {string} dir a new store
+ */
+function markConverted(dir) {
+    for (const { markers } of CONVERSIONS) for (const marker of markers) fs.writeFileSync(path.join(dir, marker), '');
+}
 const OLD_LIBRARY = 'character-metadata.sqlite';
 const OLD_CHATS = 'message-tree.sqlite';
 export const NAMED_THUMBNAILS = Object.freeze(['bg', 'avatar', 'persona'].map(d => path.join('thumbnails', d)));
@@ -59,8 +72,10 @@ export async function oldFormatLine(directories) {
 function oldFormatLineHere(directories) {
     const store = path.join(directories.root, STORE_DIR);
     if (fs.existsSync(store)) {
-        if ([GREETINGS_BY_ID, GREETING_LINKS].every(marker => fs.existsSync(path.join(store, marker))) || fs.readdirSync(store).length === 0) return null;
-        return `${directories.root} has chats whose greetings aren't kept by greeting id yet: run node scripts/convert-greeting-choices.mjs --data-root <the folder holding it> once, with the server stopped`;
+        if (fs.readdirSync(store).length === 0) return null;
+        const due = CONVERSIONS.find(c => !c.markers.every(marker => fs.existsSync(path.join(store, marker))));
+        if (!due) return null;
+        return `${directories.root} ${due.why}: run node scripts/${due.script} --data-root <the folder holding it> once, with the server stopped`;
     }
     const old = [OLD_LIBRARY, OLD_CHATS].filter(f => fs.existsSync(path.join(directories.root, f)));
     if (!old.length) return null;
@@ -116,8 +131,7 @@ async function openStore(root, handle) {
     const lib = await LibraryEngine.open(engineOf(), dir);
     try {
         if (made) {
-            fs.writeFileSync(path.join(dir, GREETINGS_BY_ID), '');
-            fs.writeFileSync(path.join(dir, GREETING_LINKS), '');
+            markConverted(dir);
             await lib.keepPairs();
             await lib.tags.markSeedPending();
             await markUpstreamImportPending(lib);
@@ -175,8 +189,7 @@ export function engineStoreHere(directories) {
     }
     const store = engineOf().Store.openSync(dir);
     if (madeHere.has(key)) {
-        fs.writeFileSync(path.join(dir, GREETINGS_BY_ID), '');
-        fs.writeFileSync(path.join(dir, GREETING_LINKS), '');
+        markConverted(dir);
     }
     openedHere.set(key, store);
     return store;

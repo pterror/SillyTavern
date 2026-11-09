@@ -302,18 +302,6 @@ describe('delete finds a greeting that moved by its hash, and answers with the p
         expect(await deleted.json()).toMatchObject({ ok: true, greetings: ['hello', 'second'], hashes: [hashes[0], hashes[1]], default_position: 0, position: 2 });
         expect((await storedCard()).data.alternate_greetings).toEqual(['second']);
     });
-
-    test('a hash more than one greeting has is a 409 and leaves the card unchanged', async () => {
-        await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
-        await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'twin' });
-        const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'twin' });
-        const hashes = (await add.json()).hashes;
-        const before = await storedCard();
-
-        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', position: 0, expected_hash: hashes[1] });
-        expect(deleted.status).toBe(409);
-        expect(await storedCard()).toEqual(before);
-    });
 });
 
 describe('/greetings/add with append appends without a length check', () => {

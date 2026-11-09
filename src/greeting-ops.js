@@ -53,6 +53,17 @@ function findGreeting(model, position, expectedHash, reasons) {
     return { ok: true, position: matches[0] };
 }
 
+/**
+ * @param {GreetingModel} model
+ * @param {string} text
+ * @param {number} [except] the position of the greeting being changed
+ * @returns {{ok: false, reason: string, same: number} | null} the refusal when another greeting has the text
+ */
+function sameAsAnother(model, text, except = -1) {
+    const same = model.greetings.findIndex((g, i) => i !== except && g.text === text);
+    return same < 0 ? null : { ok: false, reason: `same as greeting ${same + 1}`, same };
+}
+
 const GREETING_REASONS = { outOfRange: 'position out of range', changed: 'greeting at position changed since it was loaded' };
 const TARGET_REASONS = { outOfRange: 'target position out of range', changed: 'target greeting changed since it was loaded' };
 
@@ -61,7 +72,7 @@ const TARGET_REASONS = { outOfRange: 'target position out of range', changed: 't
  * @param {number} position
  * @param {number} expectedLength
  * @param {string} text
- * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
+ * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string, same?: number}}
  */
 export function opAdd(model, position, expectedLength, text) {
     if (typeof text !== 'string' || text === '') {
@@ -73,6 +84,8 @@ export function opAdd(model, position, expectedLength, text) {
     if (!Number.isInteger(position) || position < 0 || position > model.greetings.length) {
         return { ok: false, reason: 'position out of range' };
     }
+    const same = sameAsAnother(model, text);
+    if (same) return same;
     const added = { id: model.nextId, text };
     const greetings = model.greetings.slice();
     greetings.splice(position, 0, added);
@@ -108,6 +121,8 @@ export function opEdit(model, position, expectedHash, text) {
         }
         return found;
     }
+    const same = sameAsAnother(model, text, found.position);
+    if (same) return same;
     const greetings = model.greetings.map((g, i) => (i === found.position ? { id: g.id, text } : g));
     return { ok: true, model: { ...model, greetings }, position: found.position };
 }

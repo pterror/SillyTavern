@@ -5076,6 +5076,9 @@
                                                 <div class="greeting-pager-btn greeting-pager-next" title="Next greeting" data-i18n="[title]Next greeting">
                                                     <i class="fa-solid fa-chevron-right"></i>
                                                 </div>
+                                                <div class="greeting-pager-btn greeting-pager-use" role="button" title="Use in chat" data-i18n="[title]Use in chat">
+                                                    <i class="fa-solid fa-comment-dots"></i>
+                                                </div>
                                                 <div class="greeting-pager-btn greeting-pager-add" title="New greeting" data-i18n="[title]New greeting">
                                                     <i class="fa-solid fa-plus"></i>
                                                 </div>
@@ -5091,6 +5094,7 @@
                                         </div>
                                         <textarea id="greeting_field" class="field_edit_textarea mdHotkeys autoSetHeight" rows="6" data-macros data-i18n="[placeholder]This will be the greeting from the character that starts every chat." placeholder="This will be the greeting from the character that starts every chat."></textarea>
                                         <div class="field_preview macro_preview_content mes_text" data-for="greeting_field"></div>
+                                        <div id="greeting_same_note" class="greeting_same_note displayNone" role="status"></div>
                                     </div>
                                 </div>
                                 <label class="tab-title">
@@ -6185,6 +6189,7 @@
                                 <div title="Jump to swipe history" class="mes_button mes_swipe_picker fa-solid fa-layer-group" data-i18n="[title]Jump to swipe history" style="display: none;"></div>
                                 <div title="Copy" class="mes_button mes_copy fa-solid fa-copy " data-i18n="[title]Copy"></div>
                                 <div title="Bookmark this message" class="mes_button mes_bookmark_add fa-regular fa-bookmark" data-i18n="[title]Bookmark this message"></div>
+                                <div title="Show in character info" class="mes_button mes_show_greeting fa-solid fa-id-card" data-i18n="[title]Show in character info" style="display: none;"></div>
                             </div>
                             <div title="Edit" class="mes_button mes_edit fa-solid fa-pencil " data-i18n="[title]Edit"></div>
                         </div>

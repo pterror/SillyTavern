@@ -207,7 +207,7 @@ export function storedForm(msg) {
  */
 export function linkedToCard(content, greetings) {
     const text = typeof content?.mes === 'string' ? content.mes.trim() : null;
-    const same = text === null ? undefined : greetings.find(g => g.text.trim() === text);
+    const same = text === null ? undefined : greetings.find(g => g.text === content.mes) ?? greetings.find(g => g.text.trim() === text);
     const extra = { ...(content?.extra && typeof content.extra === 'object' ? content.extra : {}) };
     if (same) {
         extra.greeting_id = same.id;
@@ -1233,17 +1233,50 @@ export class ChatEngine {
      * @param {Actor} p.actor
      */
     select({ tree, node_id, actor }) {
+        return this.serialized(tree, () => this.selectNow({ tree, node_id, actor }));
+    }
+
+    /**
+     * select, inside a write already serialized on the tree
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.node_id
+     * @param {Actor} p.actor
+     */
+    async selectNow({ tree, node_id, actor }) {
+        const s = await this.messageOf(tree, node_id);
+        if (!s) return false;
+        const records = [];
+        const { user, session } = await this.actorIds(actor, records);
+        if (session === null) throw new Error('A choice is made through a session');
+        const end = await this.store.chatRead('branchEnd', { tree, at: s.id, session, user });
+        records.push(this.moveTo(session, user, s.parent, s.id)[0], { kind: 'pointerMove', session, user, target: end });
+        await this.claimConversation(records, tree, actor, { user, session });
+        await this.store.commit(records);
+        return true;
+    }
+
+    /**
+     * Makes a card greeting the session's opening: the stored opening that holds it, with what goes under it, or the
+     * greeting itself when none does.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {CardGreetings} p.card
+     * @param {number} p.greetingId
+     * @param {Actor} p.actor
+     * @returns {Promise<{ ok: boolean, reason?: string }>}
+     */
+    useCardGreeting({ tree, card, greetingId, actor }) {
         return this.serialized(tree, async () => {
-            const s = await this.messageOf(tree, node_id);
-            if (!s) return false;
-            const records = [];
-            const { user, session } = await this.actorIds(actor, records);
-            if (session === null) throw new Error('A choice is made through a session');
-            const end = await this.store.chatRead('branchEnd', { tree, at: s.id, session, user });
-            records.push(this.moveTo(session, user, s.parent, s.id)[0], { kind: 'pointerMove', session, user, target: end });
-            await this.claimConversation(records, tree, actor, { user, session });
-            await this.store.commit(records);
-            return true;
+            const group = card.ids.indexOf(greetingId);
+            if (group < 0) return { ok: false, reason: 'no such greeting' };
+            const held = this.openingsInOrder(await this.openings(tree), card).find(e => 'row' in e && e.holds === group);
+            if (held && 'row' in held) {
+                await this.selectNow({ tree, node_id: this.externalId(held.row.stored), actor });
+            } else {
+                await this.chooseCardGreetingNow({ tree, greetingId, epoch: card.defaultEpoch, actor });
+            }
+            return { ok: true };
         });
     }
 
@@ -1304,20 +1337,30 @@ export class ChatEngine {
      * @param {Actor} p.actor
      */
     chooseCardGreeting({ tree, greetingId, epoch = 0, actor }) {
-        return this.serialized(tree, async () => {
-            const records = [];
-            const { user, session } = await this.actorIds(actor, records);
-            if (session === null) throw new Error('A greeting is chosen through a session');
-            const [now] = await this.store.chatRead('sessions', { ids: [session] });
-            const atRoot = !!now && now.tree === tree && now.at === null;
-            const chosen = now ? await this.cardChoice(session, tree) : null;
-            if (atRoot && (chosen === null ? greetingId === null : chosen.id === greetingId && chosen.epoch === epoch)) return { ok: true };
-            if (!atRoot) records.push({ kind: 'pointerRoot', session, user, tree, time: this.now() });
-            records.push({ kind: 'openingChoice', session, user, tree, index: greetingChoice(greetingId, epoch) });
-            await this.claimConversation(records, tree, actor, { user, session });
-            await this.store.commit(records);
-            return { ok: true };
-        });
+        return this.serialized(tree, () => this.chooseCardGreetingNow({ tree, greetingId, epoch, actor }));
+    }
+
+    /**
+     * chooseCardGreeting, inside a write already serialized on the tree
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {number | null} p.greetingId
+     * @param {number} p.epoch
+     * @param {Actor} p.actor
+     */
+    async chooseCardGreetingNow({ tree, greetingId, epoch, actor }) {
+        const records = [];
+        const { user, session } = await this.actorIds(actor, records);
+        if (session === null) throw new Error('A greeting is chosen through a session');
+        const [now] = await this.store.chatRead('sessions', { ids: [session] });
+        const atRoot = !!now && now.tree === tree && now.at === null;
+        const chosen = now ? await this.cardChoice(session, tree) : null;
+        if (atRoot && (chosen === null ? greetingId === null : chosen.id === greetingId && chosen.epoch === epoch)) return { ok: true };
+        if (!atRoot) records.push({ kind: 'pointerRoot', session, user, tree, time: this.now() });
+        records.push({ kind: 'openingChoice', session, user, tree, index: greetingChoice(greetingId, epoch) });
+        await this.claimConversation(records, tree, actor, { user, session });
+        await this.store.commit(records);
+        return { ok: true };
     }
 
     /**

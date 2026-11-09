@@ -7,7 +7,7 @@ import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords, withoutStatements } from './entity-values.js';
-import { GREETING_LIST, greetingModelOf, greetingRecords, greetingTextsOf, matchedGreetings } from './greeting-items.js';
+import { GREETING_LIST, greetingModelOf, greetingRecords, greetingTextsOf, hasSameGreetings, matchedGreetings, withUniqueGreetings } from './greeting-items.js';
 import { SPACE, actorIds } from './actor-ids.js';
 import { LINKS, linkListRecords, storedLinks } from './character-links.js';
 import { FIELD, HASH, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
@@ -496,7 +496,7 @@ export class LibraryEngine {
      */
     writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, animatedHash, dateAdded = Date.now(), fav, renamed, tags = [], greetings } = {}) {
         return this.serialized(TYPE.character, avatar, async () => {
-            const card = JSON.parse(cardJson);
+            const card = withUniqueGreetings(JSON.parse(cardJson));
             const stored = await this.entity(TYPE.character, avatar);
             const records = [];
             const id = stored ? stored.id : await this.newId(ownerKeyOf(avatar), records);
@@ -533,13 +533,14 @@ export class LibraryEngine {
             if (model.greetings.length !== written.texts.length || model.greetings.some((g, i) => g.text !== written.texts[i]) || (model.defaultId === null) !== (written.defaultIndex === null)) {
                 throw new Error(`writeCard(): the greetings given for ${avatar} aren't the card's`);
             }
+            if (hasSameGreetings(model)) throw new Error(`writeCard(): the greetings given for ${avatar} have the same text twice`);
             const byId = greetingRecords(id, stored, model);
             next.lists.delete(GREETING_LIST);
             for (const [field, value] of byId.values) next.values.set(field, value);
             records.push(...valueRecords(id, withoutGreetingItems(withoutStatements(stored)), next));
             records.push(...byId.records);
             const { getCharaCardV2 } = await import('./character-card-normalize.js');
-            const normalized = getCharaCardV2(JSON.parse(cardJson), directories, false);
+            const normalized = getCharaCardV2(structuredClone(card), directories, false);
             const size = calculateDataSize(normalized.data ?? {});
             if (stored?.dataSize !== size) records.push({ kind: 'dataSize', entity: id, size });
             const ms = parseCreateDateToEpochMs(normalized.create_date);
