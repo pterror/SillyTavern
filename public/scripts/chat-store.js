@@ -1,4 +1,4 @@
-import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, refreshSwipeButtons, updateMessageBlock, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
+import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, refreshSwipeButtons, showMessageCount, updateMessageBlock, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
 import { eventSource, event_types } from './events.js';
 import { openingView } from './opening-view.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -190,15 +190,34 @@ export function updateMessage(mesId, updates) {
 }
 
 /**
- * @param {number} mesId
- * @param {Record<string, unknown>} values
+ * @param {unknown} counts the counts of messages and alternatives, by node
  */
-export function setUnstoredExtra(mesId, values) {
-    const old = _chatAt(mesId);
-    if (!old) return;
-    const wasClean = isAsStored(old);
-    const updated = updateMessage(mesId, { extra: { ...(old.extra ?? {}), ...values } });
-    if (wasClean && updated && old.node_id != null) markStoredAs(old.node_id, updated);
+export function takeMessageCounts(counts) {
+    if (!counts || typeof counts !== 'object') return;
+    const byNode = /** @type {Record<string, unknown>} */ (counts);
+    const countOf = (/** @type {unknown} */ nodeId) => {
+        const count = typeof nodeId === 'string' && Object.hasOwn(byNode, nodeId) ? byNode[nodeId] : undefined;
+        return typeof count === 'number' ? count : undefined;
+    };
+    for (let mesId = 0; mesId < chat.length; mesId++) {
+        const old = chat[mesId];
+        /** @type {Partial<ChatMessage>} */
+        const updates = {};
+        const own = countOf(old.node_id);
+        if (own !== undefined && old.extra?.token_count !== own) updates.extra = { ...(old.extra ?? {}), token_count: own };
+        const infos = /** @type {any[] | undefined} */ (old.swipe_info);
+        if (Array.isArray(infos) && infos.some(info => countOf(info?.node_id) !== undefined && info.extra?.token_count !== countOf(info.node_id))) {
+            updates.swipe_info = infos.map((info) => {
+                const count = countOf(info?.node_id);
+                return count === undefined ? info : { ...info, extra: { ...(info.extra ?? {}), token_count: count } };
+            });
+        }
+        if (!Object.keys(updates).length) continue;
+        const wasClean = isAsStored(old);
+        const updated = updateMessage(mesId, updates);
+        if (wasClean && updated && typeof old.node_id === 'string') markStoredAs(old.node_id, updated);
+        if (updated) showMessageCount(mesId, updated);
+    }
 }
 
 /**
@@ -476,6 +495,13 @@ function _currentOwner() {
     return avatar != null && avatar !== '' ? { avatar_url: avatar } : null;
 }
 
+/**
+ * @returns {{ group_id: string } | { avatar_url: string } | null}
+ */
+export function currentChatOwner() {
+    return _currentOwner();
+}
+
 let _lastChatOpFailureToastAt = 0;
 function _reportChatOpFailure() {
     const now = Date.now();
@@ -514,6 +540,7 @@ async function _chatOpPost(path, body, silent = false) {
         throw error;
     }
     adoptStored(answer?.stored);
+    takeMessageCounts(answer?.message_counts);
     if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
     return answer;
 }
@@ -548,6 +575,7 @@ async function _chatOpPostAnswering(path, body, answered) {
         throw error;
     }
     adoptStored(answer?.stored);
+    takeMessageCounts(answer?.message_counts);
     if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
     return answer;
 }

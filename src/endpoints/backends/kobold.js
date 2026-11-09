@@ -112,7 +112,7 @@ export async function buildRawActionKoboldRequest(directories, {
         warnings: tokenizer.warnings(assembled.droppedEntries),
         macroVariables: macroVariableChanges(orchestratorInput.chatMetadata, orchestratorInput.macroFacts.globalVariables, orchestratorInput.variablesBefore),
         itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizer.answer() }),
-        countText: tokenizer.countTokens, countedWith: tokenizer.answer,
+        countText: tokenizer.countTokens,
     };
 }
 
@@ -239,7 +239,7 @@ export const generateKobold = withGenerationStop(async function (request, respon
                 sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,
                 warnings, generationStop: response_generate.locals.generationStop,
                 itemization: startItemizing(built.itemize),
-                countText: built.countText, countedWith: built.countedWith,
+                countText: built.countText,
                 finish: await readReplyFinishSettings(directories, {
                     mainApi: 'kobold', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
                     model: lookupBackendModel({ api: 'kobold', url: built.params?.api_server ?? '' }),

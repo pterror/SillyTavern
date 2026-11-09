@@ -248,7 +248,7 @@ async function generateServer(t, reply) {
     };
 }
 
-test('a stored reply comes with its counts, as the message counter and auto-continue take them', async (t) => {
+test('a stored reply comes with its counts and the counts of the messages its request stored', async (t) => {
     const avatar = `pw-counts-${randomUUID()}.png`;
     await writeCharacter(avatar, 'Rex');
     const generate = await generateServer(t, 'At dawn we ride.');
@@ -260,10 +260,12 @@ test('a stored reply comes with its counts, as the message counter and auto-cont
     const reply = await answer.json();
 
     assert.equal(answer.status, 200, JSON.stringify(reply));
-    const { extra, counted_with: countedWith } = reply.assistant_message;
+    const { extra, message_counts: messageCounts } = reply.assistant_message;
     assert.ok(Number.isInteger(extra.token_count) && extra.token_count > 0, JSON.stringify(extra));
     assert.ok(Number.isInteger(extra.text_token_count) && extra.text_token_count > 0, JSON.stringify(extra));
-    assert.equal(typeof countedWith?.key, 'string', 'the answer names the tokenizer the counts are in');
+    const storedIds = Object.fromEntries(reply.stored.map((/** @type {any} */ s) => [s.ref, s.node_id]));
+    assert.deepEqual(Object.keys(messageCounts).sort(), [storedIds.o, storedIds.u].sort(), JSON.stringify(reply.stored));
+    for (const count of Object.values(messageCounts)) assert.ok(Number.isInteger(count) && count > 0, JSON.stringify(messageCounts));
     const stored = (await pathTo({ avatar }, reply.assistant_node_id)).messages.at(-1);
     assert.equal(stored.extra.token_count, undefined, 'the counts aren\'t stored with the message');
 });

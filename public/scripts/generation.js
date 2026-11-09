@@ -14,7 +14,7 @@ import { changeOps, changesSince } from './state-sync.js';
 import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-identity.js';
 import { holdDraft, releaseDraft } from './chat-draft.js';
 import { isFailedSend, keepFailedSend, wasSendStored } from './failed-sends.js';
-import { updateMessage, setStoreRef, storeRefOf, adoptStored, deepFreeze } from './chat-store.js';
+import { updateMessage, setStoreRef, storeRefOf, adoptStored, deepFreeze, takeMessageCounts } from './chat-store.js';
 import { hasPendingFileAttachment } from './chats.js';
 import { inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { eventSource, event_types } from './events.js';
@@ -34,7 +34,6 @@ import { sendGeneration, settingsSavedOf, wholeReplyOf } from './generation-requ
 import { getRequestHeaders } from './request-headers.js';
 import { world_info_overflow_alert } from './world-info.js';
 import { pageMacroFacts } from './macros/engine/MacroEnvBuilder.js';
-import { takeMessageCount } from './tokenizers.js';
 
 /** @type {StreamingProcessor|null} */
 export let streamingProcessor = null;
@@ -233,7 +232,7 @@ window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
         updates.swipe_info = swipeInfo;
     }
     const updated = updateMessage(mesId, updates);
-    const shown = typeof mes === 'string' ? applyStoredReply(mesId, { mes, extra: event.detail?.extra ?? {}, counted_with: event.detail?.counted_with ?? null }) : updated;
+    const shown = typeof mes === 'string' ? applyStoredReply(mesId, { mes, extra: event.detail?.extra ?? {}, message_counts: event.detail?.message_counts }) : updated;
     if (shown) {
         markStoredAs(nodeId, shown);
         updateMessageBlock(mesId, shown);
@@ -242,7 +241,7 @@ window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
 
 /**
  * @param {number} mesId
- * @param {{mes: string, extra?: Record<string, any>, counted_with?: any}|null|undefined} stored
+ * @param {{mes: string, extra?: Record<string, any>, message_counts?: Record<string, number>|null}|null|undefined} stored
  * @param {{received?: boolean}} [options]
  * @returns {ChatMessage|null}
  */
@@ -266,9 +265,7 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
         updates.swipe_info = swipeInfo;
     }
     const updated = updateMessage(mesId, updates);
-    if (typeof storedExtra.token_count === 'number') {
-        takeMessageCount((typeof storedExtra.reasoning === 'string' ? storedExtra.reasoning : '') + stored.mes, storedExtra.token_count, stored.counted_with);
-    }
+    takeMessageCounts(stored.message_counts);
     if (received) markServerFinishedReply(mesId);
     const activations = storedExtra.activations;
     if (received && world_info_overflow_alert && activations?.cut?.some(c => c.why === 'budget')) {
@@ -281,10 +278,10 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
 /**
  * @param {import('./generation-stop.js').StopResult} stop
  */
-function _showStoredReplyText({ mes, extra, counted_with }) {
+function _showStoredReplyText({ mes, extra, message_counts }) {
     if (typeof mes !== 'string') return;
     const mesId = chat.length - 1;
-    const updated = applyStoredReply(mesId, { mes, extra: extra ?? {}, counted_with: counted_with ?? null });
+    const updated = applyStoredReply(mesId, { mes, extra: extra ?? {}, message_counts });
     if (updated) updateMessageBlock(mesId, updated);
 }
 

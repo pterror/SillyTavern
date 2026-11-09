@@ -490,7 +490,7 @@ export async function buildRawActionTextCompletionRequest(directories, {
         name1: orchestratorInput.name1, name2: orchestratorInput.name2,
         warnings: tokenizer.warnings(assembled.droppedEntries),
         itemize: async () => ({ ...(await assembled.itemize()), tokenizer: tokenizer.answer() }),
-        countText: tokenizer.countTokens, countedWith: tokenizer.answer,
+        countText: tokenizer.countTokens,
     };
 }
 
@@ -624,7 +624,7 @@ export const generateTextCompletion = withGenerationStop(async function (request
                     warnings,
                     generationStop: response.locals.generationStop,
                     itemization: startItemizing(built.itemize),
-                    countText: built.countText, countedWith: built.countedWith,
+                    countText: built.countText,
                     finish: await readReplyFinishSettings(request.user.directories, {
                         mainApi: 'textgenerationwebui', source: built.backend.type, avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2,
                         model: built.model,

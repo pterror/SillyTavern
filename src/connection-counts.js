@@ -46,10 +46,9 @@ export function tokenizerStateFor(directories, settingsContext, api = undefined,
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {import('./settings-reads.js').SettingsContext} settingsContext
  * @param {string[]} texts
- * @param {{ recount?: boolean }} [options] recount: count again instead of taking stored counts.
  * @returns {Promise<{ counts: number[], tokenizer: object|null, warnings?: object[] }|null>} Null when no connection is chosen.
  */
-export async function countWithConnection(directories, settingsContext, texts, { recount = false } = {}) {
+export async function countWithConnection(directories, settingsContext, texts) {
     let state;
     try {
         state = tokenizerStateFor(directories, settingsContext);
@@ -58,7 +57,7 @@ export async function countWithConnection(directories, settingsContext, texts, {
         return null;
     }
     if (!state) return null;
-    const tokenizer = await openTokenizer(state, directories, { recount });
+    const tokenizer = await openTokenizer(state, directories);
     const counter = await tokenizer.storedCounter();
     const counts = await Promise.all(texts.map(text => (typeof text !== 'string' || text.length === 0
         ? 0

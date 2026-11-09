@@ -4,12 +4,13 @@ import { main_api } from './generation-params.js';
 import { event_types, eventSource } from './events.js';
 import { power_user } from './power-user.js';
 import { chat_completion_sources, getChatCompletionModel, oai_settings } from './chat-completion-settings.js';
-import { debounce, getStringHash } from './utils.js';
+import { debounce } from './utils.js';
 import { kai_settings } from './kai-settings.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer, getTextGenModel } from './textgen-settings.js';
 import { horde_settings } from './horde.js';
 import { showTokenizerWarnings } from './tokenizer-notices.js';
 import { getRequestHeaders } from './request-headers.js';
+import { currentChatOwner, takeMessageCounts } from './chat-store.js';
 
 const BYTES_PER_TOKEN = 3.35;
 export const TOKENIZER_SUPPORTED_KEY = 'tokenizationSupported';
@@ -225,9 +226,6 @@ const TOKENIZER_URLS = {
 
 const textEncoder = new TextEncoder();
 
-/** @type {Map<string, number>} */
-const countCache = new Map();
-
 /** @type {Map<string, number[]|null>} */
 const idCache = new Map();
 
@@ -364,7 +362,6 @@ function rememberTokenizer(stateKey, tokenizer) {
     const previous = rememberedTokenizer?.tokenizer;
     const changed = !previous || previous.key !== tokenizer.key || previous.id !== tokenizer.id;
     if (changed) {
-        countCache.clear();
         idCache.clear();
         tokenizerChangeListeners.forEach(listener => listener());
     }
@@ -409,13 +406,15 @@ function showResponseWarnings(data) {
  * @param {string} route
  * @param {object} body
  * @param {boolean} async
+ * @param {Record<string, string>} [headers]
  * @returns {any}
  */
-function postCurrent(route, body, async) {
+function postCurrent(route, body, async, headers = undefined) {
     const request = {
         async,
         type: 'POST',
         url: `/api/tokenizers/current/${route}`,
+        ...(headers ? { headers } : {}),
         data: JSON.stringify(body),
         dataType: 'json',
         contentType: 'application/json',
@@ -464,17 +463,33 @@ function getCurrentTokenizerSync() {
 /**
  * @returns {Promise<void>}
  */
-async function refreshCurrentTokenizer() {
+/** @type {string|null} */
+let refreshedKey = null;
+
+/**
+ * @param {{ recount?: boolean }} [options] recount: the shown messages' counts are wanted whatever they were counted with.
+ */
+async function refreshCurrentTokenizer({ recount = false } = {}) {
     const state = getTokenizerState();
     if (!state) {
         return;
     }
     const stateKey = JSON.stringify(state);
-    const data = await postCurrent('tokenizer', { state }, true);
+    const shown = power_user.message_token_count_enabled ? currentChatOwner() : null;
+    const countedKey = recount ? null : refreshedKey;
+    const data = shown
+        ? await postCurrent('tokenizer', { state, shown_chat: shown, counted_key: countedKey }, true, getRequestHeaders())
+        : await postCurrent('tokenizer', { state }, true);
+    if (typeof data?.tokenizer?.key === 'string') refreshedKey = data.tokenizer.key;
     rememberTokenizer(stateKey, data?.tokenizer);
+    takeMessageCounts(data?.message_counts);
 }
 
-const refreshCurrentTokenizerDebounced = debounce(refreshCurrentTokenizer);
+export function recountShownMessages() {
+    return refreshCurrentTokenizer({ recount: true });
+}
+
+const refreshCurrentTokenizerDebounced = debounce(() => refreshCurrentTokenizer());
 
 /**
  * @param {string} [api]
@@ -558,15 +573,14 @@ export function getTokenizerBestMatch(forApi) {
 /**
  * Texts counted by the server as the chosen connection counts them: the one action whose answer is a count.
  * @param {string[]} texts
- * @param {{ recount?: boolean }} [options]
  * @returns {Promise<{ counts: number[], tokenizer: CurrentTokenizer|null }>}
  */
-export async function countWithConnection(texts, { recount = false } = {}) {
+export async function countWithConnection(texts) {
     try {
         const response = await fetch('/api/tokenizers/count', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ texts, ...(recount ? { recount } : {}) }),
+            body: JSON.stringify({ texts }),
         });
         const answer = response.ok ? await response.json() : null;
         showResponseWarnings(answer);
@@ -578,52 +592,6 @@ export async function countWithConnection(texts, { recount = false } = {}) {
         console.error('Could not count the texts:', error);
         return { counts: texts.map(text => guesstimate(text)), tokenizer: null };
     }
-}
-
-/**
- * @param {CurrentTokenizer} tokenizer
- * @param {string} text
- */
-function messageCountKey(tokenizer, text) {
-    return `${tokenizer.key}-${getStringHash(text)}`;
-}
-
-/**
- * The shown messages' counts, those the server answered an action with taken without asking again.
- * @param {string[]} texts
- * @param {{ recount?: boolean }} [options]
- * @returns {Promise<number[]>}
- */
-export async function getMessageTokenCounts(texts, { recount = false } = {}) {
-    const tokenizer = getRememberedTokenizer();
-    const results = new Array(texts.length).fill(0);
-    /** @type {number[]} */
-    const pending = [];
-    texts.forEach((text, i) => {
-        if (typeof text !== 'string' || !text.length) return;
-        const cached = tokenizer && !recount ? countCache.get(messageCountKey(tokenizer, text)) : undefined;
-        if (typeof cached === 'number') results[i] = cached;
-        else pending.push(i);
-    });
-    if (pending.length === 0) return results;
-    const { counts, tokenizer: answered } = await countWithConnection(pending.map(i => texts[i]), { recount });
-    pending.forEach((i, j) => {
-        results[i] = counts[j];
-        if (answered && answered.basis !== 'failed') countCache.set(messageCountKey(answered, texts[i]), counts[j]);
-    });
-    return results;
-}
-
-/**
- * A message's count the server answered an action with, so the message counter needs no request for it.
- * @param {string} text The message's text as the counter counts it.
- * @param {number} count
- * @param {CurrentTokenizer|null|undefined} tokenizer The tokenizer it was counted with.
- */
-export function takeMessageCount(text, count, tokenizer) {
-    if (!tokenizer || typeof tokenizer !== 'object' || typeof tokenizer.key !== 'string' || tokenizer.basis === 'failed') return;
-    if (!rememberTokenizer(JSON.stringify(getTokenizerState()), tokenizer)) return;
-    countCache.set(messageCountKey(tokenizer, text), count);
 }
 
 /**
@@ -876,16 +844,14 @@ export async function initTokenizers() {
         textgen_types.APHRODITE,
     );
 
-    eventSource.on(event_types.CHAT_CHANGED, () => countCache.clear());
-
     for (const event of [
         event_types.ONLINE_STATUS_CHANGED,
         event_types.CHATCOMPLETION_SOURCE_CHANGED,
         event_types.CHATCOMPLETION_MODEL_CHANGED,
     ]) {
-        eventSource.on(event, refreshCurrentTokenizer);
+        eventSource.on(event, () => refreshCurrentTokenizer());
     }
-    $(document).on('change', '#main_api, #textgen_type, #model_novel_select, #horde_model, #tokenizer', refreshCurrentTokenizer);
+    $(document).on('change', '#main_api, #textgen_type, #model_novel_select, #horde_model, #tokenizer', () => refreshCurrentTokenizer());
     $(document).on('input', [...Object.values(SERVER_INPUTS), '#custom_api_url_text'].join(', '), refreshCurrentTokenizerDebounced);
 
     void removeStoredTokenCache();

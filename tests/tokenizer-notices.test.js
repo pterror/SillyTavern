@@ -180,6 +180,7 @@ jest.unstable_mockModule('../public/scripts/textgen-settings.js', () => ({
     getTextGenModel: (s) => (s ?? settings.textgen).llamacpp_model || undefined,
 }));
 jest.unstable_mockModule('../public/scripts/horde.js', () => ({ horde_settings: { models: [] } }));
+jest.unstable_mockModule('../public/scripts/chat-store.js', () => ({ currentChatOwner: () => null, takeMessageCounts: () => {} }));
 
 const unknownModel = 'No tokenizer is known for this model, so token counts are estimates. A tokenizer can be picked in Advanced Formatting → Tokenizer.';
 const trimEstimate = 'The backend\'s tokenizer failed, so the prompt was fitted to the context by an estimated token count.';

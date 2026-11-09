@@ -43,7 +43,7 @@ import {
 } from './instruct-mode.js';
 
 import { getTagsList, tag_import_setting, tag_sort_mode, tagsStore, getHeldAssignedTagIds, searchUsedTagOptions, refreshTagsDrawerUnderlayClip, findUsedTagIdByName } from './tags.js';
-import { tokenizers } from './tokenizers.js';
+import { recountShownMessages, tokenizers } from './tokenizers.js';
 import { renderTemplateAsync } from './templates.js';
 
 import { debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isTrueBoolean, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
@@ -3606,6 +3606,7 @@ jQuery(() => {
         power_user.message_token_count_enabled = value;
         switchTokenCount();
         saveSettingsDebounced('power_user.message_token_count_enabled');
+        if (value) void recountShownMessages();
     });
 
     $('#expandMessageActions').on('input', function () {

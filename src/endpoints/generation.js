@@ -38,7 +38,7 @@ const GENERATORS = Object.freeze({
 /**
  * @param {string} id
  * @param {string|undefined} handle
- * @returns {Promise<{state: 'unknown'|'saved'|'failed', node_id?: string, mes?: string, extra?: object, counted_with?: object|null, reason?: string}>}
+ * @returns {Promise<{state: 'unknown'|'saved'|'failed', node_id?: string, mes?: string, extra?: object, message_counts?: Record<string, number>, reason?: string}>}
  */
 export async function retryGenerationStore(id, handle) {
     const entry = generationEntryOf(id, handle);
@@ -46,7 +46,7 @@ export async function retryGenerationStore(id, handle) {
         return { state: 'unknown' };
     }
     if (entry.persisted) {
-        return { state: 'saved', node_id: entry.persisted.node_id, mes: entry.persisted.mes, extra: entry.persisted.extra, counted_with: entry.persisted.counted_with ?? null };
+        return { state: 'saved', node_id: entry.persisted.node_id, mes: entry.persisted.mes, extra: entry.persisted.extra, message_counts: entry.persisted.message_counts };
     }
     if (!entry.unsaved) {
         return { state: 'unknown' };
@@ -55,7 +55,7 @@ export async function retryGenerationStore(id, handle) {
     if (result && 'node_id' in result) {
         entry.persisted = result;
         entry.unsaved = null;
-        return { state: 'saved', node_id: result.node_id, mes: result.mes, extra: result.extra, counted_with: result.counted_with ?? null };
+        return { state: 'saved', node_id: result.node_id, mes: result.mes, extra: result.extra, message_counts: result.message_counts };
     }
     const reason = result?.error ?? 'nothing to store';
     entry.unsaved.reason = reason;

@@ -1,4 +1,4 @@
-import { getStringHash } from './utils.js';
+import { getStringHash } from './hash-utils.js';
 
 const PROVISIONAL_NODE_PREFIX = 'card:';
 

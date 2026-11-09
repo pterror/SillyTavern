@@ -12,9 +12,8 @@ async function enableCounts(page, streaming) {
         const context = stTest.context();
         context.powerUserSettings.message_token_count_enabled = true;
         context.textCompletionSettings.streaming = streaming;
-        context.saveSettingsDebounced('textgenerationwebui_settings.streaming');
+        await (await import('/script.js')).saveSettings();
     }, streaming);
-    await page.waitForTimeout(2500);
 }
 
 /**
@@ -48,9 +47,8 @@ async function storedCount(page, mesId) {
  * @param {import('@playwright/test').Page} page
  * @param {number} mesId
  * @param {string[][]} counted
- * @param {string} replyText
  */
-async function expectStoredCountShown(page, mesId, counted, replyText) {
+async function expectStoredCountShown(page, mesId, counted) {
     const reply = page.locator(`#chat .mes[mesid="${mesId}"]`);
     await expect(page.locator('#send_but')).toBeVisible({ timeout: 30000 });
     await expect.poll(() => page.evaluate((mesId) => {
@@ -63,7 +61,7 @@ async function expectStoredCountShown(page, mesId, counted, replyText) {
     await expect(reply.locator('.tokenCounterDisplay')).toHaveText(`${count}t`);
     await page.waitForTimeout(500);
     await expect(reply.locator('.tokenCounterDisplay')).toHaveText(`${count}t`);
-    expect(counted.flat().filter(text => text === '...' || text.includes(replyText))).toEqual([]);
+    expect(counted).toEqual([]);
 
     await page.evaluate(async () => {
         const { reloadCurrentChat } = await import('/script.js');
@@ -89,8 +87,11 @@ for (const streaming of [false, true]) {
             const reply = page.locator('#chat .mes[mesid="2"]');
             await expect(reply.locator('.mes_text')).toContainText(`Counted reply ${s}`, { timeout: 30000 });
             await expect(reply.locator('.tokenCounterDisplay')).toHaveText(/^\d+t$/);
+            const sentCount = await storedCount(page, 1);
+            expect(sentCount).toBeGreaterThan(0);
+            await expect(page.locator('#chat .mes[mesid="1"] .tokenCounterDisplay')).toHaveText(`${sentCount}t`);
             await page.waitForTimeout(500);
-            expect(counted.flat().filter(text => text.includes(`Counted reply ${s}`))).toEqual([]);
+            expect(counted).toEqual([]);
             // @ts-ignore
             expect(await page.evaluate(() => typeof stTest.context().chat[2].extra.text_token_count)).toBe('number');
         } finally {
@@ -117,7 +118,7 @@ test.describe('a streamed reply shows the count it was stored with', () => {
             await chatBox(page).fill(`Hello ${s}`);
             await page.locator('#send_but').click();
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('one after another', { timeout: 30000 });
-            await expectStoredCountShown(page, 2, counted, `Streamed reply ${s}`);
+            await expectStoredCountShown(page, 2, counted);
         } finally {
             await mock.close();
         }
@@ -141,14 +142,14 @@ test.describe('a streamed reply shows the count it was stored with', () => {
             const swiped = countedTexts(page);
             await page.locator('#chat .mes[mesid="2"] .swipe_right').click();
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('Take 2.', { timeout: 30000 });
-            await expectStoredCountShown(page, 2, swiped, 'Take 2.');
+            await expectStoredCountShown(page, 2, swiped);
 
             const before = await storedCount(page, 2);
             const continued = countedTexts(page);
             // @ts-ignore
             await page.evaluate(() => stTest.context().generate('continue'));
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('Take 3.', { timeout: 30000 });
-            await expectStoredCountShown(page, 2, continued, 'Take 3.');
+            await expectStoredCountShown(page, 2, continued);
             expect(await storedCount(page, 2)).toBeGreaterThan(before);
         } finally {
             await mock.close();
@@ -171,7 +172,7 @@ test.describe('a streamed reply shows the count it was stored with', () => {
             await page.locator('#send_but').click();
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('word5', { timeout: 30000 });
             await page.locator('#mes_stop').click();
-            await expectStoredCountShown(page, 2, counted, `Stopped ${s}`);
+            await expectStoredCountShown(page, 2, counted);
             // @ts-ignore
             expect(await page.evaluate(() => stTest.context().chat[2].mes)).not.toContain('word199');
         } finally {
@@ -205,7 +206,7 @@ test.describe('a streamed reply shows the count it was stored with', () => {
             await chatBox(page).fill(`Hello ${s}`);
             await page.locator('#send_but').click();
             await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('one after another', { timeout: 30000 });
-            await expectStoredCountShown(page, 2, counted, `Streamed reply ${s}`);
+            await expectStoredCountShown(page, 2, counted);
         } finally {
             await mock.close();
         }

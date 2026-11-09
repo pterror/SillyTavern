@@ -9,6 +9,8 @@ import { requestSession } from './request-session.js';
  * @property {import('./request-session.js').RequestSession} session
  * @property {import('./chat-engine.js').StateOp[]} [replyChanges]
  * @property {string | null} avatar the character whose tree it is; null for a group's
+ * @property {string | null} groupId the group whose tree it is; null for a character's
+ * @property {import('./users.js').UserDirectoryList} [directories]
  * @property {import('./pending-opening.js').PendingOpening | null} [opening] the opening the page sent that waits for what goes under it
  * @property {string} [openedAt] the node that opening was stored as
  */
@@ -28,7 +30,7 @@ export async function chatContext(request, { avatar, group }) {
     const treeSpeaker = groupId !== null || name === null ? null : (await store.people.byAvatar([name])).get(name) ?? null;
     const session = await requestSession(store.chats, request, tree);
     const replyChanges = request.body?.reply_changes;
-    return { store, tree, treeSpeaker, session, avatar: groupId === null ? name : null, ...(Array.isArray(replyChanges) ? { replyChanges } : {}) };
+    return { store, tree, treeSpeaker, session, avatar: groupId === null ? name : null, groupId, directories: request.user?.directories, ...(Array.isArray(replyChanges) ? { replyChanges } : {}) };
 }
 
 /**

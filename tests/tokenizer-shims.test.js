@@ -104,6 +104,7 @@ jest.unstable_mockModule('../public/scripts/generation-params.js', () => ({
     main_api: settings.mainApi,
 }));
 jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({ getRequestHeaders: () => ({}) }));
+jest.unstable_mockModule('../public/scripts/chat-store.js', () => ({ currentChatOwner: () => null, takeMessageCounts: () => {} }));
 jest.unstable_mockModule('../public/scripts/events.js', () => ({
     event_types: {
         CHAT_CHANGED: 'chat_id_changed', ONLINE_STATUS_CHANGED: 'online_status_changed',
@@ -382,18 +383,5 @@ describe('counting is one action the server answers', () => {
         const counted = await tokenizersModule.countWithConnection(['abcdefg']);
         expect(counted.tokenizer).toBeNull();
         expect(counted.counts).toEqual([expect.any(Number)]);
-    });
-
-    test('a message count the server answered an action with is shown without asking', async () => {
-        tokenizersModule.takeMessageCount('Two days on foot.', 6, answer());
-        expect(await tokenizersModule.getMessageTokenCounts(['Two days on foot.'])).toEqual([6]);
-        expect(requests).toEqual([]);
-    });
-
-    test('the messages it doesn\'t know are counted in one request, then known', async () => {
-        expect(await tokenizersModule.getMessageTokenCounts(['ab', '', 'abcd'])).toEqual([2, 0, 4]);
-        expect(requests.map(r => r.body)).toEqual([{ texts: ['ab', 'abcd'] }]);
-        expect(await tokenizersModule.getMessageTokenCounts(['ab', 'abcd'])).toEqual([2, 4]);
-        expect(requests).toHaveLength(1);
     });
 });

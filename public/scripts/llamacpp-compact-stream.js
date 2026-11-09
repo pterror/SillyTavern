@@ -13,17 +13,17 @@ const SERVER_KEEPALIVE_INTERVAL_MS = 12 * 1000;
 
 const STREAM_STALL_TIMEOUT_MS = 3 * SERVER_KEEPALIVE_INTERVAL_MS;
 
-/** @typedef {{mes: string, extra: Record<string, any>, counted_with?: any}} StoredReply */
+/** @typedef {{mes: string, extra: Record<string, any>, message_counts?: Record<string, number>}} StoredReply */
 
 /** @type {Map<string, StoredReply>} */
 const storedReplies = new Map();
 const STORED_REPLIES_MAX = 16;
 
-/** @param {{node_id: string, mes: string, extra?: Record<string, any>, counted_with?: any}} reply */
+/** @param {{node_id: string, mes: string, extra?: Record<string, any>, message_counts?: Record<string, number>}} reply */
 function rememberStoredReply(reply) {
     if (typeof reply.mes !== 'string') return;
     storedReplies.delete(reply.node_id);
-    storedReplies.set(reply.node_id, { mes: reply.mes, extra: reply.extra && typeof reply.extra === 'object' ? reply.extra : {}, counted_with: reply.counted_with ?? null });
+    storedReplies.set(reply.node_id, { mes: reply.mes, extra: reply.extra && typeof reply.extra === 'object' ? reply.extra : {}, ...(reply.message_counts ? { message_counts: reply.message_counts } : {}) });
     for (const oldest of storedReplies.keys()) {
         if (storedReplies.size <= STORED_REPLIES_MAX) break;
         storedReplies.delete(oldest);

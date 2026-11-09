@@ -188,7 +188,7 @@ import {
     getInstructStoppingSequences,
 } from './scripts/instruct-mode.js';
 import { initLocales, t } from './scripts/i18n.js';
-import { getMessageTokenCounts, initTokenizers } from './scripts/tokenizers.js';
+import { initTokenizers } from './scripts/tokenizers.js';
 import {
     user_avatar,
     getUserAvatars,
@@ -282,7 +282,6 @@ import {
     appendTarget,
     setSendStoredListener,
     openingForRequest,
-    setUnstoredExtra,
 } from './scripts/chat-store.js';
 export {
     updateMessage,
@@ -2641,45 +2640,6 @@ export function addOneMessage(mes, { type = undefined, insertAfter = null, scrol
     return messageElement;
 }
 
-/** @type {Set<number>} */
-const uncountedShownMessages = new Set();
-/** @type {ReturnType<typeof setTimeout>|null} */
-let shownCountsTimer = null;
-const SHOWN_COUNTS_DELAY_MS = 30;
-
-/**
- * @param {number} mesId
- */
-function countShownMessage(mesId) {
-    if (!power_user.message_token_count_enabled) return;
-    uncountedShownMessages.add(mesId);
-    shownCountsTimer ??= setTimeout(() => {
-        shownCountsTimer = null;
-        const mesIds = [...uncountedShownMessages];
-        uncountedShownMessages.clear();
-        fillTokenCounters(mesIds).catch(error => console.error('Could not count the shown messages:', error));
-    }, SHOWN_COUNTS_DELAY_MS);
-}
-
-/**
- * @param {number[]} mesIds
- * @param {{ recount?: boolean }} [options]
- */
-async function fillTokenCounters(mesIds, { recount = false } = {}) {
-    const shown = mesIds
-        .map(mesId => ({ mesId, message: chat[mesId] }))
-        .filter(({ mesId, message }) => message && !message.is_system && !isReplyGenerating(mesId));
-    const texts = shown.map(({ message }) => (message.extra?.reasoning || '') + message.mes);
-    if (!texts.some(text => text.length > 0)) return;
-    const counts = await getMessageTokenCounts(texts, { recount });
-    shown.forEach(({ mesId }, k) => {
-        const current = chat[mesId];
-        if (!current || !counts[k] || isReplyGenerating(mesId) || (current.extra?.reasoning || '') + current.mes !== texts[k]) return;
-        setUnstoredExtra(mesId, { token_count: counts[k] });
-        renderMessageCount(chatElement.find(`.mes[mesid="${mesId}"]`), chat[mesId]);
-    });
-}
-
 /**
  * @param {JQuery<HTMLElement>} messageElement
  * @param {ChatMessage} mes
@@ -2689,6 +2649,14 @@ function renderMessageCount(messageElement, mes) {
     messageElement.find('.tokenCounterDisplay').text(tokenCount ? `${tokenCount}t` : '');
     const { timerValue, timerTitle } = formatGenerationTimer(mes.gen_started, mes.gen_finished, tokenCount, mes.extra?.reasoning_duration, mes.extra?.time_to_first_token);
     messageElement.find('.mes_timer').attr('title', timerTitle ?? '').text(timerValue ?? '');
+}
+
+/**
+ * @param {number} mesId
+ * @param {ChatMessage} mes
+ */
+export function showMessageCount(mesId, mes) {
+    renderMessageCount(chatElement.find(`.mes[mesid="${mesId}"]`), mes);
 }
 
 /**
@@ -2775,7 +2743,6 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     addCopyToCodeBlocks(messageElement);
 
     updateSwipeCounter(messageId, { message: mes, messageElement });
-    countShownMessage(messageId);
 
     return messageElement;
 }
@@ -9954,19 +9921,11 @@ export async function doNavbarIconClick() {
 }
 
 function addDebugFunctions() {
-    const doBackfill = async () => {
-        await fillTokenCounters(chat.map((_, mesId) => mesId), { recount: true });
-    };
-
     registerDebugFunction('forceOnboarding', 'Force onboarding', 'Forces the onboarding process to restart.', async () => {
         firstRun = true;
         await saveSettings();
         location.reload();
     });
-
-    registerDebugFunction('backfillTokenCounts', 'Backfill token counters',
-        `Counts the messages of the current chat again with the current tokenizer, replacing the stored counts.
-        This is a visual change only.`, doBackfill);
 
     registerDebugFunction('generationTest', 'Send a generation request', 'Generates text using the currently selected API.', async () => {
         const text = prompt('Input text:', 'Hello');

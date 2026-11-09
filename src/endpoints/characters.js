@@ -35,7 +35,7 @@ import { savedViewsEvents } from '../saved-views.js';
 import { getAtPath, getStringHash, normalizeFav, setAtPath } from '../../public/scripts/hash-utils.js';
 import { applyGreetingsModelToCard } from '../greeting-list.js';
 import { defaultPositionOf, greetingOperation, hashGreetingText } from '../greeting-ops.js';
-import { openingState } from '../opening-state.js';
+import { countedOpeningState } from '../sent-message-counts.js';
 import { showGreeting } from '../tab-views.js';
 import { withSearchTiming } from '../search-timing.js';
 import { requestStore, userStore } from '../user-stores.js';
@@ -1212,7 +1212,7 @@ export async function changeGreetings({ directories, store, actor, avatar, chang
     const result = await applyGreetingOperation(directories, avatar, greetingOperation(change));
     const [tree] = actor === null ? [null] : await store.people.trees([{ avatar }]);
     if (!result.ok || tree === null || tree === undefined || actor === null) return { result, opening: null };
-    return { result, opening: await openingState({ store, tree, actor, avatar }) };
+    return { result, opening: await countedOpeningState(directories, { store, tree, actor, avatar }) };
 }
 
 /**
@@ -2293,7 +2293,7 @@ async function tabStreamSession(request, store, send) {
         if (here === null || !records.some(r => r.entity === here.tree)) return;
         const owner = await ownerOf(here.tree);
         if (!owner || !('avatar' in owner)) return;
-        const openings = await openingState({ store, tree: here.tree, actor: { user: request.user.profile.handle, session }, avatar: owner.avatar });
+        const openings = await countedOpeningState(request.user.directories, { store, tree: here.tree, actor: { user: request.user.profile.handle, session }, avatar: owner.avatar });
         const json = JSON.stringify(openings);
         if (openingsPushed?.tree === here.tree && openingsPushed.json === json) return;
         openingsPushed = { tree: here.tree, json };

@@ -121,7 +121,9 @@ test.describe('sending a message', () => {
                     const response = await fetch('/api/chats/open', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
                     const stored = (await response.json()).messages[2];
                     const { token_count: _counted, text_token_count: _textCounted, ...held } = context.chat[2].extra;
-                    return { page: JSON.parse(JSON.stringify(held)), stored: stored.extra, counted: typeof _counted === 'number' };
+                    const storedHeld = { ...stored.extra };
+                    delete storedHeld.token_count;
+                    return { page: JSON.parse(JSON.stringify(held)), stored: storedHeld, counted: typeof _counted === 'number' };
                 }, avatar);
                 expect(shown.page).toEqual(shown.stored);
                 expect(shown.counted).toBe(true);
