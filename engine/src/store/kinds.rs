@@ -1400,6 +1400,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "searchPairs" => &SearchPairs,
         "localImportMtime" => &super::local_import::MTIME_VALUE,
         "localImportSkip" => &super::local_import::SKIP_VALUE,
+        "namesOfferMark" => &super::names_offer::NamesOfferMark,
         #[cfg(any(test, feature = "measure"))]
         "testSet" => &TestSet,
         other => {

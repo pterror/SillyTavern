@@ -56,6 +56,18 @@ const DISPLAY_INDEX = /** @type {number} */ (ENTRY_CODE.get('displayIndex'));
 
 export const RELATION_CHANGES_PER_STEP = 1000;
 
+const NOT_OFFERED = 'This world offers no names to mark.';
+
+/**
+ * @param {NamesOfferRead} read
+ * @returns {boolean}
+ */
+export const namesOfferShown = read => read.state === null && read.namedEntries === 0 && read.offeredEntries > 0;
+
+/**
+ * @typedef {{ state: 'marking' | 'done' | 'declined' | 'undoing' | null, namedEntries: number, offeredEntries: number, marks: number, example: { thing: string, text: string, shownAs: 'name' | 'title' | 'opening' } | null }} NamesOfferRead
+ */
+
 /**
  * @typedef {object} Actor
  * @property {string} user
@@ -138,6 +150,8 @@ const RELATIONS_FIELD = `${EXTENSION_MARK}relations`;
 const RELATION_KINDS = 'relationKinds';
 const RELATION_KIND_FIELD = `${EXTENSION_MARK}relationKind:`;
 const RELATION_KIND_MERGE_FIELD = `${EXTENSION_MARK}relationKindMergingInto:`;
+const NAMES_FIELD = `${EXTENSION_MARK}names`;
+const NAMES_OFFER_FIELD = `${EXTENSION_MARK}namesOffer`;
 const relationKindField = (/** @type {number} */ id) => `${RELATION_KIND_FIELD}${id}`;
 const relationKindMergeField = (/** @type {number} */ id) => `${RELATION_KIND_MERGE_FIELD}${id}`;
 const isWholeId = (/** @type {unknown} */ n) => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
@@ -363,8 +377,12 @@ function storedTargetsOf(stored) {
  * @param {{ values: Map<number | string, { text?: string, json?: string }>, lists: Map<number, string[]> }} next
  * @param {import('./entity-values.js').StoredEntity | null} stored
  */
-function withMergeRecords(next, stored) {
+function withBookOwnFields(next, stored) {
     for (const value of stored?.values ?? []) {
+        if (value.field === NAMES_OFFER_FIELD && value.text !== undefined) {
+            next.values.set(value.field, { text: value.text });
+            continue;
+        }
         if (typeof value.field !== 'string' || !value.field.startsWith(RELATION_KIND_MERGE_FIELD) || value.text === undefined) continue;
         const kind = Number(value.field.slice(RELATION_KIND_MERGE_FIELD.length));
         if (!next.values.has(relationKindField(kind)) && !next.values.has(value.field)) next.values.set(value.field, { text: value.text });
@@ -711,7 +729,7 @@ export class WorldInfoEngine {
      * @returns {Promise<object[]>}
      */
     async bookRecords(id, s, book, { world = false, ownedKey } = {}, stamp) {
-        const records = valueRecords(id, s?.entity ?? null, await this.withKindsKeptRelationsNeed(id, withMergeRecords(bookValues(book, world), s?.entity ?? null), s?.entity ?? null));
+        const records = valueRecords(id, s?.entity ?? null, await this.withKindsKeptRelationsNeed(id, withBookOwnFields(bookValues(book, world), s?.entity ?? null), s?.entity ?? null));
         if (!s?.entity && !world) records.push({ kind: 'entityCreate', entity: id, type: TYPE.ownedBook, key: ownedKey, added: Date.now() });
         const raw = book.entries;
         const stored = s?.entries ?? new Map();
@@ -1192,7 +1210,7 @@ export class WorldInfoEngine {
                 }
             }
             if (fieldsChanged) {
-                pushAll(records, valueRecords(book, bookEntity, await this.withKindsKeptRelationsNeed(book, withMergeRecords(bookValues(nextBook, true), bookEntity), bookEntity)));
+                pushAll(records, valueRecords(book, bookEntity, await this.withKindsKeptRelationsNeed(book, withBookOwnFields(bookValues(nextBook, true), bookEntity), bookEntity)));
                 const ob = nextBook.originalData;
                 if (isEntryList(ob)) {
                     pushAll(records, (await this.bookRecords(s.original?.id ?? this.lib.nextId++, s.original, /** @type {Record<string, unknown>} */ (ob), { ownedKey: `${book}:${SLOT.originalData}` }, stamp)));
@@ -1740,11 +1758,12 @@ export class WorldInfoEngine {
     }
 
     /**
+     * @param {string} field
      * @param {{ entity: bigint, before: string | null, json: string }[]} rewrites
      * @param {() => import('./entity-values.js').Stamp} stamp
      * @returns {Promise<object[]>}
      */
-    async rewriteRecords(rewrites, stamp) {
+    async rewriteRecords(field, rewrites, stamp) {
         const writes = historyWrites(stamp);
         const unmarked = rewrites.filter(rewrite => rewrite.before === null).map(rewrite => rewrite.entity);
         const marked = new Set();
@@ -1755,7 +1774,7 @@ export class WorldInfoEngine {
         }
         return rewrites.flatMap(rewrite => [
             ...(rewrite.before === null && !marked.has(rewrite.entity) ? writes.json(rewrite.entity, EXTENSIONS, '', undefined) : []),
-            ...writes.json(rewrite.entity, RELATIONS_FIELD, rewrite.json, rewrite.before ?? undefined),
+            ...writes.json(rewrite.entity, field, rewrite.json, rewrite.before ?? undefined),
         ]);
     }
 
@@ -1848,32 +1867,113 @@ export class WorldInfoEngine {
     }
 
     /**
-     * @returns {Promise<{ book: bigint, changedSources: bigint[] } | null>}
+     * @param {bigint} book
+     * @returns {Promise<NamesOfferRead>}
+     */
+    namesOffer(book) {
+        return this.store.worldRead('worldbuildingNamesOffer', { book });
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {(read: NamesOfferRead) => string | null} refusal
+     * @param {string} state
+     * @returns {Promise<'ok' | 'missing' | { refused: string }>}
+     */
+    changeNamesOffer(book, refusal, state) {
+        return this.inWorld(book, async () => {
+            const refused = refusal(await this.namesOffer(book));
+            if (refused !== null) return { refused };
+            await this.store.commit([{ kind: 'textValue', entity: book, field: NAMES_OFFER_FIELD, text: state }]);
+            if (state === 'declined') return 'ok';
+            if (!(await this.namesOfferChunk(book)).ended) this.jobs.start(book);
+            return 'ok';
+        });
+    }
+
+    /**
+     * @param {bigint} book
+     */
+    markTitleKeysAsNames(book) {
+        return this.changeNamesOffer(book, read => (namesOfferShown(read) ? null : NOT_OFFERED), 'marking');
+    }
+
+    /**
+     * @param {bigint} book
+     */
+    declineNamesOffer(book) {
+        return this.changeNamesOffer(book, read => (read.state === null ? null : NOT_OFFERED), 'declined');
+    }
+
+    /**
+     * @param {bigint} book
+     */
+    undoMarkTitleKeysAsNames(book) {
+        return this.changeNamesOffer(book, read => (read.state === 'marking' || read.state === 'done' ? null : 'Nothing was marked to take back.'), 'undoing');
+    }
+
+    /**
+     * @param {bigint} book
+     * @returns {Promise<{ book: bigint, changedSources: bigint[], offerChanged: boolean } | 'missing'>}
+     */
+    namesOfferStep(book) {
+        return this.inWorld(book, async () => {
+            const { ran } = await this.namesOfferChunk(book);
+            return { book, changedSources: [], offerChanged: ran };
+        });
+    }
+
+    /**
+     * Runs in the book's lane.
+     * @param {bigint} book
+     * @returns {Promise<{ ran: boolean, ended: boolean }>}
+     */
+    async namesOfferChunk(book) {
+        /** @type {{ job: 'marking' | 'undoing' | null, entries: { entity: bigint, before: string | null, names: string[], marked: string[] }[] }} */
+        const chunk = await this.store.worldRead('worldbuildingNamesOfferChunk', { book, limit: RELATION_CHANGES_PER_STEP });
+        if (chunk.job === null) return { ran: false, ended: true };
+        const rewrites = chunk.entries.map(entry => ({ entity: entry.entity, before: entry.before, json: JSON.stringify(entry.names) }));
+        const written = await this.rewriteRecords(NAMES_FIELD, rewrites.filter(rewrite => rewrite.json !== rewrite.before), await this.stamper(null, []));
+        const marks = chunk.entries.map(entry => ({ kind: 'namesOfferMark', entry: entry.entity, names: JSON.stringify(entry.marked) }));
+        const ended = chunk.entries.length < RELATION_CHANGES_PER_STEP;
+        const end = !ended ? [] : [chunk.job === 'marking'
+            ? { kind: 'textValue', entity: book, field: NAMES_OFFER_FIELD, text: 'done' }
+            : { kind: 'valueDelete', entity: book, field: NAMES_OFFER_FIELD }];
+        await this.store.commit([...written, ...marks, ...end]);
+        return { ran: true, ended };
+    }
+
+    /**
+     * @returns {Promise<{ book: bigint, changedSources: bigint[], offerChanged: boolean } | null>}
      */
     async worldbuildingJobStep() {
         /** @type {{ book: bigint, entry: bigint, changedSources: bigint[], more: boolean } | null} */
         const step = await this.store.worldbuildingRelationStep(RELATION_CHANGES_PER_STEP);
-        if (step) return { book: step.book, changedSources: step.changedSources };
-        /** @type {{ merges: { book: bigint, kind: number, into: number }[], mergeRecordsDue: { book: bigint, kind: number }[] }} */
+        if (step) return { book: step.book, changedSources: step.changedSources, offerChanged: false };
+        /** @type {{ merges: { book: bigint, kind: number, into: number }[], mergeRecordsDue: { book: bigint, kind: number }[], namesOffers: { book: bigint }[] }} */
         const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
         for (const merge of pending.merges) {
             const done = await this.inWorld(merge.book, async () => {
                 /** @type {RelationRewrites} */
                 const chunk = await this.store.worldRead('worldbuildingKindMergeRewrites', { book: merge.book, kind: merge.kind, into: merge.into, limit: RELATION_CHANGES_PER_STEP });
                 if (chunk.rewrites.length > 0) {
-                    await this.store.commit(await this.rewriteRecords(chunk.rewrites, await this.stamper(null, [])));
-                    return { book: merge.book, changedSources: chunk.rewrites.map(rewrite => rewrite.entity) };
+                    await this.store.commit(await this.rewriteRecords(RELATIONS_FIELD, chunk.rewrites, await this.stamper(null, [])));
+                    return { book: merge.book, changedSources: chunk.rewrites.map(rewrite => rewrite.entity), offerChanged: false };
                 }
                 await this.store.commit([{ kind: 'valueDelete', entity: merge.book, field: relationKindField(merge.kind) }]);
-                return { book: merge.book, changedSources: [] };
+                return { book: merge.book, changedSources: [], offerChanged: false };
             });
             if (done !== 'missing') return done;
         }
         for (const due of pending.mergeRecordsDue) {
             const done = await this.inWorld(due.book, async () => {
                 await this.store.commit([{ kind: 'valueDelete', entity: due.book, field: relationKindMergeField(due.kind) }]);
-                return { book: due.book, changedSources: [] };
+                return { book: due.book, changedSources: [], offerChanged: false };
             });
+            if (done !== 'missing') return done;
+        }
+        for (const offer of pending.namesOffers) {
+            const done = await this.namesOfferStep(offer.book);
             if (done !== 'missing') return done;
         }
         return null;
@@ -1883,9 +1983,9 @@ export class WorldInfoEngine {
      * @returns {Promise<boolean>}
      */
     async anyWorldbuildingJob() {
-        /** @type {{ booksWithRelationSteps: bigint[], merges: unknown[], mergeRecordsDue: unknown[] }} */
+        /** @type {{ booksWithRelationSteps: bigint[], merges: unknown[], mergeRecordsDue: unknown[], namesOffers: unknown[] }} */
         const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
-        return pending.booksWithRelationSteps.length + pending.merges.length + pending.mergeRecordsDue.length > 0;
+        return pending.booksWithRelationSteps.length + pending.merges.length + pending.mergeRecordsDue.length + pending.namesOffers.length > 0;
     }
 
     /**
@@ -1956,7 +2056,7 @@ function assembleBook(s, world) {
             continue;
         }
         if (typeof v.field !== 'string') continue;
-        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD)) && v.text !== undefined) continue;
+        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD) || v.field === NAMES_OFFER_FIELD) && v.text !== undefined) continue;
         found.set(ownKeyOfField(v.field), v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
     }
     const kinds = relationKindsOfFields(s.entity?.values ?? []);

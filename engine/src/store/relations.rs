@@ -1166,6 +1166,7 @@ pub fn world_order_conversion_step(
         let layered_view = view.with_layer(&local);
         let mut derived = Out::default();
         super::references::entry_keys_came(&layered_view, &mut derived, book, entity)?;
+        super::names_offer::entry_came(&layered_view, &mut derived, book, entity)?;
         out.entries.extend(derived.entries.iter().cloned());
         derived.apply(&mut local);
     }
@@ -1612,6 +1613,7 @@ pub fn pending_worldbuilding_jobs(view: &View) -> Result<Js, StoreError> {
         ("booksWithRelationSteps", Js::Arr(relation_steps)),
         ("merges", Js::Arr(merges)),
         ("mergeRecordsDue", Js::Arr(records_due)),
+        ("namesOffers", super::names_offer::running_jobs(view)?),
     ]))
 }
 

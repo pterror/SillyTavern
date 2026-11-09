@@ -65,10 +65,10 @@ the keys' order, once each. A value that isn't a list is kept as written and hol
 as the keys the field marks (`entry_label::names_among`), so a name is always a key whatever wrote the field.
 
 Every place that draws an entry gets its **label** from the engine (`entry_label::label`), one rule: a title (upstream
-`comment`) with anything but white space in it is the label, shown as a name when it equals one of the entry's names
-and as a title otherwise; with no title, the first name; with neither, the opening of the text (from its first
-character that isn't white space to the end of that line, at most 120 characters). A label is
-`{ thing, text, shownAs }`, `thing` being the entry's entity id.
+`comment`) with anything but white space in it is the label, shown as a name when one of the entry's names has its
+words (both trimmed of the white space around them) and as a title otherwise; with no title, the first name; with
+neither, the opening of the text (from its first character that isn't white space to the end of that line, at most
+120 characters). A label is `{ thing, text, shownAs }`, `thing` being the entry's entity id.
 
 ## Keys shared between entries
 
@@ -79,6 +79,49 @@ entry passes (`references::key_written`): the old text's count goes down by one,
 that reaches 0 is deleted. An entry's creation and restore count all its keys (`references::entry_keys_came`), its
 deletion uncounts them (`references::entry_gone`). The read is one get per key: the count less the entry's own items with
 that text. The same text twice in one other entry counts twice.
+
+## The imported-book offer
+
+An imported book has no names (`worldbuilding.md`, Imported books). The world's header offers, once, to mark as names
+the keys that have their entry's title's words, and says how many entries that is, with an example. A title and a key
+have the same words when they are equal with the white space around them trimmed, as the matcher reads a key; the
+label uses the same rule, so a title whose words a name has is shown as a name.
+
+**Kept per entry, by its own writes.** An entry is **named** when one of its keys is a name, and **offered** when it
+has a title, its names field is absent or a list, and one of its keys has the title's words without being a name.
+Every write of an entry's title, a key item or its names field passes the one hook every text and JSON write of a
+counted book's entry passes (`book_stats::owned_value_changed`, then `names_offer::entry_value_written`), which reads
+the entry's title, names field and key items with the written value in place of the stored one and writes what
+changed; creation and restore count the entry once (`entry_came`), deletion uncounts it (`entry_gone`).
+
+| Key | Value | For |
+|---|---|---|
+| `NAMES_STATE_OF_ENTRY (e)` | named, offered (none: no key) | the old state, without reading the old values |
+| `OFFERED_ENTRIES (b, e)` | — | the offer's work list and its example (the first, by entity id) |
+| `NAMES_OFFER_COUNTS (b, ·)` | count (Add): named entries, offered entries, marks | the offer, and a job's progress |
+| `OFFER_MARKS (b, e)` | the mark record's place, the names it marked | Undo's work list |
+| `NAMES_OFFER_RUNNING (b)` | marking or undoing | the running job's marker, kept while the offer field says so |
+
+**The offer field.** One text field of the book, `\u0001namesOffer`: absent (offered while no entry is named and
+some entry is offered), `marking`, `done`, `declined` or `undoing`. It is no part of a world file and a whole-world
+save keeps it as stored. `worldbuilding.markTitleKeysAsNames` writes `marking` (refused unless the offer is shown),
+`declineNamesOffer` writes `declined` (refused unless the field is absent), `undoMarkTitleKeysAsNames` writes
+`undoing` (refused unless it is `marking` or `done`).
+
+**The jobs** (`WorldInfoEngine.namesOfferStep`, run by `worldbuilding-jobs.js` like the others; the action itself runs
+the first step in its own request, so a book of up to 1,000 offered entries is marked in one). A marking step reads up
+to `RELATION_CHANGES_PER_STEP` entries of `OFFERED_ENTRIES (b, ·)` (`worldbuildingNamesOfferChunk`) and commits, for
+each, a history write of its names field (its names and its offered keys, in its keys' order) and then a
+`namesOfferMark { entry, names }` record of the names it added; a step with fewer than a chunk writes `done` in the
+same commit. An undoing step reads up to a chunk of `OFFER_MARKS (b, ·)` and writes each entry's names without the
+ones its mark holds, then `namesOfferMark { entry, names: [] }`; its last deletes the field, so the offer is shown
+again. Each step takes its entries out of the list it reads, so every step makes progress.
+
+**A mark lasts until the entry's names are written again.** The names write's hook drops the entry's mark before the
+mark record of the same commit sets it, so a later write of an entry's names by anyone but the job (the author
+choosing names) drops the mark and Undo leaves that entry as the author made it. Deleting an entry drops its mark; a
+restore doesn't bring it back. A mark is a log record because it must survive what a derived-only key wouldn't: the
+names write it belongs to is a log record.
 
 ## The stored relation
 
@@ -203,6 +246,8 @@ lists it and nothing reads it at a store's opening. It lasts as long as its targ
 | a restore | `RESTORE_IN_PROGRESS` | up to 1,000 kept relations targeting the restored entry put back in use (derived keys only) | none kept targets it |
 | a kind's merge | `KINDS_BEING_MERGED` | up to 1,000 live sources' fields rewritten from kind A to kind B (one commit) | no live source has kind A; then A's name goes |
 | a merge record's end | `KIND_MERGE_RECORDS_DUE` | the record's field deleted | at once |
+| marking an imported book's title keys | `NAMES_OFFER_RUNNING` (marking) | up to 1,000 offered entries' names written, each with its mark (one commit) | none is offered; then the field says `done` |
+| taking the marks back | `NAMES_OFFER_RUNNING` (undoing) | up to 1,000 marked entries' names written without their marks (one commit) | no mark is left; then the field goes |
 
 `RELATION_CHANGES_PER_STEP` is 1,000: a relation's change reads its key and writes a few derived keys plus the tree's
 path, about 24 key operations, so a step is about the 24,000 reads one request may take (below, One request's budget).
@@ -331,6 +376,8 @@ at 312,112 sources), at most the position's length + 10.
 | one restore step | up to 1,000 kept relations back in use |
 | `displayIndex` changed | delete and insert: 2 × `depth` × (1 + the entry's strong kinds) + 2 edges |
 | kind created or renamed | none (the kind's field is its own record) |
+| an entry's title, a key item or its names written | its state recomputed (reads its title, names and key items: one scan of its own fields); when it changes, 1 state key + 1 count, + 1 index key if offered changes; a names write drops its mark (1 key, 1 count) |
+| a names offer step | per entry its names field (a history write) and a mark record: as above, + 1 mark key and 1 count |
 | kind marked merging | 1 (`KINDS_BEING_MERGED`); then per live source in its chunks, a relation removed and one added (above), or one removed when it folds into its twin; at the end A's name field (−1 index key), and the record while deleted entries hold kind A |
 
 
@@ -414,7 +461,9 @@ One area, `@st/worldbuilding`. Views:
 - `worldbuilding.worlds`: every world, `{id, name, entries, usedInEveryChat}`, in the order of the files their names
   would have had (`compareBookKeys`: `<name>.json` by the server's locale); `entries` is the book's kept count
   (`book_stats`), so no world's entries are read.
-- `worldbuilding.world`: the shown world's header, the same fields, or `{id: null}` when no world is shown.
+- `worldbuilding.world`: the shown world's header, the same fields and `namesOffer` (The imported-book offer): `null`
+  unless the offer is shown or its job runs, else `{entries, example, running, marked}` from the kept counts and the
+  first offered entry's label; or `{id: null}` when no world is shown.
 - `worldbuilding.results`: the session's filter on the shown world and what it finds (The filter, below): `{book,
   filter: {query, chips}, pages}`, each chip `{kind, kindName, target, targetDeleted, depth}` (its target's
   label, the last one shown once the target is deleted), each page `{cursor, entries, next}`: the pages the page
@@ -484,6 +533,9 @@ Actions:
   clears the filter; every action that answers the overview answers the results, re-reading the held pages by their
   cursors, and job steps push them.
 - `worldbuilding.findEntries` (book, query): one request per changed query.
+- `worldbuilding.markTitleKeysAsNames`, `declineNamesOffer`, `undoMarkTitleKeysAsNames` (book): the offer's actions
+  (The imported-book offer). Marking answers the cards and the last change, whose `markedTitleKeys` offers Undo until
+  the session's next change; each step of the job pushes the header, the cards and the open entry.
 
 The engine answers each read in one snapshot (`overview.rs`: `read_overview`, `step_in_reading_order`, each for the
 world's top level or for the sources pointing at an entry, and `read_pointing_at`;
@@ -556,7 +608,9 @@ the server stopped, then deleted with what only it uses:
    included (`relations::world_order_conversion_step`).
 
 Its first step also deletes every `KEY_ITEMS_BY_TEXT` count, and each step counts the keys of the entries it passes, so
-a run counts every key again from nothing. It prints only totals. Running it twice changes nothing.
+a run counts every key again from nothing. Each step also sets each entry's names offer state (The imported-book
+offer) from its fields, counting only what differs from the state stored, so a store written before the offer gets
+its counts from the run and a second run changes nothing. It prints only totals. Running it twice changes nothing.
 
 ## Open
 

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { TYPE } from '../library-codes.js';
-import { compareBookKeys } from '../world-info-engine.js';
+import { compareBookKeys, namesOfferShown } from '../world-info-engine.js';
 import { bookKey } from '../world-info-keys.js';
 import { CHOICE, chooseRecord } from '../settings-model/book-choices.js';
 import { EMBEDDED_WORLD_NAME } from './candidate-resolution.js';
@@ -90,6 +90,16 @@ async function entryCount(lib, book) {
 }
 
 /**
+ * @param {import('../world-info-engine.js').NamesOfferRead} read
+ * @returns {import('@st/worldbuilding/protocol').NamesOffer | null}
+ */
+function namesOfferOf(read) {
+    const running = read.state === 'marking' || read.state === 'undoing' ? read.state : null;
+    if (running === null && !namesOfferShown(read)) return null;
+    return { entries: read.offeredEntries, example: read.example, running, marked: read.marks };
+}
+
+/**
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {string} handle
  * @returns {Promise<bigint | null>}
@@ -116,7 +126,7 @@ export async function freeWorldName(lib, wanted) {
 /**
  * The world actions and the worlds views of the worldbuilding area, over the store.
  * @param {WorldPortsWiring} wiring
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readWorlds' | 'readWorld' | 'openWorld' | 'createWorld' | 'renameWorld' | 'duplicateWorld' | 'deleteWorld' | 'importWorld' | 'exportWorld' | 'setUsedInEveryChat'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readWorlds' | 'readWorld' | 'openWorld' | 'createWorld' | 'renameWorld' | 'duplicateWorld' | 'deleteWorld' | 'importWorld' | 'exportWorld' | 'setUsedInEveryChat' | 'markTitleKeysAsNames' | 'declineNamesOffer' | 'undoMarkTitleKeysAsNames'>}
  */
 export function worldbuildingWorldPorts({ libOf, booksChanged }) {
     const actorOf = (/** @type {import('@st/worldbuilding/server').Who} */ who) => ({ user: who.user.handle, session: who.session });
@@ -160,7 +170,7 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
             const id = BigInt(book);
             const key = await worldKey(lib, id);
             if (key === null) return null;
-            return { id: book, name: key, entries: await entryCount(lib, id), usedInEveryChat: await usedInEveryChat(user, id) };
+            return { id: book, name: key, entries: await entryCount(lib, id), usedInEveryChat: await usedInEveryChat(user, id), namesOffer: namesOfferOf(await lib.books.namesOffer(id)) };
         },
         async openWorld({ user }, book) {
             const lib = await libOf(user);
@@ -230,6 +240,15 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
             const data = key === null ? null : await lib.books.read(key);
             if (key === null || data === null) return null;
             return { fileName: `${key}.json`, json: JSON.stringify(data) };
+        },
+        async markTitleKeysAsNames({ user }, book) {
+            return (await libOf(user)).books.markTitleKeysAsNames(BigInt(book));
+        },
+        async declineNamesOffer({ user }, book) {
+            return (await libOf(user)).books.declineNamesOffer(BigInt(book));
+        },
+        async undoMarkTitleKeysAsNames({ user }, book) {
+            return (await libOf(user)).books.undoMarkTitleKeysAsNames(BigInt(book));
         },
         async setUsedInEveryChat({ user }, book, used) {
             const lib = await libOf(user);

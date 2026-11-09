@@ -127,7 +127,8 @@ pub fn label(
     content: impl FnOnce() -> Result<Vec<u8>, StoreError>,
 ) -> Result<Named, StoreError> {
     if let Some(title) = title.filter(|title| has_title(Some(title))) {
-        let shown_as = if names.iter().any(|name| name.as_slice() == title) {
+        let words = super::names_offer::trimmed(title);
+        let shown_as = if names.iter().any(|name| super::names_offer::trimmed(name) == words) {
             ShownAs::Name
         } else {
             ShownAs::Title

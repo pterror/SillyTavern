@@ -768,6 +768,12 @@ pub static KINDS: &[Kind] = &[
         internal: true,
     },
     Kind {
+        name: "namesOfferMark",
+        base: 1603,
+        slots: &[req("entry", Ty::Id(Space::Entity)), req("names", Ty::Text)],
+        internal: false,
+    },
+    Kind {
         name: "stateRevert",
         base: 119,
         slots: &[

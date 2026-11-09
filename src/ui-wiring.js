@@ -545,8 +545,9 @@ const optionalId = (/** @type {string | null} */ id) => (id === null ? null : Bi
 onUserStoreOpened(({ events, root, handle }) => {
     /** @type {import('@st/server-ui').User} */
     const user = /** @type {any} */ ({ handle, directories: { root } });
-    events.on('worldbuildingJobStep', () => {
-        ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview', 'worldbuilding.results', 'worldbuilding.pointingAt']).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
+    events.on('worldbuildingJobStep', (/** @type {bigint} */ _book, /** @type {boolean} */ offerChanged) => {
+        const offer = offerChanged ? ['worldbuilding.world', 'worldbuilding.entry', 'worldbuilding.found'] : [];
+        ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview', 'worldbuilding.results', 'worldbuilding.pointingAt', ...offer]).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
     });
 });
 

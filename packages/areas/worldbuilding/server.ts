@@ -29,6 +29,7 @@ import type {
     LastChangeView,
     LoopsLeftByJobsView,
     MentionedIn,
+    NamesOffer,
     Named,
     OpenEntryView,
     Placement,
@@ -120,9 +121,11 @@ export type ResultsRead = {
 
 export type Found = { entries: Named[]; next: string | null };
 
+export type NamesOfferChange = 'ok' | 'missing' | { refused: string };
+
 export type Ports = {
     readWorlds(user: User): Promise<World[]>;
-    readWorld(user: User, book: string): Promise<World | null>;
+    readWorld(user: User, book: string): Promise<(World & { namesOffer: NamesOffer | null }) | null>;
     openWorld(who: Who, book: string | null): Promise<string | null>;
     createWorld(who: Who, name: string): Promise<NewWorld>;
     renameWorld(who: Who, book: string, name: string): Promise<'ok' | 'missing' | { refused: string }>;
@@ -131,6 +134,9 @@ export type Ports = {
     importWorld(who: Who, file: Upload): Promise<NewWorld>;
     exportWorld(user: User, book: string): Promise<ExportedWorld | null>;
     setUsedInEveryChat(who: Who, book: string, used: boolean): Promise<'ok' | 'missing'>;
+    markTitleKeysAsNames(who: Who, book: string): Promise<NamesOfferChange>;
+    declineNamesOffer(who: Who, book: string): Promise<NamesOfferChange>;
+    undoMarkTitleKeysAsNames(who: Who, book: string): Promise<NamesOfferChange>;
     readOverview(user: User, query: ShownOverview): Promise<Omit<OverviewView, 'book' | 'groupBy'> | null>;
     stepOverview(user: User, query: Grouping & { layout: OverviewLayout } & OverviewStep): Promise<StepLanding | null>;
     readPointingAt(user: User, query: PointingAtQuery): Promise<PointingAtSection[] | null>;
@@ -205,6 +211,7 @@ const NOTHING_CHANGED: LastChangeView = {
     createdEntry: null,
     deletedEntry: null,
     movedEntry: null,
+    markedTitleKeys: null,
     unreachedLoops: [],
 };
 
@@ -444,6 +451,19 @@ export function worldbuildingArea(ports: Ports) {
         if (!finding) return NOTHING_FOUND;
         const found = await ports.findEntries(context.user, { ...finding, limit: FOUND_PER_QUERY });
         return { ...finding, ...found };
+    };
+
+    const namesOfferChanged = async (
+        context: ActionContext,
+        change: Promise<NamesOfferChange>,
+        lastChange: LastChangeView | null,
+    ): Promise<ActionResult> => {
+        const done = await change;
+        if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+        if (done !== 'ok') return { refused: done.refused, changed: [WORLD_VIEW] };
+        if (lastChange === null) return { changed: [WORLD_VIEW] };
+        remember(context.session, { lastChange });
+        return { changed: [...VIEWS_OF_CARDS, FOUND_VIEW, WORLD_VIEW, LAST_CHANGE_VIEW] };
     };
 
     const withOpenEntry =
@@ -788,6 +808,15 @@ export function worldbuildingArea(ports: Ports) {
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 return { changed: [WORLDS_VIEW, WORLD_VIEW] };
             },
+            'worldbuilding.markTitleKeysAsNames': (context, { book }) =>
+                namesOfferChanged(context, ports.markTitleKeysAsNames(who(context), book), {
+                    ...NOTHING_CHANGED,
+                    markedTitleKeys: { book },
+                }),
+            'worldbuilding.declineNamesOffer': (context, { book }) =>
+                namesOfferChanged(context, ports.declineNamesOffer(who(context), book), null),
+            'worldbuilding.undoMarkTitleKeysAsNames': (context, { book }) =>
+                namesOfferChanged(context, ports.undoMarkTitleKeysAsNames(who(context), book), NOTHING_CHANGED),
             'worldbuilding.setFilter': withOverview(async (context, overview, { book, query, chips, pageSize }) => {
                 if (overview.book !== book) return { refused: "That world isn't shown." };
                 if (query.trim() === '' && chips.length === 0) {

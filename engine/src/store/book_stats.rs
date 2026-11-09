@@ -162,6 +162,9 @@ fn owned_value_changed(
         } else if super::relations::is_relations_field(f) {
             super::relations::relations_field_written(view, out, *book, e, own_key, new)?;
         }
+        super::names_offer::entry_value_written(view, out, *book, e, f, json, new, entry_is_new)?;
+    } else if super::names_offer::is_offer_field(f) {
+        super::names_offer::offer_field_written(out, e, json, new);
     } else if let Some(kind) = super::relations::kind_of_relation_kind_field(f) {
         out.put(
             super::commit_checks::relation_kind_check_key(e, kind),
@@ -246,6 +249,7 @@ pub fn created(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Resul
     }
     if let Owner::Entry { book, .. } = &o {
         super::references::entry_keys_came(view, out, *book, e)?;
+        super::names_offer::entry_came(view, out, *book, e)?;
     }
     Ok(())
 }
@@ -269,6 +273,7 @@ pub fn gone(
     if kind == ENTRY {
         if let Some(Owner::Entry { book, own_key }) = owner_of(view, kind, k)? {
             super::relations::entry_deleted(view, out, book, e, &own_key, erased)?;
+            super::names_offer::entry_gone(view, out, book, e)?;
             let s = entry_stat(view, e)?;
             add(
                 out,
@@ -293,6 +298,7 @@ pub fn gone(
             for part in [BYTES, HASH, ENTRIES] {
                 out.del(key::ids(STAT_BOOK, e, part));
             }
+            super::names_offer::book_gone(out, e);
             drop_fields(view, out, e)
         }
         None => Ok(()),

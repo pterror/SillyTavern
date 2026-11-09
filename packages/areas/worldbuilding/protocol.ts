@@ -101,6 +101,7 @@ export type LastChangeView = {
     createdEntry: EntryAt | null;
     deletedEntry: (EntryAt & { label: Named }) | null;
     movedEntry: (EntryAt & { toBook: string; newEntry: string }) | null;
+    markedTitleKeys: { book: string } | null;
     unreachedLoops: UnreachedLoop[];
 };
 
@@ -193,7 +194,16 @@ export type World = { id: string; name: string; entries: number; usedInEveryChat
 
 export type WorldsView = { worlds: World[] };
 
-export type WorldView = World | { id: null };
+// `entries`: live entries with a key that has their title's words and isn't a name; `example` is the first of them, null
+// only while a job runs and none is left; `marked`: entries the offer has marked and Undo would take back.
+export type NamesOffer = {
+    entries: number;
+    example: Named | null;
+    running: 'marking' | 'undoing' | null;
+    marked: number;
+};
+
+export type WorldView = (World & { namesOffer: NamesOffer | null }) | { id: null };
 
 export type ExportedWorld = { fileName: string; json: string };
 
@@ -357,6 +367,9 @@ export const actions = {
     'worldbuilding.importWorld': v.object(opensWorld),
     'worldbuilding.exportWorld': v.object({ book: entityId }),
     'worldbuilding.setUsedInEveryChat': v.object({ book: entityId, used: v.boolean() }),
+    'worldbuilding.markTitleKeysAsNames': v.object({ book: entityId }),
+    'worldbuilding.declineNamesOffer': v.object({ book: entityId }),
+    'worldbuilding.undoMarkTitleKeysAsNames': v.object({ book: entityId }),
     'worldbuilding.setFilter': v.object({
         book: entityId,
         query: v.string(),

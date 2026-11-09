@@ -44,7 +44,7 @@ fn unindexed_key(book: u64, entry: u64, code: u64) -> Vec<u8> {
     k
 }
 
-fn is_key_item(code: u64, list: Option<u64>) -> bool {
+pub fn is_key_item(code: u64, list: Option<u64>) -> bool {
     code >= ITEM_BASE && Some((code - ITEM_BASE) % LISTS) == list
 }
 
@@ -78,10 +78,10 @@ fn change_key_items(
     Ok(())
 }
 
-fn key_texts_of(view: &View, book: u64, entry: u64) -> Result<Vec<Vec<u8>>, StoreError> {
+pub fn key_items_of(view: &View, book: u64, entry: u64) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
     let list = key_list(view, book)?;
     let prefix = key::id(key::HEAD, entry);
-    let mut texts = Vec::new();
+    let mut items = Vec::new();
     for (head_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
         let field = super::library::field_after(&head_key, key::HEAD)?;
         let FieldRef::Code(code) = field else {
@@ -90,10 +90,14 @@ fn key_texts_of(view: &View, book: u64, entry: u64) -> Result<Vec<Vec<u8>>, Stor
         if is_key_item(code, list)
             && let Some(key_text) = text_value(view, entry, &field)?
         {
-            texts.push(key_text);
+            items.push((code, key_text));
         }
     }
-    Ok(texts)
+    Ok(items)
+}
+
+fn key_texts_of(view: &View, book: u64, entry: u64) -> Result<Vec<Vec<u8>>, StoreError> {
+    Ok(key_items_of(view, book, entry)?.into_iter().map(|(_, key_text)| key_text).collect())
 }
 
 fn counted(texts: Vec<Vec<u8>>, change: i64) -> BTreeMap<Vec<u8>, i64> {

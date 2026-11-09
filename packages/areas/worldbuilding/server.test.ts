@@ -28,6 +28,7 @@ import type {
     Named,
     OpenEntryView,
     LoopsLeftByJobsView,
+    NamesOffer,
     OverviewLayout,
     OverviewView,
     PointingAtSection,
@@ -59,6 +60,7 @@ const NOTHING_CHANGED: LastChangeView = {
     createdEntry: null,
     deletedEntry: null,
     movedEntry: null,
+    markedTitleKeys: null,
     unreachedLoops: [],
 };
 
@@ -158,6 +160,7 @@ function world(
         pointingAtSteps: unknown[];
         results: ResultsQuery[];
         found: { book: string; query: string; limit: number }[];
+        namesOffer: [string, string][];
     } = {
         overview: [],
         step: [],
@@ -174,6 +177,25 @@ function world(
         pointingAtSteps: [],
         results: [],
         found: [],
+        namesOffer: [],
+    };
+    const offers = new Map<string, NamesOffer | null>([
+        [
+            '1',
+            { entries: 212, example: { thing: '7', text: 'Gerold Venn', shownAs: 'title' }, running: null, marked: 0 },
+        ],
+    ]);
+    const changeOffer = (
+        book: string,
+        change: string,
+        to: (offer: NamesOffer | null) => NamesOffer | null | string,
+    ) => {
+        asked.namesOffer.push([change, book]);
+        if (!worlds.has(book)) return 'missing' as const;
+        const changed = to(offers.get(book) ?? null);
+        if (typeof changed === 'string') return { refused: changed };
+        offers.set(book, changed);
+        return 'ok' as const;
     };
     const worlds = new Map<string, World>(
         listed.map((id) => [id, { id, name: `World ${id}`, entries: id === '1' ? 2 : 0, usedInEveryChat: false }]),
@@ -231,7 +253,24 @@ function world(
             : [];
     const ports: Ports = {
         readWorlds: async () => [...worlds.values()].sort((a, b) => a.name.localeCompare(b.name)),
-        readWorld: async (_u, book) => worlds.get(book) ?? null,
+        readWorld: async (_u, book) => {
+            const found = worlds.get(book);
+            return found ? { ...found, namesOffer: offers.get(book) ?? null } : null;
+        },
+        markTitleKeysAsNames: async (_w, book) =>
+            changeOffer(book, 'mark', (offer) =>
+                offer?.running === null
+                    ? { ...offer, running: 'marking', marked: 1000, entries: offer.entries - 1000 }
+                    : 'This world offers no names to mark.',
+            ),
+        declineNamesOffer: async (_w, book) =>
+            changeOffer(book, 'decline', (offer) =>
+                offer?.running === null ? null : 'This world offers no names to mark.',
+            ),
+        undoMarkTitleKeysAsNames: async (_w, book) =>
+            changeOffer(book, 'undo', (offer) =>
+                offer?.running === 'marking' ? { ...offer, running: 'undoing' } : 'Nothing was marked to take back.',
+            ),
         openWorld: async (_w, book) => {
             asked.opened.push(book);
             const opened =
@@ -475,6 +514,12 @@ test('opening a world opens its overview, its kinds and the last change in the s
         name: 'World 1',
         entries: 2,
         usedInEveryChat: false,
+        namesOffer: {
+            entries: 212,
+            example: { thing: '7', text: 'Gerold Venn', shownAs: 'title' },
+            running: null,
+            marked: 0,
+        },
     });
     expect(await w.view<LoopsLeftByJobsView>(LOOPS_LEFT_BY_JOBS_VIEW)).toEqual({
         book: '1',
@@ -605,6 +650,7 @@ test('making a world names it, opens it at the range asked for and answers the w
         name: 'Saltmarrow',
         entries: 0,
         usedInEveryChat: false,
+        namesOffer: null,
     });
     expect(await w.view<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null });
     expect(w.asked.overview.at(-1)).toMatchObject({ book: '10', groupBy: null, firstRank: 0, endRank: 20 });
@@ -1464,4 +1510,51 @@ test('the search schemas take a world and chips by id, a depth of directly or at
     expect(accepts('worldbuilding.showResults', { cursors: [''] })).toBe(false);
     expect(accepts('worldbuilding.showResults', { cursors: [null, '1.c2'] })).toBe(true);
     expect(accepts('worldbuilding.findEntries', { book: 'x', query: '' })).toBe(false);
+});
+
+test("an imported book's offer is on the world's header; marking answers the cards and offers Undo in the last change until the next change", async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    const cardViews = [
+        OVERVIEW_VIEW,
+        RESULTS_VIEW,
+        ENTRY_VIEW,
+        POINTING_AT_VIEW,
+        FOUND_VIEW,
+        WORLD_VIEW,
+        LAST_CHANGE_VIEW,
+    ];
+    expect(await w.act('worldbuilding.markTitleKeysAsNames', { book: '1' })).toEqual({ changed: cardViews });
+    expect(w.asked.namesOffer).toEqual([['mark', '1']]);
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ namesOffer: { running: 'marking', marked: 1000 } });
+    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
+        ...NOTHING_CHANGED,
+        markedTitleKeys: { book: '1' },
+    });
+    expect(await w.otherView<LastChangeView>(LAST_CHANGE_VIEW)).toEqual(NOTHING_CHANGED);
+    expect(await w.act('worldbuilding.markTitleKeysAsNames', { book: '1' })).toEqual({
+        refused: 'This world offers no names to mark.',
+        changed: [WORLD_VIEW],
+    });
+    expect(await w.act('worldbuilding.undoMarkTitleKeysAsNames', { book: '1' })).toEqual({ changed: cardViews });
+    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual(NOTHING_CHANGED);
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ namesOffer: { running: 'undoing' } });
+    expect(await w.act('worldbuilding.undoMarkTitleKeysAsNames', { book: '1' })).toEqual({
+        refused: 'Nothing was marked to take back.',
+        changed: [WORLD_VIEW],
+    });
+    expect(await w.act('worldbuilding.markTitleKeysAsNames', { book: '9' })).toEqual({
+        refused: 'That world no longer exists.',
+        changed: [WORLDS_VIEW],
+    });
+});
+
+test('leaving the offer answers only the header, which shows no offer from then on', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    await w.act('worldbuilding.createRelationKind', { book: '1', name: 'in' });
+    expect(await w.act('worldbuilding.declineNamesOffer', { book: '1' })).toEqual({ changed: [WORLD_VIEW] });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ namesOffer: null });
+    expect((await w.view<LastChangeView>(LAST_CHANGE_VIEW)).createdKind).toEqual({ book: '1', kind: '2' });
+    expect(v.safeParse(actions['worldbuilding.declineNamesOffer'], { book: 'one' }).success).toBe(false);
 });

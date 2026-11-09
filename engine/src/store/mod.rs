@@ -17,6 +17,7 @@ pub mod library_read;
 pub mod library_search;
 pub mod local_import;
 pub mod lock;
+pub mod names_offer;
 pub mod overview;
 pub mod prune;
 pub mod references;
@@ -2009,6 +2010,8 @@ mod library_search_tests;
 mod library_search_diff_tests;
 #[cfg(test)]
 mod library_tests;
+#[cfg(test)]
+mod names_offer_tests;
 #[cfg(test)]
 mod overview_tests;
 #[cfg(test)]

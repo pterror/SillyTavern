@@ -50,7 +50,7 @@ const names = async () => (await ports.readWorlds(uiUser)).map(w => w.name);
 
 test('a world is made under the name asked for, refused when taken, reserved or no name a world can have', async () => {
     const lantern = bookOf(await ports.createWorld(who, 'Lantern'));
-    assert.deepEqual(await ports.readWorld(uiUser, lantern), { id: lantern, name: 'Lantern', entries: 0, usedInEveryChat: false });
+    assert.deepEqual(await ports.readWorld(uiUser, lantern), { id: lantern, name: 'Lantern', entries: 0, usedInEveryChat: false, namesOffer: null });
     assert.deepEqual(await ports.createWorld(who, 'Lantern'), { refused: 'A world named "Lantern" already exists.' });
     assert.deepEqual(await ports.createWorld(who, '__embedded__'), { refused: EMBEDDED_NAME_REFUSAL });
     assert.deepEqual(await ports.createWorld(who, 'a/b'), { refused: NAME_REFUSAL });
@@ -60,11 +60,17 @@ test('a world is made under the name asked for, refused when taken, reserved or 
 });
 
 test('a file is imported under its own name, made free when taken, and counted from the kept counts', async () => {
-    const book = { entries: { 0: { uid: 0, key: ['Ilse'], content: 'Keeper.' }, 1: { uid: 1, key: ['lamp'], content: 'A lamp.' } } };
+    const book = { entries: { 0: { uid: 0, key: ['Ilse'], comment: ' Ilse', content: 'Keeper.' }, 1: { uid: 1, key: ['lamp'], content: 'A lamp.' } } };
     const ashfall = bookOf(await ports.importWorld(who, upload('Ashfall.json', book)));
-    assert.deepEqual(await ports.readWorld(uiUser, ashfall), { id: ashfall, name: 'Ashfall', entries: 2, usedInEveryChat: false });
+    const read = await ports.readWorld(uiUser, ashfall);
+    assert.deepEqual({ ...read, namesOffer: null }, { id: ashfall, name: 'Ashfall', entries: 2, usedInEveryChat: false, namesOffer: null });
+    assert.deepEqual({ ...read?.namesOffer, example: read?.namesOffer?.example?.text }, { entries: 1, example: ' Ilse', running: null, marked: 0 }, 'an imported key with the title\'s words is offered as a name');
+    assert.equal(await ports.markTitleKeysAsNames(who, ashfall), 'ok');
+    assert.deepEqual((await ports.readWorld(uiUser, ashfall))?.namesOffer, null, 'a book of one chunk is marked in the action\'s own request');
+    const thing = String(read?.namesOffer?.example?.thing);
+    assert.deepEqual(await lib.store.worldRead('worldbuildingLabels', { book: BigInt(ashfall), entities: [BigInt(thing)] }), [{ thing, text: ' Ilse', shownAs: 'name' }]);
     const again = bookOf(await ports.importWorld(who, upload('Ashfall.json', { kind: 'memory', entries: [{ name: 'Inn', entry: 'An inn.', keywords: ['inn'], weight: 1, enabled: true }] })));
-    assert.deepEqual(await ports.readWorld(uiUser, again), { id: again, name: 'Ashfall (1)', entries: 1, usedInEveryChat: false });
+    assert.deepEqual(await ports.readWorld(uiUser, again), { id: again, name: 'Ashfall (1)', entries: 1, usedInEveryChat: false, namesOffer: null });
     assert.deepEqual(await ports.importWorld(who, upload('notes.json', { notes: [] })), { refused: 'This file isn\'t a world: it holds no entries SillyTavern, NovelAI, Agnai or Risu can make.' });
     assert.deepEqual(await names(), ['Ashfall (1)', 'Ashfall', 'Lantern']);
 });
@@ -72,7 +78,7 @@ test('a file is imported under its own name, made free when taken, and counted f
 test('a copy takes the next free name and every entry; an export is the world file under its name', async () => {
     const [ashfall] = (await ports.readWorlds(uiUser)).filter(w => w.name === 'Ashfall');
     const copy = bookOf(await ports.duplicateWorld(who, ashfall.id));
-    assert.deepEqual(await ports.readWorld(uiUser, copy), { id: copy, name: 'Ashfall (2)', entries: 2, usedInEveryChat: false });
+    assert.deepEqual(await ports.readWorld(uiUser, copy), { id: copy, name: 'Ashfall (2)', entries: 2, usedInEveryChat: false, namesOffer: null });
     const exported = await ports.exportWorld(uiUser, copy);
     assert.equal(exported?.fileName, 'Ashfall (2).json');
     assert.deepEqual(Object.values(JSON.parse(exported?.json ?? '{}').entries).map((/** @type {any} */ e) => e.key), [['Ilse'], ['lamp']]);

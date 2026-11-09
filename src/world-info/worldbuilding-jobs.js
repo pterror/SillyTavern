@@ -6,7 +6,7 @@ import { LOOP_CHECK_VISITS_PER_WRITE } from '@st/worldbuilding/protocol';
 
 /**
  * @typedef {object} JobSteps
- * @property {() => Promise<{ book: bigint, changedSources: bigint[] } | null>} worldbuildingJobStep
+ * @property {() => Promise<{ book: bigint, changedSources: bigint[], offerChanged: boolean } | null>} worldbuildingJobStep
  * @property {() => Promise<boolean>} anyWorldbuildingJob
  * @property {(book: bigint, records: object[], alsoChanged: bigint[]) => Promise<UnreachedLoop[]>} unreachedLoops
  */
@@ -26,7 +26,7 @@ export class WorldbuildingJobs {
         this.loopsLeftByWorld = new Map();
         /** @type {Set<bigint>} */
         this.worldsWithJobsSinceStart = new Set();
-        /** @type {((book: bigint) => void) | null} */
+        /** @type {((book: bigint, offerChanged: boolean) => void) | null} */
         this.onStepDone = null;
     }
 
@@ -74,7 +74,7 @@ export class WorldbuildingJobs {
                 kept.push(...loops);
                 this.loopsLeftByWorld.set(step.book, kept.slice(-LOOP_CHECK_VISITS_PER_WRITE));
             }
-            this.onStepDone?.(step.book);
+            this.onStepDone?.(step.book, step.offerChanged);
         }
     }
 

@@ -3031,6 +3031,24 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "worldbuildingNamesOffer" | "worldbuildingNamesOfferChunk" => {
+            use crate::store::names_offer;
+            let book = req_integer(a, "book")?;
+            if op == "worldbuildingNamesOffer" {
+                Box::new(move |store| {
+                    store
+                        .chat_read(|view| names_offer::read_offer(view, book))
+                        .map(JsTree)
+                })
+            } else {
+                let limit = req_integer(a, "limit")? as usize;
+                Box::new(move |store| {
+                    store
+                        .chat_read(|view| names_offer::job_chunk(view, book, limit))
+                        .map(JsTree)
+                })
+            }
+        }
         "worldbuildingPendingJobs" => {
             use crate::store::relations;
             Box::new(move |store| {
