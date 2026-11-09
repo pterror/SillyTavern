@@ -155,7 +155,7 @@ fn any_depth(target: u64) -> Chip {
     }
 }
 
-fn results(store: &Store, query: &str, chips: &[Chip], pages: Vec<Option<String>>, limit: usize) -> Js {
+fn results(store: &Store, query: &str, chips: &[Chip], from: Option<String>, pages: usize, limit: usize) -> Js {
     store
         .world_results(&ResultsRead {
             book: 1,
@@ -163,6 +163,7 @@ fn results(store: &Store, query: &str, chips: &[Chip], pages: Vec<Option<String>
             card_text_characters: 5,
             clauses: words(query, None),
             chips: chips.to_vec(),
+            from,
             pages,
             limit,
         })
@@ -170,7 +171,7 @@ fn results(store: &Store, query: &str, chips: &[Chip], pages: Vec<Option<String>
 }
 
 fn one_page(store: &Store, query: &str, chips: &[Chip], cursor: Option<String>, limit: usize) -> (Vec<String>, Option<String>) {
-    let read = results(store, query, chips, vec![cursor], limit);
+    let read = results(store, query, chips, cursor, 1, limit);
     let page = &list(field(&read, "pages"))[0];
     let occurrences = list(field(page, "entries"))
         .iter()
@@ -218,9 +219,21 @@ fn a_search_finds_the_live_entries_of_its_world_only_a_page_at_a_time_in_relevan
     let paged = all_pages(&store, "lamp", &[], 3);
     assert!(paged.len() >= 3);
     assert_eq!(paged.concat(), whole);
+    let run = results(&store, "lamp", &[], None, paged.len() + 1, 3);
+    let run_pages = list(field(&run, "pages"));
+    let occurrences_of = |page: &Js| -> Vec<String> {
+        let cards = list(field(page, "entries"));
+        cards.iter().map(|card| text_of(field(card, "occurrence"))).collect()
+    };
+    let read_in_a_run: Vec<Vec<String>> = run_pages.iter().map(occurrences_of).collect();
+    assert_eq!(read_in_a_run, paged, "a run is the pages one after another, to the end");
+    assert_eq!(field(&run_pages[0], "cursor"), &Js::Null);
+    assert_eq!(next_of(&run_pages[0]), Some(text_of(field(&run_pages[1], "cursor"))));
+    let later = results(&store, "lamp", &[], next_of(&run_pages[0]), 2, 3);
+    assert_eq!(list(field(&later, "pages")), &run_pages[1..3], "a run from a later cursor reads the same pages");
     let (_, next) = one_page(&store, "lamp the", &[], None, 1);
     assert!(next.unwrap().contains('.'), "a cursor of several words carries their weights");
-    let read = results(&store, "lamp", &[], vec![None], 1);
+    let read = results(&store, "lamp", &[], None, 1, 1);
     let card = &list(field(&list(field(&read, "pages"))[0], "entries"))[0];
     assert_eq!(text_of(field(card, "cell")), "entry");
     assert!(list(field(card, "region")).is_empty());
@@ -290,7 +303,7 @@ fn the_chips_are_read_with_their_targets_labels_and_finding_matches_names_and_ti
     let dir = temp_dir("find");
     let store = Store::open_in(&dir, SMALL, pool()).unwrap();
     world(&store);
-    let read = results(&store, "", &[directly(101), any_depth(110)], vec![], 10);
+    let read = results(&store, "", &[directly(101), any_depth(110)], None, 0, 10);
     let chips = list(field(&read, "chips"));
     assert_eq!(text_of(field(&chips[0], "kindName")), "in");
     assert_eq!(text_of(field(field(&chips[0], "target"), "text")), "Saltmarrow");

@@ -12,6 +12,7 @@ import {
     LOOP_CHECK_VISITS_PER_WRITE,
     LOOPS_LEFT_BY_JOBS_VIEW,
     MAX_CARDS_PER_READ,
+    MENTION_PAGES_AT_MOST,
     OVERVIEW_VIEW,
     placementFields,
     POINTING_AT_VIEW,
@@ -57,6 +58,7 @@ import type {
     Grouping,
     HeldSelection,
     OverviewStep,
+    PagesRun,
     PointingAtQuery,
     Ports,
     RelationChange,
@@ -172,7 +174,7 @@ function world(
         changes: { book: string; change: RelationChange; loopCheckLimit: number; session: string }[];
         edits: { book: string; entry: string; edit: EntryEdit; session: string }[];
         created: { book: string; creation: EntryCreation; loopCheckLimit: number }[];
-        entryReads: { book: string; entry: string; mentionPages: string[] }[];
+        entryReads: { book: string; entry: string; mentions: PagesRun }[];
         deleted: string[];
         restored: string[];
         moved: { entry: string; toBook: string }[];
@@ -243,7 +245,13 @@ function world(
         ['8', { text: 'The Lantern House', deleted: false }],
     ]);
     let nextEntry = 50;
-    const entryRead = (entry: string, mentionPages: string[]): EntryRead => {
+    // What mentions an entry: three pages, `p0` (read at null), `p1` and `p2`, each naming the entry `m<page>`.
+    const mentionsPage = (at: number) => ({
+        cursor: at === 0 ? null : `p${at}`,
+        entries: [{ from: named(`m${at}`, `name m${at}`), sentence: { before: '', mention: 'Ilse', after: '.' } }],
+        next: at < 2 ? `p${at + 1}` : null,
+    });
+    const entryRead = (entry: string, { from, pages }: PagesRun): EntryRead => {
         const found = entries.get(entry);
         if (!found) return null;
         if (found.deleted) return { deleted: true };
@@ -260,14 +268,9 @@ function world(
             placementDiffersFromDefaults: false,
             tokens: found.text.length,
             mentionedIn: {
-                entries: [
-                    { from: named('8', 'name 8'), sentence: { before: '', mention: 'Ilse', after: ' keeps.' } },
-                    ...mentionPages.map((cursor) => ({
-                        from: named(cursor, `name ${cursor}`),
-                        sentence: { before: 'Then ', mention: 'Ilse', after: '.' },
-                    })),
-                ],
-                next: mentionPages.length < 2 ? `p${mentionPages.length + 1}` : null,
+                pages: Array.from({ length: pages }, (_, at) => at + (from === null ? 0 : Number(from.slice(1))))
+                    .filter((at) => at <= 2)
+                    .map(mentionsPage),
             },
         };
     };
@@ -417,13 +420,20 @@ function world(
                     kindName: kinds.find((listed) => listed.id === kind)?.name ?? null,
                     target: entries.get(target)?.deleted === false ? named(target, `name ${target}`) : null,
                 })),
-                pages: q.pages.map((cursor) => {
-                    const at = cursor === null ? 0 : Number(cursor.slice(1));
-                    const entries = [];
-                    for (let r = at; r < Math.min(at + q.pageSize, results); r++) entries.push(resultCard(r));
-                    const next = at + q.pageSize < results ? `c${at + q.pageSize}` : null;
-                    return { entries, next };
-                }),
+                pages: (() => {
+                    const read = [];
+                    let cursor = q.from;
+                    while (read.length < q.pages) {
+                        const at = cursor === null ? 0 : Number(cursor.slice(1));
+                        const entries = [];
+                        for (let r = at; r < Math.min(at + q.pageSize, results); r++) entries.push(resultCard(r));
+                        const next = at + q.pageSize < results ? `c${at + q.pageSize}` : null;
+                        read.push({ cursor, entries, next });
+                        if (next === null) break;
+                        cursor = next;
+                    }
+                    return read;
+                })(),
             };
         },
         findEntries: async (_u, q) => {
@@ -478,9 +488,9 @@ function world(
             merged.mergingInto = into;
             return 'ok';
         },
-        readEntry: async (_u, book, entry, mentionPages) => {
-            asked.entryReads.push({ book, entry, mentionPages });
-            return book === '1' ? entryRead(entry, mentionPages) : null;
+        readEntry: async (_u, book, entry, mentions) => {
+            asked.entryReads.push({ book, entry, mentions });
+            return book === '1' ? entryRead(entry, mentions) : null;
         },
         readKeySharers: async (_u, { book, entry, key, limit }) => {
             asked.sharers.push({ book, entry, key, limit });
@@ -564,6 +574,7 @@ function world(
 
 const WORLD_VIEWS = [
     OVERVIEW_VIEW,
+    RESULTS_VIEW,
     RELATION_KINDS_VIEW,
     LAST_CHANGE_VIEW,
     LOOPS_LEFT_BY_JOBS_VIEW,
@@ -793,7 +804,7 @@ test('deleting the shown world opens the one the list orders after it, else befo
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     await w.other('worldbuilding.openOverview', { ...open, book: '2' });
     expect(await w.act('worldbuilding.deleteWorld', { book: '2' })).toEqual({
-        changed: [RESULTS_VIEW, FOUND_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, WORLDS_VIEW],
+        changed: [FOUND_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, WORLDS_VIEW],
         opensViews: WORLD_VIEWS,
     });
     expect(w.asked.opened.at(-1)).toBe('3');
@@ -1104,7 +1115,7 @@ const entryOpen = (view: EntryView): OpenEntryView => {
     return view;
 };
 
-test('opening an entry opens its view: the entry, its keys, placement, tokens and the first page of what mentions it; more pages append; closing it shows none', async () => {
+test('opening an entry opens its view: the entry, its keys, placement, tokens and the first page of what mentions it; the page names the run of mention pages held; closing it shows none', async () => {
     const w = world(3);
     await w.act('worldbuilding.openOverview', open);
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
@@ -1114,21 +1125,30 @@ test('opening an entry opens its view: the entry, its keys, placement, tokens an
     });
     const shown = entryOpen(await w.view<EntryView>(ENTRY_VIEW));
     expect(shown).toMatchObject({ book: '1', entry: '7', deleted: false, label: named('7', 'name 7'), tokens: 20 });
-    expect(shown.mentionedIn.entries.map((m) => m.from.thing)).toEqual(['8']);
-    expect(shown.mentionedIn.next).toBe('p1');
-    expect(await w.act('worldbuilding.showMoreMentions', { cursor: 'p1' })).toEqual({ changed: [ENTRY_VIEW] });
-    await w.act('worldbuilding.showMoreMentions', { cursor: 'p1' });
-    await w.act('worldbuilding.showMoreMentions', { cursor: 'p2' });
-    const more = entryOpen(await w.view<EntryView>(ENTRY_VIEW));
-    expect(more.mentionedIn.entries.map((m) => m.from.thing)).toEqual(['8', 'p1', 'p2']);
-    expect(more.mentionedIn.next).toBeNull();
-    expect(w.asked.entryReads.at(-1)).toEqual({ book: '1', entry: '7', mentionPages: ['p1', 'p2'] });
+    const pagesOf = (view: OpenEntryView) =>
+        view.mentionedIn.pages.map((page) => [page.cursor, page.next, page.entries.map((m) => m.from.thing)]);
+    expect(pagesOf(shown)).toEqual([[null, '1.p1', ['m0']]]);
+    expect(await w.act('worldbuilding.showMentions', { from: null, pages: 3 })).toEqual({ changed: [ENTRY_VIEW] });
+    expect(pagesOf(entryOpen(await w.view<EntryView>(ENTRY_VIEW)))).toEqual([
+        [null, '1.p1', ['m0']],
+        ['1.p1', '1.p2', ['m1']],
+        ['1.p2', null, ['m2']],
+    ]);
+    expect(await w.act('worldbuilding.showMentions', { from: '1.p2', pages: 2 })).toEqual({ changed: [ENTRY_VIEW] });
+    expect(pagesOf(entryOpen(await w.view<EntryView>(ENTRY_VIEW)))).toEqual([['1.p2', null, ['m2']]]);
+    expect(w.asked.entryReads.at(-1)).toEqual({ book: '1', entry: '7', mentions: { from: 'p2', pages: 2 } });
     await w.act('worldbuilding.openEntry', { entry: '8', pointingAt });
-    expect(w.asked.entryReads.length).toBe(2);
-    expect(entryOpen(await w.view<EntryView>(ENTRY_VIEW)).mentionedIn.entries).toHaveLength(1);
+    expect(w.asked.entryReads.length).toBe(3);
+    expect(pagesOf(entryOpen(await w.view<EntryView>(ENTRY_VIEW)))).toEqual([[null, '2.p1', ['m0']]]);
+    expect(await w.act('worldbuilding.showMentions', { from: '1.p1', pages: 1 })).toEqual({
+        refused: 'Those mentions are no longer shown.',
+        changed: [ENTRY_VIEW],
+    });
     expect(await w.act('worldbuilding.closeEntry', {})).toEqual({ changed: [ENTRY_VIEW, POINTING_AT_VIEW] });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
-    expect(await w.act('worldbuilding.showMoreMentions', { cursor: 'p1' })).toEqual({ refused: 'No entry is open.' });
+    expect(await w.act('worldbuilding.showMentions', { from: null, pages: 1 })).toEqual({
+        refused: 'No entry is open.',
+    });
     await w.act('worldbuilding.openEntry', { entry: '404', pointingAt });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
 });
@@ -1318,7 +1338,7 @@ test('moving the open entry to another world opens that world with the entry ope
         refused: 'The world to move it to no longer exists.',
     });
     expect(await w.act('worldbuilding.moveEntryToWorld', { book: '1', entry: '7', toBook: '2' })).toEqual({
-        changed: [RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW],
+        changed: [FOUND_VIEW, WORLDS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW],
         opensViews: WORLD_VIEWS,
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '2' });
@@ -1331,7 +1351,7 @@ test('moving the open entry to another world opens that world with the entry ope
     });
     expect(w.asked.entryReads).toEqual([]);
     await w.view<EntryView>(ENTRY_VIEW);
-    expect(w.asked.entryReads).toEqual([{ book: '2', entry: '90', mentionPages: [] }]);
+    expect(w.asked.entryReads).toEqual([{ book: '2', entry: '90', mentions: { from: null, pages: 1 } }]);
 });
 
 test('moving an entry that is not the open one leaves the tab on its world, with the open entry still open', async () => {
@@ -1421,7 +1441,9 @@ test('the entry schemas take worlds and entries by id, keys trimmed and not empt
     expect(ok('worldbuilding.createEntry', { ...make, relation: { kind: 'in', target: '8' } })).toBe(false);
     expect(ok('worldbuilding.createEntry', { ...make, loopCheckLimit: 0 })).toBe(false);
     expect(ok('worldbuilding.moveEntryToWorld', { ...at, toBook: '2' })).toBe(true);
-    expect(ok('worldbuilding.showMoreMentions', { cursor: '' })).toBe(false);
+    expect(ok('worldbuilding.showMentions', { from: '', pages: 1 })).toBe(false);
+    expect(ok('worldbuilding.showMentions', { from: null, pages: 0 })).toBe(false);
+    expect(ok('worldbuilding.showMentions', { from: null, pages: MENTION_PAGES_AT_MOST + 1 })).toBe(false);
 });
 
 const pointingAtOpen = (view: PointingAtView) => {
@@ -1590,6 +1612,7 @@ test("the filter is the shown world's: setting it opens the results at their fir
     expect(await w.act('worldbuilding.setFilter', filter)).toEqual({ changed: [], opensViews: [RESULTS_VIEW] });
     expect(await w.view<ResultsView>(RESULTS_VIEW)).toEqual({
         book: '1',
+        generation: 1,
         filter: {
             query: 'lamp',
             chips: [
@@ -1605,7 +1628,8 @@ test("the filter is the shown world's: setting it opens the results at their fir
         query: 'lamp',
         chips: [inSaltmarrow],
         pageSize: 2,
-        pages: [null],
+        from: null,
+        pages: 1,
     });
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.setFilter', filter)).toEqual({
@@ -1622,7 +1646,7 @@ test("the filter is the shown world's: setting it opens the results at their fir
     });
 });
 
-test('the session holds the window of pages the page asks for, each read by its cursor; a cursor of another filter is refused', async () => {
+test('the session holds the run of pages the page asks for, read from its first cursor; a cursor of another filter is refused', async () => {
     const w = world(3);
     await w.act('worldbuilding.openOverview', open);
     await w.act('worldbuilding.setFilter', filter);
@@ -1630,41 +1654,39 @@ test('the session holds the window of pages the page asks for, each read by its 
     const pagesOf = (view: ResultsView) =>
         'pages' in view ? view.pages.map((page) => [page.cursor, page.next, page.entries.map((e) => e.entry)]) : [];
     expect(pagesOf(shown)).toEqual([[null, '1.c2', ['300', '301']]]);
-    expect(await w.act('worldbuilding.showResults', { cursors: [null, '1.c2', '1.c4'] })).toEqual({
-        changed: [RESULTS_VIEW],
-    });
+    expect(await w.act('worldbuilding.showResults', { from: null, pages: 4 })).toEqual({ changed: [RESULTS_VIEW] });
     shown = await w.view<ResultsView>(RESULTS_VIEW);
     expect(pagesOf(shown)).toEqual([
         [null, '1.c2', ['300', '301']],
         ['1.c2', '1.c4', ['302', '303']],
         ['1.c4', null, ['304']],
     ]);
-    expect(w.asked.results.at(-1)?.pages).toEqual([null, 'c2', 'c4']);
-    expect(await w.act('worldbuilding.showResults', { cursors: ['1.c4'] })).toEqual({ changed: [RESULTS_VIEW] });
+    expect(w.asked.results.at(-1)).toMatchObject({ from: null, pages: 4 });
+    expect(await w.act('worldbuilding.showResults', { from: '1.c4', pages: 1 })).toEqual({ changed: [RESULTS_VIEW] });
     expect(pagesOf(await w.view<ResultsView>(RESULTS_VIEW))).toEqual([['1.c4', null, ['304']]]);
-    expect(await w.act('worldbuilding.showResults', { cursors: ['1.c2'] })).toEqual({ changed: [RESULTS_VIEW] });
+    expect(await w.act('worldbuilding.showResults', { from: '1.c2', pages: 1 })).toEqual({ changed: [RESULTS_VIEW] });
     expect(pagesOf(await w.view<ResultsView>(RESULTS_VIEW))).toEqual([['1.c2', '1.c4', ['302', '303']]]);
+    expect(w.asked.results.at(-1)).toMatchObject({ from: 'c2', pages: 1 });
     await w.act('worldbuilding.setFilter', { ...filter, query: 'oil' });
-    expect(await w.act('worldbuilding.showResults', { cursors: ['1.c2'] })).toEqual({
+    expect(await w.act('worldbuilding.showResults', { from: '1.c2', pages: 1 })).toEqual({
         refused: 'Those results are no longer shown.',
         changed: [RESULTS_VIEW],
     });
+    expect(await w.view<ResultsView>(RESULTS_VIEW)).toMatchObject({ generation: 2 });
     expect(pagesOf(await w.view<ResultsView>(RESULTS_VIEW))).toEqual([[null, '2.c2', ['300', '301']]]);
-    expect(await w.other('worldbuilding.showResults', { cursors: [null] })).toEqual({
+    expect(await w.other('worldbuilding.showResults', { from: null, pages: 1 })).toEqual({
         refused: 'Nothing is searched for.',
         changed: [RESULTS_VIEW],
     });
 });
 
-test("a window past one read's budget is refused", async () => {
+test("a run past one read's budget is refused", async () => {
     const half = MAX_CARDS_PER_READ / 2;
     const w = world(3, { results: 2 * MAX_CARDS_PER_READ });
     await w.act('worldbuilding.openOverview', open);
     await w.act('worldbuilding.setFilter', { ...filter, pageSize: half });
-    expect(await w.act('worldbuilding.showResults', { cursors: [null, `1.c${half}`] })).toEqual({
-        changed: [RESULTS_VIEW],
-    });
-    expect(await w.act('worldbuilding.showResults', { cursors: [null, `1.c${half}`, `1.c${2 * half}`] })).toEqual({
+    expect(await w.act('worldbuilding.showResults', { from: null, pages: 2 })).toEqual({ changed: [RESULTS_VIEW] });
+    expect(await w.act('worldbuilding.showResults', { from: `1.c${half}`, pages: 3 })).toEqual({
         refused: READ_REFUSAL,
     });
 });
@@ -1711,7 +1733,8 @@ test('what changes cards answers the results; another world clears them, the sam
     expect(await w.view<ResultsView>(RESULTS_VIEW)).toMatchObject({ book: '1' });
     expect(w.asked.results.at(-1)).toMatchObject({ groupBy: null });
     expect(await w.act('worldbuilding.openOverview', { ...open, book: '2' })).toMatchObject({
-        changed: [RESULTS_VIEW],
+        changed: [],
+        opensViews: WORLD_VIEWS,
     });
     expect(await w.view<ResultsView>(RESULTS_VIEW)).toEqual({ book: null });
     await w.act('worldbuilding.openOverview', open);
@@ -1747,9 +1770,10 @@ test('the search schemas take a world and chips by id, a depth of directly or at
     expect(accepts('worldbuilding.setFilter', { ...filter, chips: [{ ...inSaltmarrow, kind: '0' }] })).toBe(false);
     expect(accepts('worldbuilding.setFilter', { ...filter, pageSize: 0 })).toBe(false);
     expect(accepts('worldbuilding.setFilter', { ...filter, pageSize: MAX_CARDS_PER_READ + 1 })).toBe(false);
-    expect(accepts('worldbuilding.showResults', { cursors: [] })).toBe(false);
-    expect(accepts('worldbuilding.showResults', { cursors: [''] })).toBe(false);
-    expect(accepts('worldbuilding.showResults', { cursors: [null, '1.c2'] })).toBe(true);
+    expect(accepts('worldbuilding.showResults', { from: null, pages: 0 })).toBe(false);
+    expect(accepts('worldbuilding.showResults', { from: '', pages: 1 })).toBe(false);
+    expect(accepts('worldbuilding.showResults', { from: '1.c2', pages: 2 })).toBe(true);
+    expect(accepts('worldbuilding.showResults', { from: null, pages: MAX_CARDS_PER_READ + 1 })).toBe(false);
     expect(accepts('worldbuilding.findEntries', { book: 'x', query: '' })).toBe(false);
 });
 

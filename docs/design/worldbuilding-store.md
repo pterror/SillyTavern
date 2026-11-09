@@ -453,9 +453,9 @@ One area, `@st/worldbuilding`. Views:
   live entries of the world have it), text, relations line (each target a label), placement (every upstream field but
   `key`, `comment` and `content`, as stored, missing ones at upstream's defaults, `public/scripts/world-info-entry-defaults.js`,
   and whether any differs from them), its text in tokens as the chosen connection counts them, and what mentions it:
-  the first page of the references to it (`src/world-info/references.js`), each source's label with the sentence
-  around its first mention, and the pages `showMoreMentions` added. A deleted entry shows as deleted, under the label
-  it was last shown with.
+  the run of pages of the references to it the page names (`src/world-info/references.js`; the first page until
+  `showMentions` names another), each page `{cursor, entries, next}`, each source's label with the sentence around its
+  first mention. A deleted entry shows as deleted, under the label it was last shown with.
 - `worldbuilding.pointingAt`: what points at the session's open entry: `{book, entry, sections}`, one section per kind
   with a relation in use targeting it, in kind id order (the kinds read by one seek each, never from the sources),
   each `{kind, kindName, count, firstRank, entries, stepLanding}`: its sources ranked by their tree, each drawn as a
@@ -471,10 +471,10 @@ One area, `@st/worldbuilding`. Views:
   unless the offer is shown or its job runs, else `{entries, example, running, marked}` from the kept counts and the
   first offered entry's label; or `{id: null}` when no world is shown.
 - `worldbuilding.results`: the session's filter on the shown world and what it finds (The filter, below): `{book,
-  filter: {query, chips}, pages}`, each chip `{kind, kindName, target, targetDeleted, depth}` (its target's
-  label, the last one shown once the target is deleted), each page `{cursor, entries, next}`: the pages the page
-  asked for and nothing else, each the cards its cursor reads, drawn as the overview draws a top-level card with no
-  region; `{book: null}` with no filter.
+  generation, filter: {query, chips}, pages}`, `generation` counting the filters set, each chip `{kind, kindName,
+  target, targetDeleted, depth}` (its target's label, the last one shown once the target is deleted), each page
+  `{cursor, entries, next}`: the run of pages the page asked for and nothing else, each the cards its cursor reads,
+  drawn as the overview draws a top-level card with no region; `{book: null}` with no filter. It opens with the world.
 - `worldbuilding.selection`: the session's selection on the shown world (Selections and bulk actions): `{book, base,
   except, matching, matchingCapped}`, or `{book: null}`.
 - `worldbuilding.bulkJobs`: the shown world's running bulk jobs, `{book, jobs: [{job, action, target, done}]}`, `target`
@@ -501,7 +501,7 @@ Actions:
 
 - `worldbuilding.openEntry` (an entry of the shown world, and how the page draws what points at it: the layout and the
   `endRank` each section starts with, within one read's budget; opens the entry view and `worldbuilding.pointingAt`),
-  `closeEntry`, `showMoreMentions` (cursor). The open entry is held inside the session's shown world and has no world
+  `closeEntry`, `showMentions` (a run of pages, as `showResults` names one). The open entry is held inside the session's shown world and has no world
   of its own, so it is always one of the shown world's entries: opening another world closes it, reopening the same
   world (another range, layout or grouping) keeps it, and with no world shown none opens;
 - `worldbuilding.showPointingAtRange` (kind, range) and `worldbuilding.stepPointingAt` (kind, from an occurrence or
@@ -539,12 +539,14 @@ Actions:
 - `worldbuilding.setFilter` (book, query, chips, page size within one read): sets the filter of the world the session
   shows and opens the results at their first page, closing an open entry (typing on an entry's page goes to the
   world's page); refused when a chip names no live entry of the world; an empty query with no chips clears it. It
-  holds the first page. `showResults` (cursors, null for the first page) names the window of pages the page wants,
-  and the session holds those and nothing else; it is refused when they would read more than one read's cards, or
-  when a cursor is another filter's: the page sees each store cursor as `<generation>.<cursor>`, the generation
-  counting each filter set, so a cursor of an earlier filter is never read under a later one. Opening another world
-  clears the filter; every action that answers the overview answers the results, re-reading the held pages by their
-  cursors, and job steps push them.
+  holds the first page. `showResults` (`from`, a cursor or null for the first page, and `pages`) names the run of
+  pages the page wants: the page at `from`, then each page after the one before, read in one snapshot, so the pages
+  held always follow one another; the session holds those and nothing else. It is refused when they would read more
+  than one read's cards, or when the cursor is another filter's: the page sees each store cursor as
+  `<generation>.<cursor>`, the generation counting each filter set, so a cursor of an earlier filter is never read
+  under a later one (an open entry's mention cursors are tagged the same way, counting entries opened). Opening
+  another world clears the filter; every action that answers the overview answers the results, re-reading the held
+  run from its first cursor, and job steps push them.
 - `worldbuilding.findEntries` (book, query): one request per changed query.
 - `worldbuilding.select` (book, entries, selected: a click, a Shift-click range or a drag over what the page draws),
   `selectAllMatching`, `selectNone` (book); `worldbuilding.bulk` (book, action: `{delete: true}`, `{set: placement

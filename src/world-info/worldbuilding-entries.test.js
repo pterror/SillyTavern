@@ -56,6 +56,8 @@ test('a key is added, switched and removed on the entry as stored; a name is a k
 
 const IN = 1;
 
+const FIRST = { from: null, pages: 1 };
+
 test('the entry view, its edits, a new entry after another, delete, restore and moving to another world, over the store', async () => {
     const entries = {
         1: { uid: 1, key: ['Ilse', 'Varro'], comment: '', content: 'Ilse Varro keeps the lamp.', displayIndex: 0, depth: 2, extensions: { names: ['Varro'] } },
@@ -69,42 +71,45 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
     const [first, second] = [(ids.get('1')), /** @type {string} */ (ids.get('2'))];
     const B = String(book);
 
-    let read = await ports.readEntry(uiUser, B, first, []);
+    let read = await ports.readEntry(uiUser, B, first, FIRST);
     assert.ok(read && !read.deleted);
     assert.deepEqual(read.label, { thing: first, text: 'Varro', shownAs: 'name' });
     assert.deepEqual(read.keys, [{ text: 'Ilse', isName: false, alsoBringsUp: 1 }, { text: 'Varro', isName: true, alsoBringsUp: 0 }]);
     assert.equal(read.placement.depth, 2);
     assert.equal(read.placementDiffersFromDefaults, true);
     assert.equal(read.tokens, 5);
-    assert.deepEqual(read.mentionedIn.entries, [{
-        from: { thing: second, text: 'The Lantern House', shownAs: 'title' },
-        sentence: { before: '', mention: 'Ilse', after: ' Varro lives here, mostly.' },
-    }]);
-    assert.equal(read.mentionedIn.next, null);
+    assert.deepEqual(read.mentionedIn, { pages: [{
+        cursor: null,
+        entries: [{
+            from: { thing: second, text: 'The Lantern House', shownAs: 'title' },
+            sentence: { before: '', mention: 'Ilse', after: ' Varro lives here, mostly.' },
+        }],
+        next: null,
+    }] });
     assert.deepEqual(read.links, [], 'a key that is no name links nothing');
     assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Ilse', limit: 5 }), { entries: [{ thing: second, text: 'The Lantern House', shownAs: 'title' }], more: false });
     assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Ilse', limit: 0 }), { entries: [], more: true });
     assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Varro', limit: 5 }), { entries: [], more: false });
     assert.equal(await ports.readKeySharers(uiUser, { book: '424242', entry: first, key: 'Ilse', limit: 5 }), null);
     assert.equal(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'Ilse', as: 'name' }), 'ok');
-    let linked = await ports.readEntry(uiUser, B, second, []);
+    let linked = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(linked && !linked.deleted);
     assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 13 }, { entry: first, from: 14, to: 19 }], 'every name links where it is written');
     assert.equal(await ports.editEntry(who, B, first, { change: 'addKey', key: 'Ilse Varro', as: 'name' }), 'ok');
-    linked = await ports.readEntry(uiUser, B, second, []);
+    linked = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(linked && !linked.deleted);
     assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 19 }], 'of names written over each other, the longest that starts first links');
     assert.equal(await ports.editEntry(who, B, first, { change: 'removeKey', key: 'Ilse Varro' }), 'ok');
     assert.equal(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'Ilse', as: 'trigger' }), 'ok');
 
     assert.equal(await ports.editEntry(who, B, second, { change: 'addKey', key: 'The Lantern House', as: 'name' }), 'ok');
-    read = await ports.readEntry(uiUser, B, second, []);
+    read = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(read && !read.deleted);
     assert.deepEqual(read.label, { thing: second, text: 'The Lantern House', shownAs: 'name' });
     assert.equal(await ports.editEntry(who, B, second, { change: 'removeKey', key: 'Ilse' }), 'ok');
-    assert.deepEqual(/** @type {any} */ (await ports.readEntry(uiUser, B, first, [])).keys[0], { text: 'Ilse', isName: false, alsoBringsUp: 0 });
+    assert.deepEqual(/** @type {any} */ (await ports.readEntry(uiUser, B, first, FIRST)).keys[0], { text: 'Ilse', isName: false, alsoBringsUp: 0 });
     assert.equal(await ports.editEntry(who, B, first, { change: 'placement', fields: { depth: 4 } }), 'ok');
-    assert.equal(/** @type {any} */ (await ports.readEntry(uiUser, B, first, [])).placementDiffersFromDefaults, false);
+    assert.equal(/** @type {any} */ (await ports.readEntry(uiUser, B, first, FIRST)).placementDiffersFromDefaults, false);
     assert.deepEqual(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'nope', as: 'name' }), { refused: 'That entry has no such key.' });
     assert.equal(await ports.editEntry(who, String(other), first, { change: 'text', text: '' }), 'no entry');
     assert.equal(await ports.editEntry(who, B, first, { change: 'text', text: 'Varro keeps the lamp.' }), 'ok');
@@ -118,7 +123,7 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
     assert.deepEqual(newest.extensions.names, ['Saltmarrow']);
     assert.deepEqual(newest.extensions.relations.map((/** @type {any} */ r) => [r.kind, r.target]), [[IN, 2]]);
     assert.equal(newest.probability, 100, 'a new entry has upstream\'s fields at their defaults');
-    const madeRead = await ports.readEntry(uiUser, B, made.entry, []);
+    const madeRead = await ports.readEntry(uiUser, B, made.entry, FIRST);
     assert.ok(madeRead && !madeRead.deleted);
     assert.deepEqual(madeRead.relations.map(r => [r.kind, r.targetEntry, r.target?.text]), [['1', second, 'The Lantern House']]);
     assert.deepEqual(await ports.createEntry(who, B, { after: null, name: null, relation: { kind: '9', target: second } }, 100), { refused: 'This world has no such relation kind.' });
@@ -126,26 +131,42 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
     const deleted = await ports.deleteEntry(who, B, second);
     assert.ok(typeof deleted === 'object' && 'label' in deleted);
     assert.deepEqual(deleted.label, { thing: second, text: 'The Lantern House', shownAs: 'name' });
-    assert.deepEqual(await ports.readEntry(uiUser, B, second, []), { deleted: true });
+    assert.deepEqual(await ports.readEntry(uiUser, B, second, FIRST), { deleted: true });
     assert.equal(await ports.deleteEntry(who, B, second), 'no entry');
     const restored = await ports.restoreEntry(who, B, second);
     assert.ok(typeof restored === 'object' && 'unreachedLoops' in restored);
     await lib.books.jobs.settled();
-    const back = await ports.readEntry(uiUser, B, second, []);
+    const back = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(back && !back.deleted);
     assert.deepEqual(back.keys.map(k => [k.text, k.alsoBringsUp]), [['house', 0], ['The Lantern House', 0]]);
     assert.equal(await ports.restoreEntry(who, B, second), 'no entry');
     await ports.editEntry(who, B, first, { change: 'addKey', key: 'house', as: 'trigger' });
-    assert.deepEqual(/** @type {any} */ (await ports.readEntry(uiUser, B, second, [])).keys[0], { text: 'house', isName: false, alsoBringsUp: 1 }, 'a restored entry\'s keys count again');
+    assert.deepEqual(/** @type {any} */ (await ports.readEntry(uiUser, B, second, FIRST)).keys[0], { text: 'house', isName: false, alsoBringsUp: 1 }, 'a restored entry\'s keys count again');
 
     const moved = await ports.moveEntryToWorld(who, B, first, String(other));
     assert.ok(typeof moved === 'object' && 'entry' in moved);
-    assert.equal(await ports.readEntry(uiUser, B, first, []).then(r => r && 'deleted' in r && r.deleted), true);
+    assert.equal(await ports.readEntry(uiUser, B, first, FIRST).then(r => r && 'deleted' in r && r.deleted), true);
     const there = await ports.readEntry(uiUser, String(other), moved.entry, []);
     assert.ok(there && !there.deleted);
     assert.equal(there.text, 'Varro keeps the lamp.');
     assert.deepEqual(await ports.moveEntryToWorld(who, B, first, String(other)), 'no entry');
-    assert.equal(await ports.readEntry(uiUser, B, '424242', []), null);
+    assert.equal(await ports.readEntry(uiUser, B, '424242', FIRST), null);
+});
+
+test('what mentions an entry is read as a run of pages, each from the cursor the one before ends at', async () => {
+    const many = 520;
+    const sources = Object.fromEntries(Array.from({ length: many }, (_, at) => [at + 2, { uid: at + 2, key: [`source ${at}`], comment: '', content: `Ilse ${at}.`, displayIndex: at + 1 }]));
+    await lib.books.write('Mentioned', { entries: { 1: { uid: 1, key: ['Ilse'], comment: '', content: 'Ilse.', displayIndex: 0, extensions: { names: ['Ilse'] } }, ...sources } });
+    const { id: book } = /** @type {{ id: bigint }} */ (await lib.books.find('Mentioned'));
+    const ilse = String((await lib.books.storedEntries(book)).find(({ entity }) => entity.key.endsWith(':1'))?.entity.id);
+    const run = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: null, pages: 5 })).mentionedIn.pages;
+    assert.ok(run.length > 1 && run.length <= 5);
+    assert.equal(run.reduce((/** @type {number} */ sum, /** @type {any} */ page) => sum + page.entries.length, 0), many);
+    assert.equal(run[0].cursor, null);
+    for (let at = 1; at < run.length; at++) assert.equal(run[at].cursor, run[at - 1].next, 'each page is read from where the one before ends');
+    assert.equal(run.at(-1).next, null);
+    const later = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: run[0].next, pages: 1 })).mentionedIn.pages;
+    assert.deepEqual(later, [run[1]]);
 });
 
 after(async () => {

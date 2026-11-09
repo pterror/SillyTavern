@@ -40,7 +40,7 @@ test('results, chips and found entries over the store', async () => {
     const B = String(book);
 
     assert.deepEqual(await ports.labelEntries(uiUser, B, [id(1), '424242']), [{ thing: id(1), text: 'Saltmarrow', shownAs: 'name' }, null]);
-    const query = { book: B, groupBy: String(IN), layout: LAYOUT, pageSize: 10, pages: [null] };
+    const query = { book: B, groupBy: String(IN), layout: LAYOUT, pageSize: 10, from: null, pages: 1 };
     const read = await ports.readResults(uiUser, { ...query, query: 'lamp', chips: [{ kind: String(IN), target: id(1), depth: 'anyDepth' }] });
     assert.deepEqual(read.chips, [{ kindName: 'in', target: { thing: id(1), text: 'Saltmarrow', shownAs: 'name' } }]);
     assert.deepEqual(new Set(read.pages[0].entries.map(card => card.entry)), new Set([id(2), id(3), id(4)]));
@@ -58,9 +58,12 @@ test('results, chips and found entries over the store', async () => {
     const first = await ports.readResults(uiUser, { ...query, pageSize: 1, query: '  ', chips: [{ kind: String(IN), target: id(1), depth: 'directly' }] });
     assert.deepEqual(first.pages[0].entries.map(found => found.occurrence), [`${id(1)}/${id(2)}`]);
     const cursor = /** @type {string} */ (first.pages[0].next);
-    const both = await ports.readResults(uiUser, { ...query, pageSize: 1, query: '', pages: [null, cursor], chips: [{ kind: String(IN), target: id(1), depth: 'directly' }] });
-    assert.deepEqual(both.pages.map(page => page.entries.map(found => found.entry)), [[id(2)], [id(3)]]);
+    const both = await ports.readResults(uiUser, { ...query, pageSize: 1, query: '', pages: 5, chips: [{ kind: String(IN), target: id(1), depth: 'directly' }] });
+    assert.deepEqual(both.pages.map(page => page.entries.map(found => found.entry)), [[id(2)], [id(3)]], 'a run reads on to the last page');
+    assert.deepEqual(both.pages.map(page => page.cursor), [null, cursor]);
     assert.equal(both.pages[1].next, null);
+    const later = await ports.readResults(uiUser, { ...query, pageSize: 1, query: '', from: cursor, pages: 1, chips: [{ kind: String(IN), target: id(1), depth: 'directly' }] });
+    assert.deepEqual(later.pages.map(page => page.entries.map(found => found.entry)), [[id(3)]]);
 
     const found = await ports.findEntries(uiUser, { book: B, query: 'lamp', limit: 20 });
     assert.deepEqual(new Set(found.entries.map(named => named.text)), new Set(['Lamp Street', 'an old lamp', 'Far Lamp']), 'a trigger matches too; the label is the label rule\'s');

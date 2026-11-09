@@ -3131,26 +3131,21 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
             use crate::store::world_search::ResultsRead;
             let book = req_integer(a, "book")?;
             let chips = chips_from_js(a)?;
-            let mut pages = Vec::new();
-            for cursor in a
-                .get::<Vec<Unknown>>("pages")?
-                .ok_or_else(|| invalid("worldbuildingResults takes the pages' cursors".into()))?
-            {
-                pages.push(match cursor.get_type()? {
-                    ValueType::Null => None,
-                    _ => Some(
-                        String::from_utf8(string("cursor", cursor)?)
-                            .map_err(|_| invalid("a cursor is text".into()))?,
-                    ),
-                });
-            }
+            let from = match a.get::<Unknown>("from")? {
+                Some(cursor) if cursor.get_type()? != ValueType::Null => Some(
+                    String::from_utf8(string("cursor", cursor)?)
+                        .map_err(|_| invalid("a cursor is text".into()))?,
+                ),
+                _ => None,
+            };
             let read = ResultsRead {
                 book,
                 grouping_kind: opt_integer(a, "groupBy")?,
                 card_text_characters: req_integer(a, "cardTextCharacters")? as usize,
                 clauses: clauses_from_js(a, Scope::book(book))?,
                 chips,
-                pages,
+                from,
+                pages: req_integer(a, "pages")? as usize,
                 limit: req_integer(a, "limit")? as usize,
             };
             Box::new(move |store| store.world_results(&read).map(JsTree))

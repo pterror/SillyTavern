@@ -1,8 +1,8 @@
+import { MENTIONS_PER_PAGE } from '@st/worldbuilding/protocol';
 import { TYPE } from '../library-codes.js';
 import { entryObject, keysOfEntry } from '../world-info-engine.js';
 import { newWorldInfoEntryDefinition, newWorldInfoEntryTemplate } from '../../public/scripts/world-info-entry-defaults.js';
 
-export const MENTIONS_PER_PAGE = 20;
 export const SENTENCE_SIDE_CHARACTERS = 200;
 const SENTENCE_WINDOW = 4 * SENTENCE_SIDE_CHARACTERS;
 
@@ -173,38 +173,46 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
     const actorOf = (/** @type {import('@st/worldbuilding/server').Who} */ who) => ({ user: who.user.handle, session: who.session });
 
     /**
+     * The run of pages of what mentions the entry: the page at `from`, then each page after the one before.
      * @param {import('@st/server-ui').User} user
      * @param {bigint} book
      * @param {bigint} entry
-     * @param {string[]} pages
+     * @param {import('@st/worldbuilding/server').PagesRun} run
      * @returns {Promise<import('@st/worldbuilding/protocol').MentionedIn>}
      */
-    const mentionsOf = async (user, book, entry, pages) => {
+    const mentionsOf = async (user, book, entry, { from, pages }) => {
         const references = await referencesOf(user);
-        /** @type {Map<bigint, { text: string, span: [number, number] | undefined }>} */
-        const found = new Map();
+        /** @type {{ cursor: string | null, found: { entry: bigint, text: string, span: [number, number] | undefined }[], next: string | null }[]} */
+        const read = [];
         /** @type {string | null} */
-        let next = null;
-        for (const cursor of [null, ...pages]) {
+        let cursor = from;
+        while (read.length < pages) {
             const page = await references.to(book, entry, { ...(cursor === null ? {} : { cursor }), limit: MENTIONS_PER_PAGE, withText: true });
             if (!page) break;
-            for (const reference of page.references) {
-                if (!found.has(reference.entry)) found.set(reference.entry, { text: reference.text ?? '', span: reference.spans[0] });
-            }
-            next = page.next;
+            const found = page.references.map(reference => ({ entry: reference.entry, text: reference.text ?? '', span: reference.spans[0] }));
+            read.push({ cursor, found, next: page.next });
+            if (page.next === null) break;
+            cursor = page.next;
         }
+        const sources = read.flatMap(page => page.found.map(found => found.entry));
         const lib = await libOf(user);
         /** @type {(import('@st/worldbuilding/protocol').Named | null)[]} */
-        const labels = found.size === 0 ? [] : await lib.store.worldRead('worldbuildingLabels', { book, entities: [...found.keys()] });
-        const entries = [...found.values()].flatMap(({ text, span }, i) => {
-            const from = labels[i];
-            return from ? [{ from, sentence: sentenceAround(text, span) }] : [];
-        });
-        return { entries, next };
+        const labels = sources.length === 0 ? [] : await lib.store.worldRead('worldbuildingLabels', { book, entities: sources });
+        let at = 0;
+        return {
+            pages: read.map(({ cursor: readAt, found, next }) => ({
+                cursor: readAt,
+                entries: found.flatMap(({ text, span }) => {
+                    const source = labels[at++];
+                    return source ? [{ from: source, sentence: sentenceAround(text, span) }] : [];
+                }),
+                next,
+            })),
+        };
     };
 
     return {
-        async readEntry(user, book, entry, mentionPages) {
+        async readEntry(user, book, entry, mentions) {
             const lib = await libOf(user);
             const [b, e] = [BigInt(book), BigInt(entry)];
             const read = await lib.store.worldRead('worldbuildingEntry', { book: b, entry: e });
@@ -220,7 +228,7 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
                 placement: /** @type {import('@st/worldbuilding/protocol').Placement} */ (placement),
                 placementDiffersFromDefaults: differs,
                 tokens: counts?.[0] ?? null,
-                mentionedIn: await mentionsOf(user, b, e, mentionPages),
+                mentionedIn: await mentionsOf(user, b, e, mentions),
             };
         },
         async readKeySharers(user, { book, entry, key, limit }) {

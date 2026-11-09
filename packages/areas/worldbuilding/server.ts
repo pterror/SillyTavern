@@ -64,6 +64,9 @@ export type Who = { user: User; session: string };
 
 export type Grouping = { book: string; groupBy: string | null };
 
+// The page at `from` (null: the first) and the pages after it, `pages` in all.
+export type PagesRun = { from: string | null; pages: number };
+
 export type ShownOverview = Grouping & {
     firstRank: number;
     endRank: number;
@@ -125,12 +128,13 @@ export type ResultsQuery = {
     query: string;
     chips: Chip[];
     pageSize: number;
-    pages: (string | null)[];
+    from: string | null;
+    pages: number;
 };
 
 export type ResultsRead = {
     chips: { kindName: string | null; target: Named | null }[];
-    pages: { entries: EntryCell[]; next: string | null }[];
+    pages: { cursor: string | null; entries: EntryCell[]; next: string | null }[];
 };
 
 export type Found = { entries: Named[]; next: string | null };
@@ -201,7 +205,7 @@ export type Ports = {
         change: RelationChange,
         loopCheckLimit: number,
     ): Promise<RelationChangeAnswer>;
-    readEntry(user: User, book: string, entry: string, mentionPages: string[]): Promise<EntryRead>;
+    readEntry(user: User, book: string, entry: string, mentions: PagesRun): Promise<EntryRead>;
     readKeySharers(
         user: User,
         query: { book: string; entry: string; key: string; limit: number },
@@ -280,6 +284,7 @@ const NO_BULK_JOBS: BulkJobsView = { book: null };
 
 const VIEWS_OF_A_WORLD = [
     OVERVIEW_VIEW,
+    RESULTS_VIEW,
     RELATION_KINDS_VIEW,
     LAST_CHANGE_VIEW,
     LOOPS_LEFT_BY_JOBS_VIEW,
@@ -295,6 +300,8 @@ const BEING_MERGED = 'That kind is being merged, or another kind is being merged
 const NO_SUCH_ENTRY = "That entry isn't in this world.";
 const NO_ENTRY_OPEN = 'No entry is open.';
 const NO_FILTER = 'Nothing is searched for.';
+const RESULTS_GONE = 'Those results are no longer shown.';
+const MENTIONS_GONE = 'Those mentions are no longer shown.';
 const NOT_SHOWN = "That world isn't shown.";
 const NOTHING_SELECTED_REFUSAL = 'Nothing is selected.';
 const TOO_MANY_PICKED = `At most ${PICKED_AT_MOST} entries are picked one at a time; select all matching instead.`;
@@ -308,25 +315,27 @@ export function rangeAround(rank: number, firstRank: number, endRank: number): {
 // `ranges` holds the sections' ranges the page asked for, the most recently asked first.
 export type ShownPointingAt = PointingAtShown & { ranges: PointingAtRange[] };
 
+// `mentions` is the run of pages of what mentions it the page asked for; its cursors are shown to the page as
+// `<generation>.<cursor>`, the generation counting entries opened, so a cursor of another entry is never read for this one.
 export type OpenEntry = {
     entry: string;
     label: Named | null;
-    mentionPages: string[];
+    mentions: PagesRun & { generation: number };
     pointingAt: ShownPointingAt;
     sharersOf: string | null;
 };
 
 export type HeldChip = Chip & { label: Named };
 
-// `pages` are the store's cursors of the pages held; the page sees each as `<generation>.<cursor>`, so a cursor of an
-// earlier filter is never read under this one.
+// `run` names the pages held by the store's cursor of the first; the page sees each cursor as `<generation>.<cursor>`, so
+// a cursor of an earlier filter is never read under this one.
 export type ShownFilter = {
     book: string;
     query: string;
     chips: HeldChip[];
     pageSize: number;
     generation: number;
-    pages: (string | null)[];
+    run: PagesRun;
 };
 
 export type ShownWorldState = { overview: ShownOverview; entry: OpenEntry | null };
@@ -351,10 +360,21 @@ const NO_SESSION_STATE: SessionState = {
 
 type EntryShown = { book: string; shown: OpenEntry };
 
-const opened = (entry: string, { endRank, layout }: PointingAtShown): OpenEntry => ({
+const FIRST_PAGE: PagesRun = { from: null, pages: 1 };
+
+const tagged = (generation: number) => (cursor: string | null) => (cursor === null ? null : `${generation}.${cursor}`);
+
+// The store's cursor of a page's `<generation>.<cursor>`, or undefined when it is another generation's.
+const untagged = (generation: number, cursor: string | null): string | null | undefined => {
+    if (cursor === null) return null;
+    const ours = `${generation}.`;
+    return cursor.startsWith(ours) ? cursor.slice(ours.length) : undefined;
+};
+
+const opened = (entry: string, { endRank, layout }: PointingAtShown, generation: number): OpenEntry => ({
     entry,
     label: null,
-    mentionPages: [],
+    mentions: { ...FIRST_PAGE, generation },
     pointingAt: { endRank, layout, ranges: [] },
     sharersOf: null,
 });
@@ -375,6 +395,8 @@ const heldRange = (shown: ShownPointingAt, kind: string): PointingAtRange =>
 export function worldbuildingArea(ports: Ports) {
     const bySession = new Map<string, SessionState>();
     let filtersSet = 0;
+    let entriesOpened = 0;
+    const openedNow = (entry: string, pointingAt: PointingAtShown) => opened(entry, pointingAt, ++entriesOpened);
 
     const stateOf = (session: string) => bySession.get(session) ?? NO_SESSION_STATE;
 
@@ -487,9 +509,18 @@ export function worldbuildingArea(ports: Ports) {
         const open = entryOf(context.session);
         if (!open) return NO_ENTRY;
         const { book, shown } = open;
-        const read = await ports.readEntry(context.user, book, shown.entry, shown.mentionPages);
+        const { generation, ...run } = shown.mentions;
+        const read = await ports.readEntry(context.user, book, shown.entry, run);
         if (read === null) return NO_ENTRY;
         if (read.deleted) return { book, entry: shown.entry, deleted: true, label: shown.label };
+        const shownCursor = tagged(generation);
+        const mentionedIn = {
+            pages: read.mentionedIn.pages.map((page) => ({
+                ...page,
+                cursor: shownCursor(page.cursor),
+                next: shownCursor(page.next),
+            })),
+        };
         const state = stateOf(context.session);
         const world = state.world;
         if (world?.overview.book === book && world.entry?.entry === shown.entry) {
@@ -498,7 +529,7 @@ export function worldbuildingArea(ports: Ports) {
                 world: { ...world, entry: { ...world.entry, label: read.label } },
             });
         }
-        return { book, entry: shown.entry, ...read };
+        return { book, entry: shown.entry, ...read, mentionedIn };
     };
 
     const readPointingAtView = async (context: ViewContext): Promise<PointingAtView> => {
@@ -528,7 +559,7 @@ export function worldbuildingArea(ports: Ports) {
             query: shown.query,
             chips: shown.chips.map(({ kind, target, depth }) => ({ kind, target, depth })),
             pageSize: shown.pageSize,
-            pages: shown.pages,
+            ...shown.run,
         });
         const chips = shown.chips.map((chip, at) => {
             const target = read.chips[at]?.target ?? null;
@@ -539,11 +570,11 @@ export function worldbuildingArea(ports: Ports) {
                 targetDeleted: !target,
             };
         });
-        const shownCursor = (cursor: string | null) => (cursor === null ? null : `${shown.generation}.${cursor}`);
-        const pages = shown.pages.map((cursor, at) => ({
-            cursor: shownCursor(cursor),
-            entries: read.pages[at]?.entries ?? [],
-            next: shownCursor(read.pages[at]?.next ?? null),
+        const shownCursor = tagged(shown.generation);
+        const pages = read.pages.map((page) => ({
+            cursor: shownCursor(page.cursor),
+            entries: page.entries,
+            next: shownCursor(page.next),
         }));
         const current = stateOf(context.session);
         if (current.filter === shown) {
@@ -552,6 +583,7 @@ export function worldbuildingArea(ports: Ports) {
         }
         return {
             book: shown.book,
+            generation: shown.generation,
             filter: {
                 query: shown.query,
                 chips: chips.map(({ kind, kindName, label, targetDeleted, depth }) => ({
@@ -667,10 +699,7 @@ export function worldbuildingArea(ports: Ports) {
             ...(selection?.book === opened ? {} : { selection: null }),
         });
         return {
-            changed: [
-                ...(filter && !filterStays ? [RESULTS_VIEW] : []),
-                ...(world?.entry && !entry ? [ENTRY_VIEW, POINTING_AT_VIEW] : []),
-            ],
+            changed: world?.entry && !entry ? [ENTRY_VIEW, POINTING_AT_VIEW] : [],
             opensViews: VIEWS_OF_A_WORLD,
         };
     };
@@ -816,7 +845,7 @@ export function worldbuildingArea(ports: Ports) {
             'worldbuilding.setRelationWeak': (context, relation) =>
                 relationChanged(context, { change: 'setWeak', ...relation }),
             'worldbuilding.openEntry': withOverview(async (context, _overview, { entry, pointingAt }) => {
-                rememberEntry(context.session, opened(entry, pointingAt));
+                rememberEntry(context.session, openedNow(entry, pointingAt));
                 return { changed: [], opensViews: [ENTRY_VIEW, POINTING_AT_VIEW] };
             }),
             'worldbuilding.closeEntry': async (context) => {
@@ -848,10 +877,11 @@ export function worldbuildingArea(ports: Ports) {
                 rememberEntry(context.session, { ...shown, pointingAt: withRange(shown.pointingAt, range) });
                 return { changed: [POINTING_AT_VIEW] };
             }),
-            'worldbuilding.showMoreMentions': withOpenEntry(async (context, { shown }, { cursor }) => {
-                if (!shown.mentionPages.includes(cursor)) {
-                    rememberEntry(context.session, { ...shown, mentionPages: [...shown.mentionPages, cursor] });
-                }
+            'worldbuilding.showMentions': withOpenEntry(async (context, { shown }, { from, pages }) => {
+                const { generation } = shown.mentions;
+                const stored = untagged(generation, from);
+                if (stored === undefined) return { refused: MENTIONS_GONE, changed: [ENTRY_VIEW] };
+                rememberEntry(context.session, { ...shown, mentions: { from: stored, pages, generation } });
                 return { changed: [ENTRY_VIEW] };
             }),
             'worldbuilding.setEntryText': (context, { book, entry, text }) =>
@@ -881,7 +911,7 @@ export function worldbuildingArea(ports: Ports) {
                     createdEntry: { book, entry: made.entry },
                     loops: { book, found: made.unreachedLoops },
                 };
-                if (open) rememberEntry(context.session, opened(made.entry, open.pointingAt), { lastChange });
+                if (open) rememberEntry(context.session, openedNow(made.entry, open.pointingAt), { lastChange });
                 else remember(context.session, { lastChange });
                 return open
                     ? {
@@ -937,7 +967,7 @@ export function worldbuildingArea(ports: Ports) {
                     layout: overview.layout,
                     around: moved.entry,
                 });
-                rememberEntry(context.session, opened(moved.entry, open.shown.pointingAt), { lastChange });
+                rememberEntry(context.session, openedNow(moved.entry, open.shown.pointingAt), { lastChange });
                 return {
                     changed: [...new Set([...changed, ...shown.changed])].filter(
                         (view) => !shown.opensViews.includes(view),
@@ -1040,7 +1070,7 @@ export function worldbuildingArea(ports: Ports) {
                 }
                 const closes = entryOf(context.session) !== null;
                 rememberEntry(context.session, null, {
-                    filter: { book, query, chips: held, pageSize, generation: ++filtersSet, pages: [null] },
+                    filter: { book, query, chips: held, pageSize, generation: ++filtersSet, run: FIRST_PAGE },
                     ...selectionChange,
                 });
                 return {
@@ -1048,16 +1078,13 @@ export function worldbuildingArea(ports: Ports) {
                     opensViews: [RESULTS_VIEW],
                 };
             }),
-            'worldbuilding.showResults': async (context, { cursors }) => {
+            'worldbuilding.showResults': async (context, { from, pages }) => {
                 const shown = stateOf(context.session).filter;
                 if (!shown) return { refused: NO_FILTER, changed: [RESULTS_VIEW] };
-                if (cursors.length * shown.pageSize > MAX_CARDS_PER_READ) return { refused: READ_REFUSAL };
-                const ours = `${shown.generation}.`;
-                if (cursors.some((cursor) => cursor !== null && !cursor.startsWith(ours))) {
-                    return { refused: 'Those results are no longer shown.', changed: [RESULTS_VIEW] };
-                }
-                const pages = cursors.map((cursor) => (cursor === null ? null : cursor.slice(ours.length)));
-                remember(context.session, { filter: { ...shown, pages } });
+                if (pages * shown.pageSize > MAX_CARDS_PER_READ) return { refused: READ_REFUSAL };
+                const stored = untagged(shown.generation, from);
+                if (stored === undefined) return { refused: RESULTS_GONE, changed: [RESULTS_VIEW] };
+                remember(context.session, { filter: { ...shown, run: { from: stored, pages } } });
                 return { changed: [RESULTS_VIEW] };
             },
             'worldbuilding.findEntries': async (context, { book, query }) => {

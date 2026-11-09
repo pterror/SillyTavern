@@ -23,6 +23,8 @@ export const READS_PER_LOOP_CHECK_VISIT = 2;
 export const MAX_CARDS_PER_READ = READS_PER_REQUEST / READS_PER_CARD;
 export const LOOP_CHECK_VISITS_PER_WRITE = READS_PER_REQUEST / READS_PER_LOOP_CHECK_VISIT;
 export const FOUND_PER_QUERY = 20;
+export const MENTIONS_PER_PAGE = 20;
+export const MENTION_PAGES_AT_MOST = MAX_CARDS_PER_READ / MENTIONS_PER_PAGE;
 export const KEY_SHARERS_SHOWN = 20;
 export const SELECTION_COUNTED_UP_TO = 1000;
 export const PICKED_AT_MOST = MAX_CARDS_PER_READ;
@@ -129,7 +131,15 @@ export type KeyOfEntry = { text: string; isName: boolean; alsoBringsUp: number }
 
 export type Sentence = { before: string; mention: string; after: string };
 
-export type MentionedIn = { entries: { from: Named; sentence: Sentence }[]; next: string | null };
+// A page read at `cursor` (null: the first), and the cursor of the page after it (null: the last).
+export type MentionsPage = {
+    cursor: string | null;
+    entries: { from: Named; sentence: Sentence }[];
+    next: string | null;
+};
+
+// The run of pages the page asked for: the first at the cursor asked from, each next the page after the one before.
+export type MentionedIn = { pages: MentionsPage[] };
 
 // Where the entry's text names another entry: `from` and `to` are UTF-16 offsets into `text`, in order, never overlapping.
 export type TextLink = { entry: string; from: number; to: number };
@@ -242,8 +252,10 @@ export type ShownChip = { kind: string; kindName: string | null; target: Named; 
 
 export type ResultsPage = { cursor: string | null; entries: EntryCell[]; next: string | null };
 
+// `generation` counts the filters set, so the page tells a new filter from the one it shows; `pages` are the run the page
+// asked for, as MentionedIn's are.
 export type ResultsView =
-    | { book: string; filter: { query: string; chips: ShownChip[] }; pages: ResultsPage[] }
+    | { book: string; generation: number; filter: { query: string; chips: ShownChip[] }; pages: ResultsPage[] }
     | { book: null };
 
 export type FoundView = { book: string; query: string; entries: Named[]; next: string | null } | { book: null };
@@ -398,7 +410,10 @@ export const actions = {
         v.object({ kind: kindId, from: pointingAtOccurrenceKey, to: v.picklist(['parent', 'firstChild']) }),
     ]),
     'worldbuilding.closeEntry': v.object({}),
-    'worldbuilding.showMoreMentions': v.object({ cursor }),
+    'worldbuilding.showMentions': v.object({
+        from: v.nullable(cursor),
+        pages: v.pipe(positiveWholeNumber, v.maxValue(MENTION_PAGES_AT_MOST)),
+    }),
     'worldbuilding.setEntryText': v.object({ ...entryNamed, text: v.string() }),
     'worldbuilding.setEntryTitle': v.object({ ...entryNamed, title: v.string() }),
     'worldbuilding.addKey': v.object({ ...entryNamed, key: keyText, as: keyAs }),
@@ -435,7 +450,8 @@ export const actions = {
         pageSize: v.pipe(positiveWholeNumber, v.maxValue(MAX_CARDS_PER_READ)),
     }),
     'worldbuilding.showResults': v.object({
-        cursors: v.pipe(v.array(v.nullable(cursor)), v.minLength(1), v.maxLength(MAX_CARDS_PER_READ)),
+        from: v.nullable(cursor),
+        pages: v.pipe(positiveWholeNumber, v.maxValue(MAX_CARDS_PER_READ)),
     }),
     'worldbuilding.findEntries': v.object({ book: entityId, query: v.string() }),
     'worldbuilding.select': v.object({

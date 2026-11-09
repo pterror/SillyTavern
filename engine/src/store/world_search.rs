@@ -57,7 +57,10 @@ pub struct ResultsRead {
     pub card_text_characters: usize,
     pub clauses: Vec<Clause>,
     pub chips: Vec<Chip>,
-    pub pages: Vec<Option<String>>,
+    /// The page at `from` (none: the first), then each page after the one before, until `pages` are read or the
+    /// results end.
+    pub from: Option<String>,
+    pub pages: usize,
     pub limit: usize,
 }
 
@@ -637,8 +640,9 @@ pub fn read_results(
             ),
         ]));
     }
-    let mut pages = Vec::with_capacity(read.pages.len());
-    for cursor in &read.pages {
+    let mut pages = Vec::new();
+    let mut cursor = read.from.clone();
+    while pages.len() < read.pages {
         let page = match page_of(view, cache, read, cursor.as_deref(), &mut tighten) {
             Err(StoreError::Refused(_)) => Page {
                 entries: Vec::new(),
@@ -659,9 +663,14 @@ pub fn read_results(
             )?);
         }
         pages.push(Js::Obj(vec![
+            ("cursor", cursor.map_or(Js::Null, |at| Js::Text(at.into_bytes()))),
             ("entries", Js::Arr(cards)),
-            ("next", page.next.map_or(Js::Null, |next| Js::Text(next.into_bytes()))),
+            ("next", page.next.clone().map_or(Js::Null, |next| Js::Text(next.into_bytes()))),
         ]));
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
     }
     Ok((
         Js::Obj(vec![("chips", Js::Arr(chips)), ("pages", Js::Arr(pages))]),
