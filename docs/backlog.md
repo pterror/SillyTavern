@@ -135,7 +135,7 @@ State and other
 - Message styling per thing, cascading (character, group, chat, user, device) through the same levels as settings and looks, in place of dialogue colorizing.
 - A lorebook's name is edited where it's shown: the editor header's name is a field, committing it is the rename (one request, `/rename`'s answer), and the rename button goes, for every book; on a card's own book it renames the card's book. Owner approved 2026-11-08.
 - Lorebook names: trimmed on create but not on rename. Ordering global lorebooks needs a real order, not a leading-space hack.
-- Embedded lorebooks identical to their card's book still sit in the lorebook list; once confirmed identical, they're removed.
+- Every lorebook converted from a card's embedded one is removed, whatever edits it has since ("EVERY lorebook that was converted from an embedded one MUST go IRREGARDLESS of edits", owner, 2026-11-10). A card's own book is reached only from its character, never listed among worlds.
 - Shared code lives in the page's folder: `src/library-engine.js` imports `public/scripts/hash-utils.js`. Code both sides use belongs in a shared package.
 - `LibraryEngine.query` is unreadable.
 - Logging: "[Macro] Warning: Parsing errors detected" logs the whole prompt, thousands of lines. Best-in-class logging: short, structured, nothing dumped.
