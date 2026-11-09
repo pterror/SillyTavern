@@ -45,6 +45,16 @@ const open = new Map();
 /** @type {Map<string, any>} */
 const openedHere = new Map();
 const madeHere = new Set();
+
+/** @type {((opened: { lib: any, events: EventEmitter, root: string, handle: string }) => void)[]} */
+const openedListeners = [];
+
+/**
+ * @param {(opened: { lib: any, events: EventEmitter, root: string, handle: string }) => void} listener
+ */
+export function onUserStoreOpened(listener) {
+    openedListeners.push(listener);
+}
 /** @type {() => any} */
 let engineOf = () => {
     throw new Error('user-stores: no engine set');
@@ -144,6 +154,8 @@ async function openStore(root, handle) {
             events.emit('commit', records);
             return done;
         };
+        lib.books.jobs.onStepDone = (/** @type {bigint} */ book) => events.emit('worldbuildingJobStep', book);
+        for (const listener of openedListeners) listener({ lib, events, root, handle });
         lib.books.jobs.resume().catch(error => console.error('Resuming worldbuilding jobs failed.', error));
         const people = libraryPeople(lib);
         const chats = await ChatEngine.open(lib.store, people, await lib.nextIds());

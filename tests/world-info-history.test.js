@@ -128,6 +128,7 @@ describe('world-info history', () => {
         expect(e?.entryIndex).toBe(0);
         expect(/** @type {any} */ (await books.read('b')).entries[0].displayIndex).toBe(0);
         await expect(books.revert('b', 0, CONTENT, first.id, ALICE)).rejects.toThrow();
+        expect(await books.revert('b', 0, '\u0001relations', first.id, ALICE)).toBe('relations change by their own actions');
     });
 
     test('forgetting leaves a marker or nothing, never the current value', async () => {

@@ -27,7 +27,7 @@ export class WorldbuildingJobs {
         /** @type {Set<bigint>} */
         this.worldsWithJobsSinceStart = new Set();
         /** @type {((book: bigint) => void) | null} */
-        this.onLoopsChanged = null;
+        this.onStepDone = null;
     }
 
     /**
@@ -68,13 +68,13 @@ export class WorldbuildingJobs {
                 this.worldsWithJobsSinceStart.clear();
                 return;
             }
-            if (step.changedSources.length === 0) continue;
-            const loops = await this.books.unreachedLoops(step.book, [], step.changedSources);
-            if (loops.length === 0) continue;
-            const kept = this.loopsLeftByWorld.get(step.book) ?? [];
-            kept.push(...loops);
-            this.loopsLeftByWorld.set(step.book, kept.slice(-LOOP_CHECK_VISITS_PER_WRITE));
-            this.onLoopsChanged?.(step.book);
+            const loops = step.changedSources.length === 0 ? [] : await this.books.unreachedLoops(step.book, [], step.changedSources);
+            if (loops.length > 0) {
+                const kept = this.loopsLeftByWorld.get(step.book) ?? [];
+                kept.push(...loops);
+                this.loopsLeftByWorld.set(step.book, kept.slice(-LOOP_CHECK_VISITS_PER_WRITE));
+            }
+            this.onStepDone?.(step.book);
         }
     }
 

@@ -76,12 +76,24 @@ first one counts.
 
 **World files carry keys.** Entity ids mean nothing outside one store, so a world file's relation names its target by
 the target's key (`"target": 12`), as before. Reading a world (export, the drawer, a card book) turns each
-`targetEntry` of an entry of the same world into `target` with that entry's key; one whose target isn't in the world
-(a deleted entry, below) stays as `targetEntry`, so a save of what was read keeps it. Writing turns each `target` into
-the `targetEntry` of the entry with that key in what is written (an import, a whole-world save) or in the stored world
-(an entry edit), and leaves out one whose key names nothing; a `targetEntry` is kept only when it names an entry of
-this world, live or deleted. The translation reads only what the write or read already holds, plus one lookup per
-target key not among them.
+`targetEntry` of a live entry of the same world into `target` with that entry's key and leaves out every other one: a
+relation kept while its target is deleted (below) is in no read and no export, and no file ever carries an entity id.
+Writing turns each `target` into the `targetEntry` of the entry with that key in what is written (an import, a
+whole-world save) or in the stored world (an entry edit), and leaves out one whose key names nothing or names an entry
+that isn't live after the write; a written `targetEntry` is kept only when it names an entry live after the write. The
+translation reads only what the write or read already holds, plus one lookup per target key not among them and one
+read of which named entries are live (`worldbuildingLiveEntriesOf`).
+
+**A whole-entry write leaves kept relations as they are.** Every write that replaces an entry's relations list (a save
+from the drawer, an entry edit, a whole-world save or import over a stored world, the one-time conversion to entity ids)
+passes one function (`relationsForStore`): the relations the entry's stored field holds whose target isn't live after
+the write are carried over from the stored field unchanged, and whatever the written list says about a target that
+isn't live is ignored. So what was read and saved back, with its kept relations left out, changes nothing kept; a
+kept relation changes only by its own action (`removeRelation`, which accepts a target that is a deleted entry of the
+world), by its source's deletion or restore, or by its target's restore or erasure. A whole-world save also keeps each
+stored kind name that kept relations still hold (`worldbuildingRelationKindKept`), so a save of a read can't remove a
+kind a kept relation needs. Reverting the relations field to an earlier version as a whole is refused ("relations
+change by their own actions").
 
 This field is the only source of truth. Everything below is derived from it by the entry's own writes (`histSet`,
 `histEdit`, `jsonValue`, `valueDelete`, creation, deletion, restore), through the one hook every JSON write of a counted
@@ -132,9 +144,9 @@ while its source is deleted**. Only relations in use are in `RELATIONS_BY_TARGET
   at any point.
 - **The end.** When the last relation in use of kind `k` targeting D is made kept, D's place stops counting for `k`;
   when the last of any kind goes, D leaves the order tree and its marker goes, in that same step.
-- **A user's own removal.** A source whose field drops a relation to D (an edit, a save from the drawer that left it
-  out) has that relation gone for good, kept or not: a later restore of D doesn't bring it back, because the restore
-  only uses what the sources' fields still hold.
+- **A user's own removal.** A relation in use to D that a source's write drops before the step reaches it (an edit, a
+  save from the drawer that left it out) is gone for good; a kept one goes only by `removeRelation`. Either way a later
+  restore of D doesn't bring it back, because the restore only uses what the sources' fields still hold.
 - **Erasing** D for good (erasing its world, which erases the sources too) drops its place, its marker and its kept
   relations.
 
@@ -148,8 +160,8 @@ the restore's own commit, the rest by steps (`relations::restore_step`, marked b
 derive job like a deletion's. A kept relation's kind is in use the whole time (it can't be deleted, and a merge
 rewrites it in its live source), so each comes back as written, in the kind it has by then.
 
-**What bounds a kept relation's life.** It goes when it comes back into use (its target restored), when its source's
-field drops it, or when its target is erased for good. While kept it costs its derived keys and nothing else: no job
+**What bounds a kept relation's life.** It goes when it comes back into use (its target restored), when it is removed
+by its own action, or when its target is erased for good. While kept it costs its derived keys and nothing else: no job
 lists it and nothing reads it at a store's opening. It lasts as long as its target can still be restored.
 
 ## Every job
@@ -242,7 +254,7 @@ Where the answer goes:
 | restore | `WorldInfoEngine.restore`'s result (no endpoint restores an entry yet) |
 | a character's embedded book (`LibraryEngine.writeCard`) | its result; the character endpoints answer the old client with a plain name or a fixed shape that would break if it changed, so they don't pass it on |
 | batched card imports, a card's bundled world (`card-import-extras.js`), new-user seeding (`users.js`), the import of upstream's files (`upstream-import.js`) | none: they run without a page waiting on them |
-| each step of a deletion, a restore or a merge after the action's own commit | pushed to the world's open tabs: the view `worldbuilding.loopsLeftByJobs` (the loops the world's jobs have found since its last job began), changed by `ui.changed` after each step |
+| each step of a deletion, a restore or a merge after the action's own commit | pushed to the world's open tabs: the view `worldbuilding.loopsLeftByJobs` (the loops the world's jobs have found since its last job began), changed by `ui.changed` after each step, whether a request started the job or the store's opening resumed it (each store's job runner reports its steps on the store's events, `worldbuildingJobStep`, which `src/ui-wiring.js` turns into the push when the store opens) |
 
 Requests that don't carry a limit use `LOOP_CHECK_VISITS_PER_WRITE` (below).
 

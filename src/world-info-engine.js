@@ -234,6 +234,16 @@ function withRelationsList(entry, relations) {
 }
 
 /**
+ * @param {unknown} relation
+ * @returns {string | null}
+ */
+function targetEntryOf(relation) {
+    if (!isPlainObject(relation)) return null;
+    const target = /** @type {Record<string, unknown>} */ (relation)[TARGET_ENTRY];
+    return typeof target === 'string' ? target : null;
+}
+
+/**
  * @param {unknown} entry
  * @param {Map<string, string>} keyOfEntity
  * @returns {unknown}
@@ -241,28 +251,36 @@ function withRelationsList(entry, relations) {
 function relationsForFile(entry, keyOfEntity) {
     const relations = relationsListOf(entry);
     if (!relations) return entry;
-    return withRelationsList(entry, relations.map(relation => {
-        if (!isPlainObject(relation)) return relation;
-        const fields = /** @type {Record<string, unknown>} */ (relation);
-        const target = fields[TARGET_ENTRY];
-        const key = typeof target === 'string' ? keyOfEntity.get(target) : undefined;
-        return key === undefined ? relation : renamedField(fields, TARGET_ENTRY, 'target', keyForFile(key));
+    return withRelationsList(entry, relations.flatMap(relation => {
+        const target = targetEntryOf(relation);
+        if (target === null) return [relation];
+        const key = keyOfEntity.get(target);
+        return key === undefined ? [] : [renamedField(/** @type {Record<string, unknown>} */ (relation), TARGET_ENTRY, 'target', keyForFile(key))];
     }));
 }
 
 /**
  * @param {unknown} entry
  * @param {RelationTargets} targets
+ * @param {unknown[]} storedRelations
  * @returns {unknown}
  */
-function relationsForStore(entry, targets) {
+function relationsForStore(entry, targets, storedRelations) {
+    const keptAsStored = storedRelations.filter(relation => {
+        const target = targetEntryOf(relation);
+        return target !== null && !targets.liveAfter.has(target);
+    });
     const relations = relationsListOf(entry);
-    if (!relations) return entry;
+    if (!relations) {
+        if (keptAsStored.length === 0 || !isPlainObject(entry)) return entry;
+        const entryFields = /** @type {Record<string, any>} */ (entry);
+        return { ...entryFields, extensions: { ...(isPlainObject(entryFields.extensions) ? entryFields.extensions : {}), relations: keptAsStored } };
+    }
     /** @type {unknown[]} */
-    const kept = [];
+    const written = [];
     for (const relation of relations) {
         if (!isPlainObject(relation)) {
-            kept.push(relation);
+            written.push(relation);
             continue;
         }
         const fields = /** @type {Record<string, unknown>} */ (relation);
@@ -271,14 +289,29 @@ function relationsForStore(entry, targets) {
         if ('target' in fields) {
             const key = fileTargetKey(fields.target);
             const entity = key === null ? undefined : targets.entityOfKey.get(key);
-            if (entity !== undefined) kept.push(renamedField(fields, 'target', TARGET_ENTRY, String(entity)));
+            if (entity !== undefined && targets.liveAfter.has(String(entity))) written.push(renamedField(fields, 'target', TARGET_ENTRY, String(entity)));
             continue;
         }
-        const target = fields[TARGET_ENTRY];
-        if (typeof target === 'string' && !targets.entriesOfWorld.has(target)) continue;
-        kept.push(relation);
+        const target = targetEntryOf(fields);
+        if (target !== null && !targets.liveAfter.has(target)) continue;
+        written.push(relation);
     }
-    return withRelationsList(entry, kept);
+    return withRelationsList(entry, [...written, ...keptAsStored]);
+}
+
+/**
+ * @param {import('./entity-values.js').StoredEntity | null | undefined} stored
+ * @returns {unknown[]}
+ */
+function storedRelationsOf(stored) {
+    const field = stored?.values.find(value => value.field === RELATIONS_FIELD);
+    if (!field || field.json === undefined) return [];
+    try {
+        const relations = JSON.parse(field.json);
+        return Array.isArray(relations) ? relations : [];
+    } catch {
+        return [];
+    }
 }
 
 /**
@@ -298,7 +331,10 @@ function fileTargetKeysOf(entry) {
  * @returns {string[]}
  */
 function storeTargetsOf(entry) {
-    return (relationsListOf(entry) ?? []).flatMap(relation => (isPlainObject(relation) && typeof relation[TARGET_ENTRY] === 'string' ? [relation[TARGET_ENTRY]] : []));
+    return (relationsListOf(entry) ?? []).flatMap(relation => {
+        const target = targetEntryOf(relation);
+        return target === null ? [] : [target];
+    });
 }
 
 /**
@@ -306,18 +342,14 @@ function storeTargetsOf(entry) {
  * @returns {string[]}
  */
 function storedTargetsOf(stored) {
-    const field = stored.values.find(value => value.field === RELATIONS_FIELD);
-    if (!field || field.json === undefined) return [];
-    try {
-        const relations = JSON.parse(field.json);
-        return Array.isArray(relations) ? relations.flatMap(relation => (isPlainObject(relation) && typeof relation[TARGET_ENTRY] === 'string' ? [relation[TARGET_ENTRY]] : [])) : [];
-    } catch {
-        return [];
-    }
+    return storedRelationsOf(stored).flatMap(relation => {
+        const target = targetEntryOf(relation);
+        return target === null ? [] : [target];
+    });
 }
 
 /**
- * @typedef {{ entityOfKey: Map<string, bigint>, entriesOfWorld: Set<string>, kinds?: Set<number> }} RelationTargets
+ * @typedef {{ entityOfKey: Map<string, bigint>, liveAfter: Set<string>, kinds?: Set<number> }} RelationTargets
  */
 
 /**
@@ -346,10 +378,10 @@ const put = (/** @type {unknown} */ v) => (typeof v === 'string' ? { text: v } :
  * @param {unknown} entry
  * @param {string} key
  * @param {boolean} owned
- * @param {RelationTargets} [targets]
+ * @param {{ targets: RelationTargets, stored: import('./entity-values.js').StoredEntity | null }} [relationsFrom]
  */
-export function entryValues(entry, key, owned, targets) {
-    if (targets) entry = relationsForStore(entry, targets);
+export function entryValues(entry, key, owned, relationsFrom) {
+    if (relationsFrom) entry = relationsForStore(entry, relationsFrom.targets, storedRelationsOf(relationsFrom.stored));
     /** @type {Map<number | string, { text?: string, json?: string }>} */
     const values = new Map();
     /** @type {Map<number, string[]>} */
@@ -645,7 +677,7 @@ export class WorldInfoEngine {
      * @returns {Promise<object[]>}
      */
     async bookRecords(id, s, book, { world = false, ownedKey } = {}, stamp) {
-        const records = valueRecords(id, s?.entity ?? null, withMergeRecords(bookValues(book, world), s?.entity ?? null));
+        const records = valueRecords(id, s?.entity ?? null, await this.withKindsKeptRelationsNeed(id, withMergeRecords(bookValues(book, world), s?.entity ?? null), s?.entity ?? null));
         if (!s?.entity && !world) records.push({ kind: 'entityCreate', entity: id, type: TYPE.ownedBook, key: ownedKey, added: Date.now() });
         const raw = book.entries;
         const stored = s?.entries ?? new Map();
@@ -681,8 +713,7 @@ export class WorldInfoEngine {
         const keys = new Set(incoming.map(([k]) => k));
         /** @type {Map<string, bigint>} */
         const entityOfKey = new Map(incoming.map(([k]) => [k, stored.get(k)?.entity.id ?? this.lib.nextId++]));
-        const named = [...new Set(incoming.flatMap(([, entry]) => storeTargetsOf(entry)))];
-        const targets = { entityOfKey, entriesOfWorld: await this.entriesOfWorld(book, named, new Set([...entityOfKey.values()].map(String))), kinds };
+        const targets = { entityOfKey, liveAfter: new Set([...entityOfKey.values()].map(String)), kinds };
         for (const [k, x] of stored) {
             if (!keys.has(k)) records.push({ kind: 'histEntityDelete', entity: x.entity.id, ...stamp() });
         }
@@ -690,7 +721,7 @@ export class WorldInfoEngine {
         for (const [k, entry] of incoming) {
             const had = stored.get(k);
             const id = /** @type {bigint} */ (entityOfKey.get(k));
-            pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, owned, targets), historyWrites(stamp)));
+            pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, owned, { targets, stored: had?.entity ?? null }), historyWrites(stamp)));
             if (!had) records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
             const position = positions.get(k);
             if (position !== undefined) records.push({ kind: 'itemPlace', entity: book, list: 0, item: id, position });
@@ -1053,11 +1084,11 @@ export class WorldInfoEngine {
                 let last = numbers.lastPosition ?? 0;
                 /** @type {Map<string, bigint>} */
                 const entityOfWrite = new Map([...writes.keys()].map(k => [k, touched.get(k)?.entity.id ?? this.lib.nextId++]));
-                const targets = await this.relationTargets(book, [...writes.values()], entityOfWrite);
+                const targets = await this.relationTargets(book, [...writes.values()], [...touched.values()].map(x => x.entity), entityOfWrite, new Set(deletedEntities.map(String)));
                 for (const [k, entry] of writes) {
                     const had = touched.get(k);
                     const id = /** @type {bigint} */ (entityOfWrite.get(k));
-                    pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, false, targets), historyWrites(stamp)));
+                    pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, false, { targets, stored: had?.entity ?? null }), historyWrites(stamp)));
                     if (!had) {
                         last += POSITION_GAP;
                         records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
@@ -1105,7 +1136,7 @@ export class WorldInfoEngine {
                 }
             }
             if (fieldsChanged) {
-                pushAll(records, valueRecords(book, bookEntity, withMergeRecords(bookValues(nextBook, true), bookEntity)));
+                pushAll(records, valueRecords(book, bookEntity, await this.withKindsKeptRelationsNeed(book, withMergeRecords(bookValues(nextBook, true), bookEntity), bookEntity)));
                 const ob = nextBook.originalData;
                 if (isEntryList(ob)) {
                     pushAll(records, (await this.bookRecords(s.original?.id ?? this.lib.nextId++, s.original, /** @type {Record<string, unknown>} */ (ob), { ownedKey: `${book}:${SLOT.originalData}` }, stamp)));
@@ -1159,10 +1190,10 @@ export class WorldInfoEngine {
             const [e] = id === null ? [null] : await this.lib.entities([id]);
             if (!e) return 'no entry';
             const entry = { ...data, uid: /** @type {any} */ (entryObject(e, false)).uid };
-            const targets = await this.relationTargets(found.id, [entry], new Map([[k, e.id]]));
+            const targets = await this.relationTargets(found.id, [entry], [e], new Map([[k, e.id]]), new Set());
             /** @type {object[]} */
             const keyed = [];
-            const records = valueRecords(e.id, e, entryValues(entry, k, false, targets), historyWrites(await this.stamper(actor, keyed)));
+            const records = valueRecords(e.id, e, entryValues(entry, k, false, { targets, stored: e }), historyWrites(await this.stamper(actor, keyed)));
             const index = /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
             if (!Object.is(index, e.entryIndex)) records.push({ kind: 'entryIndex', entry: e.id, book: found.id, ...(index === undefined ? {} : { index }) });
             if (records.length > 0) await this.store.commit([...keyed, ...records]);
@@ -1325,10 +1356,11 @@ export class WorldInfoEngine {
      * @param {number | string} field
      * @param {bigint} change
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ entry: object } | 'missing' | 'no entry'>}
+     * @returns {Promise<{ entry: object } | 'missing' | 'no entry' | 'relations change by their own actions'>}
      */
     revert(name, uid, field, change, actor = null) {
         return this.lane([bookKey(name)], async () => {
+            if (field === RELATIONS_FIELD) return 'relations change by their own actions';
             const at = await this.entryOf(name, uid);
             if (typeof at === 'string') return at;
             /** @type {object[]} */
@@ -1448,7 +1480,7 @@ export class WorldInfoEngine {
         const stored = await this.storedEntries(book);
         /** @type {Map<string, bigint>} */
         const entityOfKey = new Map(stored.map(({ entity }) => [entity.key.slice(entity.key.indexOf(':') + 1), entity.id]));
-        const targets = { entityOfKey, entriesOfWorld: new Set([...entityOfKey.values()].map(String)) };
+        const targets = { entityOfKey, liveAfter: new Set([...entityOfKey.values()].map(String)) };
         const stamp = await this.stamper(null, []);
         const writes = historyWrites(stamp);
         let rewritten = 0;
@@ -1459,7 +1491,7 @@ export class WorldInfoEngine {
             if (!field || field.json === undefined) continue;
             const relations = JSON.parse(field.json);
             if (!Array.isArray(relations) || !relations.some(relation => isPlainObject(relation) && 'target' in relation)) continue;
-            const converted = relationsListOf(relationsForStore({ extensions: { relations } }, targets));
+            const converted = relationsListOf(relationsForStore({ extensions: { relations } }, targets, relations));
             pushAll(records, writes.json(entity.id, RELATIONS_FIELD, JSON.stringify(converted), field.json));
             rewritten++;
             if (records.length >= RELATION_CHANGES_PER_STEP) {
@@ -1473,28 +1505,27 @@ export class WorldInfoEngine {
 
     /**
      * @param {bigint} book
-     * @param {string[]} named
-     * @param {Set<string>} known
-     * @returns {Promise<Set<string>>}
+     * @param {{ values: Map<number | string, { text?: string, json?: string }>, lists: Map<number, string[]> }} next
+     * @param {import('./entity-values.js').StoredEntity | null} stored
      */
-    async entriesOfWorld(book, named, known) {
-        const unknown = named.filter(entity => !known.has(entity) && /^\d+$/.test(entity));
-        const found = new Set(known);
-        if (unknown.length > 0) {
-            /** @type {bigint[]} */
-            const entries = await this.store.worldRead('worldbuildingEntriesOfWorld', { book, entities: unknown.map(BigInt) });
-            for (const entity of entries) found.add(String(entity));
+    async withKindsKeptRelationsNeed(book, next, stored) {
+        for (const value of stored?.values ?? []) {
+            if (typeof value.field !== 'string' || !value.field.startsWith(RELATION_KIND_FIELD) || value.text === undefined || next.values.has(value.field)) continue;
+            const kind = Number(value.field.slice(RELATION_KIND_FIELD.length));
+            if (await this.store.worldRead('worldbuildingRelationKindKept', { book, kind })) next.values.set(value.field, { text: value.text });
         }
-        return found;
+        return next;
     }
 
     /**
      * @param {bigint} book
      * @param {unknown[]} entries
+     * @param {import('./entity-values.js').StoredEntity[]} storedEntries
      * @param {Map<string, bigint>} written
+     * @param {Set<string>} deletedHere
      * @returns {Promise<RelationTargets>}
      */
-    async relationTargets(book, entries, written) {
+    async relationTargets(book, entries, storedEntries, written, deletedHere) {
         const entityOfKey = new Map(written);
         const keys = [...new Set(entries.flatMap(fileTargetKeysOf))].filter(key => !entityOfKey.has(key));
         const ids = keys.length > 0 ? await this.lib.ids(TYPE.entry, keys.map(key => `${book}:${key}`)) : [];
@@ -1502,8 +1533,15 @@ export class WorldInfoEngine {
             const id = ids[index];
             if (id !== null && id !== undefined) entityOfKey.set(key, id);
         });
-        const named = [...new Set(entries.flatMap(storeTargetsOf))];
-        return { entityOfKey, entriesOfWorld: await this.entriesOfWorld(book, named, new Set([...written.values()].map(String))) };
+        const liveAfter = new Set([...written.values()].map(String));
+        const named = [...new Set([...entries.flatMap(storeTargetsOf), ...storedEntries.flatMap(storedTargetsOf), ...[...entityOfKey.values()].map(String)])]
+            .filter(entity => !liveAfter.has(entity) && !deletedHere.has(entity) && /^\d+$/.test(entity));
+        if (named.length > 0) {
+            /** @type {bigint[]} */
+            const live = await this.store.worldRead('worldbuildingLiveEntriesOf', { book, entities: named.map(BigInt) });
+            for (const entity of live) liveAfter.add(String(entity));
+        }
+        return { entityOfKey, liveAfter };
     }
 
     /**

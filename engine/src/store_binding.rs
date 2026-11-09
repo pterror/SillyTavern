@@ -2929,6 +2929,16 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "worldbuildingRelationKindKept" => {
+            use crate::store::chat_read::Js;
+            use crate::store::relations;
+            let (book, kind) = (req_integer(a, "book")?, req_integer(a, "kind")?);
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| Ok(Js::Bool(relations::relation_kind_kept(view, book, kind)?)))
+                    .map(JsTree)
+            })
+        }
         "worldbuildingRelationKindInUse" => {
             use crate::store::chat_read::Js;
             use crate::store::relations;
@@ -2939,7 +2949,7 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
-        "worldbuildingSourcesTargeting" | "worldbuildingEntriesOfWorld" => {
+        "worldbuildingSourcesTargeting" | "worldbuildingLiveEntriesOf" => {
             use crate::store::relations;
             let (book, entities) = (req_integer(a, "book")?, integers(a, "entities")?);
             if op == "worldbuildingSourcesTargeting" {
@@ -2952,7 +2962,7 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
             } else {
                 Box::new(move |store| {
                     store
-                        .chat_read(|view| relations::entries_of_world(view, book, &entities))
+                        .chat_read(|view| relations::live_entries_of_world(view, book, &entities))
                         .map(JsTree)
                 })
             }

@@ -333,6 +333,11 @@ fn any_relation_in_use_targets(
     Ok(first_under(reader, &relations_targeting_prefix(book, target))?.is_some())
 }
 
+pub fn relation_kind_kept(view: &View, book: u64, kind: u64) -> Result<bool, StoreError> {
+    Ok(first_under(view, &kept_by_kind_prefix(book, kind))?.is_some()
+        || counter_at(view, &relations_of_deleted_entries_count_key(book, kind))? > 0)
+}
+
 pub fn relation_kind_in_use(
     reader: &impl ReadDerived,
     book: u64,
@@ -1446,10 +1451,10 @@ pub fn sources_targeting(view: &View, book: u64, targets: &[u64], limit: usize) 
     Ok(Js::Arr(sources.into_iter().take(limit).map(Js::Big).collect()))
 }
 
-pub fn entries_of_world(view: &View, book: u64, entities: &[u64]) -> Result<Js, StoreError> {
+pub fn live_entries_of_world(view: &View, book: u64, entities: &[u64]) -> Result<Js, StoreError> {
     let mut found = Vec::new();
     for entity in entities {
-        if is_entry_of(view, book, *entity)? || is_deleted_entry_of(view, book, *entity)? {
+        if is_entry_of(view, book, *entity)? {
             found.push(Js::Big(*entity));
         }
     }
@@ -1744,7 +1749,10 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
             "This relation kind is being merged into another; pick that one.",
         ));
     }
-    if entry_key_in(view, book, edit.target)?.is_none() {
+    let target_is_live = entry_key_in(view, book, edit.target)?.is_some();
+    let removing_a_kept_relation = matches!(edit.change, RelationChange::Remove)
+        && is_deleted_entry_of(view, book, edit.target)?;
+    if !target_is_live && !removing_a_kept_relation {
         return Ok(refusal("The target isn't an entry of this world."));
     }
     let target = edit.target;
