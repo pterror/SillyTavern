@@ -63,6 +63,7 @@ import type {
 } from './protocol.ts';
 import { defineArea } from '@st/server-ui';
 import type { ActionContext, ActionResult, Upload, User, ViewContext } from '@st/server-ui';
+import type { Looks } from '@st/protocol/looks';
 
 export type Who = { user: User; session: string };
 
@@ -162,6 +163,9 @@ export type HeldSelection = {
 export type SelectionRead = Omit<Extract<SelectionView, { base: unknown }>, 'book' | 'base'>;
 
 export type Ports = {
+    // The looks of the things a view draws, as the view is read: the session's views' things are what a look's edit
+    // answers looks for.
+    looksOf(context: ViewContext, view: string, things: string[]): Promise<Looks>;
     readWorlds(user: User): Promise<World[]>;
     readWorld(user: User, book: string): Promise<(World & { namesOffer: NamesOffer | null }) | null>;
     openWorld(who: Who, book: string | null): Promise<string | null>;
@@ -402,6 +406,32 @@ const heldRange = (shown: ShownPointingAt, kind: string): PointingAtRange =>
         endRank: shown.endRank,
         stepLandedOn: null,
     };
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+
+// The things a view draws by name: every label, the entries its text links, and the worlds it lists or shows.
+export function thingsDrawn(view: string, value: unknown): string[] {
+    const found = new Set<string>();
+    const walk = (part: unknown): void => {
+        if (Array.isArray(part)) {
+            for (const item of part) walk(item);
+            return;
+        }
+        if (!isObject(part)) return;
+        if (typeof part['thing'] === 'string' && typeof part['shownAs'] === 'string') found.add(part['thing']);
+        for (const item of Object.values(part)) walk(item);
+    };
+    walk(value);
+    if (!isObject(value)) return [...found];
+    if (view === ENTRY_VIEW && Array.isArray(value['links']))
+        for (const link of value['links'])
+            if (isObject(link) && typeof link['entry'] === 'string') found.add(link['entry']);
+    if (view === WORLDS_VIEW && Array.isArray(value['worlds']))
+        for (const world of value['worlds'])
+            if (isObject(world) && typeof world['id'] === 'string') found.add(world['id']);
+    if (view === WORLD_VIEW && typeof value['id'] === 'string') found.add(value['id']);
+    return [...found];
+}
 
 export function worldbuildingArea(ports: Ports) {
     const bySession = new Map<string, SessionState>();
@@ -746,9 +776,20 @@ export function worldbuildingArea(ports: Ports) {
         }
     };
 
+    const drawn = (views: Record<string, (context: ViewContext) => Promise<object>>) =>
+        Object.fromEntries(
+            Object.entries(views).map(([key, read]) => [
+                key,
+                async (context: ViewContext) => {
+                    const value = await read(context);
+                    return { ...value, looks: await ports.looksOf(context, key, thingsDrawn(key, value)) };
+                },
+            ]),
+        );
+
     return defineArea({
         schemas: actions,
-        views: {
+        views: drawn({
             [WORLDS_VIEW]: async (context: ViewContext): Promise<WorldsView> => ({
                 worlds: await ports.readWorlds(context.user),
             }),
@@ -794,7 +835,7 @@ export function worldbuildingArea(ports: Ports) {
                 const loops = book === null ? [] : await ports.readLoopsLeftByJobs(context.user, book);
                 return { book, ...(await shownLoops(context.user, book, loops)) };
             },
-        },
+        }),
         gone: (session) => {
             bySession.delete(session);
         },

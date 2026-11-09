@@ -1,5 +1,8 @@
 import * as v from 'valibot';
 import { expect, test } from 'vite-plus/test';
+import type { Looks, ResolvedLook } from '@st/protocol/looks';
+import { READS_OF_LOOKS_BESIDES_THINGS } from '@st/looks/protocol';
+
 import {
     actions,
     cardsPerTopLevelEntry,
@@ -23,6 +26,10 @@ import {
     BULK_JOBS_VIEW,
     PICKED_AT_MOST,
     READS_PER_CARD,
+    READS_PER_DRAWN_CARD,
+    READS_PER_LOOK,
+    READS_OF_TEXT_LINKS,
+    READS_OF_LOOKS_PER_PART,
     READS_PER_LABEL,
     READS_PER_LOOP_CHECK_VISIT,
     READS_PER_MENTION_CHECK,
@@ -79,6 +86,12 @@ import type {
 } from './server.ts';
 import type { ActionContext, ActionResult, Upload, User } from '@st/server-ui';
 
+const LOOK: ResolvedLook = {
+    layers: { rest: [{ property: 'color', value: 'teal' }] },
+    picture: { before: false, after: false },
+    note: null,
+    fonts: [],
+};
 const user: User = { handle: 'u', directories: { root: '/u' } };
 
 const NOTHING_CHANGED: LastChangeView = {
@@ -188,18 +201,23 @@ type Costs = { [K in keyof Ports]?: (...args: Parameters<Ports[K]>) => number };
 
 const READS_ASKED: Costs = {
     readWorld: () => READS_PER_LABEL,
-    readOverview: (_u, q) => (q.endRank - q.firstRank) * cardsOf(q.layout) * READS_PER_CARD,
+    looksOf: (_c, _v, things) => (things.length === 0 ? 0 : READS_OF_LOOKS_BESIDES_THINGS),
+    readOverview: (_u, q) => (q.endRank - q.firstRank) * cardsOf(q.layout) * READS_PER_DRAWN_CARD,
     stepOverview: (_u, q) => crossedBy(q) * cardsOf(q.layout) * READS_PER_CARD,
-    readPointingAt: (_u, q) => q.maxCards * READS_PER_CARD,
+    readPointingAt: (_u, q) => q.maxCards * READS_PER_DRAWN_CARD,
     stepPointingAt: (_u, q) => crossedBy(q) * cardsOf(q.layout) * READS_PER_CARD,
     labelEntries: (_u, _b, entries) => entries.length * READS_PER_LABEL,
-    readResults: (_u, q) => q.pages * q.pageSize * READS_PER_CARD + q.walkSteps,
+    readResults: (_u, q) => q.pages * q.pageSize * READS_PER_DRAWN_CARD + q.walkSteps,
     findEntries: (_u, q) => q.limit * READS_PER_LABEL,
     readSelection: (_u, selection, walkSteps) => selection.except.length + walkSteps,
     // The first chunk walks in the engine's own share (WALK_STEPS_PER_READ) before its loop check.
     startBulk: (_w, _s, _a, limit) => WALK_STEPS_PER_READ + loopCheck(limit),
     changeRelation: (_w, _b, _c, limit) => loopCheck(limit),
-    readEntry: (_u, _b, _e, asked) => asked.textLinkReads + asked.mentionChecks * READS_PER_MENTION_CHECK,
+    // Each entry the text names costs at least two of its reads, and its look one more.
+    readEntry: (_u, _b, _e, asked) =>
+        asked.textLinkReads +
+        Math.ceil(asked.textLinkReads / 2) * READS_PER_LOOK +
+        asked.mentionChecks * READS_PER_MENTION_CHECK,
     readKeySharers: (_u, q) => q.limit * READS_PER_LABEL,
     createEntry: (_w, _b, _c, limit) => loopCheck(limit),
     // These run the engine's loop check at its own limit.
@@ -248,7 +266,9 @@ function world(
         namesOffer: [string, string][];
         selections: HeldSelection[];
         bulk: { selection: HeldSelection; action: BulkAction; loopCheckLimit: number; session: string }[];
+        looks: { view: string; session: string; things: string[] }[];
     } = {
+        looks: [],
         overview: [],
         step: [],
         changes: [],
@@ -324,7 +344,7 @@ function world(
             title: null,
             keys: [{ text: `name ${entry}`, isName: true, alsoBringsUp: 0 }],
             text: found.text,
-            links: [],
+            links: entry === '7' ? [{ entry: '8', from: 0, to: 3 }] : [],
             linksComplete: true,
             relations: [],
             placement: PLACEMENT,
@@ -348,6 +368,10 @@ function world(
               ]
             : [];
     const ports: Ports = {
+        looksOf: async (context, view, things) => {
+            asked.looks.push({ view, session: context.session, things });
+            return { styles: { s: LOOK }, things: Object.fromEntries(things.map((thing) => [thing, 's'])) };
+        },
         readWorlds: async () => [...worlds.values()].sort((a, b) => a.name.localeCompare(b.name)),
         readWorld: async (_u, book) => {
             const found = worlds.get(book);
@@ -625,15 +649,21 @@ function world(
     const reads = { asked: 0 };
     const area = worldbuildingArea(countingReads(ports, reads));
     const context: ActionContext = { user, session: 's', chat: null, upload: null };
-    const view = <T>(key: string) => area.views[key]!(context) as Promise<T>;
+    const withoutLooks = async <T>(read: Promise<unknown>): Promise<T> => {
+        const { looks: _, ...value } = (await read) as { looks: unknown };
+        return value as T;
+    };
+    const view = <T>(key: string) => withoutLooks<T>(area.views[key]!(context) as Promise<unknown>);
     const parsed = (type: string, payload: unknown) =>
         v.parse(actions[type as keyof typeof actions] as v.GenericSchema, payload);
     const act = (type: string, payload: unknown, upload: Upload | null = null): Promise<ActionResult> =>
         area.actions[type]!({ ...context, upload }, parsed(type, payload));
     const other = (type: string, payload: unknown): Promise<ActionResult> =>
         area.actions[type]!({ ...context, session: 't' }, parsed(type, payload));
-    const otherView = <T>(key: string) => area.views[key]!({ ...context, session: 't' }) as Promise<T>;
-    return { view, act, other, otherView, asked, reads, views: Object.keys(area.views) };
+    const otherView = <T>(key: string) =>
+        withoutLooks<T>(area.views[key]!({ ...context, session: 't' }) as Promise<unknown>);
+    const drawnView = (key: string) => area.views[key]!(context) as Promise<{ looks: Looks }>;
+    return { view, drawnView, act, other, otherView, asked, reads, views: Object.keys(area.views) };
 }
 
 const WORLD_VIEWS = [
@@ -650,6 +680,22 @@ const WORLD_VIEWS = [
 const open = { book: '1', groupBy: '1', firstRank: 0, endRank: 20, layout: LAYOUT, around: null };
 
 const pointingAt = { endRank: 12, layout: LAYOUT };
+
+test('every view carries the looks of exactly the names it draws, and the looks know which session drew them', async () => {
+    const w = world(1000);
+    await w.act('worldbuilding.openOverview', { ...open, endRank: 3 });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
+    const overview = await w.drawnView(OVERVIEW_VIEW);
+    expect(Object.keys(overview.looks.things)).toEqual(['100', '101', '102']);
+    expect(overview.looks.styles).toEqual({ s: LOOK });
+    const entry = await w.drawnView(ENTRY_VIEW);
+    expect(Object.keys(entry.looks.things)).toEqual(expect.arrayContaining(['7', '8']));
+    const worlds = await w.drawnView(WORLDS_VIEW);
+    expect(Object.keys(worlds.looks.things).sort()).toEqual(['1', '2']);
+    expect(Object.keys((await w.drawnView(WORLD_VIEW)).looks.things)).toEqual(['1', '7']);
+    expect(Object.keys((await w.drawnView(SELECTION_VIEW)).looks.things)).toEqual([]);
+    expect(w.asked.looks.find((l) => l.view === ENTRY_VIEW)).toMatchObject({ session: 's' });
+});
 
 test('opening a world opens its overview, its kinds and the last change in the same answer, at the range asked for', async () => {
     const w = world(1000);
@@ -2242,16 +2288,19 @@ test("a job's step reads its walk and its loop check within one part's budget, i
 });
 
 test("a part holds one action's work and one view's bounded reads, besides the counted labels", () => {
-    expect(READS_OF_ACTION + READS_PER_VIEW + READS_OF_COUNTED_LABELS).toBeLessThanOrEqual(READS_PER_REQUEST);
+    expect(READS_OF_ACTION + READS_PER_VIEW + READS_OF_COUNTED_LABELS + READS_OF_LOOKS_PER_PART).toBeLessThanOrEqual(
+        READS_PER_REQUEST,
+    );
     expect(LOOP_CHECK_VISITS_PER_WRITE * READS_PER_LOOP_CHECK_VISIT).toBeLessThanOrEqual(READS_OF_ACTION);
     expect(STEP_CARDS_AT_MOST * READS_PER_CARD).toBeLessThanOrEqual(READS_OF_ACTION);
     expect(WALK_STEPS_PER_READ).toBeLessThanOrEqual(READS_OF_ACTION);
-    expect(MAX_CARDS_PER_READ * READS_PER_CARD).toBeLessThanOrEqual(READS_PER_VIEW);
-    expect(MAX_CARDS_PER_READ * READS_PER_CARD + WALK_STEPS_PER_READ).toBeLessThanOrEqual(
+    expect(MAX_CARDS_PER_READ * READS_PER_DRAWN_CARD).toBeLessThanOrEqual(READS_PER_VIEW);
+    expect(MAX_CARDS_PER_READ * READS_PER_DRAWN_CARD + WALK_STEPS_PER_READ).toBeLessThanOrEqual(
         READS_OF_ACTION + READS_PER_VIEW,
     );
-    expect(TEXT_LINK_READS_PER_READ + MENTION_CHECKS_PER_READ * READS_PER_MENTION_CHECK).toBeLessThanOrEqual(
-        READS_PER_VIEW,
+    expect(TEXT_LINK_READS_PER_READ + Math.ceil(TEXT_LINK_READS_PER_READ / 2) * READS_PER_LOOK).toBeLessThanOrEqual(
+        READS_OF_TEXT_LINKS,
     );
+    expect(READS_OF_TEXT_LINKS + MENTION_CHECKS_PER_READ * READS_PER_MENTION_CHECK).toBeLessThanOrEqual(READS_PER_VIEW);
     expect(PICKED_AT_MOST + SELECTION_WALK_STEPS).toBeLessThanOrEqual(READS_PER_VIEW);
 });

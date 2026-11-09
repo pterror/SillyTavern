@@ -1,5 +1,7 @@
 import * as v from 'valibot';
 import type { ActionSchemas } from '@st/protocol';
+import type { Looks } from '@st/protocol/looks';
+import { READS_OF_LOOKS_BESIDES_THINGS } from '@st/looks/protocol';
 
 export const OVERVIEW_VIEW = 'worldbuilding.overview';
 export const RELATION_KINDS_VIEW = 'worldbuilding.relationKinds';
@@ -29,8 +31,12 @@ export const RELATION_CHANGES_PER_STEP = 1000;
 // A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
 // label (its title, keys, names and, with neither a title nor a name, its text): 10 with one relation.
 export const READS_PER_CARD = 10;
-// A label reads the entry's title, keys, names and, with neither a title nor a name, its text.
-export const READS_PER_LABEL = 4;
+// A drawn name's look reads the thing's own look; the theme, its world's and the shared looks are read once per view.
+export const READS_PER_LOOK = 1;
+// A drawn card's own name and its relation's target, each in its look.
+export const READS_PER_DRAWN_CARD = READS_PER_CARD + 2 * READS_PER_LOOK;
+// A label reads the entry's title, keys, names and, with neither a title nor a name, its text; and its look.
+export const READS_PER_LABEL = 4 + READS_PER_LOOK;
 export const READS_PER_LOOP_CHECK_VISIT = 2;
 // An entry checked for a mention reads its place (in the world's order, or in the index's list for a name), whether it
 // is in the world, and its text's head and record; one that mentions the entry, its label too.
@@ -49,15 +55,17 @@ export const STEP_CARDS_AT_MOST = Math.floor(READS_OF_ACTION / READS_PER_CARD);
 // A walk of a chip's region (the results, a selection's count, a bulk chunk with no words) reads a key a step.
 export const WALK_STEPS_PER_READ = READS_OF_ACTION;
 // One view's bounded reads: the rest of a part.
-export const READS_PER_VIEW = READS_PER_REQUEST - READS_OF_COUNTED_LABELS - READS_OF_ACTION;
-export const MAX_CARDS_PER_READ = Math.floor(READS_PER_VIEW / READS_PER_CARD);
+// The views of a part that draw names (the overview, the world, the worlds, the entry, what points at it, the last
+// change) each read the looks besides their things' own once.
+export const READS_OF_LOOKS_PER_PART = 6 * READS_OF_LOOKS_BESIDES_THINGS;
+export const READS_PER_VIEW = READS_PER_REQUEST - READS_OF_COUNTED_LABELS - READS_OF_ACTION - READS_OF_LOOKS_PER_PART;
+export const MAX_CARDS_PER_READ = Math.floor(READS_PER_VIEW / READS_PER_DRAWN_CARD);
 // The entry view reads the names its text writes and what mentions it, in halves. Looking for the names reads one key
 // per seek of the names index, per entry listed under a name found and per name checked one by one, and two (its case
-// and whole-word flags) per entry it names.
-export const TEXT_LINK_READS_PER_READ = Math.floor(READS_PER_VIEW / 2);
-export const MENTION_CHECKS_PER_READ = Math.floor(
-    (READS_PER_VIEW - TEXT_LINK_READS_PER_READ) / READS_PER_MENTION_CHECK,
-);
+// and whole-word flags) per entry it names, whose look is one more.
+export const TEXT_LINK_READS_PER_READ = Math.floor(READS_PER_VIEW / 2 / (1 + READS_PER_LOOK / 2));
+export const READS_OF_TEXT_LINKS = TEXT_LINK_READS_PER_READ + Math.ceil(TEXT_LINK_READS_PER_READ / 2) * READS_PER_LOOK;
+export const MENTION_CHECKS_PER_READ = Math.floor((READS_PER_VIEW - READS_OF_TEXT_LINKS) / READS_PER_MENTION_CHECK);
 export const MENTION_PAGES_AT_MOST = Math.floor(MAX_CARDS_PER_READ / MENTIONS_PER_PAGE);
 export const PICKED_AT_MOST = MAX_CARDS_PER_READ;
 // The selection's count checks each picked entry it leaves out (one read each), then walks.
@@ -84,6 +92,9 @@ export const WORLD_LABELS = Object.freeze({
 });
 
 export type Named = { thing: string; text: string; shownAs: 'name' | 'title' | 'opening' };
+
+// Every view of the area carries the looks of the names it draws.
+export type Drawn<T> = T & { looks: Looks };
 
 export type RelationOnCard = {
     kind: string;

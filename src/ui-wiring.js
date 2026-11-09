@@ -523,6 +523,7 @@ const looks = looksArea(looksPorts({ libOf }));
 
 /** @type {import('@st/worldbuilding/server').Ports} */
 const worldbuildingPorts = {
+    looksOf: looks.looksOf,
     ...worldbuildingWorldPorts({
         libOf,
         async booksChanged(user, change) {
