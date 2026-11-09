@@ -107,16 +107,21 @@
     color: var(--SmartThemeBodyColor) !important;
 }
 
-.tag {
-    border-radius: 5px;
+/* The strut of .tags_reserve_row must keep the chip's box, so they share it here. */
+.tag,
+.tags_reserve_row::before {
     border-style: solid;
     border-width: 1px;
     box-sizing: border-box;
+    padding: 0.1rem 0.2rem;
+    font-size: calc(var(--mainFontSize) - 5%);
+}
+
+.tag {
+    border-radius: 5px;
     color: var(--SmartThemeBodyColor);
     background-color: var(--black30a);
     border-color: var(--white50a);
-    padding: 0.1rem 0.2rem;
-    font-size: calc(var(--mainFontSize) - 5%);
     display: flex;
     flex-direction: row;
     align-items: center;
@@ -168,12 +173,23 @@
 }
 
 .tags {
+    --tags-gap: 0.2rem;
     display: flex;
     flex-direction: row;
     flex-wrap: wrap;
     justify-content: flex-start;
-    gap: 0.2rem;
+    gap: var(--tags-gap);
     align-items: flex-end;
+}
+
+/* One chip tall even with no tags. The margin cancels the gap after the strut. */
+.tags_reserve_row::before {
+    content: '\200b';
+    width: 0;
+    padding-inline: 0;
+    border-inline-width: 0;
+    border-color: transparent;
+    margin-inline-end: calc(-1 * var(--tags-gap));
 }
 
 #bulkTagsList,
