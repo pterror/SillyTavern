@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
-import { answerOf, greetingRow, greetingsList, listDelete, listEdit, listToggleDefault, openGreetingsList } from './alternatives-list.js';
+import { answerOf, greetingAnswer, greetingRow, greetingsList, listDelete, listEdit, listToggleDefault, openGreetingsList } from './alternatives-list.js';
 import { cardToGreetingsModel } from '../../src/greeting-list.js';
 import { hashGreetingText } from '../../src/greeting-ops.js';
 
@@ -89,6 +89,22 @@ async function otherSessionOp(page, op, body) {
         return response.status;
     }, { op, body });
     expect(status).toBe(200);
+}
+
+/**
+ * @param {import('@playwright/test').Browser} browser
+ * @param {(other: import('@playwright/test').Page) => Promise<T>} fn
+ * @template T
+ */
+async function withOtherSession(browser, fn) {
+    const context = await browser.newContext();
+    try {
+        const other = await context.newPage();
+        await testSetup.awaitST({ page: other });
+        return await fn(other);
+    } finally {
+        await context.close();
+    }
 }
 
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -223,10 +239,14 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expectPageHoldsServerList(page, avatar);
     });
 
-    test('list demote after another session already cleared the default: the list shows none is, and setting it again works', async ({ page }) => {
+    test('list demote after another session already cleared the default: the list shows none is, and setting it again works', async ({ page, browser }) => {
         const { g, avatar } = await withDefaultAtOne(page, 'DemoteAlreadyCleared');
         await openGreetingsList(page, 3);
-        await otherSessionOp(page, 'default/unset', { avatar_url: avatar, expected_default_position: 1 });
+        await withOtherSession(browser, async (other) => {
+            await openCharacter(other, avatar);
+            await openGreetingsList(other, 3);
+            await listToggleDefault(other, g[1]);
+        });
         await expect(greetingRow(page, g[1]).locator('.alternative-default')).toHaveAttribute('aria-pressed', 'false', { timeout: 10000 });
         await listToggleDefault(page, g[1]);
         await listToggleDefault(page, g[1]);
@@ -618,14 +638,18 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         expect(opening.nodeIds.map(isStoredId)).toEqual([false, true, false, false]);
     });
 
-    test('list delete on a list another session reordered deletes that greeting and drops no other', async ({ page }) => {
+    test('list delete on a list another session reordered deletes that greeting and drops no other', async ({ page, browser }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`, `Three ${s}`];
         const avatar = await createCharacter(page, `ServerListReordered-${s}`, g);
         await openCharacter(page, avatar);
         await openGreetingsList(page, 4);
-        await otherSessionOp(page, 'move', {
-            avatar_url: avatar, source_position: 3, expected_hash: hashGreetingText(g[3]), side: 'before', target_position: 0, target_expected_hash: hashGreetingText(g[0]),
+        await withOtherSession(browser, async (other) => {
+            await openCharacter(other, avatar);
+            await openGreetingsList(other, 4);
+            const moved = greetingAnswer(other);
+            await greetingRow(other, g[3]).locator('.alternative-drag').press('Home');
+            expect((await answerOf(await moved)).ok).toBe(true);
         });
 
         await expect(greetingRow(page, 0).locator('.alternative-text')).toHaveText(g[3], { timeout: 10000 });
