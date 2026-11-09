@@ -20,11 +20,17 @@
     margin: 0 10px;
 }
 
-.tags_div_preview {
-    max-height: calc(var(--mainFontSize) * 2);
+/* One row of chips, clipped at the edge; a chip wider than the row ends in an ellipsis. */
+.tags.tags_div_preview {
+    flex-wrap: nowrap;
     overflow: hidden;
     align-items: flex-start;
     pointer-events: none;
+}
+
+.tags_div_preview > .tag {
+    flex-shrink: 0;
+    max-width: 100%;
 }
 
 #tags_div:has(.inline-drawer-icon.up) .tags_div_preview {

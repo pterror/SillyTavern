@@ -17,28 +17,53 @@ async function measure(page) {
     }));
 }
 
+/**
+ * @param {import('@playwright/test').Page} page
+ */
+async function createCharacter(page) {
+    const name = `TagRowReservedTest-${Date.now()}`;
+    await openCharacterManagementDrawer(page);
+    await page.locator('#rm_button_create').click();
+    await page.locator('#character_name_pole').fill(name);
+    await page.locator('#create_button_label').click();
+    await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
+    await expect(page.locator('#char-info-panel')).toHaveClass(/openDrawer/);
+    await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} tag
+ */
+async function addTag(page, tag) {
+    await page.locator('#tagInput').fill('');
+    await page.locator('#tagInput').pressSequentially(tag);
+    await page.locator('.ui-autocomplete .ui-menu-item', { hasText: new RegExp(`^\\s*${tag}\\s*$`) }).first().click();
+    await page.locator('#tagInput').fill('');
+    await page.locator('#tagInput').blur();
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ */
+async function deleteOpenCharacter(page) {
+    await page.locator('#delete_button').click();
+    const confirmButton = page.locator('.popup-button-ok');
+    await confirmButton.first().waitFor({ state: 'visible', timeout: 5000 });
+    await confirmButton.first().click();
+}
+
 test.describe('character info tag row', () => {
     test.beforeEach(testSetup.awaitST);
 
     test('keeps one chip of height with no tags, so the first tag and removing it move nothing below', async ({ page }) => {
-        const name = `TagRowReservedTest-${Date.now()}`;
-        await openCharacterManagementDrawer(page);
-        await page.locator('#rm_button_create').click();
-        await page.locator('#character_name_pole').fill(name);
-        await page.locator('#create_button_label').click();
-        await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
-        await expect(page.locator('#char-info-panel')).toHaveClass(/openDrawer/);
-        await page.locator('#tagInput').waitFor({ state: 'visible', timeout: 10000 });
+        await createCharacter(page);
         try {
             await expect(page.locator('#tags_div_preview .tag')).toHaveCount(0);
             const empty = await measure(page);
             expect(empty.row).toBeGreaterThan(0);
 
-            const tag = `reserved${Date.now()}`;
-            await page.locator('#tagInput').pressSequentially(tag);
-            await page.locator('.ui-autocomplete .ui-menu-item').first().click();
-            await page.locator('#tagInput').fill('');
-            await page.locator('#tagInput').blur();
+            await addTag(page, `reserved${Date.now()}`);
             await expect(page.locator('#tags_div_preview .tag')).toHaveCount(1);
             const one = await measure(page);
             expect(one.chip).toBe(empty.row);
@@ -52,10 +77,48 @@ test.describe('character info tag row', () => {
             expect(removed.row).toBe(empty.row);
             expect(removed.below).toBe(empty.below);
         } finally {
-            await page.locator('#delete_button').click();
-            const confirmButton = page.locator('.popup-button-ok');
-            await confirmButton.first().waitFor({ state: 'visible', timeout: 5000 });
-            await confirmButton.first().click();
+            await deleteOpenCharacter(page);
+        }
+    });
+
+    test('is exactly one chip row at any font size: more chips are cut off at the edge, not wrapped', async ({ page }) => {
+        await createCharacter(page);
+        try {
+            const stamp = Date.now();
+            const tags = [`long${stamp}${'x'.repeat(120)}`, ...Array.from({ length: 12 }, (_, n) => `row${stamp}n${n}`)];
+            for (const tag of tags) {
+                await addTag(page, tag);
+            }
+            await expect(page.locator('#tags_div_preview .tag')).toHaveCount(tags.length);
+
+            for (const size of ['10px', '15px', '22px', '31px']) {
+                const row = await page.evaluate(async size => {
+                    document.documentElement.style.setProperty('--mainFontSize', size);
+                    await new Promise(resolve => requestAnimationFrame(resolve));
+                    const preview = document.getElementById('tags_div_preview');
+                    const box = preview.getBoundingClientRect();
+                    const chips = [...preview.querySelectorAll('.tag')].map(el => el.getBoundingClientRect());
+                    return {
+                        height: box.height,
+                        width: box.width,
+                        chipHeight: chips[0].height,
+                        tops: [...new Set(chips.map(c => c.top - box.top))],
+                        bottoms: [...new Set(chips.map(c => c.bottom - box.top))],
+                        firstWidth: chips[0].width,
+                        lastLeft: chips.at(-1).left - box.left,
+                        contentHeight: preview.scrollHeight,
+                    };
+                }, size);
+                expect(row.height, size).toBe(row.chipHeight);
+                expect(row.tops, size).toEqual([0]);
+                expect(row.bottoms, size).toEqual([row.height]);
+                expect(row.contentHeight, size).toBe(Math.round(row.height));
+                expect(row.firstWidth, size).toBeLessThanOrEqual(row.width);
+                expect(row.lastLeft, size).toBeGreaterThan(row.width);
+            }
+        } finally {
+            await page.evaluate(() => document.documentElement.style.removeProperty('--mainFontSize'));
+            await deleteOpenCharacter(page);
         }
     });
 });
