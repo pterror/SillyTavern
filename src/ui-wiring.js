@@ -13,6 +13,7 @@ import { References } from './world-info/references.js';
 import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
 import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
 import { worldbuildingSearchPorts } from './world-info/worldbuilding-search.js';
+import { worldbuildingBulkPorts } from './world-info/worldbuilding-bulk.js';
 import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
 import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
@@ -545,9 +546,13 @@ const optionalId = (/** @type {string | null} */ id) => (id === null ? null : Bi
 onUserStoreOpened(({ events, root, handle }) => {
     /** @type {import('@st/server-ui').User} */
     const user = /** @type {any} */ ({ handle, directories: { root } });
-    events.on('worldbuildingJobStep', (/** @type {bigint} */ _book, /** @type {boolean} */ offerChanged) => {
-        const offer = offerChanged ? ['worldbuilding.world', 'worldbuilding.entry', 'worldbuilding.found'] : [];
-        ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview', 'worldbuilding.results', 'worldbuilding.pointingAt', ...offer]).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
+    events.on('worldbuildingJobStep', (/** @type {bigint} */ _book, /** @type {'relations' | 'names' | 'entries'} */ touched) => {
+        const also = {
+            relations: [],
+            names: ['worldbuilding.world', 'worldbuilding.entry', 'worldbuilding.found'],
+            entries: ['worldbuilding.world', 'worldbuilding.worlds', 'worldbuilding.entry', 'worldbuilding.found', 'worldbuilding.bulkJobs'],
+        }[touched];
+        ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview', 'worldbuilding.results', 'worldbuilding.pointingAt', 'worldbuilding.selection', ...also]).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
     });
 });
 
@@ -573,6 +578,7 @@ const worldbuildingPorts = {
         },
     }),
     ...worldbuildingSearchPorts({ libOf }),
+    ...worldbuildingBulkPorts({ libOf }),
     async readLoopsLeftByJobs(user, book) {
         return (await libOf(user)).books.jobs.loopsLeft(BigInt(book));
     },

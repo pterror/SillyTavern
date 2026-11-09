@@ -11,6 +11,8 @@ export const WORLD_VIEW = 'worldbuilding.world';
 export const POINTING_AT_VIEW = 'worldbuilding.pointingAt';
 export const RESULTS_VIEW = 'worldbuilding.results';
 export const FOUND_VIEW = 'worldbuilding.found';
+export const SELECTION_VIEW = 'worldbuilding.selection';
+export const BULK_JOBS_VIEW = 'worldbuilding.bulkJobs';
 
 export const READS_PER_REQUEST = 24_000;
 // A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
@@ -20,6 +22,8 @@ export const READS_PER_LOOP_CHECK_VISIT = 2;
 export const MAX_CARDS_PER_READ = READS_PER_REQUEST / READS_PER_CARD;
 export const LOOP_CHECK_VISITS_PER_WRITE = READS_PER_REQUEST / READS_PER_LOOP_CHECK_VISIT;
 export const FOUND_PER_QUERY = 20;
+export const SELECTION_COUNTED_UP_TO = 1000;
+export const PICKED_AT_MOST = MAX_CARDS_PER_READ;
 
 export type Named = { thing: string; text: string; shownAs: 'name' | 'title' | 'opening' };
 
@@ -221,6 +225,31 @@ export type ResultsView =
 
 export type FoundView = { book: string; query: string; entries: Named[]; next: string | null } | { book: null };
 
+// `none`: the entries in `except` are selected; `matching`: what the shown filter (else the whole world) matches is,
+// but those in `except`. `matching` counts the selected up to SELECTION_COUNTED_UP_TO, `matchingCapped` saying there may
+// be more; it is null under `none`.
+export type SelectionView =
+    | {
+          book: string;
+          base: 'none' | 'matching';
+          except: string[];
+          matching: number | null;
+          matchingCapped: boolean;
+      }
+    | { book: null };
+
+export type RelationTo = { kind: string; target: string };
+
+export type BulkAction =
+    | { delete: true }
+    | { set: Partial<Placement> }
+    | { moveTo: RelationTo }
+    | { alsoPutIn: RelationTo };
+
+export type BulkJob = { job: string; action: BulkAction; target: Named | null; done: number };
+
+export type BulkJobsView = { book: string; jobs: BulkJob[] } | { book: null };
+
 export function cardsPerTopLevelEntry(levels: RegionLayout[]): number {
     let cards = 1;
     let atLevel = 1;
@@ -284,6 +313,17 @@ const keyText = v.pipe(v.string(), v.trim(), v.minLength(1));
 const keyAs = v.picklist(['name', 'trigger']);
 const cursor = v.pipe(v.string(), v.minLength(1));
 const chip = v.object({ kind: kindId, target: entityId, depth: v.picklist(['directly', 'anyDepth']) });
+const placementChange = v.pipe(
+    v.partial(v.strictObject(placementFields)),
+    v.check((fields: object) => Object.keys(fields).length > 0, 'Name at least one field.'),
+);
+const relationTo = v.object({ kind: kindId, target: entityId });
+const bulkAction = v.union([
+    v.strictObject({ delete: v.literal(true) }),
+    v.strictObject({ set: placementChange }),
+    v.strictObject({ moveTo: relationTo }),
+    v.strictObject({ alsoPutIn: relationTo }),
+]);
 
 export const actions = {
     'worldbuilding.openOverview': v.pipe(
@@ -341,13 +381,7 @@ export const actions = {
     'worldbuilding.addKey': v.object({ ...entryNamed, key: keyText, as: keyAs }),
     'worldbuilding.setKeyAs': v.object({ ...entryNamed, key: keyText, as: keyAs }),
     'worldbuilding.removeKey': v.object({ ...entryNamed, key: keyText }),
-    'worldbuilding.setPlacement': v.object({
-        ...entryNamed,
-        fields: v.pipe(
-            v.partial(v.strictObject(placementFields)),
-            v.check((fields: object) => Object.keys(fields).length > 0, 'Name at least one field.'),
-        ),
-    }),
+    'worldbuilding.setPlacement': v.object({ ...entryNamed, fields: placementChange }),
     'worldbuilding.createEntry': v.object({
         book: entityId,
         after: v.nullable(entityId),
@@ -380,4 +414,12 @@ export const actions = {
         cursors: v.pipe(v.array(v.nullable(cursor)), v.minLength(1), v.maxLength(MAX_CARDS_PER_READ)),
     }),
     'worldbuilding.findEntries': v.object({ book: entityId, query: v.string() }),
+    'worldbuilding.select': v.object({
+        book: entityId,
+        entries: v.pipe(v.array(entityId), v.minLength(1), v.maxLength(PICKED_AT_MOST)),
+        selected: v.boolean(),
+    }),
+    'worldbuilding.selectAllMatching': v.object({ book: entityId }),
+    'worldbuilding.selectNone': v.object({ book: entityId }),
+    'worldbuilding.bulk': v.object({ book: entityId, action: bulkAction, loopCheckLimit }),
 } satisfies ActionSchemas;

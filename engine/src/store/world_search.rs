@@ -433,19 +433,28 @@ fn page_of(
         };
         return relevance_page(view, cache, scope, &read.clauses, filters, cursor, read.limit, tighten);
     }
-    let lead_at = read
-        .chips
+    chip_led_page(view, read.book, &read.chips, cursor, read.limit)
+}
+
+fn chip_led_page(
+    view: &View,
+    book: u64,
+    chips: &[Chip],
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Page, StoreError> {
+    let lead_at = chips
         .iter()
         .position(|chip| chip.depth == Depth::Directly)
         .unwrap_or(0);
-    let Some(&lead) = read.chips.get(lead_at) else {
+    let Some(&lead) = chips.get(lead_at) else {
         return Ok(Page {
             entries: Vec::new(),
             next: None,
         });
     };
     let mut others = Chips::new(
-        read.chips
+        chips
             .iter()
             .enumerate()
             .filter(|(at, _)| *at != lead_at)
@@ -453,8 +462,155 @@ fn page_of(
             .collect(),
     );
     match lead.depth {
-        Depth::Directly => sources_page(view, read.book, lead, &mut others, cursor, read.limit),
-        Depth::AnyDepth => region_page(view, read.book, lead, &mut others, cursor, read.limit),
+        Depth::Directly => sources_page(view, book, lead, &mut others, cursor, limit),
+        Depth::AnyDepth => region_page(view, book, lead, &mut others, cursor, limit),
+    }
+}
+
+pub enum Selected {
+    Entries(Vec<u64>),
+    World,
+    Filter { clauses: Vec<Clause>, chips: Vec<Chip> },
+}
+
+pub struct Walked {
+    pub entries: Vec<u64>,
+    pub next: Option<String>,
+}
+
+fn world_entries_prefix(book: u64) -> Vec<u8> {
+    let mut prefix = key::id(key::ENTITY_KEY, super::books::ENTRY);
+    prefix.extend_from_slice(format!("{book}:").as_bytes());
+    prefix
+}
+
+fn world_page(view: &View, book: u64, cursor: Option<&str>, limit: usize) -> Result<Walked, StoreError> {
+    let prefix = world_entries_prefix(book);
+    let after = match cursor {
+        None => None,
+        Some(cursor) => Some(
+            cursor
+                .strip_prefix('k')
+                .and_then(unhex)
+                .ok_or_else(|| refused("that isn't a cursor of this selection"))?,
+        ),
+    };
+    let mut start = prefix.clone();
+    if let Some(after) = &after {
+        start.extend_from_slice(after);
+        start.push(0);
+    }
+    let end = key::prefix_end(&prefix);
+    let mut entries = Vec::new();
+    let mut last = after;
+    loop {
+        let found = view.scan(&start, &end, SCANNED_AT_ONCE)?;
+        if found.is_empty() {
+            return Ok(Walked { entries, next: None });
+        }
+        for (stored_key, value) in found {
+            if entries.len() == limit {
+                return Ok(Walked {
+                    entries,
+                    next: last.map(|last| format!("k{}", hex(&last))),
+                });
+            }
+            let entity = super::library::parse_uvarint(&value)?;
+            if relations::is_entry_of(view, book, entity)? {
+                entries.push(entity);
+            }
+            let suffix = stored_key[prefix.len()..].to_vec();
+            start = stored_key;
+            start.push(0);
+            last = Some(suffix);
+        }
+    }
+}
+
+fn listed_page(view: &View, book: u64, listed: &[u64], cursor: Option<&str>, limit: usize) -> Result<Walked, StoreError> {
+    let from = match cursor {
+        None => 0,
+        Some(cursor) => cursor
+            .strip_prefix('i')
+            .and_then(|at| at.parse::<usize>().ok())
+            .ok_or_else(|| refused("that isn't a cursor of this selection"))?,
+    };
+    let mut entries = Vec::new();
+    for (at, &entity) in listed.iter().enumerate().skip(from) {
+        if entries.len() == limit {
+            return Ok(Walked {
+                entries,
+                next: Some(format!("i{at}")),
+            });
+        }
+        if relations::is_entry_of(view, book, entity)? {
+            entries.push(entity);
+        }
+    }
+    Ok(Walked { entries, next: None })
+}
+
+fn matches_page(
+    view: &View,
+    cache: &StatsCache,
+    book: u64,
+    clauses: &[Clause],
+    chips: &[Chip],
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Walked, StoreError> {
+    let from = match cursor {
+        None => 0,
+        Some(cursor) => cursor
+            .strip_prefix('s')
+            .and_then(unhex_u64)
+            .ok_or_else(|| refused("that isn't a cursor of this selection"))?,
+    };
+    let filters = if chips.is_empty() {
+        Vec::new()
+    } else {
+        vec![Filter::Check(Arc::new(ChipCheck(chips.to_vec())))]
+    };
+    let q = query::Query {
+        scope: Scope::book(book),
+        clauses: clauses.to_vec(),
+        filters,
+        order: Order::Relevance,
+        limit,
+        after: None,
+        weights: None,
+        limits: Limits::default(),
+    };
+    let (entries, next) = query::matches_from(view, &q, cache, from, limit)?;
+    Ok(Walked {
+        entries,
+        next: next.map(|doc| format!("s{}", hex_u64(doc))),
+    })
+}
+
+// Only the chips-only walk is in an order writes can change: a reorder in the leading chip's region can move an entry
+// across its cursor.
+pub fn walk_selected(
+    view: &View,
+    cache: &StatsCache,
+    book: u64,
+    selected: &Selected,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Walked, StoreError> {
+    match selected {
+        Selected::Entries(listed) => listed_page(view, book, listed, cursor, limit),
+        Selected::World => world_page(view, book, cursor, limit),
+        Selected::Filter { clauses, chips } if !clauses.is_empty() => {
+            matches_page(view, cache, book, clauses, chips, cursor, limit)
+        }
+        Selected::Filter { chips, .. } => {
+            let page = chip_led_page(view, book, chips, cursor, limit)?;
+            Ok(Walked {
+                entries: page.entries.into_iter().map(|(entity, _)| entity).collect(),
+                next: page.next,
+            })
+        }
     }
 }
 

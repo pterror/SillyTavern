@@ -28,6 +28,7 @@ pub mod state;
 pub mod stats;
 pub mod tags;
 pub mod token_cache;
+pub mod world_bulk;
 pub mod world_order_tree;
 pub mod world_search;
 
@@ -659,6 +660,20 @@ impl Store {
         })?;
         self.inner.tighten(&tighten);
         Ok(found)
+    }
+
+    pub fn world_bulk_chunk(&self, read: &world_bulk::BulkRead) -> StoreResult<chat_read::Js> {
+        self.derived(|v| world_bulk::bulk_chunk(v, &self.inner.search_stats, read))
+    }
+
+    pub fn world_selection_count(
+        &self,
+        book: u64,
+        selected: &world_search::Selected,
+        except: &std::collections::HashSet<u64>,
+        cap: usize,
+    ) -> StoreResult<chat_read::Js> {
+        self.derived(|v| world_bulk::selection_count(v, &self.inner.search_stats, book, selected, except, cap))
     }
 
     pub fn library_entities(&self, ids: &[u64]) -> StoreResult<Vec<Option<library_read::Entity>>> {
@@ -2028,5 +2043,7 @@ mod tags_tests;
 mod tests;
 #[cfg(test)]
 mod token_cache_tests;
+#[cfg(test)]
+mod world_bulk_tests;
 #[cfg(test)]
 mod world_search_tests;

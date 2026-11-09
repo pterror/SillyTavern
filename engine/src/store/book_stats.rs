@@ -165,6 +165,8 @@ fn owned_value_changed(
         super::names_offer::entry_value_written(view, out, *book, e, f, json, new, entry_is_new)?;
     } else if super::names_offer::is_offer_field(f) {
         super::names_offer::offer_field_written(out, e, json, new);
+    } else if let Some(job) = super::world_bulk::job_of_field(f) {
+        super::world_bulk::job_field_written(out, e, job, json, new);
     } else if let Some(kind) = super::relations::kind_of_relation_kind_field(f) {
         out.put(
             super::commit_checks::relation_kind_check_key(e, kind),
@@ -299,6 +301,7 @@ pub fn gone(
                 out.del(key::ids(STAT_BOOK, e, part));
             }
             super::names_offer::book_gone(out, e);
+            super::world_bulk::book_gone(view, out, e)?;
             drop_fields(view, out, e)
         }
         None => Ok(()),

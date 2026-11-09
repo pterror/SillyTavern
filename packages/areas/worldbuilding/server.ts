@@ -1,5 +1,6 @@
 import {
     actions,
+    BULK_JOBS_VIEW,
     cardsPerTopLevelEntry,
     ENTRY_VIEW,
     FOUND_PER_QUERY,
@@ -13,10 +14,15 @@ import {
     readFitsTheBudget,
     RELATION_KINDS_VIEW,
     RESULTS_VIEW,
+    PICKED_AT_MOST,
+    SELECTION_VIEW,
     WORLD_VIEW,
     WORLDS_VIEW,
 } from './protocol.ts';
 import type {
+    BulkAction,
+    BulkJob,
+    BulkJobsView,
     Chip,
     EntryCell,
     FoundView,
@@ -40,6 +46,7 @@ import type {
     PointingAtView,
     RelationKind,
     RelationKindsView,
+    SelectionView,
     StepLanding,
     UnreachedLoop,
 } from './protocol.ts';
@@ -123,6 +130,16 @@ export type Found = { entries: Named[]; next: string | null };
 
 export type NamesOfferChange = 'ok' | 'missing' | { refused: string };
 
+// `filter` null: the whole world.
+export type HeldSelection = {
+    book: string;
+    base: 'none' | 'matching';
+    filter: { query: string; chips: Chip[] } | null;
+    except: string[];
+};
+
+export type SelectionRead = Omit<Extract<SelectionView, { base: unknown }>, 'book' | 'base'>;
+
 export type Ports = {
     readWorlds(user: User): Promise<World[]>;
     readWorld(user: User, book: string): Promise<(World & { namesOffer: NamesOffer | null }) | null>;
@@ -149,6 +166,14 @@ export type Ports = {
     readResults(user: User, query: ResultsQuery): Promise<ResultsRead>;
     findEntries(user: User, query: { book: string; query: string; limit: number }): Promise<Found>;
     readLoopsLeftByJobs(user: User, book: string): Promise<UnreachedLoop[]>;
+    readSelection(user: User, selection: HeldSelection): Promise<SelectionRead | null>;
+    startBulk(
+        who: Who,
+        selection: HeldSelection,
+        action: BulkAction,
+        loopCheckLimit: number,
+    ): Promise<{ unreachedLoops: UnreachedLoop[] } | 'missing' | { refused: string }>;
+    readBulkJobs(user: User, book: string): Promise<BulkJob[] | null>;
     createRelationKind(who: Who, book: string, name: string): Promise<string | null>;
     renameRelationKind(who: Who, book: string, kind: string, name: string): Promise<'ok' | 'missing' | 'no kind'>;
     deleteRelationKind(
@@ -220,9 +245,9 @@ const NO_ENTRY: EntryView = { book: null };
 const NOTHING_POINTED_AT: PointingAtView = { book: null };
 
 // The views that show how many entries a world has; an action that adds or takes away an entry answers them all.
-const VIEWS_COUNTING_ENTRIES = [OVERVIEW_VIEW, RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, WORLD_VIEW];
+const VIEWS_COUNTING_ENTRIES = [OVERVIEW_VIEW, RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, WORLD_VIEW, SELECTION_VIEW];
 
-const VIEWS_OF_CARDS = [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW];
+const VIEWS_OF_CARDS = [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW];
 
 const NO_RESULTS: ResultsView = { book: null };
 
@@ -230,7 +255,19 @@ const NOTHING_FOUND: FoundView = { book: null };
 
 const NO_WORLD: WorldView = { id: null };
 
-const VIEWS_OF_A_WORLD = [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW];
+const NOTHING_SELECTED: SelectionView = { book: null };
+
+const NO_BULK_JOBS: BulkJobsView = { book: null };
+
+const VIEWS_OF_A_WORLD = [
+    OVERVIEW_VIEW,
+    RELATION_KINDS_VIEW,
+    LAST_CHANGE_VIEW,
+    LOOPS_LEFT_BY_JOBS_VIEW,
+    WORLD_VIEW,
+    SELECTION_VIEW,
+    BULK_JOBS_VIEW,
+];
 
 const NO_WORLD_SHOWN = 'No world is shown.';
 const WORLD_GONE = 'That world no longer exists.';
@@ -239,6 +276,9 @@ const BEING_MERGED = 'That kind is being merged, or another kind is being merged
 const NO_SUCH_ENTRY = "That entry isn't in this world.";
 const NO_ENTRY_OPEN = 'No entry is open.';
 const NO_FILTER = 'Nothing is searched for.';
+const NOT_SHOWN = "That world isn't shown.";
+const NOTHING_SELECTED_REFUSAL = 'Nothing is selected.';
+const TOO_MANY_PICKED = `At most ${PICKED_AT_MOST} entries are picked one at a time; select all matching instead.`;
 
 export function rangeAround(rank: number, firstRank: number, endRank: number): { firstRank: number; endRank: number } {
     if (rank >= firstRank && rank < endRank) return { firstRank, endRank };
@@ -277,6 +317,7 @@ type SessionState = {
     lastChange: LastChangeView;
     filter: ShownFilter | null;
     finding: { book: string; query: string } | null;
+    selection: HeldSelection | null;
 };
 
 const NO_SESSION_STATE: SessionState = {
@@ -286,6 +327,7 @@ const NO_SESSION_STATE: SessionState = {
     lastChange: NOTHING_CHANGED,
     filter: null,
     finding: null,
+    selection: null,
 };
 
 const opened = (book: string, entry: string, { endRank, layout }: PointingAtShown): OpenEntry => ({
@@ -446,6 +488,23 @@ export function worldbuildingArea(ports: Ports) {
         };
     };
 
+    const shownSelection = (session: string): HeldSelection | null => {
+        const { selection, overview } = stateOf(session);
+        return selection && selection.book === overview?.book ? selection : null;
+    };
+
+    const readSelectionView = async (context: ViewContext): Promise<SelectionView> => {
+        const selection = shownSelection(context.session);
+        if (!selection) return NOTHING_SELECTED;
+        const read = await ports.readSelection(context.user, selection);
+        return read ? { book: selection.book, base: selection.base, ...read } : NOTHING_SELECTED;
+    };
+
+    const selected = (context: ActionContext, selection: HeldSelection | null): ActionResult => {
+        remember(context.session, { selection });
+        return { changed: [SELECTION_VIEW] };
+    };
+
     const readFoundView = async (context: ViewContext): Promise<FoundView> => {
         const finding = stateOf(context.session).finding;
         if (!finding) return NOTHING_FOUND;
@@ -486,6 +545,7 @@ export function worldbuildingArea(ports: Ports) {
                 entry: null,
                 lastChange: NOTHING_CHANGED,
                 filter: null,
+                selection: null,
             });
             return {
                 changed: [
@@ -496,6 +556,8 @@ export function worldbuildingArea(ports: Ports) {
                     LOOPS_LEFT_BY_JOBS_VIEW,
                     ENTRY_VIEW,
                     POINTING_AT_VIEW,
+                    SELECTION_VIEW,
+                    BULK_JOBS_VIEW,
                 ],
                 opensViews: [WORLD_VIEW, WORLDS_VIEW],
             };
@@ -517,13 +579,14 @@ export function worldbuildingArea(ports: Ports) {
                 };
             }
         }
-        const filter = stateOf(context.session).filter;
+        const { filter, selection } = stateOf(context.session);
         const filterStays = filter?.book === opened;
         remember(context.session, {
             overview,
             kindsOfBook: opened,
             lastChange: NOTHING_CHANGED,
             ...(filterStays ? {} : { filter: null }),
+            ...(selection?.book === opened ? {} : { selection: null }),
         });
         return { changed: filter && !filterStays ? [RESULTS_VIEW] : [], opensViews: VIEWS_OF_A_WORLD };
     };
@@ -550,6 +613,7 @@ export function worldbuildingArea(ports: Ports) {
                 entry: state.entry?.book === book ? null : state.entry,
                 filter: state.overview?.book === book ? null : state.filter,
                 finding: state.finding?.book === book ? null : state.finding,
+                selection: state.selection?.book === book ? null : state.selection,
             });
         }
     };
@@ -579,6 +643,12 @@ export function worldbuildingArea(ports: Ports) {
             [POINTING_AT_VIEW]: readPointingAtView,
             [RESULTS_VIEW]: readResultsView,
             [FOUND_VIEW]: readFoundView,
+            [SELECTION_VIEW]: readSelectionView,
+            [BULK_JOBS_VIEW]: async (context: ViewContext): Promise<BulkJobsView> => {
+                const book = stateOf(context.session).overview?.book;
+                const jobs = book === undefined ? null : await ports.readBulkJobs(context.user, book);
+                return jobs && book !== undefined ? { book, jobs } : NO_BULK_JOBS;
+            },
             [LAST_CHANGE_VIEW]: async (context: ViewContext): Promise<LastChangeView> =>
                 stateOf(context.session).lastChange,
             [LOOPS_LEFT_BY_JOBS_VIEW]: async (context: ViewContext): Promise<LoopsLeftByJobsView> => {
@@ -790,6 +860,8 @@ export function worldbuildingArea(ports: Ports) {
                         ENTRY_VIEW,
                         POINTING_AT_VIEW,
                         WORLD_VIEW,
+                        SELECTION_VIEW,
+                        BULK_JOBS_VIEW,
                     ],
                     opensViews: [WORLDS_VIEW],
                 };
@@ -818,10 +890,14 @@ export function worldbuildingArea(ports: Ports) {
             'worldbuilding.undoMarkTitleKeysAsNames': (context, { book }) =>
                 namesOfferChanged(context, ports.undoMarkTitleKeysAsNames(who(context), book), NOTHING_CHANGED),
             'worldbuilding.setFilter': withOverview(async (context, overview, { book, query, chips, pageSize }) => {
-                if (overview.book !== book) return { refused: "That world isn't shown." };
+                if (overview.book !== book) return { refused: NOT_SHOWN };
+                const selection = stateOf(context.session).selection;
+                const dropsSelection = selection?.base === 'matching';
+                const selectionChange = dropsSelection ? { selection: null } : {};
+                const selectionChanged = dropsSelection ? [SELECTION_VIEW] : [];
                 if (query.trim() === '' && chips.length === 0) {
-                    remember(context.session, { filter: null });
-                    return { changed: [RESULTS_VIEW] };
+                    remember(context.session, { filter: null, ...selectionChange });
+                    return { changed: [RESULTS_VIEW, ...selectionChanged] };
                 }
                 const labels = await ports.labelEntries(
                     context.user,
@@ -838,8 +914,12 @@ export function worldbuildingArea(ports: Ports) {
                 remember(context.session, {
                     filter: { book, query, chips: held, pageSize, generation: ++filtersSet, pages: [null] },
                     entry: null,
+                    ...selectionChange,
                 });
-                return { changed: closes ? [ENTRY_VIEW, POINTING_AT_VIEW] : [], opensViews: [RESULTS_VIEW] };
+                return {
+                    changed: [...(closes ? [ENTRY_VIEW, POINTING_AT_VIEW] : []), ...selectionChanged],
+                    opensViews: [RESULTS_VIEW],
+                };
             }),
             'worldbuilding.showResults': async (context, { cursors }) => {
                 const shown = stateOf(context.session).filter;
@@ -857,6 +937,50 @@ export function worldbuildingArea(ports: Ports) {
                 remember(context.session, { finding: { book, query } });
                 return { changed: [], opensViews: [FOUND_VIEW] };
             },
+            'worldbuilding.select': withOverview(async (context, overview, { book, entries, selected: picked }) => {
+                if (overview.book !== book) return { refused: NOT_SHOWN };
+                const held = shownSelection(context.session) ?? { book, base: 'none', filter: null, except: [] };
+                const adding = (held.base === 'none') === picked;
+                const named = new Set(entries);
+                const except = adding
+                    ? [...held.except, ...[...named].filter((entry) => !held.except.includes(entry))]
+                    : held.except.filter((entry) => !named.has(entry));
+                if (except.length > PICKED_AT_MOST) return { refused: TOO_MANY_PICKED };
+                return selected(context, held.base === 'none' && except.length === 0 ? null : { ...held, except });
+            }),
+            'worldbuilding.selectAllMatching': withOverview(async (context, overview, { book }) => {
+                if (overview.book !== book) return { refused: NOT_SHOWN };
+                const shown = stateOf(context.session).filter;
+                const filter =
+                    shown?.book === book
+                        ? {
+                              query: shown.query,
+                              chips: shown.chips.map(({ kind, target, depth }) => ({ kind, target, depth })),
+                          }
+                        : null;
+                return selected(context, { book, base: 'matching', filter, except: [] });
+            }),
+            'worldbuilding.selectNone': withOverview(async (context, overview, { book }) => {
+                if (overview.book !== book) return { refused: NOT_SHOWN };
+                return selected(context, null);
+            }),
+            'worldbuilding.bulk': withOverview(async (context, overview, { book, action, loopCheckLimit }) => {
+                if (overview.book !== book) return { refused: NOT_SHOWN };
+                const selection = shownSelection(context.session);
+                if (!selection) return { refused: NOTHING_SELECTED_REFUSAL, changed: [SELECTION_VIEW] };
+                const done = await ports.startBulk(who(context), selection, action, loopCheckLimit);
+                if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                if ('refused' in done) return { refused: done.refused };
+                remember(context.session, {
+                    selection: null,
+                    lastChange: { ...NOTHING_CHANGED, unreachedLoops: done.unreachedLoops },
+                });
+                return {
+                    changed: [
+                        ...new Set([...VIEWS_COUNTING_ENTRIES, ...VIEWS_OF_CARDS, BULK_JOBS_VIEW, LAST_CHANGE_VIEW]),
+                    ],
+                };
+            }),
         },
     });
 }

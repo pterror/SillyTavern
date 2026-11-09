@@ -496,6 +496,34 @@ pub fn matches_upto(
     }
 }
 
+// The doc to go on from is returned while the walk stopped before the end (`most` reached, or the budget spent).
+pub fn matches_from(
+    view: &View,
+    q: &Query,
+    cache: &StatsCache,
+    from: u64,
+    most: usize,
+) -> StoreResult<(Vec<u64>, Option<u64>)> {
+    let mut ctx = Ctx::new(view, Some(cache));
+    let mut plan = Plan::new(&mut ctx, q, Take::All, &TagNames::default())?;
+    let budget = ctx.work.saturating_add(q.limits.enumerate);
+    let mut out = Vec::new();
+    let mut d = from;
+    loop {
+        match plan.next_match(&mut ctx, d, u64::MAX, budget, None, &mut Walk::default())? {
+            Step::Match(doc, _) => {
+                if out.len() == most {
+                    return Ok((out, Some(doc)));
+                }
+                out.push(doc);
+                d = doc + 1;
+            }
+            Step::End => return Ok((out, None)),
+            Step::Stopped(at) => return Ok((out, Some(at))),
+        }
+    }
+}
+
 pub struct Matching<'a> {
     ctx: Ctx<'a>,
     plan: Plan,

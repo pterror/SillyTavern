@@ -248,6 +248,7 @@ lists it and nothing reads it at a store's opening. It lasts as long as its targ
 | a merge record's end | `KIND_MERGE_RECORDS_DUE` | the record's field deleted | at once |
 | marking an imported book's title keys | `NAMES_OFFER_RUNNING` (marking) | up to 1,000 offered entries' names written, each with its mark (one commit) | none is offered; then the field says `done` |
 | taking the marks back | `NAMES_OFFER_RUNNING` (undoing) | up to 1,000 marked entries' names written without their marks (one commit) | no mark is left; then the field goes |
+| a bulk action | `BULK_JOBS` | the next up to 1,000 selected entries acted on, with the job's cursor, in one commit; a delete's chunk ends early where its entries' relations in use targeting them would pass 1,000 | its walk ends; then the job's fields go |
 
 `RELATION_CHANGES_PER_STEP` is 1,000: a relation's change reads its key and writes a few derived keys plus the tree's
 path, about 24 key operations, so a step is about the 24,000 reads one request may take (below, One request's budget).
@@ -378,6 +379,7 @@ at 312,112 sources), at most the position's length + 10.
 | kind created or renamed | none (the kind's field is its own record) |
 | an entry's title, a key item or its names written | its state recomputed (reads its title, names and key items: one scan of its own fields); when it changes, 1 state key + 1 count, + 1 index key if offered changes; a names write drops its mark (1 key, 1 count) |
 | a names offer step | per entry its names field (a history write) and a mark record: as above, + 1 mark key and 1 count |
+| a bulk step | each acted-on entry's own write, as the single action writes it (above); + 1 cursor field, + the job field and `BULK_JOBS` key at its first and last |
 | kind marked merging | 1 (`KINDS_BEING_MERGED`); then per live source in its chunks, a relation removed and one added (above), or one removed when it folds into its twin; at the end A's name field (−1 index key), and the record while deleted entries hold kind A |
 
 
@@ -469,6 +471,10 @@ One area, `@st/worldbuilding`. Views:
   label, the last one shown once the target is deleted), each page `{cursor, entries, next}`: the pages the page
   asked for and nothing else, each the cards its cursor reads, drawn as the overview draws a top-level card with no
   region; `{book: null}` with no filter.
+- `worldbuilding.selection`: the session's selection on the shown world (Selections and bulk actions): `{book, base,
+  except, matching, matchingCapped}`, or `{book: null}`.
+- `worldbuilding.bulkJobs`: the shown world's running bulk jobs, `{book, jobs: [{job, action, target, done}]}`, `target`
+  the label of a Move to's or Also put in's target.
 - `worldbuilding.found`: the session's search for a target entry (Move to, Also put in, + relation's target step):
   `{book, query, entries, next}`, the first `FOUND_PER_QUERY` (20) labels of the best matches.
 
@@ -533,6 +539,10 @@ Actions:
   clears the filter; every action that answers the overview answers the results, re-reading the held pages by their
   cursors, and job steps push them.
 - `worldbuilding.findEntries` (book, query): one request per changed query.
+- `worldbuilding.select` (book, entries, selected: a click, a Shift-click range or a drag over what the page draws),
+  `selectAllMatching`, `selectNone` (book); `worldbuilding.bulk` (book, action: `{delete: true}`, `{set: placement
+  fields}`, `{moveTo: {kind, target}}` or `{alsoPutIn: {kind, target}}`, loopCheckLimit) starts the job over the
+  selection and clears it, answering the cards, the counts and the running jobs; each step pushes them.
 - `worldbuilding.markTitleKeysAsNames`, `declineNamesOffer`, `undoMarkTitleKeysAsNames` (book): the offer's actions
   (The imported-book offer). Marking answers the cards and the last change, whose `markedTitleKeys` offers Undo until
   the session's next change; each step of the job pushes the header, the cards and the open entry.
@@ -590,6 +600,59 @@ must hold. The chip's target is never in its own results.
   leading chip's target. Every page held is read again in one snapshot when the view is read, so a cursor reads the
   same page while nothing changed. A cursor the store can't use for this search (not its form, or a word weights
   list of other words) reads an empty last page rather than failing the read.
+
+## Selections and bulk actions
+
+A selection is a filter plus exceptions, never a list of entries (`worldbuilding.md`, Selecting rows). It is tab state:
+the session holds `{book, base, filter, except}`, `base` being `none` (the entries in `except` are selected) or
+`matching` (what `filter` matches is, but those in `except`), `filter` the results filter it was made under or none
+for the whole world. `select` adds entries to `except` or takes them out, as the base calls for; `selectAllMatching`
+holds the session's filter (or the whole world) with no exceptions; `selectNone` drops it. Setting the filter drops a
+`matching` selection (it named another filter) and keeps one of picked entries; opening another world drops it. At
+most `PICKED_AT_MOST` (one read's cards, 2,400) entries are held in `except`, so a selection costs the same at any
+size.
+
+**The count** (`worldbuildingSelectionCount`, the `worldbuilding.selection` view): for the whole world, the book's kept
+entry count less the exceptions that are live entries of it, exact; for a filter, the walk below up to
+`SELECTION_COUNTED_UP_TO` (1,000) selected entries, `capped` when more may follow (past the cap, or the walk spent one
+request's budget first). Under `none` there is no count: the view's `except` holds the picked entries still live.
+
+**The walks** (`world_search::walk_selected`), each from a cursor, each reading only what it selects:
+
+| Selected | Order | Cursor |
+|---|---|---|
+| the whole world | the entries' keys (`ENTITY_KEY (entry, "<book>:<uid>")`), each checked live | the last key |
+| words, with or without chips | entity id: the search's matches in doc order (`query::matches_from`), the chips checked on each | the next doc |
+| chips only | the leading chip's region, as the results read it | the results' cursor |
+| picked entries | their order, each checked live | an index |
+
+Entity ids and keys never change, so a walk by them sees each entry as it is when it gets there: one that comes to
+match ahead of the cursor is acted on, one that stops matching isn't, and none is met twice. The chips-only walk is in
+the region's order, which a reorder by another write can move an entry across (it is then met twice, or not at all); a
+walk over the world checking each entry against the chips instead would cost the world.
+
+**The job.** `worldbuilding.bulk` freezes the selection into the job: a book text field `\u0001bulkJob:<n>` holding the
+action, what is selected, the exceptions and the actor, written once, and `\u0001bulkJobCursor:<n>` holding the walk's
+cursor and how many entries it has acted on, rewritten by each step (neither is part of a world file; a whole-world
+save keeps them). The derived key `BULK_JOBS (b, n)` is kept while the first field exists. The action runs the first
+chunk in its own request and writes the fields only when more is left, so a selection of up to 1,000 entries is one
+commit with no job. Each chunk (`worldbuildingBulkChunk`) walks up to `RELATION_CHANGES_PER_STEP` entries, leaves out
+the exceptions, and acts in one commit with the cursor's write:
+
+- **Set**: each entry's placement fields written as `setPlacement` writes them.
+- **Delete**: the entries deleted as `deleteEntry` deletes one (each one's relations targeting it by its own steps);
+  the chunk stops before the entry whose relations in use targeting it (counted from the trees of sources, at most
+  1,000 each) would take the chunk's past 1,000, so a step is the work of one large delete at most.
+- **Move to** (kind, target): the entry's relations in use of the kind give way to one to the target: the one it has
+  already, else its first such relation rewritten to the target (its other fields kept), else a new strong one; relations
+  kept while their target is deleted stay. **Also put in**: a new strong relation where it has none. A new relation goes
+  last among the target's, each after the one before (`relations::bulk_relation_rewrites`). The target is never put in
+  itself. A kind that is gone or being merged, or a target no longer live, ends the job (refuses the action when it
+  starts).
+
+Each step's loop check is the deletion steps' (pushed with `worldbuilding.loopsLeftByJobs`); the first chunk's goes in
+the action's last change. The `worldbuilding.bulkJobs` view lists the shown world's running jobs, `{job, action,
+target, done}`.
 
 **Finding a target** (`worldbuildingFind`) is the same search over keys (so names) and titles only, the first page of
 its hits as labels; no words find nothing.

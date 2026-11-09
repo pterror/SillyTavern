@@ -16,10 +16,17 @@ import {
     READ_REFUSAL,
     RELATION_KINDS_VIEW,
     RESULTS_VIEW,
+    SELECTION_VIEW,
+    BULK_JOBS_VIEW,
+    PICKED_AT_MOST,
     WORLD_VIEW,
     WORLDS_VIEW,
 } from './protocol.ts';
 import type {
+    BulkAction,
+    BulkJob,
+    BulkJobsView,
+    SelectionView,
     EntryCell,
     EntryView,
     FoundView,
@@ -44,6 +51,7 @@ import type {
     EntryEdit,
     EntryRead,
     Grouping,
+    HeldSelection,
     OverviewStep,
     PointingAtQuery,
     Ports,
@@ -161,6 +169,8 @@ function world(
         results: ResultsQuery[];
         found: { book: string; query: string; limit: number }[];
         namesOffer: [string, string][];
+        selections: HeldSelection[];
+        bulk: { selection: HeldSelection; action: BulkAction; loopCheckLimit: number; session: string }[];
     } = {
         overview: [],
         step: [],
@@ -178,7 +188,10 @@ function world(
         results: [],
         found: [],
         namesOffer: [],
+        selections: [],
+        bulk: [],
     };
+    const bulkJobs: BulkJob[] = [];
     const offers = new Map<string, NamesOffer | null>([
         [
             '1',
@@ -396,6 +409,27 @@ function world(
             return { entries: q.query === '' ? [] : [named('7', 'name 7')], next: null };
         },
         readLoopsLeftByJobs: async (_u, book) => (book === '1' ? [{ entry: '7', kind: '1', entries: ['7', '8'] }] : []),
+        readSelection: async (_u, selection) => {
+            asked.selections.push(selection);
+            if (selection.book !== '1') return null;
+            if (selection.base === 'none') {
+                const except = selection.except.filter((entry) => entries.get(entry)?.deleted === false);
+                return { except, matching: null, matchingCapped: false };
+            }
+            const matched = selection.filter === null ? 1500 : results;
+            const selected = matched - selection.except.length;
+            return { except: selection.except, matching: Math.min(selected, 1000), matchingCapped: selected > 1000 };
+        },
+        startBulk: async ({ session }, selection, action, loopCheckLimit) => {
+            asked.bulk.push({ selection, action, loopCheckLimit, session });
+            if (selection.book !== '1') return 'missing';
+            if ('moveTo' in action && action.moveTo.target === '999') {
+                return { refused: "The target isn't an entry of this world." };
+            }
+            bulkJobs.push({ job: String(bulkJobs.length + 1), action, target: null, done: 1000 });
+            return { unreachedLoops: 'moveTo' in action ? [{ entry: '7', kind: '1', entries: ['7', '8'] }] : [] };
+        },
+        readBulkJobs: async (_u, book) => (book === '1' ? bulkJobs : null),
         createRelationKind: async (_w, book, name) => {
             if (book !== '1') return null;
             kinds.push({ id: String(kinds.length + 1), name, mergingInto: null });
@@ -491,6 +525,16 @@ function world(
     return { view, act, other, otherView, asked };
 }
 
+const WORLD_VIEWS = [
+    OVERVIEW_VIEW,
+    RELATION_KINDS_VIEW,
+    LAST_CHANGE_VIEW,
+    LOOPS_LEFT_BY_JOBS_VIEW,
+    WORLD_VIEW,
+    SELECTION_VIEW,
+    BULK_JOBS_VIEW,
+];
+
 const open = { book: '1', groupBy: '1', firstRank: 0, endRank: 20, layout: LAYOUT, around: null };
 
 const pointingAt = { endRank: 12, layout: LAYOUT };
@@ -507,7 +551,7 @@ test('opening a world opens its overview, its kinds and the last change in the s
     });
     expect(await w.act('worldbuilding.openOverview', open)).toEqual({
         changed: [],
-        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+        opensViews: WORLD_VIEWS,
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toEqual({
         id: '1',
@@ -594,7 +638,7 @@ test('opening no world in particular opens the last one opened, else the first; 
     await w.act('worldbuilding.openOverview', { ...open, book: '2', groupBy: null });
     expect(await w.act('worldbuilding.openOverview', unopened)).toEqual({
         changed: [],
-        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+        opensViews: WORLD_VIEWS,
     });
     expect(w.asked.opened).toEqual(['2', null]);
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '2' });
@@ -612,6 +656,8 @@ test('opening no world in particular opens the last one opened, else the first; 
             LOOPS_LEFT_BY_JOBS_VIEW,
             ENTRY_VIEW,
             POINTING_AT_VIEW,
+            SELECTION_VIEW,
+            BULK_JOBS_VIEW,
         ],
         opensViews: [WORLD_VIEW, WORLDS_VIEW],
     });
@@ -643,7 +689,7 @@ test('making a world names it, opens it at the range asked for and answers the w
     const w = world(3);
     expect(await w.act('worldbuilding.createWorld', { name: ' Saltmarrow ', overview: drawn })).toEqual({
         changed: [WORLDS_VIEW],
-        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+        opensViews: WORLD_VIEWS,
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toEqual({
         id: '10',
@@ -680,7 +726,7 @@ test('duplicating a world opens the copy; importing a file opens what it made, a
     const w = world(3);
     expect(await w.act('worldbuilding.duplicateWorld', { book: '1', overview: drawn })).toMatchObject({
         changed: [WORLDS_VIEW],
-        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+        opensViews: WORLD_VIEWS,
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '10', name: 'World 1 (1)' });
     expect(await w.act('worldbuilding.duplicateWorld', { book: '9', overview: drawn })).toEqual({
@@ -693,7 +739,7 @@ test('duplicating a world opens the copy; importing a file opens what it made, a
     const file: Upload = { path: '/tmp/upload', name: 'Ashfall.json', type: 'application/json', size: 20 };
     expect(await w.act('worldbuilding.importWorld', { overview: drawn }, file)).toMatchObject({
         changed: [WORLDS_VIEW],
-        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+        opensViews: WORLD_VIEWS,
     });
     expect(w.asked.imported).toEqual([file]);
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '11', name: 'Ashfall' });
@@ -718,6 +764,8 @@ test('deleting a world opens the worlds list and every tab that showed it shows 
             ENTRY_VIEW,
             POINTING_AT_VIEW,
             WORLD_VIEW,
+            SELECTION_VIEW,
+            BULK_JOBS_VIEW,
         ],
         opensViews: [WORLDS_VIEW],
     });
@@ -820,7 +868,7 @@ test('a relation change names its world, passes the session and the loop check l
         loopCheckLimit: 500,
     };
     expect(await w.act('worldbuilding.addRelation', add)).toEqual({
-        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW],
+        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, LAST_CHANGE_VIEW],
     });
     expect(w.asked.changes[0]).toEqual({
         book: '1',
@@ -979,7 +1027,7 @@ test('opening an entry opens its view: the entry, its keys, placement, tokens an
 test('an edit names its world and entry, passes the session, answers the entry and the overview, and says why it is refused', async () => {
     const w = world(3);
     await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
-    const both = { changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, FOUND_VIEW] };
+    const both = { changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, FOUND_VIEW] };
     expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '7', text: 'Ilse left.' })).toEqual(both);
     expect(entryOpen(await w.view<EntryView>(ENTRY_VIEW)).text).toBe('Ilse left.');
     expect(await w.act('worldbuilding.setEntryTitle', { book: '1', entry: '7', title: '' })).toEqual(both);
@@ -996,7 +1044,7 @@ test('an edit names its world and entry, passes the session, answers the entry a
     );
     expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '404', text: '' })).toEqual({
         refused: "That entry isn't in this world.",
-        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, FOUND_VIEW],
+        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, FOUND_VIEW],
     });
     expect(await w.act('worldbuilding.setEntryText', { book: '2', entry: '7', text: '' })).toEqual({
         refused: 'That world no longer exists.',
@@ -1026,7 +1074,7 @@ test('making an entry places it, opens it when asked and says what it made and w
         loopCheckLimit: 300,
     };
     expect(await w.act('worldbuilding.createEntry', make)).toEqual({
-        changed: [OVERVIEW_VIEW, RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, WORLD_VIEW, LAST_CHANGE_VIEW],
+        changed: [OVERVIEW_VIEW, RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, WORLD_VIEW, SELECTION_VIEW, LAST_CHANGE_VIEW],
         opensViews: [ENTRY_VIEW, POINTING_AT_VIEW],
     });
     expect(w.asked.created[0]).toEqual({
@@ -1047,6 +1095,7 @@ test('making an entry places it, opens it when asked and says what it made and w
             FOUND_VIEW,
             WORLDS_VIEW,
             WORLD_VIEW,
+            SELECTION_VIEW,
             ENTRY_VIEW,
             POINTING_AT_VIEW,
             LAST_CHANGE_VIEW,
@@ -1074,6 +1123,7 @@ test('deleting the open entry shows it deleted under its label and offers it bac
             FOUND_VIEW,
             WORLDS_VIEW,
             WORLD_VIEW,
+            SELECTION_VIEW,
             ENTRY_VIEW,
             POINTING_AT_VIEW,
             LAST_CHANGE_VIEW,
@@ -1093,7 +1143,7 @@ test('deleting the open entry shows it deleted under its label and offers it bac
     });
     expect(await w.act('worldbuilding.deleteEntry', { book: '1', entry: '7' })).toEqual({
         refused: "That entry isn't in this world.",
-        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, FOUND_VIEW],
+        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, FOUND_VIEW],
     });
     expect(await w.act('worldbuilding.restoreEntry', { book: '1', entry: '7' })).toEqual(all);
     expect(entryOpen(await w.view<EntryView>(ENTRY_VIEW)).entry).toBe('7');
@@ -1135,6 +1185,7 @@ test('moving the open entry to another world follows it there; the same world or
             FOUND_VIEW,
             WORLDS_VIEW,
             WORLD_VIEW,
+            SELECTION_VIEW,
             ENTRY_VIEW,
             POINTING_AT_VIEW,
             LAST_CHANGE_VIEW,
@@ -1465,7 +1516,7 @@ test('what changes cards answers the results; another world clears them, the sam
     });
     expect(await w.act('worldbuilding.openOverview', { ...open, groupBy: null })).toEqual({
         changed: [],
-        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+        opensViews: WORLD_VIEWS,
     });
     expect(await w.view<ResultsView>(RESULTS_VIEW)).toMatchObject({ book: '1' });
     expect(w.asked.results.at(-1)).toMatchObject({ groupBy: null });
@@ -1520,6 +1571,7 @@ test("an imported book's offer is on the world's header; marking answers the car
         RESULTS_VIEW,
         ENTRY_VIEW,
         POINTING_AT_VIEW,
+        SELECTION_VIEW,
         FOUND_VIEW,
         WORLD_VIEW,
         LAST_CHANGE_VIEW,
@@ -1557,4 +1609,161 @@ test('leaving the offer answers only the header, which shows no offer from then 
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ namesOffer: null });
     expect((await w.view<LastChangeView>(LAST_CHANGE_VIEW)).createdKind).toEqual({ book: '1', kind: '2' });
     expect(v.safeParse(actions['worldbuilding.declineNamesOffer'], { book: 'one' }).success).toBe(false);
+});
+
+test('picking entries selects them as exceptions to nothing; unpicking the last clears the selection, and a deleted one drops out', async () => {
+    const w = world(3);
+    const pick = (entries: string[], selected: boolean, book = '1') =>
+        w.act('worldbuilding.select', { book, entries, selected });
+    expect(await pick(['7'], true)).toEqual({ refused: 'No world is shown.' });
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
+    expect(await pick(['7', '8'], true, '2')).toEqual({ refused: "That world isn't shown." });
+    expect(await pick(['7', '8', '7'], true)).toEqual({ changed: [SELECTION_VIEW] });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({
+        book: '1',
+        base: 'none',
+        except: ['7', '8'],
+        matching: null,
+        matchingCapped: false,
+    });
+    expect(await w.otherView<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
+    await pick(['7'], false);
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toMatchObject({ base: 'none', except: ['8'] });
+    await pick(['7'], true);
+    await w.act('worldbuilding.deleteEntry', { book: '1', entry: '8' });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toMatchObject({ base: 'none', except: ['7'] });
+    await pick(['7', '8'], false);
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
+    await pick(['7'], true);
+    expect(await w.act('worldbuilding.selectNone', { book: '1' })).toEqual({ changed: [SELECTION_VIEW] });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
+});
+
+test('selecting all matching holds the shown filter, else the whole world; unpicking adds exceptions and the count follows', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.act('worldbuilding.selectAllMatching', { book: '1' })).toEqual({ changed: [SELECTION_VIEW] });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({
+        book: '1',
+        base: 'matching',
+        except: [],
+        matching: 1000,
+        matchingCapped: true,
+    });
+    expect(w.asked.selections.at(-1)).toEqual({ book: '1', base: 'matching', filter: null, except: [] });
+
+    expect(await w.act('worldbuilding.setFilter', filter)).toEqual({
+        changed: [SELECTION_VIEW],
+        opensViews: [RESULTS_VIEW],
+    });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
+    await w.act('worldbuilding.selectAllMatching', { book: '1' });
+    expect(w.asked.selections).toHaveLength(1);
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toMatchObject({ matching: 5, matchingCapped: false });
+    expect(w.asked.selections.at(-1)).toEqual({
+        book: '1',
+        base: 'matching',
+        filter: { query: 'lamp', chips: [{ kind: '1', target: '8', depth: 'anyDepth' }] },
+        except: [],
+    });
+    await w.act('worldbuilding.select', { book: '1', entries: ['301', '302'], selected: false });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toMatchObject({ except: ['301', '302'], matching: 3 });
+    await w.act('worldbuilding.select', { book: '1', entries: ['302'], selected: true });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toMatchObject({ base: 'matching', except: ['301'] });
+
+    expect(await w.act('worldbuilding.setFilter', { ...filter, query: '', chips: [] })).toEqual({
+        changed: [RESULTS_VIEW, SELECTION_VIEW],
+    });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
+
+    await w.act('worldbuilding.select', { book: '1', entries: ['7'], selected: true });
+    expect(await w.act('worldbuilding.setFilter', filter)).toEqual({ changed: [], opensViews: [RESULTS_VIEW] });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toMatchObject({ base: 'none', except: ['7'] });
+    await w.act('worldbuilding.openOverview', { ...open, book: '2' });
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
+});
+
+test('picking one at a time stops at one read of cards', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    const many = Array.from({ length: PICKED_AT_MOST }, (_, i) => String(1000 + i));
+    expect(await w.act('worldbuilding.select', { book: '1', entries: many, selected: true })).toEqual({
+        changed: [SELECTION_VIEW],
+    });
+    expect(await w.act('worldbuilding.select', { book: '1', entries: ['7'], selected: true })).toEqual({
+        refused: `At most ${PICKED_AT_MOST} entries are picked one at a time; select all matching instead.`,
+    });
+    await w.act('worldbuilding.selectAllMatching', { book: '1' });
+    expect(await w.act('worldbuilding.select', { book: '1', entries: many, selected: false })).toEqual({
+        changed: [SELECTION_VIEW],
+    });
+});
+
+test('a bulk action runs over the selection and clears it, answering the cards, the running jobs and the loops it left', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    const moveTo = { moveTo: { kind: '1', target: '8' } };
+    expect(await w.act('worldbuilding.bulk', { book: '1', action: moveTo, loopCheckLimit: 400 })).toEqual({
+        refused: 'Nothing is selected.',
+        changed: [SELECTION_VIEW],
+    });
+    await w.act('worldbuilding.selectAllMatching', { book: '1' });
+    await w.act('worldbuilding.select', { book: '1', entries: ['7'], selected: false });
+    const refused = { moveTo: { kind: '1', target: '999' } };
+    expect(await w.act('worldbuilding.bulk', { book: '1', action: refused, loopCheckLimit: 400 })).toEqual({
+        refused: "The target isn't an entry of this world.",
+    });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toMatchObject({ base: 'matching', except: ['7'] });
+
+    expect(await w.view<BulkJobsView>(BULK_JOBS_VIEW)).toEqual({ book: '1', jobs: [] });
+    expect(await w.act('worldbuilding.bulk', { book: '1', action: moveTo, loopCheckLimit: 400 })).toEqual({
+        changed: [
+            OVERVIEW_VIEW,
+            RESULTS_VIEW,
+            FOUND_VIEW,
+            WORLDS_VIEW,
+            WORLD_VIEW,
+            SELECTION_VIEW,
+            ENTRY_VIEW,
+            POINTING_AT_VIEW,
+            BULK_JOBS_VIEW,
+            LAST_CHANGE_VIEW,
+        ],
+    });
+    expect(w.asked.bulk.at(-1)).toEqual({
+        selection: { book: '1', base: 'matching', filter: null, except: ['7'] },
+        action: moveTo,
+        loopCheckLimit: 400,
+        session: 's',
+    });
+    expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
+    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
+        ...NOTHING_CHANGED,
+        unreachedLoops: [{ entry: '7', kind: '1', entries: ['7', '8'] }],
+    });
+    expect(await w.view<BulkJobsView>(BULK_JOBS_VIEW)).toEqual({
+        book: '1',
+        jobs: [{ job: '1', action: moveTo, target: null, done: 1000 }],
+    });
+    expect(await w.otherView<BulkJobsView>(BULK_JOBS_VIEW)).toEqual({ book: null });
+});
+
+test('the selection schemas take entries by id, at most one read of them at once, and one bulk action of a known shape', () => {
+    const ok = (type: string, payload: unknown) =>
+        v.safeParse(actions[type as keyof typeof actions] as v.GenericSchema, payload).success;
+    expect(ok('worldbuilding.select', { book: '1', entries: [], selected: true })).toBe(false);
+    expect(ok('worldbuilding.select', { book: '1', entries: ['x'], selected: true })).toBe(false);
+    const tooMany = Array.from({ length: PICKED_AT_MOST + 1 }, (_, i) => String(i));
+    expect(ok('worldbuilding.select', { book: '1', entries: tooMany, selected: true })).toBe(false);
+    const bulk = (action: unknown) => ok('worldbuilding.bulk', { book: '1', action, loopCheckLimit: 10 });
+    expect(bulk({ delete: true })).toBe(true);
+    expect(bulk({ delete: false })).toBe(false);
+    expect(bulk({ set: { order: 5, position: 4 } })).toBe(true);
+    expect(bulk({ set: {} })).toBe(false);
+    expect(bulk({ set: { content: 'x' } })).toBe(false);
+    expect(bulk({ alsoPutIn: { kind: '1', target: '8' } })).toBe(true);
+    expect(bulk({ moveTo: { kind: '0', target: '8' } })).toBe(false);
+    expect(bulk({ delete: true, moveTo: { kind: '1', target: '8' } })).toBe(false);
 });

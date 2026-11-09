@@ -154,7 +154,7 @@ async function openStore(root, handle) {
             events.emit('commit', records);
             return done;
         };
-        lib.books.jobs.onStepDone = (/** @type {bigint} */ book, /** @type {boolean} */ offerChanged) => events.emit('worldbuildingJobStep', book, offerChanged);
+        lib.books.jobs.onStepDone = (/** @type {bigint} */ book, /** @type {string} */ touched) => events.emit('worldbuildingJobStep', book, touched);
         for (const listener of openedListeners) listener({ lib, events, root, handle });
         lib.books.jobs.resume().catch(error => console.error('Resuming worldbuilding jobs failed.', error));
         const people = libraryPeople(lib);

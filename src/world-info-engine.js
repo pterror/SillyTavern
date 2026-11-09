@@ -5,6 +5,7 @@ import { TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
 import { LOOP_CHECK_VISITS_PER_WRITE } from '@st/worldbuilding/protocol';
 import { WorldbuildingJobs } from './world-info/worldbuilding-jobs.js';
+import { filterClauses } from './world-info/worldbuilding-search.js';
 
 const ENTRY_KEYS = Object.freeze([
     'uid', 'key', 'keysecondary', 'comment', 'content', 'constant', 'vectorized', 'selective', 'selectiveLogic',
@@ -67,6 +68,29 @@ export const namesOfferShown = read => read.state === null && read.namedEntries 
 /**
  * @typedef {{ state: 'marking' | 'done' | 'declined' | 'undoing' | null, namedEntries: number, offeredEntries: number, marks: number, example: { thing: string, text: string, shownAs: 'name' | 'title' | 'opening' } | null }} NamesOfferRead
  */
+
+/**
+ * @typedef {{ book: bigint, changedSources: bigint[], unreachedLoops?: UnreachedLoop[], touched: 'relations' | 'names' | 'entries' }} JobStep
+ */
+
+/**
+ * @typedef {{ delete: true } | { set: Record<string, unknown> } | { moveTo: { kind: string, target: string } } | { alsoPutIn: { kind: string, target: string } }} BulkAction
+ * @typedef {{ entries: string[] } | { world: true } | { query: string, chips: { kind: string, target: string, depth: 'directly' | 'anyDepth' }[] }} BulkSelected
+ * @typedef {{ action: BulkAction, selected: BulkSelected, except: string[], actor: Actor | null }} BulkJob
+ */
+
+/**
+ * @param {BulkSelected} selected
+ * @param {string[]} except
+ */
+const selectedArgs = (selected, except) => ({
+    except: except.map(BigInt),
+    ...('entries' in selected
+        ? { selected: 'entries', entries: selected.entries.map(BigInt) }
+        : 'world' in selected
+            ? { selected: 'world' }
+            : { selected: 'filter', clauses: filterClauses(selected.query), chips: selected.chips.map(chip => ({ kind: Number(chip.kind), target: BigInt(chip.target), depth: chip.depth })) }),
+});
 
 /**
  * @typedef {object} Actor
@@ -152,6 +176,9 @@ const RELATION_KIND_FIELD = `${EXTENSION_MARK}relationKind:`;
 const RELATION_KIND_MERGE_FIELD = `${EXTENSION_MARK}relationKindMergingInto:`;
 const NAMES_FIELD = `${EXTENSION_MARK}names`;
 const NAMES_OFFER_FIELD = `${EXTENSION_MARK}namesOffer`;
+const BULK_JOB_FIELD = `${EXTENSION_MARK}bulkJob:`;
+const BULK_JOB_CURSOR_FIELD = `${EXTENSION_MARK}bulkJobCursor:`;
+const isBulkJobField = (/** @type {unknown} */ field) => typeof field === 'string' && (field.startsWith(BULK_JOB_FIELD) || field.startsWith(BULK_JOB_CURSOR_FIELD));
 const relationKindField = (/** @type {number} */ id) => `${RELATION_KIND_FIELD}${id}`;
 const relationKindMergeField = (/** @type {number} */ id) => `${RELATION_KIND_MERGE_FIELD}${id}`;
 const isWholeId = (/** @type {unknown} */ n) => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
@@ -379,7 +406,7 @@ function storedTargetsOf(stored) {
  */
 function withBookOwnFields(next, stored) {
     for (const value of stored?.values ?? []) {
-        if (value.field === NAMES_OFFER_FIELD && value.text !== undefined) {
+        if ((value.field === NAMES_OFFER_FIELD || isBulkJobField(value.field)) && value.text !== undefined) {
             next.values.set(value.field, { text: value.text });
             continue;
         }
@@ -1090,138 +1117,150 @@ export class WorldInfoEngine {
         return this.lane([key], async () => {
             const found = await this.find(name);
             if (!found?.defined) return null;
-            const book = found.id;
-            const [bookEntity] = await this.lib.entities([book]);
-            const copying = fieldChanges.some(c => c.key === 'originalData' && isCardBookCopy({ originalData: c.value }));
-            if (copying && !(await this.cardCopies([{ id: book, entity: bookEntity }]))[0]) return 'card copy';
-            const keys = entryChanges.map(c => String(c.uid));
-            const ids = await this.lib.ids(TYPE.entry, keys.map(k => `${book}:${k}`));
-            const entities = await this.lib.entities(ids);
-            /** @type {Map<string, { entity: import('./entity-values.js').StoredEntity, position: number }>} */
-            const touched = new Map();
-            /** @type {Map<string, unknown>} */
-            const writes = new Map();
-            /** @type {object[]} */
-            const records = [];
-            const stamp = await this.stamper(actor, records);
-            /** @type {Record<string, object>} */
-            const stored = {};
-            /** @type {string[]} */
-            const deleted = [];
-            /** @type {Record<string, unknown>} */
-            const storedFields = {};
-            /** @type {object[]} */
-            const conflicts = [];
-            /** @type {Map<string, object>} */
-            const current = new Map();
-            const keyOfEntity = await this.keysOfTargets(book, entities.flatMap(e => (e ? [e] : [])));
-            entities.forEach((e, i) => {
-                if (e && !current.has(keys[i])) current.set(keys[i], entryObject(e, false, keyOfEntity));
-            });
-            const deletedUids = [];
-            const gone = new Set();
-            for (const [i, change] of entryChanges.entries()) {
-                const k = keys[i];
-                const cur = current.get(k);
-                const next = isPlainObject(change.data) ? { ...change.data, uid: /** @type {any} */ (cur)?.uid ?? change.uid } : null;
-                const currentHash = cur === undefined ? null : jsonHash(cur);
-                if (currentHash === (next ? jsonHash(next) : null)) continue;
-                if (currentHash !== (change.base_hash ?? null)) {
-                    conflicts.push({ uid: k, current: cur ?? null });
-                    continue;
-                }
-                const e = /** @type {import('./entity-values.js').StoredEntity | null} */ (entities[i]);
-                if (e && !gone.has(k)) touched.set(k, { entity: e, position: 0 });
-                const nextJson = next && JSON.parse(JSON.stringify(next));
-                if (nextJson) {
-                    current.set(k, nextJson);
-                    stored[k] = nextJson;
-                    writes.set(k, nextJson);
-                } else {
-                    current.delete(k);
-                    if (touched.has(k)) records.push({ kind: 'histEntityDelete', entity: /** @type {any} */ (touched.get(k)).entity.id, ...stamp() });
-                    touched.delete(k);
-                    gone.add(k);
-                    writes.delete(k);
-                    deleted.push(k);
-                    deletedUids.push(change.uid);
-                }
+            return this.applyInLane(found.id, entryChanges, fieldChanges, actor);
+        });
+    }
+
+    /**
+     * Runs in the book's lane. `also` is committed with the changes, even when they change nothing.
+     * @param {bigint} book
+     * @param {{ uid: string | number, base_hash?: number | null, data?: object | null }[]} entryChanges
+     * @param {{ key: string, base_hash?: number | null, value?: unknown }[]} fieldChanges
+     * @param {Actor | null} actor
+     * @param {object[]} [also]
+     * @returns {Promise<'card copy' | { ok: true, entries: Record<string, object>, deleted: string[], fields: Record<string, unknown>, conflicts: object[], unreachedLoops: UnreachedLoop[] }>}
+     */
+    async applyInLane(book, entryChanges, fieldChanges, actor, also = []) {
+        const [bookEntity] = await this.lib.entities([book]);
+        const copying = fieldChanges.some(c => c.key === 'originalData' && isCardBookCopy({ originalData: c.value }));
+        if (copying && !(await this.cardCopies([{ id: book, entity: bookEntity }]))[0]) return 'card copy';
+        const keys = entryChanges.map(c => String(c.uid));
+        const ids = await this.lib.ids(TYPE.entry, keys.map(k => `${book}:${k}`));
+        const entities = await this.lib.entities(ids);
+        /** @type {Map<string, { entity: import('./entity-values.js').StoredEntity, position: number }>} */
+        const touched = new Map();
+        /** @type {Map<string, unknown>} */
+        const writes = new Map();
+        /** @type {object[]} */
+        const records = [];
+        const stamp = await this.stamper(actor, records);
+        /** @type {Record<string, object>} */
+        const stored = {};
+        /** @type {string[]} */
+        const deleted = [];
+        /** @type {Record<string, unknown>} */
+        const storedFields = {};
+        /** @type {object[]} */
+        const conflicts = [];
+        /** @type {Map<string, object>} */
+        const current = new Map();
+        const keyOfEntity = await this.keysOfTargets(book, entities.flatMap(e => (e ? [e] : [])));
+        entities.forEach((e, i) => {
+            if (e && !current.has(keys[i])) current.set(keys[i], entryObject(e, false, keyOfEntity));
+        });
+        const deletedUids = [];
+        const gone = new Set();
+        for (const [i, change] of entryChanges.entries()) {
+            const k = keys[i];
+            const cur = current.get(k);
+            const next = isPlainObject(change.data) ? { ...change.data, uid: /** @type {any} */ (cur)?.uid ?? change.uid } : null;
+            const currentHash = cur === undefined ? null : jsonHash(cur);
+            if (currentHash === (next ? jsonHash(next) : null)) continue;
+            if (currentHash !== (change.base_hash ?? null)) {
+                conflicts.push({ uid: k, current: cur ?? null });
+                continue;
             }
-            const deletedEntities = [...gone].flatMap(key => {
-                const index = keys.indexOf(key);
-                const e = index === -1 ? null : entities[index];
-                return e ? [e.id] : [];
-            });
-            const sourcesOfDeleted = deletedEntities.length === 0 ? [] : await this.store.worldRead('worldbuildingSourcesTargeting', { book, entities: deletedEntities, limit: RELATION_CHANGES_PER_STEP });
-            if (writes.size > 0) {
-                const numbers = await this.store.worldRead('numbers', { book });
-                let last = numbers.lastPosition ?? 0;
-                /** @type {Map<string, bigint>} */
-                const entityOfWrite = new Map([...writes.keys()].map(k => [k, touched.get(k)?.entity.id ?? this.lib.nextId++]));
-                const targets = await this.relationTargets(book, [...writes.values()], [...touched.values()].map(x => x.entity), entityOfWrite, new Set(deletedEntities.map(String)));
-                for (const [k, entry] of writes) {
-                    const had = touched.get(k);
-                    const id = /** @type {bigint} */ (entityOfWrite.get(k));
-                    pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, false, { targets, stored: had?.entity ?? null }), historyWrites(stamp)));
-                    if (!had) {
-                        last += POSITION_GAP;
-                        records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
-                        records.push({ kind: 'itemPlace', entity: book, list: 0, item: id, position: last });
-                    }
-                    const index = /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
-                    if (!Object.is(index, had?.entity.entryIndex)) records.push({ kind: 'entryIndex', entry: id, book, ...(index === undefined ? {} : { index }) });
-                }
+            const e = /** @type {import('./entity-values.js').StoredEntity | null} */ (entities[i]);
+            if (e && !gone.has(k)) touched.set(k, { entity: e, position: 0 });
+            const nextJson = next && JSON.parse(JSON.stringify(next));
+            if (nextJson) {
+                current.set(k, nextJson);
+                stored[k] = nextJson;
+                writes.set(k, nextJson);
+            } else {
+                current.delete(k);
+                if (touched.has(k)) records.push({ kind: 'histEntityDelete', entity: /** @type {any} */ (touched.get(k)).entity.id, ...stamp() });
+                touched.delete(k);
+                gone.add(k);
+                writes.delete(k);
+                deleted.push(k);
+                deletedUids.push(change.uid);
             }
-            const changes = () => records.some(r => /** @type {any} */ (r).kind !== 'keyMap');
-            const started = () => {
-                if (deletedEntities.length > 0) this.jobs.start(book);
-            };
-            if (fieldChanges.length === 0 && deletedUids.length === 0) {
-                if (changes()) await this.store.commit(records);
-                started();
-                return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records, sourcesOfDeleted) };
-            }
-            const s = { id: book, entity: bookEntity, entries: new Map(), original: null };
-            const [o] = await this.lib.ids(TYPE.ownedBook, [`${book}:${SLOT.originalData}`]);
-            if (o !== null) s.original = await this.stored(o, false);
-            const fields = this.assemble(/** @type {StoredBook} */ (s), true);
-            const nextBook = { ...fields };
-            let fieldsChanged = false;
-            for (const change of fieldChanges) {
-                const cur = fields[change.key];
-                const next = change.value ?? undefined;
-                const currentHash = cur === undefined ? null : jsonHash(cur);
-                if (currentHash === (next === undefined ? null : jsonHash(next))) continue;
-                if (currentHash !== (change.base_hash ?? null)) {
-                    conflicts.push({ key: change.key, current: cur ?? null });
-                    continue;
+        }
+        const deletedEntities = [...gone].flatMap(key => {
+            const index = keys.indexOf(key);
+            const e = index === -1 ? null : entities[index];
+            return e ? [e.id] : [];
+        });
+        const sourcesOfDeleted = deletedEntities.length === 0 ? [] : await this.store.worldRead('worldbuildingSourcesTargeting', { book, entities: deletedEntities, limit: RELATION_CHANGES_PER_STEP });
+        if (writes.size > 0) {
+            const numbers = await this.store.worldRead('numbers', { book });
+            let last = numbers.lastPosition ?? 0;
+            /** @type {Map<string, bigint>} */
+            const entityOfWrite = new Map([...writes.keys()].map(k => [k, touched.get(k)?.entity.id ?? this.lib.nextId++]));
+            const targets = await this.relationTargets(book, [...writes.values()], [...touched.values()].map(x => x.entity), entityOfWrite, new Set(deletedEntities.map(String)));
+            for (const [k, entry] of writes) {
+                const had = touched.get(k);
+                const id = /** @type {bigint} */ (entityOfWrite.get(k));
+                pushAll(records, valueRecords(id, had?.entity ?? null, entryValues(entry, k, false, { targets, stored: had?.entity ?? null }), historyWrites(stamp)));
+                if (!had) {
+                    last += POSITION_GAP;
+                    records.push({ kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 });
+                    records.push({ kind: 'itemPlace', entity: book, list: 0, item: id, position: last });
                 }
-                if (next === undefined) delete nextBook[change.key]; else setOwn(nextBook, change.key, next);
-                storedFields[change.key] = next ?? null;
+                const index = /** @type {any} */ (entry).displayIndex != null ? Number(/** @type {any} */ (entry).displayIndex) : undefined;
+                if (!Object.is(index, had?.entity.entryIndex)) records.push({ kind: 'entryIndex', entry: id, book, ...(index === undefined ? {} : { index }) });
+            }
+        }
+        const changes = () => also.length > 0 || records.some(r => /** @type {any} */ (r).kind !== 'keyMap');
+        const started = () => {
+            if (deletedEntities.length > 0) this.jobs.start(book);
+        };
+        if (fieldChanges.length === 0 && deletedUids.length === 0) {
+            if (changes()) await this.store.commit([...records, ...also]);
+            started();
+            return { ok: /** @type {const} */ (true), entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records, sourcesOfDeleted) };
+        }
+        const s = { id: book, entity: bookEntity, entries: new Map(), original: null };
+        const [o] = await this.lib.ids(TYPE.ownedBook, [`${book}:${SLOT.originalData}`]);
+        if (o !== null) s.original = await this.stored(o, false);
+        const fields = this.assemble(/** @type {StoredBook} */ (s), true);
+        const nextBook = { ...fields };
+        let fieldsChanged = false;
+        for (const change of fieldChanges) {
+            const cur = fields[change.key];
+            const next = change.value ?? undefined;
+            const currentHash = cur === undefined ? null : jsonHash(cur);
+            if (currentHash === (next === undefined ? null : jsonHash(next))) continue;
+            if (currentHash !== (change.base_hash ?? null)) {
+                conflicts.push({ key: change.key, current: cur ?? null });
+                continue;
+            }
+            if (next === undefined) delete nextBook[change.key]; else setOwn(nextBook, change.key, next);
+            storedFields[change.key] = next ?? null;
+            fieldsChanged = true;
+        }
+        const original = /** @type {any} */ (nextBook.originalData);
+        if (deletedUids.length > 0 && original && Array.isArray(original.entries)) {
+            // eslint-disable-next-line eqeqeq
+            const kept = original.entries.filter((/** @type {any} */ item) => !deletedUids.some(uid => item?.uid == uid));
+            if (kept.length !== original.entries.length) {
+                nextBook.originalData = { ...original, entries: kept };
                 fieldsChanged = true;
             }
-            const original = /** @type {any} */ (nextBook.originalData);
-            if (deletedUids.length > 0 && original && Array.isArray(original.entries)) {
-                // eslint-disable-next-line eqeqeq
-                const kept = original.entries.filter((/** @type {any} */ item) => !deletedUids.some(uid => item?.uid == uid));
-                if (kept.length !== original.entries.length) {
-                    nextBook.originalData = { ...original, entries: kept };
-                    fieldsChanged = true;
-                }
+        }
+        if (fieldsChanged) {
+            pushAll(records, valueRecords(book, bookEntity, await this.withKindsKeptRelationsNeed(book, withBookOwnFields(bookValues(nextBook, true), bookEntity), bookEntity)));
+            const ob = nextBook.originalData;
+            if (isEntryList(ob)) {
+                pushAll(records, (await this.bookRecords(s.original?.id ?? this.lib.nextId++, s.original, /** @type {Record<string, unknown>} */ (ob), { ownedKey: `${book}:${SLOT.originalData}` }, stamp)));
+            } else if (s.original) {
+                pushAll(records, this.deleteRecords(s.original, stamp));
             }
-            if (fieldsChanged) {
-                pushAll(records, valueRecords(book, bookEntity, await this.withKindsKeptRelationsNeed(book, withBookOwnFields(bookValues(nextBook, true), bookEntity), bookEntity)));
-                const ob = nextBook.originalData;
-                if (isEntryList(ob)) {
-                    pushAll(records, (await this.bookRecords(s.original?.id ?? this.lib.nextId++, s.original, /** @type {Record<string, unknown>} */ (ob), { ownedKey: `${book}:${SLOT.originalData}` }, stamp)));
-                } else if (s.original) {
-                    pushAll(records, this.deleteRecords(s.original, stamp));
-                }
-            }
-            if (changes()) await this.store.commit(records);
-            started();
-            return { ok: true, entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records, sourcesOfDeleted) };
-        });
+        }
+        if (changes()) await this.store.commit([...records, ...also]);
+        started();
+        return { ok: /** @type {const} */ (true), entries: stored, deleted, fields: storedFields, conflicts, unreachedLoops: await this.unreachedLoops(book, records, sourcesOfDeleted) };
     }
 
     /**
@@ -1914,12 +1953,12 @@ export class WorldInfoEngine {
 
     /**
      * @param {bigint} book
-     * @returns {Promise<{ book: bigint, changedSources: bigint[], offerChanged: boolean } | 'missing'>}
+     * @returns {Promise<JobStep | 'missing'>}
      */
     namesOfferStep(book) {
         return this.inWorld(book, async () => {
             const { ran } = await this.namesOfferChunk(book);
-            return { book, changedSources: [], offerChanged: ran };
+            return { book, changedSources: [], touched: ran ? 'names' : 'relations' };
         });
     }
 
@@ -1944,13 +1983,133 @@ export class WorldInfoEngine {
     }
 
     /**
-     * @returns {Promise<{ book: bigint, changedSources: bigint[], offerChanged: boolean } | null>}
+     * Starts a bulk action over what `selection` selects, running its first chunk in this request; the rest runs as a
+     * job.
+     * @param {bigint} book
+     * @param {{ selected: BulkSelected, except: string[] }} selection
+     * @param {BulkAction} action
+     * @param {number} loopCheckLimit
+     * @param {Actor | null} [actor]
+     * @returns {Promise<{ unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing'>}
+     */
+    startBulk(book, { selected, except }, action, loopCheckLimit, actor = null) {
+        return this.inWorld(book, async () => {
+            const [bookEntity] = await this.lib.entities([book]);
+            const job = 1 + Math.max(0, ...bulkJobFields(bookEntity?.values ?? []).map(field => field.job));
+            const step = await this.bulkChunk(book, job, { action, selected, except, actor }, { cursor: null, done: 0 }, false);
+            if ('ended' in step) return { refused: step.ended };
+            if (step.more) this.jobs.start(book);
+            return { unreachedLoops: step.unreachedLoops ?? (await this.unreachedLoops(book, [], step.changedSources, loopCheckLimit)) };
+        });
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {number} job
+     * @returns {Promise<JobStep | 'missing'>}
+     */
+    bulkStep(book, job) {
+        return this.inWorld(book, async () => {
+            const [bookEntity] = await this.lib.entities([book]);
+            const found = bulkJobFields(bookEntity?.values ?? []).find(field => field.job === job);
+            if (!found) return { book, changedSources: [], touched: 'entries' };
+            const step = await this.bulkChunk(book, job, found.state, found.at, true);
+            return 'ended' in step
+                ? { book, changedSources: [], touched: 'entries' }
+                : { book, changedSources: step.changedSources, ...(step.unreachedLoops ? { unreachedLoops: step.unreachedLoops } : {}), touched: 'entries' };
+        });
+    }
+
+    /**
+     * The bulk jobs running in a world, in the order they were started.
+     * @param {bigint} book
+     * @returns {Promise<{ job: number, action: BulkAction, done: number }[]>}
+     */
+    async bulkJobs(book) {
+        const [bookEntity] = await this.lib.entities([book]);
+        if (!bookEntity || bookEntity.type !== TYPE.book) return [];
+        return bulkJobFields(bookEntity.values).map(({ job, state, at }) => ({ job, action: state.action, done: at.done }));
+    }
+
+    /**
+     * How many entries `selection` selects, counted up to `cap`.
+     * @param {bigint} book
+     * @param {{ selected: BulkSelected, except: string[] }} selection
+     * @param {number} cap
+     * @returns {Promise<{ matching: number, capped: boolean }>}
+     */
+    selectionCount(book, { selected, except }, cap) {
+        return this.store.worldRead('worldbuildingSelectionCount', { book, ...selectedArgs(selected, except), cap });
+    }
+
+    /**
+     * Runs in the book's lane. One chunk of a bulk job from `at`, committed with the job's own fields: written when
+     * more is left, deleted (if `stored`) when this chunk is the last.
+     * @param {bigint} book
+     * @param {number} job
+     * @param {BulkJob} state
+     * @param {{ cursor: string | null, done: number }} at
+     * @param {boolean} stored
+     * @returns {Promise<{ ended: string } | { more: boolean, changedSources: bigint[], unreachedLoops?: UnreachedLoop[] }>}
+     */
+    async bulkChunk(book, job, state, at, stored) {
+        const { action } = state;
+        const relation = 'moveTo' in action ? action.moveTo : 'alsoPutIn' in action ? action.alsoPutIn : null;
+        const verb = 'delete' in action ? 'delete' : 'set' in action ? 'set' : 'moveTo' in action ? 'moveTo' : 'alsoPutIn';
+        /** @type {{ ended: string | null, entities: bigint[], rewrites: { entity: bigint, before: string | null, json: string }[], next: string | null }} */
+        const chunk = await this.store.worldRead('worldbuildingBulkChunk', {
+            book,
+            ...selectedArgs(state.selected, state.except),
+            cursor: at.cursor,
+            limit: RELATION_CHANGES_PER_STEP,
+            action: verb,
+            ...(relation ? { kind: Number(relation.kind), target: BigInt(relation.target) } : {}),
+        });
+        const removed = stored ? [
+            { kind: 'valueDelete', entity: book, field: `${BULK_JOB_FIELD}${job}` },
+            { kind: 'valueDelete', entity: book, field: `${BULK_JOB_CURSOR_FIELD}${job}` },
+        ] : [];
+        if (chunk.ended !== null) {
+            if (removed.length > 0) await this.store.commit(removed);
+            return { ended: chunk.ended };
+        }
+        const more = chunk.next !== null;
+        const also = !more ? removed : [
+            ...(stored ? [] : [{ kind: 'textValue', entity: book, field: `${BULK_JOB_FIELD}${job}`, text: JSON.stringify(state) }]),
+            { kind: 'textValue', entity: book, field: `${BULK_JOB_CURSOR_FIELD}${job}`, text: JSON.stringify({ cursor: chunk.next, done: at.done + chunk.entities.length }) },
+        ];
+        const entities = (await this.lib.entities(chunk.entities)).filter(e => e !== null && e.type === TYPE.entry && e.key.startsWith(`${book}:`));
+        if ('delete' in action) {
+            const keyOfEntity = await this.keysOfTargets(book, entities);
+            const changes = entities.map(e => ({ uid: e.key.slice(e.key.indexOf(':') + 1), base_hash: jsonHash(entryObject(e, false, keyOfEntity)), data: null }));
+            const done = await this.applyInLane(book, changes, [], state.actor, also);
+            return { more, changedSources: [], unreachedLoops: typeof done === 'object' ? done.unreachedLoops : [] };
+        }
+        /** @type {object[]} */
+        const records = [];
+        const stamp = await this.stamper(state.actor, records);
+        if ('set' in action) {
+            const nexts = entities.map(e => ({ ...(/** @type {Record<string, unknown>} */ (entryObject(e, false))), ...action.set }));
+            const targets = await this.relationTargets(book, nexts, entities, new Map(entities.map(e => [e.key.slice(e.key.indexOf(':') + 1), e.id])), new Set());
+            entities.forEach((e, i) => {
+                pushAll(records, valueRecords(e.id, e, entryValues(nexts[i], e.key.slice(e.key.indexOf(':') + 1), false, { targets, stored: e }), historyWrites(stamp)));
+            });
+            if (also.length > 0 || records.some(r => /** @type {any} */ (r).kind !== 'keyMap')) await this.store.commit([...records, ...also]);
+            return { more, changedSources: [] };
+        }
+        pushAll(records, await this.rewriteRecords(RELATIONS_FIELD, chunk.rewrites, stamp));
+        if (also.length > 0 || records.some(r => /** @type {any} */ (r).kind !== 'keyMap')) await this.store.commit([...records, ...also]);
+        return { more, changedSources: chunk.rewrites.map(rewrite => rewrite.entity) };
+    }
+
+    /**
+     * @returns {Promise<JobStep | null>}
      */
     async worldbuildingJobStep() {
         /** @type {{ book: bigint, entry: bigint, changedSources: bigint[], more: boolean } | null} */
         const step = await this.store.worldbuildingRelationStep(RELATION_CHANGES_PER_STEP);
-        if (step) return { book: step.book, changedSources: step.changedSources, offerChanged: false };
-        /** @type {{ merges: { book: bigint, kind: number, into: number }[], mergeRecordsDue: { book: bigint, kind: number }[], namesOffers: { book: bigint }[] }} */
+        if (step) return { book: step.book, changedSources: step.changedSources, touched: 'relations' };
+        /** @type {{ merges: { book: bigint, kind: number, into: number }[], mergeRecordsDue: { book: bigint, kind: number }[], namesOffers: { book: bigint }[], bulkJobs: { book: bigint, job: number }[] }} */
         const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
         for (const merge of pending.merges) {
             const done = await this.inWorld(merge.book, async () => {
@@ -1958,22 +2117,26 @@ export class WorldInfoEngine {
                 const chunk = await this.store.worldRead('worldbuildingKindMergeRewrites', { book: merge.book, kind: merge.kind, into: merge.into, limit: RELATION_CHANGES_PER_STEP });
                 if (chunk.rewrites.length > 0) {
                     await this.store.commit(await this.rewriteRecords(RELATIONS_FIELD, chunk.rewrites, await this.stamper(null, [])));
-                    return { book: merge.book, changedSources: chunk.rewrites.map(rewrite => rewrite.entity), offerChanged: false };
+                    return { book: merge.book, changedSources: chunk.rewrites.map(rewrite => rewrite.entity), touched: /** @type {const} */ ('relations') };
                 }
                 await this.store.commit([{ kind: 'valueDelete', entity: merge.book, field: relationKindField(merge.kind) }]);
-                return { book: merge.book, changedSources: [], offerChanged: false };
+                return { book: merge.book, changedSources: [], touched: /** @type {const} */ ('relations') };
             });
             if (done !== 'missing') return done;
         }
         for (const due of pending.mergeRecordsDue) {
             const done = await this.inWorld(due.book, async () => {
                 await this.store.commit([{ kind: 'valueDelete', entity: due.book, field: relationKindMergeField(due.kind) }]);
-                return { book: due.book, changedSources: [], offerChanged: false };
+                return { book: due.book, changedSources: [], touched: /** @type {const} */ ('relations') };
             });
             if (done !== 'missing') return done;
         }
         for (const offer of pending.namesOffers) {
             const done = await this.namesOfferStep(offer.book);
+            if (done !== 'missing') return done;
+        }
+        for (const bulk of pending.bulkJobs) {
+            const done = await this.bulkStep(bulk.book, bulk.job);
             if (done !== 'missing') return done;
         }
         return null;
@@ -1983,9 +2146,9 @@ export class WorldInfoEngine {
      * @returns {Promise<boolean>}
      */
     async anyWorldbuildingJob() {
-        /** @type {{ booksWithRelationSteps: bigint[], merges: unknown[], mergeRecordsDue: unknown[], namesOffers: unknown[] }} */
+        /** @type {{ booksWithRelationSteps: bigint[], merges: unknown[], mergeRecordsDue: unknown[], namesOffers: unknown[], bulkJobs: unknown[] }} */
         const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
-        return pending.booksWithRelationSteps.length + pending.merges.length + pending.mergeRecordsDue.length + pending.namesOffers.length > 0;
+        return pending.booksWithRelationSteps.length + pending.merges.length + pending.mergeRecordsDue.length + pending.namesOffers.length + pending.bulkJobs.length > 0;
     }
 
     /**
@@ -2041,6 +2204,27 @@ export class WorldInfoEngine {
 }
 
 /**
+ * @param {{ field: unknown, text?: string }[]} values
+ * @returns {{ job: number, state: BulkJob, at: { cursor: string | null, done: number } }[]}
+ */
+function bulkJobFields(values) {
+    /** @type {Map<number, string>} */
+    const cursors = new Map();
+    for (const value of values) {
+        if (typeof value.field === 'string' && value.field.startsWith(BULK_JOB_CURSOR_FIELD) && value.text !== undefined) cursors.set(Number(value.field.slice(BULK_JOB_CURSOR_FIELD.length)), value.text);
+    }
+    /** @type {{ job: number, state: BulkJob, at: { cursor: string | null, done: number } }[]} */
+    const jobs = [];
+    for (const value of values) {
+        if (typeof value.field !== 'string' || !value.field.startsWith(BULK_JOB_FIELD) || value.text === undefined) continue;
+        const job = Number(value.field.slice(BULK_JOB_FIELD.length));
+        const at = cursors.get(job);
+        jobs.push({ job, state: JSON.parse(value.text), at: at === undefined ? { cursor: null, done: 0 } : JSON.parse(at) });
+    }
+    return jobs.sort((a, b) => a.job - b.job);
+}
+
+/**
  * @param {StoredBook} s
  * @param {boolean} world
  * @returns {Record<string, unknown>}
@@ -2056,7 +2240,7 @@ function assembleBook(s, world) {
             continue;
         }
         if (typeof v.field !== 'string') continue;
-        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD) || v.field === NAMES_OFFER_FIELD) && v.text !== undefined) continue;
+        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD) || v.field === NAMES_OFFER_FIELD || isBulkJobField(v.field)) && v.text !== undefined) continue;
         found.set(ownKeyOfField(v.field), v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
     }
     const kinds = relationKindsOfFields(s.entity?.values ?? []);

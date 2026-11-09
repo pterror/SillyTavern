@@ -1614,6 +1614,7 @@ pub fn pending_worldbuilding_jobs(view: &View) -> Result<Js, StoreError> {
         ("merges", Js::Arr(merges)),
         ("mergeRecordsDue", Js::Arr(records_due)),
         ("namesOffers", super::names_offer::running_jobs(view)?),
+        ("bulkJobs", super::world_bulk::running_jobs(view)?),
     ]))
 }
 
@@ -2126,6 +2127,97 @@ pub fn relations_of_new_entry(view: &View, book: u64, kind: u64, target: u64) ->
     ));
     json.push(b']');
     Ok(Js::Obj(vec![("json", Js::Text(json))]))
+}
+
+// `replace`: the source's other relations in use of `kind` go, its first one (in the field's order) becoming the one to
+// `target` with its other fields kept. Relations kept while their target is deleted stay as written.
+pub fn bulk_relation_rewrites(
+    view: &View,
+    book: u64,
+    kind: u64,
+    target: u64,
+    sources: &[u64],
+    replace: bool,
+) -> Result<Js, StoreError> {
+    let prefix = relations_of_kind_targeting_prefix(book, kind, target);
+    let mut last = view
+        .scan_vals_rev(&prefix, &key::prefix_end(&prefix), 1)?
+        .into_iter()
+        .next()
+        .map(|(stored_key, _)| position_and_source_of_relation_of_kind_targeting(&prefix, &stored_key))
+        .transpose()?
+        .map(|(position, _)| position);
+    let mut rewrites = Vec::new();
+    for &source in sources {
+        if source == target {
+            continue;
+        }
+        let before = written_field(view, source)?;
+        if before.is_none() && text_value(view, source, &relations_field())?.is_some() {
+            continue;
+        }
+        let items = match &before {
+            None => Vec::new(),
+            Some(written) => match items_of(written) {
+                Some(items) => items,
+                None => continue,
+            },
+        };
+        let base = before.clone().unwrap_or_else(|| b"[]".to_vec());
+        let has = items.iter().any(|item| item.kind == kind && item.target == target);
+        let mut others = Vec::new();
+        if replace {
+            for item in items.iter().filter(|item| item.kind == kind && item.target != target) {
+                if position_in_use(view, source, kind, item.target)?.is_some() {
+                    others.push(item.span.start);
+                }
+            }
+        }
+        if has && others.is_empty() {
+            continue;
+        }
+        let json = if has {
+            rewritten(&base, &items, |item| (!others.contains(&item.span.start)).then_some(None), &[])
+        } else {
+            let position = position_between(last.as_deref(), None)
+                .or_else(|| last.clone())
+                .unwrap_or_default();
+            last = Some(position.clone());
+            match others.first().copied() {
+                Some(first) => {
+                    let change = ItemChange {
+                        target: Some(target),
+                        position: Some(position),
+                        ..ItemChange::default()
+                    };
+                    rewritten(
+                        &base,
+                        &items,
+                        |item| match item.span.start {
+                            at if at == first => Some(Some(item_rewritten(&base, item, &change))),
+                            at if others.contains(&at) => None,
+                            _ => Some(None),
+                        },
+                        &[],
+                    )
+                }
+                None => {
+                    let added = item_json(
+                        kind,
+                        target,
+                        &Relation {
+                            position,
+                            weak: false,
+                            item: Vec::new(),
+                        },
+                    );
+                    rewritten(&base, &items, |_| Some(None), &[added])
+                }
+            }
+        };
+        rewrites.push(rewrite_js(source, before, json));
+    }
+    Ok(Js::Arr(rewrites))
 }
 
 pub struct UnreachedLoop {

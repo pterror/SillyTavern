@@ -16,11 +16,11 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-fn pool() -> Arc<Pool> {
+pub(super) fn pool() -> Arc<Pool> {
     Pool::new(64 << 10, 256 << 10, 4, 1, 2, 2)
 }
 
-const SMALL: StoreConfig = StoreConfig {
+pub(super) const SMALL: StoreConfig = StoreConfig {
     log: log::Config {
         block_size: 256,
         file_target: 8192,
@@ -35,7 +35,7 @@ const SMALL: StoreConfig = StoreConfig {
     relocate_bytes: 1024,
 };
 
-fn set_code_text(entity: u64, field: u64, text_literal: &str) -> Record {
+pub(super) fn set_code_text(entity: u64, field: u64, text_literal: &str) -> Record {
     rec(
         "textValue",
         vec![
@@ -48,7 +48,7 @@ fn set_code_text(entity: u64, field: u64, text_literal: &str) -> Record {
     )
 }
 
-fn entry(
+pub(super) fn entry(
     entity: u64,
     world: u64,
     title: &str,
@@ -78,7 +78,7 @@ fn entry(
     records
 }
 
-fn world(store: &Store) {
+pub(super) fn world(store: &Store) {
     history_user(store);
     book(store, 1, "one");
     book(store, 2, "two");
@@ -99,7 +99,7 @@ fn world(store: &Store) {
     store.commit_wait(vec![soft_delete(110, 1)]).unwrap();
 }
 
-fn words(text_literal: &str, fields: Option<Vec<u32>>) -> Vec<Clause> {
+pub(super) fn words(text_literal: &str, fields: Option<Vec<u32>>) -> Vec<Clause> {
     text_literal
         .split_whitespace()
         .map(|word| Clause {
@@ -111,21 +111,21 @@ fn words(text_literal: &str, fields: Option<Vec<u32>>) -> Vec<Clause> {
         .collect()
 }
 
-fn field<'a>(fields: &'a Js, name: &str) -> &'a Js {
+pub(super) fn field<'a>(fields: &'a Js, name: &str) -> &'a Js {
     let Js::Obj(fields) = fields else {
         panic!("not an object: {fields:?}")
     };
     &fields.iter().find(|(key_name, _)| *key_name == name).unwrap_or_else(|| panic!("no {name}")).1
 }
 
-fn list(value: &Js) -> &[Js] {
+pub(super) fn list(value: &Js) -> &[Js] {
     match value {
         Js::Arr(items) => items,
         other => panic!("not a list: {other:?}"),
     }
 }
 
-fn text_of(value: &Js) -> String {
+pub(super) fn text_of(value: &Js) -> String {
     match value {
         Js::Text(bytes) => String::from_utf8(bytes.clone()).unwrap(),
         other => panic!("not a text: {other:?}"),

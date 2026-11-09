@@ -1194,6 +1194,37 @@ fn ids_arg(name: &str, v: Option<Vec<Unknown>>) -> Result<Option<Vec<u64>>> {
         .transpose()
 }
 
+fn chips_from_js(a: &Object) -> Result<Vec<crate::store::world_search::Chip>> {
+    use crate::store::world_search::{Chip, Depth};
+    let mut chips = Vec::new();
+    for chip in a.get::<Vec<Object>>("chips")?.unwrap_or_default() {
+        let depth = match chip.get::<String>("depth")?.as_deref() {
+            Some("directly") => Depth::Directly,
+            Some("anyDepth") => Depth::AnyDepth,
+            _ => return Err(invalid("a chip's depth is directly or anyDepth".into())),
+        };
+        chips.push(Chip {
+            kind: req_integer(&chip, "kind")?,
+            target: req_integer(&chip, "target")?,
+            depth,
+        });
+    }
+    Ok(chips)
+}
+
+fn selected_from_js(a: &Object, book: u64) -> Result<crate::store::world_search::Selected> {
+    use crate::store::world_search::Selected;
+    Ok(match a.get::<String>("selected")?.as_deref() {
+        Some("entries") => Selected::Entries(integers(a, "entries")?),
+        Some("world") => Selected::World,
+        Some("filter") => Selected::Filter {
+            clauses: clauses_from_js(a, Scope::book(book))?,
+            chips: chips_from_js(a)?,
+        },
+        _ => return Err(invalid("selected is entries, world or filter".into())),
+    })
+}
+
 fn clauses_from_js(q: &Object, scope: Scope) -> Result<Vec<Clause>> {
     let nfields = scope.fields().len() as u64;
     let mut clauses = Vec::new();
@@ -3057,22 +3088,49 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
-        "worldbuildingResults" => {
-            use crate::store::world_search::{Chip, Depth, ResultsRead};
+        "worldbuildingBulkChunk" => {
+            use crate::store::world_bulk::{BulkAction, BulkRead};
             let book = req_integer(a, "book")?;
-            let mut chips = Vec::new();
-            for chip in a.get::<Vec<Object>>("chips")?.unwrap_or_default() {
-                let depth = match chip.get::<String>("depth")?.as_deref() {
-                    Some("directly") => Depth::Directly,
-                    Some("anyDepth") => Depth::AnyDepth,
-                    _ => return Err(invalid("a chip's depth is directly or anyDepth".into())),
-                };
-                chips.push(Chip {
-                    kind: req_integer(&chip, "kind")?,
-                    target: req_integer(&chip, "target")?,
-                    depth,
-                });
-            }
+            let kind_and_target = || -> Result<(u64, u64)> { Ok((req_integer(a, "kind")?, req_integer(a, "target")?)) };
+            let action = match a.get::<String>("action")?.as_deref() {
+                Some("delete") => BulkAction::Delete,
+                Some("set") => BulkAction::Set,
+                Some("moveTo") => {
+                    let (kind, target) = kind_and_target()?;
+                    BulkAction::MoveTo { kind, target }
+                }
+                Some("alsoPutIn") => {
+                    let (kind, target) = kind_and_target()?;
+                    BulkAction::AlsoPutIn { kind, target }
+                }
+                _ => return Err(invalid("a bulk action is delete, set, moveTo or alsoPutIn".into())),
+            };
+            let read = BulkRead {
+                book,
+                selected: selected_from_js(a, book)?,
+                except: integers(a, "except")?.into_iter().collect(),
+                cursor: match a.get::<Unknown>("cursor")? {
+                    Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => Some(
+                        String::from_utf8(string("cursor", v)?).map_err(|_| invalid("a cursor is text".into()))?,
+                    ),
+                    _ => None,
+                },
+                limit: req_integer(a, "limit")? as usize,
+                action,
+            };
+            Box::new(move |store| store.world_bulk_chunk(&read).map(JsTree))
+        }
+        "worldbuildingSelectionCount" => {
+            let book = req_integer(a, "book")?;
+            let selected = selected_from_js(a, book)?;
+            let except: std::collections::HashSet<u64> = integers(a, "except")?.into_iter().collect();
+            let cap = req_integer(a, "cap")? as usize;
+            Box::new(move |store| store.world_selection_count(book, &selected, &except, cap).map(JsTree))
+        }
+        "worldbuildingResults" => {
+            use crate::store::world_search::ResultsRead;
+            let book = req_integer(a, "book")?;
+            let chips = chips_from_js(a)?;
             let mut pages = Vec::new();
             for cursor in a
                 .get::<Vec<Unknown>>("pages")?

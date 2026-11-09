@@ -2,11 +2,12 @@ import { LOOP_CHECK_VISITS_PER_WRITE } from '@st/worldbuilding/protocol';
 
 /**
  * @typedef {{ entry: string, kind: string, entries: string[] }} UnreachedLoop
+ * @typedef {'relations' | 'names' | 'entries'} Touched
  */
 
 /**
  * @typedef {object} JobSteps
- * @property {() => Promise<{ book: bigint, changedSources: bigint[], offerChanged: boolean } | null>} worldbuildingJobStep
+ * @property {() => Promise<{ book: bigint, changedSources: bigint[], unreachedLoops?: UnreachedLoop[], touched: Touched } | null>} worldbuildingJobStep
  * @property {() => Promise<boolean>} anyWorldbuildingJob
  * @property {(book: bigint, records: object[], alsoChanged: bigint[]) => Promise<UnreachedLoop[]>} unreachedLoops
  */
@@ -26,7 +27,7 @@ export class WorldbuildingJobs {
         this.loopsLeftByWorld = new Map();
         /** @type {Set<bigint>} */
         this.worldsWithJobsSinceStart = new Set();
-        /** @type {((book: bigint, offerChanged: boolean) => void) | null} */
+        /** @type {((book: bigint, touched: Touched) => void) | null} */
         this.onStepDone = null;
     }
 
@@ -68,13 +69,13 @@ export class WorldbuildingJobs {
                 this.worldsWithJobsSinceStart.clear();
                 return;
             }
-            const loops = step.changedSources.length === 0 ? [] : await this.books.unreachedLoops(step.book, [], step.changedSources);
+            const loops = step.unreachedLoops ?? (step.changedSources.length === 0 ? [] : await this.books.unreachedLoops(step.book, [], step.changedSources));
             if (loops.length > 0) {
                 const kept = this.loopsLeftByWorld.get(step.book) ?? [];
                 kept.push(...loops);
                 this.loopsLeftByWorld.set(step.book, kept.slice(-LOOP_CHECK_VISITS_PER_WRITE));
             }
-            this.onStepDone?.(step.book, step.offerChanged);
+            this.onStepDone?.(step.book, step.touched);
         }
     }
 
