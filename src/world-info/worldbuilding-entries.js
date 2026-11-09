@@ -167,7 +167,7 @@ async function worldKey(lib, book) {
 /**
  * The entry actions and the entry view of the worldbuilding area, over the store.
  * @param {EntryPortsWiring} wiring
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'readKeySharers' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld'>}
  */
 export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
     const actorOf = (/** @type {import('@st/worldbuilding/server').Who} */ who) => ({ user: who.user.handle, session: who.session });
@@ -213,13 +213,24 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             const stored = await lib.books.entryIn(b, e);
             const { placement, differs } = placementOf(stored ? /** @type {Record<string, unknown>} */ (entryObject(stored, false)) : {});
             const counts = await countTokens(user, [read.text]);
+            const links = (await (await referencesOf(user)).links(b, e)) ?? [];
             return {
                 ...read,
+                links: links.map(link => ({ ...link, entry: String(link.entry) })),
                 placement: /** @type {import('@st/worldbuilding/protocol').Placement} */ (placement),
                 placementDiffersFromDefaults: differs,
                 tokens: counts?.[0] ?? null,
                 mentionedIn: await mentionsOf(user, b, e, mentionPages),
             };
+        },
+        async readKeySharers(user, { book, entry, key, limit }) {
+            const b = BigInt(book);
+            const found = await (await referencesOf(user)).sharingKey(b, BigInt(entry), key, { limit });
+            if (found === null) return null;
+            const lib = await libOf(user);
+            /** @type {(import('@st/worldbuilding/protocol').Named | null)[]} */
+            const labels = found.entries.length === 0 ? [] : await lib.store.worldRead('worldbuildingLabels', { book: b, entities: found.entries });
+            return { entries: labels.flatMap(label => (label ? [label] : [])), more: found.more };
         },
         async editEntry(who, book, entry, edit) {
             const lib = await libOf(who.user);

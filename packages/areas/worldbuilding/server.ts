@@ -5,6 +5,8 @@ import {
     ENTRY_VIEW,
     FOUND_PER_QUERY,
     FOUND_VIEW,
+    KEY_SHARERS_SHOWN,
+    KEY_SHARERS_VIEW,
     LAST_CHANGE_VIEW,
     LOOPS_LEFT_BY_JOBS_VIEW,
     MAX_CARDS_PER_READ,
@@ -29,6 +31,7 @@ import type {
     ResultsView,
     EntryView,
     ExportedWorld,
+    KeySharersView,
     World,
     WorldsView,
     WorldView,
@@ -195,6 +198,10 @@ export type Ports = {
         loopCheckLimit: number,
     ): Promise<RelationChangeAnswer>;
     readEntry(user: User, book: string, entry: string, mentionPages: string[]): Promise<EntryRead>;
+    readKeySharers(
+        user: User,
+        query: { book: string; entry: string; key: string; limit: number },
+    ): Promise<{ entries: Named[]; more: boolean } | null>;
     editEntry(who: Who, book: string, entry: string, edit: EntryEdit): Promise<'ok' | EntryWriteRefusal>;
     createEntry(
         who: Who,
@@ -244,6 +251,8 @@ const NOTHING_CHANGED: LastChangeView = {
 const NO_ENTRY: EntryView = { book: null };
 
 const NOTHING_POINTED_AT: PointingAtView = { book: null };
+
+const NO_KEY_SHARERS: KeySharersView = { book: null };
 
 // The views that show how many entries a world has; an action that adds or takes away an entry answers them all.
 const VIEWS_COUNTING_ENTRIES = [OVERVIEW_VIEW, RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, WORLD_VIEW, SELECTION_VIEW];
@@ -296,6 +305,7 @@ export type OpenEntry = {
     label: Named | null;
     mentionPages: string[];
     pointingAt: ShownPointingAt;
+    sharersOf: string | null;
 };
 
 export type HeldChip = Chip & { label: Named };
@@ -337,6 +347,7 @@ const opened = (book: string, entry: string, { endRank, layout }: PointingAtShow
     label: null,
     mentionPages: [],
     pointingAt: { endRank, layout, ranges: [] },
+    sharersOf: null,
 });
 
 const withRange = (shown: ShownPointingAt, range: PointingAtRange): ShownPointingAt => ({
@@ -641,6 +652,13 @@ export function worldbuildingArea(ports: Ports) {
                 return kinds && book !== null ? { book, kinds } : { book: null, kinds: [] };
             },
             [ENTRY_VIEW]: readEntryView,
+            [KEY_SHARERS_VIEW]: async (context: ViewContext): Promise<KeySharersView> => {
+                const shown = stateOf(context.session).entry;
+                if (!shown || shown.sharersOf === null) return NO_KEY_SHARERS;
+                const { book, entry, sharersOf: key } = shown;
+                const read = await ports.readKeySharers(context.user, { book, entry, key, limit: KEY_SHARERS_SHOWN });
+                return read ? { book, entry, key, ...read } : NO_KEY_SHARERS;
+            },
             [POINTING_AT_VIEW]: readPointingAtView,
             [RESULTS_VIEW]: readResultsView,
             [FOUND_VIEW]: readFoundView,
@@ -776,6 +794,11 @@ export function worldbuildingArea(ports: Ports) {
                 entryEdited(context, book, entry, { change: 'setKeyAs', key, as }),
             'worldbuilding.removeKey': (context, { book, entry, key }) =>
                 entryEdited(context, book, entry, { change: 'removeKey', key }),
+            'worldbuilding.showKeySharers': withOpenEntry(async (context, shown, { book, entry, key }) => {
+                if (shown.book !== book || shown.entry !== entry) return { refused: NO_ENTRY_OPEN };
+                remember(context.session, { entry: { ...shown, sharersOf: key } });
+                return { changed: [], opensViews: [KEY_SHARERS_VIEW] };
+            }),
             'worldbuilding.setPlacement': (context, { book, entry, fields }) =>
                 entryEdited(context, book, entry, { change: 'placement', fields }),
             'worldbuilding.createEntry': async (context, { book, after, name, relation, open, loopCheckLimit }) => {
@@ -802,9 +825,7 @@ export function worldbuildingArea(ports: Ports) {
                 if (typeof done === 'string' || 'refused' in done) return refusedWrite(done);
                 const shown = stateOf(context.session).entry;
                 remember(context.session, {
-                    ...(shown?.book === book && shown.entry === entry
-                        ? { entry: { ...shown, label: done.label } }
-                        : {}),
+                    ...(shown?.book === book && shown.entry === entry ? { entry: null } : {}),
                     lastChange: {
                         ...NOTHING_CHANGED,
                         deletedEntry: { book, entry, label: done.label },

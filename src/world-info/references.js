@@ -12,7 +12,7 @@ export const HEAVY_MIN_ENTRIES = 4;
 /**
  * @typedef {import('./key-matching.js').MatchDefaults} Defaults
  * @typedef {{ name1?: string, name2?: string }} MacroContext
- * @typedef {{ id: bigint, key: string[], content: string, constant: boolean, caseSensitive: boolean | null, matchWholeWords: boolean | null, broken: string | null }} Facts
+ * @typedef {{ id: bigint, key: string[], names: string[], content: string, constant: boolean, caseSensitive: boolean | null, matchWholeWords: boolean | null, broken: string | null }} Facts
  * @typedef {{ entry: bigint, name: string, spans: [number, number][] }} Reference
  */
 
@@ -40,13 +40,17 @@ function parseCursor(cursor) {
 export function factsOf(e, owned) {
     const o = entryObject(e, owned);
     if (typeof o !== 'object' || o === null || Array.isArray(o)) {
-        return { id: e.id, key: [], content: '', constant: false, caseSensitive: null, matchWholeWords: null, broken: 'not an entry object' };
+        return { id: e.id, key: [], names: [], content: '', constant: false, caseSensitive: null, matchWholeWords: null, broken: 'not an entry object' };
     }
     const entry = owned ? convertCharacterBook({ entries: [o] }).entries[/** @type {any} */ (o).id ?? 0] : o;
     const x = /** @type {Record<string, any>} */ (entry);
+    /** @type {string[]} */
+    const key = Array.isArray(x.key) ? x.key.filter(k => typeof k === 'string') : [];
+    const names = x.extensions?.names;
     return {
         id: e.id,
-        key: Array.isArray(x.key) ? x.key.filter(k => typeof k === 'string') : [],
+        key,
+        names: Array.isArray(names) ? key.filter(k => names.includes(k)) : [],
         content: typeof x.content === 'string' ? x.content : '',
         constant: Boolean(x.constant),
         caseSensitive: typeof x.caseSensitive === 'boolean' ? x.caseSensitive : null,
@@ -197,6 +201,66 @@ export class References {
             }
         }
         return { references, unresolved: [...unresolved], next };
+    }
+
+    /**
+     * Where an entry's text names another entry: every span of every name, in order; of overlapping spans the one that
+     * starts first is kept, and of those starting together the longest.
+     * @param {bigint} book
+     * @param {bigint} entry
+     * @returns {Promise<{ entry: bigint, from: number, to: number }[] | null>}
+     */
+    async links(book, entry) {
+        const owned = await this.owned(book);
+        if (owned === null) return null;
+        const [source] = await this.facts([entry], owned);
+        if (!source) return null;
+        const indexed = (await this.candidates('nameCandidates', book, source.content)) ?? [];
+        const ids = [...new Set([...indexed, ...(await this.unindexed(book))])].filter(id => id !== entry).sort(byId);
+        /** @type {{ entry: bigint, from: number, to: number }[]} */
+        const spans = [];
+        for (let at = 0; at < ids.length; at += PAGE) {
+            for (const target of await this.facts(ids.slice(at, at + PAGE), owned)) {
+                for (const raw of target.names) {
+                    const name = nameOf(raw, this.macroContext);
+                    if (name === null) continue;
+                    const m = mention(source.content, name, target, this.defaults);
+                    for (const [from, to] of m.spans) spans.push({ entry: target.id, from, to });
+                }
+            }
+        }
+        spans.sort((a, b) => a.from - b.from || b.to - a.to);
+        /** @type {{ entry: bigint, from: number, to: number }[]} */
+        const links = [];
+        for (const span of spans) {
+            if (span.from >= (links[links.length - 1]?.to ?? 0)) links.push(span);
+        }
+        return links;
+    }
+
+    /**
+     * The other entries of the book with `key` among their keys, by id, at most `limit` of them.
+     * @param {bigint} book
+     * @param {bigint} entry
+     * @param {string} key
+     * @param {{ limit: number }} page
+     * @returns {Promise<{ entries: bigint[], more: boolean } | null>}
+     */
+    async sharingKey(book, entry, key, { limit }) {
+        const owned = await this.owned(book);
+        if (owned === null) return null;
+        const indexed = parseRegexFromString(key) ? [] : ((await this.candidates('nameCandidates', book, key)) ?? []);
+        const ids = [...new Set([...indexed, ...(await this.unindexed(book))])].filter(id => id !== entry).sort(byId);
+        /** @type {bigint[]} */
+        const entries = [];
+        for (let at = 0; at < ids.length; at += PAGE) {
+            for (const other of await this.facts(ids.slice(at, at + PAGE), owned)) {
+                if (!other.key.includes(key)) continue;
+                if (entries.length === limit) return { entries, more: true };
+                entries.push(other.id);
+            }
+        }
+        return { entries, more: false };
     }
 
     /**

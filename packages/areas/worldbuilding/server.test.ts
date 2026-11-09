@@ -6,6 +6,8 @@ import {
     ENTRY_VIEW,
     FOUND_PER_QUERY,
     FOUND_VIEW,
+    KEY_SHARERS_SHOWN,
+    KEY_SHARERS_VIEW,
     LAST_CHANGE_VIEW,
     LOOP_CHECK_VISITS_PER_WRITE,
     LOOPS_LEFT_BY_JOBS_VIEW,
@@ -23,6 +25,7 @@ import {
     WORLDS_VIEW,
 } from './protocol.ts';
 import type {
+    KeySharersView,
     BulkAction,
     BulkJob,
     BulkJobsView,
@@ -168,6 +171,7 @@ function world(
         pointingAtSteps: unknown[];
         results: ResultsQuery[];
         found: { book: string; query: string; limit: number }[];
+        sharers: { book: string; entry: string; key: string; limit: number }[];
         namesOffer: [string, string][];
         selections: HeldSelection[];
         bulk: { selection: HeldSelection; action: BulkAction; loopCheckLimit: number; session: string }[];
@@ -187,6 +191,7 @@ function world(
         pointingAtSteps: [],
         results: [],
         found: [],
+        sharers: [],
         namesOffer: [],
         selections: [],
         bulk: [],
@@ -238,6 +243,7 @@ function world(
             title: null,
             keys: [{ text: `name ${entry}`, isName: true, alsoBringsUp: 0 }],
             text: found.text,
+            links: [],
             relations: [],
             placement: PLACEMENT,
             placementDiffersFromDefaults: false,
@@ -464,6 +470,11 @@ function world(
         readEntry: async (_u, book, entry, mentionPages) => {
             asked.entryReads.push({ book, entry, mentionPages });
             return book === '1' ? entryRead(entry, mentionPages) : null;
+        },
+        readKeySharers: async (_u, { book, entry, key, limit }) => {
+            asked.sharers.push({ book, entry, key, limit });
+            if (book !== '1') return null;
+            return { entries: key === 'Ilse' ? [named('8', 'name 8')] : [], more: false };
         },
         editEntry: async ({ session }, book, entry, edit) => {
             asked.edits.push({ book, entry, edit, session });
@@ -1152,7 +1163,7 @@ test('making an entry places it, opens it when asked and says what it made and w
     });
 });
 
-test('deleting the open entry shows it deleted under its label and offers it back; restoring shows it again with the loops it left', async () => {
+test('deleting the open entry closes it and offers it back under its label; restoring answers the loops it left', async () => {
     const w = world(3);
     await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
     const all = {
@@ -1169,12 +1180,7 @@ test('deleting the open entry shows it deleted under its label and offers it bac
         ],
     };
     expect(await w.act('worldbuilding.deleteEntry', { book: '1', entry: '7' })).toEqual(all);
-    expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({
-        book: '1',
-        entry: '7',
-        deleted: true,
-        label: named('7', 'name 7'),
-    });
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
     expect((await w.view<LastChangeView>(LAST_CHANGE_VIEW)).deletedEntry).toEqual({
         book: '1',
         entry: '7',
@@ -1185,7 +1191,7 @@ test('deleting the open entry shows it deleted under its label and offers it bac
         changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, FOUND_VIEW],
     });
     expect(await w.act('worldbuilding.restoreEntry', { book: '1', entry: '7' })).toEqual(all);
-    expect(entryOpen(await w.view<EntryView>(ENTRY_VIEW)).entry).toBe('7');
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
     expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
         ...NOTHING_CHANGED,
         unreachedLoops: [{ entry: '7', kind: '1', entries: ['7', '8'] }],
@@ -1193,6 +1199,28 @@ test('deleting the open entry shows it deleted under its label and offers it bac
     expect(await w.act('worldbuilding.restoreEntry', { book: '1', entry: '7' })).toMatchObject({
         refused: "That entry isn't in this world.",
     });
+});
+
+test("a key's other entries open with the key, for the open entry only, and reopen with the next key", async () => {
+    const w = world(3);
+    const ask = { book: '1', entry: '7', key: 'Ilse' };
+    expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toEqual({ book: null });
+    expect(await w.act('worldbuilding.showKeySharers', ask)).toEqual({ refused: 'No entry is open.' });
+    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    expect(await w.act('worldbuilding.showKeySharers', { ...ask, entry: '8' })).toEqual({
+        refused: 'No entry is open.',
+    });
+    expect(await w.act('worldbuilding.showKeySharers', ask)).toEqual({ changed: [], opensViews: [KEY_SHARERS_VIEW] });
+    expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toEqual({
+        ...ask,
+        entries: [named('8', 'name 8')],
+        more: false,
+    });
+    expect(w.asked.sharers).toEqual([{ ...ask, limit: KEY_SHARERS_SHOWN }]);
+    await w.act('worldbuilding.showKeySharers', { ...ask, key: 'lamp' });
+    expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toMatchObject({ key: 'lamp', entries: [] });
+    await w.act('worldbuilding.openEntry', { book: '1', entry: '8', pointingAt });
+    expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toEqual({ book: null });
 });
 
 test('an entry deleted elsewhere shows deleted under the label it was last shown with', async () => {
@@ -1314,7 +1342,7 @@ test('opening an entry opens what points at it in the same answer: a section per
     });
     await w.act('worldbuilding.openEntry', { book: '1', entry: '8', pointingAt });
     expect(await w.view<PointingAtView>(POINTING_AT_VIEW)).toEqual({ book: '1', entry: '8', sections: [] });
-    await w.act('worldbuilding.deleteEntry', { book: '1', entry: '8' });
+    await w.other('worldbuilding.deleteEntry', { book: '1', entry: '8' });
     expect(await w.view<PointingAtView>(POINTING_AT_VIEW)).toEqual({ book: '1', entry: '8', sections: [] });
     await w.act('worldbuilding.closeEntry', {});
     expect(await w.view<PointingAtView>(POINTING_AT_VIEW)).toEqual({ book: null });

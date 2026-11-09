@@ -13,6 +13,7 @@ export const RESULTS_VIEW = 'worldbuilding.results';
 export const FOUND_VIEW = 'worldbuilding.found';
 export const SELECTION_VIEW = 'worldbuilding.selection';
 export const BULK_JOBS_VIEW = 'worldbuilding.bulkJobs';
+export const KEY_SHARERS_VIEW = 'worldbuilding.keySharers';
 
 export const READS_PER_REQUEST = 24_000;
 // A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
@@ -22,6 +23,7 @@ export const READS_PER_LOOP_CHECK_VISIT = 2;
 export const MAX_CARDS_PER_READ = READS_PER_REQUEST / READS_PER_CARD;
 export const LOOP_CHECK_VISITS_PER_WRITE = READS_PER_REQUEST / READS_PER_LOOP_CHECK_VISIT;
 export const FOUND_PER_QUERY = 20;
+export const KEY_SHARERS_SHOWN = 20;
 export const SELECTION_COUNTED_UP_TO = 1000;
 export const PICKED_AT_MOST = MAX_CARDS_PER_READ;
 
@@ -115,6 +117,9 @@ export type Sentence = { before: string; mention: string; after: string };
 
 export type MentionedIn = { entries: { from: Named; sentence: Sentence }[]; next: string | null };
 
+// Where the entry's text names another entry: `from` and `to` are UTF-16 offsets into `text`, in order, never overlapping.
+export type TextLink = { entry: string; from: number; to: number };
+
 export const TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet'] as const;
 
 const wholeNumber = v.pipe(v.number(), v.integer());
@@ -170,6 +175,7 @@ export type OpenEntryView = EntryAt & {
     title: string | null;
     keys: KeyOfEntry[];
     text: string;
+    links: TextLink[];
     relations: RelationOnCard[];
     placement: Placement;
     placementDiffersFromDefaults: boolean;
@@ -193,6 +199,9 @@ export type PointingAtView = (EntryAt & { sections: PointingAtSection[] }) | { b
 export type PointingAtShown = { endRank: number; layout: OverviewLayout };
 
 export type EntryView = OpenEntryView | DeletedEntryView | { book: null };
+
+// The other entries of the open entry's world that have `key` among their keys, the first KEY_SHARERS_SHOWN of them.
+export type KeySharersView = (EntryAt & { key: string; entries: Named[]; more: boolean }) | { book: null };
 
 export type World = { id: string; name: string; entries: number; usedInEveryChat: boolean };
 
@@ -381,6 +390,7 @@ export const actions = {
     'worldbuilding.addKey': v.object({ ...entryNamed, key: keyText, as: keyAs }),
     'worldbuilding.setKeyAs': v.object({ ...entryNamed, key: keyText, as: keyAs }),
     'worldbuilding.removeKey': v.object({ ...entryNamed, key: keyText }),
+    'worldbuilding.showKeySharers': v.object({ ...entryNamed, key: keyText }),
     'worldbuilding.setPlacement': v.object({ ...entryNamed, fields: placementChange }),
     'worldbuilding.createEntry': v.object({
         book: entityId,

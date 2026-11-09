@@ -81,6 +81,21 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
         sentence: { before: '', mention: 'Ilse', after: ' Varro lives here, mostly.' },
     }]);
     assert.equal(read.mentionedIn.next, null);
+    assert.deepEqual(read.links, [], 'a key that is no name links nothing');
+    assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Ilse', limit: 5 }), { entries: [{ thing: second, text: 'The Lantern House', shownAs: 'title' }], more: false });
+    assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Ilse', limit: 0 }), { entries: [], more: true });
+    assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Varro', limit: 5 }), { entries: [], more: false });
+    assert.equal(await ports.readKeySharers(uiUser, { book: '424242', entry: first, key: 'Ilse', limit: 5 }), null);
+    assert.equal(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'Ilse', as: 'name' }), 'ok');
+    let linked = await ports.readEntry(uiUser, B, second, []);
+    assert.ok(linked && !linked.deleted);
+    assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 13 }, { entry: first, from: 14, to: 19 }], 'every name links where it is written');
+    assert.equal(await ports.editEntry(who, B, first, { change: 'addKey', key: 'Ilse Varro', as: 'name' }), 'ok');
+    linked = await ports.readEntry(uiUser, B, second, []);
+    assert.ok(linked && !linked.deleted);
+    assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 19 }], 'of names written over each other, the longest that starts first links');
+    assert.equal(await ports.editEntry(who, B, first, { change: 'removeKey', key: 'Ilse Varro' }), 'ok');
+    assert.equal(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'Ilse', as: 'trigger' }), 'ok');
 
     assert.equal(await ports.editEntry(who, B, second, { change: 'addKey', key: 'The Lantern House', as: 'name' }), 'ok');
     read = await ports.readEntry(uiUser, B, second, []);
