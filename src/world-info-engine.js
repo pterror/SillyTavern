@@ -3,7 +3,7 @@ import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '.
 import { LINKS, storedLinks } from './character-links.js';
 import { TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
-import { LOOP_CHECK_VISITS_PER_WRITE, WALK_STEPS_PER_READ } from '@st/worldbuilding/protocol';
+import { LOOP_CHECK_VISITS_PER_WRITE, RELATION_CHANGES_PER_STEP, WALK_STEPS_PER_READ } from '@st/worldbuilding/protocol';
 import { WorldbuildingJobs } from './world-info/worldbuilding-jobs.js';
 import { filterClauses } from './world-info/worldbuilding-search.js';
 
@@ -55,7 +55,7 @@ const DISPLAY_INDEX = /** @type {number} */ (ENTRY_CODE.get('displayIndex'));
  * @typedef {{ rewrites: { entity: bigint, before: string | null, json: string }[], more: boolean }} RelationRewrites
  */
 
-export const RELATION_CHANGES_PER_STEP = 1000;
+export { RELATION_CHANGES_PER_STEP };
 
 const NOT_OFFERED = 'This world offers no names to mark.';
 

@@ -22,8 +22,10 @@ export const SELECTION_COUNTED_UP_TO = 1000;
 export const LOOPS_SHOWN = 3;
 export const ENTRIES_NAMED_PER_LOOP = 3;
 
-// One request's work: 200 ms at an assumed 8 µs a read (docs/design/worldbuilding-store.md, One request's budget).
+// One part of an answer: 200 ms at an assumed 8 µs a read (docs/design/worldbuilding-store.md, One request's budget).
 export const READS_PER_REQUEST = 24_000;
+// A job's step, and a write's chunk, changes at most this many entries, relations or sources.
+export const RELATION_CHANGES_PER_STEP = 1000;
 // A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
 // label (its title, keys, names and, with neither a title nor a name, its text): 10 with one relation.
 export const READS_PER_CARD = 10;
@@ -37,25 +39,29 @@ export const READS_PER_MENTION_CHECK = 4 + READS_PER_LABEL;
 // the jobs (each loop its entry, its target and the entries it names), and the world header's example.
 export const READS_OF_COUNTED_LABELS =
     (FOUND_PER_QUERY + KEY_SHARERS_SHOWN + 2 * LOOPS_SHOWN * (2 + ENTRIES_NAMED_PER_LOOP) + 1) * READS_PER_LABEL;
-// One answer can hold every view of the area and its action's own work (a bulk action answers them all, and a job's
-// step pushes them all), so the request's reads are split in equal shares, one per bounded read an answer can hold:
-// a write's loop check; the action's step or walk (a step's crossing, the entry an opening is around, a bulk chunk's
-// walk); the overview's cards; the results' cards; the results' walk; what points at the open entry; the names its
-// text writes; what mentions it; the selection's count. Whatever an answer holds, its reads stay within the request's.
-export const READ_SHARES = 9;
-export const READS_PER_SHARE = Math.floor((READS_PER_REQUEST - READS_OF_COUNTED_LABELS) / READ_SHARES);
-export const MAX_CARDS_PER_READ = Math.floor(READS_PER_SHARE / READS_PER_CARD);
-export const LOOP_CHECK_VISITS_PER_WRITE = Math.floor(READS_PER_SHARE / READS_PER_LOOP_CHECK_VISIT);
-export const MENTION_CHECKS_PER_READ = Math.floor(READS_PER_SHARE / READS_PER_MENTION_CHECK);
-// Looking for the names an entry's text writes reads one key per seek of the names index, per entry listed under a name
-// found and per name checked one by one, and two (its case and whole-word flags) per entry it names.
-export const TEXT_LINK_READS_PER_READ = READS_PER_SHARE;
+// An answer's first part holds the action's own work and the views it names its own; every other view is a later part
+// of its own. So a part holds at most one view's bounded reads and one action's work, besides the counted labels.
+// The action's work: a write's loop check walks up from each source it changed (at most a step's) and, sharing one
+// visited set, about one ancestor of each; a step crossing top-level entries, or the results' walk, gets as much.
+export const LOOP_CHECK_VISITS_PER_WRITE = 2 * RELATION_CHANGES_PER_STEP;
+export const READS_OF_ACTION = LOOP_CHECK_VISITS_PER_WRITE * READS_PER_LOOP_CHECK_VISIT;
+export const STEP_CARDS_AT_MOST = Math.floor(READS_OF_ACTION / READS_PER_CARD);
 // A walk of a chip's region (the results, a selection's count, a bulk chunk with no words) reads a key a step.
-export const WALK_STEPS_PER_READ = READS_PER_SHARE;
+export const WALK_STEPS_PER_READ = READS_OF_ACTION;
+// One view's bounded reads: the rest of a part.
+export const READS_PER_VIEW = READS_PER_REQUEST - READS_OF_COUNTED_LABELS - READS_OF_ACTION;
+export const MAX_CARDS_PER_READ = Math.floor(READS_PER_VIEW / READS_PER_CARD);
+// The entry view reads the names its text writes and what mentions it, in halves. Looking for the names reads one key
+// per seek of the names index, per entry listed under a name found and per name checked one by one, and two (its case
+// and whole-word flags) per entry it names.
+export const TEXT_LINK_READS_PER_READ = Math.floor(READS_PER_VIEW / 2);
+export const MENTION_CHECKS_PER_READ = Math.floor(
+    (READS_PER_VIEW - TEXT_LINK_READS_PER_READ) / READS_PER_MENTION_CHECK,
+);
 export const MENTION_PAGES_AT_MOST = Math.floor(MAX_CARDS_PER_READ / MENTIONS_PER_PAGE);
 export const PICKED_AT_MOST = MAX_CARDS_PER_READ;
 // The selection's count checks each picked entry it leaves out (one read each), then walks.
-export const SELECTION_WALK_STEPS = READS_PER_SHARE - PICKED_AT_MOST;
+export const SELECTION_WALK_STEPS = READS_PER_VIEW - PICKED_AT_MOST;
 
 // A world's fields as its search index numbers them, and the labels its search syntax gives them.
 export const WORLD_FIELD = Object.freeze({
@@ -354,6 +360,10 @@ export function cardsPerTopLevelEntry(levels: RegionLayout[]): number {
 export function readFitsTheBudget(topLevelEntries: number, layout: OverviewLayout): boolean {
     if (topLevelEntries === 0) return true;
     return topLevelEntries * cardsPerTopLevelEntry(layout.regionsByNestingLevel) <= MAX_CARDS_PER_READ;
+}
+
+export function stepFitsTheBudget(topLevelEntriesCrossed: number, layout: OverviewLayout): boolean {
+    return topLevelEntriesCrossed * cardsPerTopLevelEntry(layout.regionsByNestingLevel) <= STEP_CARDS_AT_MOST;
 }
 
 const entityId = v.pipe(v.string(), v.regex(/^\d+$/));

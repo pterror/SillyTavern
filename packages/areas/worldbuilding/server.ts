@@ -1,7 +1,6 @@
 import {
     actions,
     BULK_JOBS_VIEW,
-    cardsPerTopLevelEntry,
     ENTRY_VIEW,
     FOUND_PER_QUERY,
     FOUND_VIEW,
@@ -20,6 +19,7 @@ import {
     PICKED_AT_MOST,
     SELECTION_VIEW,
     SELECTION_WALK_STEPS,
+    stepFitsTheBudget,
     TEXT_LINK_READS_PER_READ,
     WALK_STEPS_PER_READ,
     WORLD_VIEW,
@@ -495,13 +495,13 @@ export function worldbuildingArea(ports: Ports) {
                 loops: { book, found: answer.unreachedLoops },
             },
         });
-        return { changed: [...VIEWS_OF_CARDS, LAST_CHANGE_VIEW] };
+        return { changed: [...VIEWS_OF_CARDS, LAST_CHANGE_VIEW], own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW] };
     };
 
     const refusedWrite = (refusal: EntryWriteRefusal): ActionResult => {
         if (refusal === 'missing') return { refused: WORLD_GONE };
         if (refusal === 'no entry') {
-            return { refused: NO_SUCH_ENTRY, changed: [...VIEWS_OF_CARDS, FOUND_VIEW] };
+            return { refused: NO_SUCH_ENTRY, changed: [...VIEWS_OF_CARDS, FOUND_VIEW], own: [] };
         }
         return { refused: refusal.refused };
     };
@@ -513,7 +513,7 @@ export function worldbuildingArea(ports: Ports) {
         edit: EntryEdit,
     ): Promise<ActionResult> => {
         const done = await ports.editEntry(who(context), book, entry, edit);
-        return done === 'ok' ? { changed: [...VIEWS_OF_CARDS, FOUND_VIEW] } : refusedWrite(done);
+        return done === 'ok' ? { changed: [...VIEWS_OF_CARDS, FOUND_VIEW], own: [ENTRY_VIEW] } : refusedWrite(done);
     };
 
     const readEntryView = async (context: ViewContext): Promise<EntryView> => {
@@ -648,7 +648,10 @@ export function worldbuildingArea(ports: Ports) {
         if (done !== 'ok') return { refused: done.refused, changed: [WORLD_VIEW] };
         if (lastChange === null) return { changed: [WORLD_VIEW] };
         remember(context.session, { lastChange });
-        return { changed: [...VIEWS_OF_CARDS, FOUND_VIEW, WORLD_VIEW, LAST_CHANGE_VIEW] };
+        return {
+            changed: [...VIEWS_OF_CARDS, FOUND_VIEW, WORLD_VIEW, LAST_CHANGE_VIEW],
+            own: [WORLD_VIEW, LAST_CHANGE_VIEW],
+        };
     };
 
     const withOpenEntry =
@@ -662,7 +665,7 @@ export function worldbuildingArea(ports: Ports) {
         context: ActionContext,
         book: string | null,
         { groupBy, firstRank, endRank, layout, around }: ShownWorld,
-    ): Promise<{ changed: string[]; opensViews: string[] }> => {
+    ): Promise<{ changed: string[]; opensViews: string[]; own: string[] }> => {
         const opened = await ports.openWorld(who(context), book);
         if (opened === null) {
             remember(context.session, {
@@ -672,23 +675,22 @@ export function worldbuildingArea(ports: Ports) {
                 filter: null,
                 selection: null,
             });
-            return {
-                changed: [
-                    OVERVIEW_VIEW,
-                    RESULTS_VIEW,
-                    RELATION_KINDS_VIEW,
-                    LAST_CHANGE_VIEW,
-                    LOOPS_LEFT_BY_JOBS_VIEW,
-                    ENTRY_VIEW,
-                    POINTING_AT_VIEW,
-                    SELECTION_VIEW,
-                    BULK_JOBS_VIEW,
-                ],
-                opensViews: [WORLD_VIEW, WORLDS_VIEW],
-            };
+            const changed = [
+                OVERVIEW_VIEW,
+                RESULTS_VIEW,
+                RELATION_KINDS_VIEW,
+                LAST_CHANGE_VIEW,
+                LOOPS_LEFT_BY_JOBS_VIEW,
+                ENTRY_VIEW,
+                POINTING_AT_VIEW,
+                SELECTION_VIEW,
+                BULK_JOBS_VIEW,
+            ];
+            const opensViews = [WORLD_VIEW, WORLDS_VIEW];
+            return { changed, opensViews, own: [...changed, ...opensViews] };
         }
         let overview: ShownOverview = { book: opened, groupBy, firstRank, endRank, layout, stepLandedOn: null };
-        if (around !== null) {
+        if (around !== null && stepFitsTheBudget(1, layout)) {
             const landed = await ports.stepOverview(context.user, {
                 book: opened,
                 groupBy,
@@ -714,10 +716,8 @@ export function worldbuildingArea(ports: Ports) {
             ...(filterStays ? {} : { filter: null }),
             ...(selection?.book === opened ? {} : { selection: null }),
         });
-        return {
-            changed: world?.entry && !entry ? [ENTRY_VIEW, POINTING_AT_VIEW] : [],
-            opensViews: VIEWS_OF_A_WORLD,
-        };
+        const closes = world?.entry && !entry ? [ENTRY_VIEW, POINTING_AT_VIEW] : [];
+        return { changed: closes, opensViews: VIEWS_OF_A_WORLD, own: [OVERVIEW_VIEW, WORLD_VIEW, ...closes] };
     };
 
     const newWorldShown = async (
@@ -728,7 +728,7 @@ export function worldbuildingArea(ports: Ports) {
         if (made === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
         if ('refused' in made) return { refused: made.refused };
         const shown = await showWorld(context, made.book, { ...overview, groupBy: null, around: null });
-        return { ...shown, changed: [...shown.changed, WORLDS_VIEW] };
+        return { ...shown, changed: [...shown.changed, WORLDS_VIEW], own: [...new Set([...shown.own, WORLDS_VIEW])] };
     };
 
     const forgetWorld = (book: string) => {
@@ -807,9 +807,7 @@ export function worldbuildingArea(ports: Ports) {
             }),
             'worldbuilding.stepOverview': withOverview(async (context, overview, step) => {
                 const crossed = 'by' in step ? Math.abs(step.by) + 1 : 1;
-                if (crossed * cardsPerTopLevelEntry(overview.layout.regionsByNestingLevel) > MAX_CARDS_PER_READ) {
-                    return { refused: READ_REFUSAL };
-                }
+                if (!stepFitsTheBudget(crossed, overview.layout)) return { refused: READ_REFUSAL };
                 const { book, groupBy, layout, firstRank, endRank } = overview;
                 const landed = await ports.stepOverview(context.user, { book, groupBy, layout, ...step });
                 if (!landed) return { refused: 'That is no longer shown.', changed: [OVERVIEW_VIEW] };
@@ -834,7 +832,10 @@ export function worldbuildingArea(ports: Ports) {
                 const done = await ports.renameRelationKind(who(context), book, kind, name);
                 if (done === 'missing') return { refused: WORLD_GONE };
                 if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
-                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW, POINTING_AT_VIEW] };
+                return {
+                    changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW, POINTING_AT_VIEW],
+                    own: [RELATION_KINDS_VIEW],
+                };
             },
             'worldbuilding.deleteRelationKind': async (context, { book, kind }) => {
                 const done = await ports.deleteRelationKind(who(context), book, kind);
@@ -850,7 +851,10 @@ export function worldbuildingArea(ports: Ports) {
                 if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
                 if (done === 'same kind') return { refused: 'A kind is merged into another kind.' };
                 if (done === 'being merged') return { refused: BEING_MERGED };
-                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW, POINTING_AT_VIEW] };
+                return {
+                    changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW, POINTING_AT_VIEW],
+                    own: [RELATION_KINDS_VIEW],
+                };
             },
             'worldbuilding.addRelation': (context, relation) =>
                 relationChanged(context, { change: 'add', ...relation }),
@@ -862,7 +866,7 @@ export function worldbuildingArea(ports: Ports) {
                 relationChanged(context, { change: 'setWeak', ...relation }),
             'worldbuilding.openEntry': withOverview(async (context, _overview, { entry, pointingAt }) => {
                 rememberEntry(context.session, openedNow(entry, pointingAt));
-                return { changed: [], opensViews: [ENTRY_VIEW, POINTING_AT_VIEW] };
+                return { changed: [], opensViews: [ENTRY_VIEW, POINTING_AT_VIEW], own: [ENTRY_VIEW] };
             }),
             'worldbuilding.closeEntry': async (context) => {
                 rememberEntry(context.session, null);
@@ -878,9 +882,7 @@ export function worldbuildingArea(ports: Ports) {
             'worldbuilding.stepPointingAt': withOpenEntry(async (context, { book, shown }, { kind, ...step }) => {
                 const { layout } = shown.pointingAt;
                 const crossed = 'by' in step ? Math.abs(step.by) + 1 : 1;
-                if (crossed * cardsPerTopLevelEntry(layout.regionsByNestingLevel) > MAX_CARDS_PER_READ) {
-                    return { refused: READ_REFUSAL };
-                }
+                if (!stepFitsTheBudget(crossed, layout)) return { refused: READ_REFUSAL };
                 const { entry } = shown;
                 const landed = await ports.stepPointingAt(context.user, { book, entry, kind, layout, ...step });
                 if (!landed) return { refused: 'That is no longer shown.', changed: [POINTING_AT_VIEW] };
@@ -933,8 +935,12 @@ export function worldbuildingArea(ports: Ports) {
                     ? {
                           changed: [...VIEWS_COUNTING_ENTRIES, LAST_CHANGE_VIEW],
                           opensViews: [ENTRY_VIEW, POINTING_AT_VIEW],
+                          own: [ENTRY_VIEW, LAST_CHANGE_VIEW],
                       }
-                    : { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
+                    : {
+                          changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW],
+                          own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW],
+                      };
             },
             'worldbuilding.deleteEntry': async (context, { book, entry }) => {
                 const done = await ports.deleteEntry(who(context), book, entry);
@@ -945,12 +951,13 @@ export function worldbuildingArea(ports: Ports) {
                     deletedEntry: { book, entry, label: done.label },
                     loops: { book, found: done.unreachedLoops },
                 };
-                if (open?.book === book && open.shown.entry === entry) {
-                    rememberEntry(context.session, null, { lastChange });
-                } else {
-                    remember(context.session, { lastChange });
-                }
-                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
+                const closes = open?.book === book && open.shown.entry === entry;
+                if (closes) rememberEntry(context.session, null, { lastChange });
+                else remember(context.session, { lastChange });
+                return {
+                    changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW],
+                    own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW, ...(closes ? [ENTRY_VIEW, POINTING_AT_VIEW] : [])],
+                };
             },
             'worldbuilding.restoreEntry': async (context, { book, entry }) => {
                 const done = await ports.restoreEntry(who(context), book, entry);
@@ -958,7 +965,12 @@ export function worldbuildingArea(ports: Ports) {
                 remember(context.session, {
                     lastChange: { ...NOTHING_CHANGED, loops: { book, found: done.unreachedLoops } },
                 });
-                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
+                const open = entryOf(context.session);
+                const shown = open?.book === book && open.shown.entry === entry ? ENTRY_VIEW : OVERVIEW_VIEW;
+                return {
+                    changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW],
+                    own: [shown, LAST_CHANGE_VIEW],
+                };
             },
             'worldbuilding.moveEntryToWorld': async (context, { book, entry, toBook }) => {
                 if (toBook === book) return { refused: 'The entry is in that world already.' };
@@ -974,7 +986,7 @@ export function worldbuildingArea(ports: Ports) {
                 const overview = overviewOf(context.session);
                 if (!overview || open?.book !== book || open.shown.entry !== entry) {
                     remember(context.session, { lastChange });
-                    return { changed };
+                    return { changed, own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW] };
                 }
                 const shown = await showWorld(context, toBook, {
                     groupBy: null,
@@ -989,6 +1001,7 @@ export function worldbuildingArea(ports: Ports) {
                         (view) => !shown.opensViews.includes(view),
                     ),
                     opensViews: shown.opensViews,
+                    own: [WORLD_VIEW, LAST_CHANGE_VIEW],
                 };
             },
             'worldbuilding.openWorlds': async () => ({ changed: [], opensViews: [WORLDS_VIEW] }),
@@ -1022,6 +1035,7 @@ export function worldbuildingArea(ports: Ports) {
                             (view) => !opened.opensViews.includes(view),
                         ),
                         opensViews: opened.opensViews,
+                        own: [...new Set([...opened.own, WORLDS_VIEW])],
                     };
                 }
                 return {
@@ -1038,6 +1052,7 @@ export function worldbuildingArea(ports: Ports) {
                         BULK_JOBS_VIEW,
                     ],
                     opensViews: [WORLDS_VIEW],
+                    own: [WORLDS_VIEW],
                 };
             },
             'worldbuilding.importWorld': async (context, { overview }) => {
@@ -1149,6 +1164,7 @@ export function worldbuildingArea(ports: Ports) {
                     changed: [
                         ...new Set([...VIEWS_COUNTING_ENTRIES, ...VIEWS_OF_CARDS, BULK_JOBS_VIEW, LAST_CHANGE_VIEW]),
                     ],
+                    own: [SELECTION_VIEW, BULK_JOBS_VIEW, LAST_CHANGE_VIEW],
                 };
             }),
         },

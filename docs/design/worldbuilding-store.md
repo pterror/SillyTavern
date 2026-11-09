@@ -256,7 +256,7 @@ lists it and nothing reads it at a store's opening. It lasts as long as its targ
 | taking the marks back | `NAMES_OFFER_RUNNING` (undoing) | up to 1,000 marked entries' names written without their marks (one commit) | no mark is left; then the field goes |
 | a bulk action | `BULK_JOBS` | the next up to 1,000 selected entries acted on, with the job's cursor, in one commit; a delete's chunk ends early where its entries' relations in use targeting them would pass 1,000 | its walk ends; then the job's fields go |
 
-`RELATION_CHANGES_PER_STEP` is 1,000: a relation's change reads its key and writes a few derived keys plus the tree's
+`RELATION_CHANGES_PER_STEP` (`packages/areas/worldbuilding/protocol.ts`) is 1,000: a relation's change reads its key and writes a few derived keys plus the tree's
 path, about 24 key operations, so a step is about the 24,000 reads one request may take (below, One request's budget,
 which doesn't hold this work).
 A step that finds nothing to do ends its job. A failed step stops the job until the store next opens; a restarted
@@ -431,38 +431,67 @@ sending a message, the one figure they give for an action), and the engine's wor
 per read (not measured; I don't know the real figure, and it should be measured on the slowest storage the app runs on),
 200 ms is about 24,000 reads (`READS_PER_REQUEST`).
 
-That budget is the whole answer's, not each read's. An answer is the action's own work and every view it answers, and
-one answer can hold every view of the area (a bulk action answers them all, and each step of a job pushes them all;
-a push to a tab is an answer too). So the views' reads can't each take the budget: it is split in **shares**, one per
-bounded read an answer can hold, equal since none has a claim to more, and each read is bounded by its share
-(`READS_PER_SHARE`, `packages/areas/worldbuilding/protocol.ts`). The reads bounded by a count of labels are taken off
-first (`READS_OF_COUNTED_LABELS`: the 20 targets found, the 20 sharers of a key, the loops named by the last change and
-by the jobs, 3 each with their entry, target and 3 entries, and the world header's example; 71 labels at 4 reads,
-284 reads). The rest, 23,716 reads, is 9 shares of 2,635:
+That budget is one part's. An answer is a stream of parts (`packages/server-ui`): the **first part** carries what the
+action changed on screen, the views its result names its own (`own`), and is read after the action's own work; every
+other view it changed follows as a **later part** of the same response, one view each, read in the order the result
+lists them, after the first is sent. One request, one round trip, and the reader's result is in the first part, so it
+is the first part that has to fit 200 ms; each later part fits it again. The user's other tabs are pushed after the
+acting tab's answer, each view of each tab a push of its own, and a job step's push is the same (`ui.changed`).
 
-| Share | Bound | What it holds |
-|---|---|---|
-| a write's loop check | `LOOP_CHECK_VISITS_PER_WRITE` (1,317 visits at 2 reads) | the cap on `loopCheckLimit` and the limit of writes that carry none |
-| the action's step or walk | `MAX_CARDS_PER_READ` cards crossed; `WALK_STEPS_PER_READ` | a step crossing `n` top-level entries (each drawn), the entry an opening is around, a bulk chunk's walk of a chip's region |
-| the overview | `MAX_CARDS_PER_READ` (263 cards at 10 reads) | the range's top-level entries times the cards each draws: the schema on `openOverview`, the handler on `showRange` |
-| the results' cards | `MAX_CARDS_PER_READ` | a run's pages times its page size (`setFilter`, `showResults`) |
-| the results' walk | `WALK_STEPS_PER_READ` (2,635 keys) | the walk of a chip's region, shared by the run's pages (The filter) |
-| what points at the open entry | `MAX_CARDS_PER_READ` | the sections' ranges, cut in the order last asked for |
-| the names its text writes | `TEXT_LINK_READS_PER_READ` (2,635 reads) | The names a text writes |
-| what mentions it | `MENTION_CHECKS_PER_READ` (329 entries at 8 reads) | the run of mention pages; an entry checked costs 4 reads (its place: a slot of the world's order, or a doc of the index's list for the names; whether it is in the world; its text's head and record) and one that mentions it its label, 4 more |
-| the selection's count | `PICKED_AT_MOST` exceptions checked, `SELECTION_WALK_STEPS` (2,372 keys) | the count's walk (Selections and bulk actions) |
+So a part holds at most one action's work and one view's bounded reads. The reads bounded by a count of labels are taken
+off first (`READS_OF_COUNTED_LABELS`: the 20 targets found, the 20 sharers of a key, the loops named by the last change
+and by the jobs, 3 each with their entry, target and 3 entries, and the world header's example; 71 labels at 4 reads,
+284 reads). Then (`packages/areas/worldbuilding/protocol.ts`):
+
+- **The action's work** (`READS_OF_ACTION`, 4,000 reads): a write's loop check walks up from each source the write
+  changed, at most a step's `RELATION_CHANGES_PER_STEP` (1,000), and the walks share one visited set, so it is given a
+  visit for each source and one for an ancestor of each (`LOOP_CHECK_VISITS_PER_WRITE`, 2,000 visits at 2 reads; the
+  cap on `loopCheckLimit` and the limit of writes that carry none). An action that steps instead of writing gets as
+  much: a step crosses at most `STEP_CARDS_AT_MOST` (400) cards, its top-level entries crossed times the cards each
+  draws (`stepFitsTheBudget`, the handlers of `stepOverview` and `stepPointingAt`; the entry an opening is around is one
+  crossed, and an opening whose layout draws more than that per top-level entry opens without it). The walk of a chip's
+  region takes as many keys (`WALK_STEPS_PER_READ`, 4,000): the results' run of pages shares it, and so does a bulk
+  chunk's walk.
+- **One view's bounded reads** (`READS_PER_VIEW`, the rest: 19,716 reads):
+
+| View | Bound |
+|---|---|
+| the overview, what points at the open entry | `MAX_CARDS_PER_READ` (1,971 cards at 10 reads): the range's top-level entries times the cards each draws (the schema on `openOverview`, the handler on `showRange`; the sections' ranges, cut in the order last asked for) |
+| the results | `MAX_CARDS_PER_READ` for a run's pages times its page size (`setFilter`, `showResults`), and its walk of a chip's region in the action's share, so only an action that does no other bounded work answers the results first |
+| the entry | in halves: the names its text writes (`TEXT_LINK_READS_PER_READ`, 9,858 reads, The names a text writes) and what mentions it (`MENTION_CHECKS_PER_READ`, 1,232 entries at 8 reads: an entry checked costs 4, its place (a slot of the world's order, or a doc of the index's list for the names), whether it is in the world, its text's head and record, and one that mentions it its label, 4 more) |
+| the selection's count | `PICKED_AT_MOST` (1,971) exceptions checked, then `SELECTION_WALK_STEPS` (17,745 keys) of the count's walk (Selections and bulk actions) |
 
 A card costs about 10 reads (title, text, the key list, the names, the relations, and per relation the kind's name and
 the target's label: its title, key list, names and, with neither a title nor a name, its text; counted with one
-relation). A label costs 4. Each share is a bound the area passes to its read (the ports take the cards, checks, reads
-and steps they may spend), so whatever an answer holds, its reads stay within one request's budget:
-`server.test.ts` counts what every action's answer and a push, with every view at its most, ask the ports for.
+relation). A label costs 4. Each bound is passed to its read (the ports take the cards, checks, reads and steps they may
+spend). Each action names as its own the one view of cards it is about, with the views it changes that read only
+counted labels or nothing:
 
-What these bounds cost the page: a read draws about a ninth of what it did, so a screen's three screens of top-level entries
-keep fewer nesting levels (`page/layout.ts` drops the deepest that doesn't fit), a text past about 2,600 characters
-says not every name was looked for, and a world walked for mentions offers "Look further" every 329 entries.
+| Action | First part | Later parts |
+|---|---|---|
+| a relation action | the overview, the last change; its loop check | the entry, what points at it, the results, the selection |
+| an entry edit (`setEntryText`, `setEntryTitle`, the key actions, `setPlacement`) | the entry | the overview, the results, what points at it, the selection, the targets found |
+| `createEntry` | the entry it opens, else the overview; the last change; its loop check | the rest of the cards and the counts |
+| `deleteEntry`, `restoreEntry` | the overview (for a restore of the open entry, the entry), the last change, and the entry and what points at it when they close; the engine's loop check | the rest |
+| `moveEntryToWorld` | the overview and the last change; moving the open entry, the world it opens and the last change, since its loop check and the step around the entry take the action's share twice | the rest |
+| `openEntry` | the entry | what points at it |
+| `openOverview`, `createWorld`, `duplicateWorld`, `importWorld`, `deleteWorld` | the overview and the world (and the worlds list); the step around an entry | the world's other views |
+| `renameRelationKind`, `mergeRelationKind` | the kinds | the cards |
+| `markTitleKeysAsNames` and its undo | the world and the last change | the cards |
+| `bulk` | the selection (cleared), the running jobs, the last change; the first chunk's walk and loop check (8,000 reads, the action's share twice, with no view of cards) | the cards and the counts |
+| a write refused because its entry is gone | the refusal | the cards and the targets found |
+| every other action | every view it changes: one view of cards at most, with its step where it steps | none |
 
-Not bounded by the shares, and not counted:
+`server.test.ts` counts what each action's first part, and each view read alone at its most (a later part, or a part of
+a push), ask the ports for; the worst first part is a restore of the open entry, 23,722 reads.
+
+What these bounds cost the page: a read draws 1,971 cards, so three screens of top-level entries keep two nesting levels
+to about a 1920 × 1080 screen (`page/layout.ts` drops the deepest that doesn't fit); a text past about 9,800 characters
+says not every name was looked for; a world walked for mentions offers "Look further" every 1,232 entries; a step crosses
+at most 400 cards (6 top-level entries of two levels at 1920 × 1080). I don't know what a loop check needs in real
+worlds, and the 2,000 visits, like the 8 µs, should be measured.
+
+Not bounded, and not counted:
 
 - each chip's walk up from a hit (`CHIP_WALK_VISITS`, 12,000 visits, per hit), in the results, the count and a bulk
   chunk: a page of hits can walk that much per hit. The search with words checks chips on the candidates it ranks,
@@ -475,8 +504,6 @@ Not bounded by the shares, and not counted:
 - what a world holds a count of: its worlds, kinds, running jobs, a filter's chips, an entry's keys and relations;
   levels, columns, rows, the card text's length (one read per card whatever its length; the answer's size follows the
   entries' own text), a key's or a name's length.
-- a request answers each other tab of the user showing a changed view before its own answer is sent
-  (`packages/server-ui`, `spread`), so a request does one answer's reads per such tab.
 
 ## The answer and the page
 
@@ -678,7 +705,7 @@ further than it does, so the next seek is at `k` = what they share. Each seek is
 start costs one seek when no name starts there and about one more per name that does. Then the names checked one by one
 are listed. Each entry named reads its `caseSensitive` and `matchWholeWords` (a world's own fields, a card book's
 extensions), and the matcher checks each of its names (`References.links`). At most `TEXT_LINK_READS_PER_READ` reads: a text of up
-to about 2,600 characters in a world with few names sharing a start is looked through whole; a longer text, a name
+to about 9,800 characters in a world with few names sharing a start is looked through whole; a longer text, a name
 shared by very many entries, or very many names checked one by one stops at the bound.
 
 **At the bound** the read answers the links it found in what it reached (names starting earlier in the text, then the
@@ -727,7 +754,7 @@ the session holds `{book, base, filter, except}`, `base` being `none` (the entri
 for the whole world. `select` adds entries to `except` or takes them out, as the base calls for; `selectAllMatching`
 holds the session's filter (or the whole world) with no exceptions; `selectNone` drops it. Setting the filter drops a
 `matching` selection (it named another filter) and keeps one of picked entries; opening another world drops it. At
-most `PICKED_AT_MOST` (one read's cards, 263) entries are held in `except`, so a selection costs the same at any
+most `PICKED_AT_MOST` (one read's cards, 1,971) entries are held in `except`, so a selection costs the same at any
 size.
 
 **The count** (`worldbuildingSelectionCount`, the `worldbuilding.selection` view): for the whole world, the book's kept
