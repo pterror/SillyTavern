@@ -46,7 +46,7 @@
         {{/if}}
         {{#each chats}}
             {{#with this}}
-            <div class="recentChat {{#if hidden}}hidden{{/if}} {{#if is_group}}group{{/if}}" data-file="{{chat_name}}" data-avatar="{{avatar}}" data-group="{{group}}">
+            <div class="recentChat look-scope {{#if hidden}}hidden{{/if}} {{#if is_group}}group{{/if}}" data-file="{{chat_name}}" data-avatar="{{avatar}}" data-group="{{group}}">
                 {{#if pinned}}
                     <div class="recentChatPinned">
                         <i class="fa-solid fa-thumbtack fa-fw fa-xs" title="Pinned chat" data-i18n="[title]Pinned chat"></i>
@@ -60,7 +60,7 @@
                         <div class="chatName" title="{{display_name}}">
                             <strong class="characterName">{{char_name}}</strong>
                             <span>&ndash;</span>
-                            <span>{{display_name}}</span>
+                            <span class="recentChatLabel">{{display_name}}</span>
                         </div>
                         <small class="chatDate" title="{{date_long}}">{{date_short}}</small>
                         <div class="chatActions">

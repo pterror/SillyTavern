@@ -5,7 +5,7 @@ import path from 'node:path';
 import { after, test } from 'node:test';
 
 import { looksArea } from '@st/looks/server';
-import { lookCss } from '@st/protocol/looks';
+import { NO_LOOK_STYLE, lookCss } from '@st/protocol/looks';
 import { LOOK_FIELD, TYPE } from './library-codes.js';
 import { fontsDirectory, looksPorts } from './looks-store.js';
 import { writeDrafts } from './settings-model/model-store.js';
@@ -67,7 +67,7 @@ const entryOf = async (book, uid) => String((await lib.ids(TYPE.entry, [`${book}
  */
 async function drawn(things) {
     const read = await looks.looksFor(uiUser, things);
-    return Object.fromEntries(things.map(t => [t, read.things[t] === undefined ? null : read.styles[read.things[t]]]));
+    return Object.fromEntries(things.map(t => [t, read.things[t] === NO_LOOK_STYLE ? null : read.styles[read.things[t]]]));
 }
 
 const red = [{ property: 'color', value: 'red' }];

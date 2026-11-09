@@ -1,6 +1,6 @@
 import * as v from 'valibot';
 import type { ActionSchemas } from '@st/protocol';
-import type { Looks } from '@st/protocol/looks';
+import type { Looks, Named } from '@st/protocol/looks';
 import { READS_OF_LOOKS_BESIDES_THINGS } from '@st/looks/protocol';
 
 export const OVERVIEW_VIEW = 'worldbuilding.overview';
@@ -91,7 +91,7 @@ export const WORLD_LABELS = Object.freeze({
     secondary: [WORLD_FIELD.secondary],
 });
 
-export type Named = { thing: string; text: string; shownAs: 'name' | 'title' | 'opening' };
+export type { Named };
 
 // Every view of the area carries the looks of the names it draws.
 export type Drawn<T> = T & { looks: Looks };

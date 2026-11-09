@@ -32,6 +32,8 @@ export type Area = {
     views: Record<string, ViewReader>;
     actions: Record<string, (context: ActionContext, payload: unknown) => Promise<ActionResult>>;
     followChat: string[];
+    // Open in every tab from its start, with no view.open.
+    openFromStart: string[];
     gone: (session: string) => void;
 };
 
@@ -40,6 +42,7 @@ export function defineArea<S extends ActionSchemas>(area: {
     views: Area['views'];
     actions: Handlers<S>;
     followChat?: string[];
+    openFromStart?: string[];
     gone?: (session: string) => void;
 }): Area {
     return {
@@ -47,6 +50,7 @@ export function defineArea<S extends ActionSchemas>(area: {
         views: area.views,
         actions: area.actions as Area['actions'],
         followChat: area.followChat ?? [],
+        openFromStart: area.openFromStart ?? [],
         gone: area.gone ?? (() => {}),
     };
 }
@@ -97,6 +101,7 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
     const views = new Map<string, Area['views'][string]>();
     const actions = new Map<string, { schema: v.GenericSchema; run: Area['actions'][string]; views: string[] }>();
     const followChat = new Set<string>();
+    const openFromStart = areas.flatMap((area) => area.openFromStart);
     for (const area of areas) {
         for (const [key, read] of Object.entries(area.views)) {
             if (views.has(key)) throw new Error(`Two areas define the view ${key}`);
@@ -118,7 +123,7 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
     const tabOf = (user: User, session: string): Tab => {
         let tab = tabs.get(session);
         if (!tab || tab.user.directories.root !== user.directories.root) {
-            tab = { user, session, chat: null, open: new Set(), streams: new Set() };
+            tab = { user, session, chat: null, open: new Set(openFromStart), streams: new Set() };
             tabs.set(session, tab);
         }
         return tab;

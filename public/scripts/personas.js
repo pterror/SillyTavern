@@ -66,6 +66,8 @@ import { commonEnumMatchProviders, commonEnumProviders, enumIcons } from './slas
 import { SlashCommandEnumValue, enumTypes } from './slash-commands/SlashCommandEnumValue.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { slashCommandReturnHelper } from './slash-commands/SlashCommandReturnHelper.js';
+import { drawName, holdLooks } from './names.js';
+import { PERSONA_LOOKS } from './name-holders.js';
 
 /**
  * @typedef {object} PersonaConnection A connection between a character and a character or group entity
@@ -166,6 +168,19 @@ function reloadUserAvatar() {
 const personaThumbnails = new Map();
 /** @type {Map<string, string>} */
 const personaRefs = new Map();
+/** @type {Map<string, string>} */
+const personaThings = new Map();
+
+/**
+ * The thing a persona's name is drawn by.
+ * @param {string | null | undefined} avatar
+ * @returns {string | undefined}
+ */
+export const personaThing = avatar => (avatar ? personaThings.get(avatar) : undefined);
+
+export function drawYourName() {
+    drawName($('#your_name'), personaThing(user_avatar), name1);
+}
 /** @type {Map<string, { x: number, y: number, width: number, height: number }>} */
 const personaCrops = new Map();
 
@@ -273,7 +288,7 @@ function getUserAvatarBlock(avatarId) {
     const personaDescription = personaStore.get(avatarId)?.description;
     const personaTitle = personaStore.get(avatarId)?.title;
 
-    template.find('.ch_name').text(personaName || '[Unnamed Persona]');
+    drawName(template.find('.ch_name'), personaThing(avatarId), personaName || '[Unnamed Persona]');
     template.find('.ch_description').text(personaDescription || $('#user_avatar_block').attr('no_desc_text')).toggleClass('text_muted', !personaDescription);
     template.find('.ch_additional_info').text(personaTitle || '');
     template.attr('data-avatar-id', avatarId);
@@ -319,7 +334,7 @@ function registerPersonaListRedraw() {
 askOnChatOpen('personas', () => ({}));
 
 /**
- * @typedef {{avatars: string[], thumbnails: Record<string, string>, thumbnails_still?: Record<string, string>, refs: Record<string, string>, crops?: Record<string, { x: number, y: number, width: number, height: number }>}} UserAvatarsAnswer
+ * @typedef {{avatars: string[], thumbnails: Record<string, string>, thumbnails_still?: Record<string, string>, refs: Record<string, string>, crops?: Record<string, { x: number, y: number, width: number, height: number }>, things?: Record<string, string>, looks?: import('@st/protocol/looks').Looks}} UserAvatarsAnswer
  */
 
 /**
@@ -347,6 +362,9 @@ export async function getUserAvatars(doRender = true, openPageAt = '', given = n
             rememberPersonaThumbnail(avatar, thumbnail, data.thumbnails_still?.[avatar]);
         }
         for (const [avatar, ref] of Object.entries(data.refs ?? {})) personaRefs.set(avatar, ref);
+        personaThings.clear();
+        for (const [avatar, thing] of Object.entries(data.things ?? {})) personaThings.set(avatar, thing);
+        if (data.looks) holdLooks(PERSONA_LOOKS, data.looks);
         personaCrops.clear();
         for (const [avatar, crop] of Object.entries(data.crops ?? {})) personaCrops.set(avatar, crop);
 
@@ -855,7 +873,7 @@ export function getPersonaDescriptionLorebook() {
 }
 
 export function setPersonaDescription() {
-    $('#your_name').text(name1);
+    drawYourName();
 
     if (getPersonaDescriptionPosition() === persona_description_positions.AFTER_CHAR) {
         getOrCreatePersonaDescriptor();
@@ -1468,7 +1486,7 @@ async function onPersonaLoreButtonClick({ shiftKey, altKey }) {
     const template = $(await renderTemplateAsync('personaLorebook'));
 
     const worldSelect = template.find('select');
-    template.find('.persona_name').text(personaName);
+    drawName(template.find('.persona_name'), personaThing(user_avatar), personaName);
 
     for (const worldName of world_names) {
         const option = document.createElement('option');

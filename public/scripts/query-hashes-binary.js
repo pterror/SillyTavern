@@ -2,7 +2,7 @@
 
 /**
  * @param {ArrayBuffer} buffer
- * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, more: boolean, cursor: string|undefined, hashRows: HashRow[], favHashRows: HashRow[]|undefined}}
+ * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, more: boolean, cursor: string|undefined, hashRows: HashRow[], favHashRows: HashRow[]|undefined, looks: import('@st/protocol/looks').Looks|undefined}}
  */
 export function deserializeQueryHashesBinary(buffer) {
     const view = new DataView(buffer);
@@ -16,6 +16,7 @@ export function deserializeQueryHashesBinary(buffer) {
     const hasCursor = (headerFlags & 0b1000) !== 0;
     const hasHidden = (headerFlags & 0b10000) !== 0;
     const hasFavs = (headerFlags & 0b100000) !== 0;
+    const hasLooks = (headerFlags & 0b1000000) !== 0;
     const seq = view.getFloat64(offset, true); offset += 8;
     const total = view.getFloat64(offset, true); offset += 8;
 
@@ -81,5 +82,12 @@ export function deserializeQueryHashesBinary(buffer) {
 
     const favHashRows = hasFavs ? readRows() : undefined;
 
-    return { seq, token, total: hasTotal ? total : undefined, totalApprox, hashRows, hidden, hiddenApprox, more, cursor, favHashRows };
+    let looks;
+    if (hasLooks) {
+        const looksLen = view.getUint32(offset, true); offset += 4;
+        looks = JSON.parse(decoder.decode(new Uint8Array(buffer, offset, looksLen)));
+        offset += looksLen;
+    }
+
+    return { seq, token, total: hasTotal ? total : undefined, totalApprox, hashRows, hidden, hiddenApprox, more, cursor, favHashRows, looks };
 }

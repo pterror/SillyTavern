@@ -38,6 +38,7 @@ import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
  * @property {number|string} [hidden]
  * @property {string} [cursor]
  * @property {Array<{type: 'character', item: Character}|{type: 'group', item: object}>} [favs]
+ * @property {import('@st/protocol/looks').Looks} [looks] The looks of the names the rows draw, when the query was asked with `draws`.
  */
 
 /**
@@ -245,7 +246,7 @@ async function postHashQuery(body) {
 
 const BATCH_FIELDS_CHUNK_SIZE = 500;
 
-const HASH_MODE_BATCH_FIELDS = /** @type {const} */ (['name', 'fav', 'tags', 'tag_ids', 'data', 'thumbnail', 'avatar_ref']);
+const HASH_MODE_BATCH_FIELDS = /** @type {const} */ (['name', 'thing', 'fav', 'tags', 'tag_ids', 'data', 'thumbnail', 'avatar_ref']);
 
 /**
  * @param {string[]} ids
@@ -312,7 +313,7 @@ function projectCachedCharacter(character) {
  * @param {FavsQuery} [favs]
  * @returns {{filter: CharacterQueryFilter, sort: CharacterQuerySort|undefined, page: number, pageSize: number, want: string[], favs?: FavsQuery}}
  */
-function normalizedQueryRequest(filter, sort, page, pageSize, want, favs) {
+function normalizedQueryRequest(filter, sort, page, pageSize, want, favs, draws = null) {
     const search = typeof filter.search === 'string' ? filter.search.trim() : '';
     const normalizedFilter = search ? { ...filter, search } : (() => {
         const rest = { ...filter };
@@ -320,7 +321,7 @@ function normalizedQueryRequest(filter, sort, page, pageSize, want, favs) {
         return rest;
     })();
     const normalizedSort = sort?.field === 'search' && !search ? undefined : sort;
-    const shape = { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want: [...want] };
+    const shape = { filter: normalizedFilter, sort: normalizedSort, page, pageSize, want: [...want], ...(draws ? { draws } : {}) };
     if (!favs) return shape;
     const { filter: favsFilter, sort: favsSort } = normalizedQueryRequest(favs.filter, favs.sort, 1, favs.pageSize, []);
     return { ...shape, favs: { filter: favsFilter, sort: favsSort, pageSize: favs.pageSize } };
@@ -468,10 +469,11 @@ export class CharacterRepository {
      * @param {object} [options]
      * @param {(result: CharacterQueryResult) => void} [options.onFresh]
      * @param {FavsQuery} [options.favs] The favourites the same answer carries; rows mode only.
+     * @param {string | null} [options.draws] The place of the page that draws the rows: the answer carries their names' looks.
      * @returns {Promise<CharacterQueryResult>}
      */
-    async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT, { onFresh, favs } = {}) {
-        const requestShape = normalizedQueryRequest(filter, sort, page, pageSize, want, want.includes('rows') ? favs : undefined);
+    async query(filter = {}, sort = undefined, page = 1, pageSize = 100, want = DEFAULT_QUERY_WANT, { onFresh, favs, draws = null } = {}) {
+        const requestShape = normalizedQueryRequest(filter, sort, page, pageSize, want, want.includes('rows') ? favs : undefined, draws);
         const { filter: normalizedFilter } = requestShape;
         const signature = JSON.stringify(requestShape);
 
@@ -607,18 +609,20 @@ export class CharacterRepository {
     async #fillPage(first, requestShape, useHashMode, includeGroups) {
         const rows = [...(first.rows ?? [])];
         const hashRows = [...(resultHashRows.get(first) ?? [])];
+        let looks = first.looks;
         let last = first;
         const want = requestShape.want.filter(w => w !== 'hidden');
-        const continued = { ...requestShape };
+        const continued = { ...requestShape, ...(requestShape.draws ? { drawsMore: true } : {}) };
         delete continued.favs;
         while (last.more === true && typeof last.cursor === 'string' && rows.length < requestShape.pageSize) {
             const shape = { ...continued, want, pageSize: requestShape.pageSize - rows.length, cursor: last.cursor };
             last = useHashMode ? await this.#queryHashMode(shape, undefined, includeGroups) : await postJson('/api/characters/query', shape);
             rows.push(...(last.rows ?? []));
             hashRows.push(...(resultHashRows.get(last) ?? []));
+            if (last.looks) looks = { styles: { ...looks?.styles, ...last.looks.styles }, things: { ...looks?.things, ...last.looks.things } };
         }
         /** @type {CharacterQueryResult} */
-        const result = { ...first, rows, seq: last.seq, token: last.token };
+        const result = { ...first, rows, seq: last.seq, token: last.token, ...(looks ? { looks } : {}) };
         if (useHashMode) resultHashRows.set(result, hashRows);
         const favHashRows = resultFavHashRows.get(first);
         if (favHashRows) resultFavHashRows.set(result, favHashRows);
@@ -656,6 +660,7 @@ export class CharacterRepository {
         if (decoded.hidden !== undefined) result.hidden = decoded.hiddenApprox ? `~${decoded.hidden}` : decoded.hidden;
         if (decoded.more) result.more = true;
         if (decoded.cursor !== undefined) result.cursor = decoded.cursor;
+        if (decoded.looks !== undefined) result.looks = decoded.looks;
         const [rows, favs] = await this.#resolveHashRowSets([decoded.hashRows, decoded.favHashRows], includeGroups);
         result.rows = rows;
         resultHashRows.set(result, decoded.hashRows);

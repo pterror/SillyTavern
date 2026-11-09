@@ -1601,6 +1601,7 @@ export class WorldInfoEngine {
             const entry = /** @type {Record<string, unknown>} */ (entryObject(e, false));
             return {
                 book: book.key,
+                world: String(bookOf(e)),
                 bookName: typeof name === 'string' && name ? name : book.key,
                 uid: e.key.slice(e.key.indexOf(':') + 1),
                 comment: entry.comment,

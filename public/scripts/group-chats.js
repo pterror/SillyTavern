@@ -92,6 +92,8 @@ import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup } from './popup.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
+import { drawName, holdLooks, nameNode } from './names.js';
+import { CANDIDATE_LOOKS } from './name-holders.js';
 
 export {
     selected_group,
@@ -758,7 +760,7 @@ export function getGroupBlock(group) {
         for (const member of group.members) {
             const character = findGroupMemberCharacter(member);
             if (character) {
-                namesList.push(character.name);
+                namesList.push(character);
                 count++;
             }
         }
@@ -773,7 +775,7 @@ export function getGroupBlock(group) {
     template.addClass(isFav ? 'is_fav' : '');
     template.find('.ch_fav').val(String(isFav));
     template.find('.group_select_counter').text(count + ' ' + (count != 1 ? t`characters` : t`character`));
-    template.find('.group_select_block_list').text(namesList.join(', '));
+    template.find('.group_select_block_list').get(0)?.replaceChildren(...namesList.flatMap((character, i) => [...(i > 0 ? [', '] : []), nameNode(character.thing, character.name)]));
 
     const tagsElement = template.find('.tags');
     const rowTags = Array.isArray(group.tag_ids)
@@ -1543,7 +1545,7 @@ export async function printGroupCandidates() {
     const empty = { rows: [], total: 0 };
     const { sort, result: firstPage } = noCharacterShown
         ? { sort: wantedSort, result: empty }
-        : await queryWithSortFallback(filter, wantedSort, trySort => characterRepository.query(filter, trySort, 1, pageSize, GROUP_CANDIDATES_WANT));
+        : await queryWithSortFallback(filter, wantedSort, trySort => characterRepository.query(filter, trySort, 1, pageSize, GROUP_CANDIDATES_WANT, { draws: CANDIDATE_LOOKS }));
     /** @type {object | undefined} */
     let pendingFirstPage = firstPage;
     $('#rm_group_add_members_pagination').pagination({
@@ -1560,11 +1562,12 @@ export async function printGroupCandidates() {
                 ? Promise.resolve(pendingFirstPage)
                 : noCharacterShown
                     ? Promise.resolve(empty)
-                    : characterRepository.query(filter, sort, page, requestedPageSize, GROUP_CANDIDATES_WANT);
+                    : characterRepository.query(filter, sort, page, requestedPageSize, GROUP_CANDIDATES_WANT, { draws: CANDIDATE_LOOKS });
             pendingFirstPage = undefined;
             resultPromise
                 .then(result => {
                     const rows = Array.isArray(result.rows) ? result.rows : [];
+                    if ('looks' in result && result.looks) holdLooks(CANDIDATE_LOOKS, result.looks);
                     ajaxParams.success({ rows: rows.map(item => ({ item, id: item.avatar, type: 'character' })), total: result.total });
                 })
                 .catch(error => {
@@ -1642,7 +1645,7 @@ function getGroupCharacterBlock(character) {
     const isFav = normalizeFav(character.fav);
     template.data('id', character.avatar);
     template.find('.avatar img').attr({ 'src': avatar, 'title': character.avatar });
-    template.find('.ch_name').text(character.name);
+    drawName(template.find('.ch_name'), character.thing, character.name);
     template.attr({ 'data-avatar': character.avatar });
     template.find('.ch_fav').val(String(isFav));
     template.toggleClass('is_fav', isFav);

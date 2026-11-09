@@ -17,6 +17,7 @@ export function toShallow(character) {
         shallow: true,
         name: character.name,
         avatar: character.avatar,
+        thing: character.thing,
         thumbnail: character.thumbnail,
         avatar_ref: character.avatar_ref,
         chat: character.chat,

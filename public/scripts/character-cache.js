@@ -130,7 +130,7 @@ function locked(job) {
  * @returns {string | null}
  */
 export function characterRowKey(hashRow) {
-    return hashRow.version === null ? null : `c:${hashRow.version}:${hashRow.tagIdsHash}:${hashRow.id}`;
+    return hashRow.version === null ? null : `c2:${hashRow.version}:${hashRow.tagIdsHash}:${hashRow.id}`;
 }
 
 /**

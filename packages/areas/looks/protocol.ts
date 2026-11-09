@@ -1,6 +1,6 @@
 import * as v from 'valibot';
 import type { ActionSchemas } from '@st/protocol';
-import { LOOK_STATES } from '@st/protocol/looks';
+import { DRAWN_VIEW, LOOK_STATES } from '@st/protocol/looks';
 import type { ResolvedLook } from '@st/protocol/looks';
 import {
     CSS_LENGTH_AT_MOST,
@@ -14,7 +14,7 @@ import type { Refusal, StoredLook } from './look.ts';
 export type { Refusal, StoredLook };
 
 export const LOOK_VIEW = 'looks.look';
-export const DRAWN_VIEW = 'looks.drawn';
+export { DRAWN_VIEW };
 
 // Distinct shared looks one resolution reads, at two reads each; past them a name is drawn without the rest.
 export const SHARED_LOOKS_PER_READ = 64;

@@ -2,6 +2,8 @@ import { createSignal, untrack } from 'solid-js';
 import type { Accessor, Signal } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type { ActionAnswer, ChatOwner, ViewFrame, ViewPush } from '@st/protocol';
+import { isLooks } from './looks.ts';
+import type { LookSheet } from './looks.ts';
 
 export type ActionResult = { ok: true; answer?: unknown } | { ok: false; error: string; answer?: unknown };
 
@@ -16,6 +18,7 @@ export type Client = {
 
 export type ClientOptions = {
     headers: () => Record<string, string>;
+    looks?: LookSheet;
 };
 
 const ENDPOINT = '/api/ui/action';
@@ -48,7 +51,7 @@ async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<stri
     if (rest.trim() !== '') yield rest;
 }
 
-export function createClient({ headers }: ClientOptions): Client {
+export function createClient({ headers, looks }: ClientOptions): Client {
     const views = new Map<
         string,
         { set: (value: unknown) => void; patch: (change: unknown) => void; get: Accessor<unknown> }
@@ -90,6 +93,12 @@ export function createClient({ headers }: ClientOptions): Client {
             if ('patch' in frame) target.patch(frame.patch);
             else target.set(frame.value);
             setVersion(frame.version);
+            const carried = 'patch' in frame ? frame.patch : frame.value;
+            const drawn = isRecord(carried) ? carried['looks'] : undefined;
+            if (looks && isLooks(drawn)) {
+                if ('patch' in frame) looks.add(frame.key, drawn);
+                else looks.hold(frame.key, drawn);
+            }
         }
     };
 

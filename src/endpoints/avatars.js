@@ -15,6 +15,8 @@ import { imagesOf, removeImage, writePersonaImage } from '../image-entities.js';
 import { cropOf, normalizeCrop, thumbnailsFor, thumbnailsOf } from '../thumbnail-urls.js';
 import { avatarRefString } from '../avatar-refs.js';
 import cacheBuster from '../middleware/cacheBuster.js';
+import { pageLooks } from '../ui-wiring.js';
+import { PERSONA_LOOKS } from '../../public/scripts/name-holders.js';
 
 export const router = express.Router();
 
@@ -38,7 +40,14 @@ export async function personaImagesAnswer(request) {
         if (crop) crops[image.key] = crop;
     }
     const refs = Object.fromEntries(images.map(i => [i.key, avatarRefString(TYPE.personaImage, i.key)]));
-    return { avatars: images.map(i => i.key), thumbnails, thumbnails_still: stills, crops, refs };
+    const ids = images.length ? await lib.ids(TYPE.persona, images.map(i => i.key)) : [];
+    /** @type {Record<string, string>} */
+    const things = {};
+    images.forEach((image, i) => {
+        if (ids[i] !== null && ids[i] !== undefined) things[image.key] = String(ids[i]);
+    });
+    const looks = await pageLooks(request, PERSONA_LOOKS, Object.values(things));
+    return { avatars: images.map(i => i.key), thumbnails, thumbnails_still: stills, crops, refs, things, looks };
 }
 
 router.post('/get', async function (request, response) {

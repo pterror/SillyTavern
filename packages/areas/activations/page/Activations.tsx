@@ -1,8 +1,10 @@
 import { For, Show, onCleanup, onMount } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import { useUi } from '@st/page/context';
+import { Name } from '@st/page/name';
+import { LOOK_SCOPE_CLASS } from '@st/protocol/looks';
 import { VIEW } from '../protocol.ts';
-import type { Cut, Opener, PanelView, Shown, Where } from '../protocol.ts';
+import type { Cut, Label, Opener, PanelView, Shown, Where } from '../protocol.ts';
 
 export type OldPage = {
     messageNumber(nodeId: string): number | null;
@@ -19,6 +21,14 @@ export function Activations(props: { look: Look | null; old: OldPage; onClose: (
     return (
         <Show when={props.look} keyed>
             {(look) => <Panel look={look} view={view} old={props.old} onClose={props.onClose} />}
+        </Show>
+    );
+}
+
+function Labelled(props: { label: Label }) {
+    return (
+        <Show when={props.label.thing !== null && props.label} fallback={props.label.text}>
+            {(named) => <Name named={named() as Extract<Label, { shownAs: unknown }>} />}
         </Show>
     );
 }
@@ -97,10 +107,17 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
         else props.old.openEntry(opener.book, opener.uid);
     };
 
-    const Title = (p: { title: string; open: Opener }) => (
-        <Show when={p.open !== null} fallback={<span class="activation-title">{p.title}</span>}>
+    const Title = (p: { label: Label; open: Opener }) => (
+        <Show
+            when={p.open !== null}
+            fallback={
+                <span class="activation-title">
+                    <Labelled label={p.label} />
+                </span>
+            }
+        >
             <button type="button" class="activation-title activation-open" onClick={() => open(p.open)}>
-                {p.title}
+                <Labelled label={p.label} />
             </button>
         </Show>
     );
@@ -134,23 +151,27 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
                         <ol class="activations-list">
                             <For each={panel().entries}>
                                 {(entry) => (
-                                    <li class="activation">
+                                    <li class={`activation ${LOOK_SCOPE_CLASS}`}>
                                         <div class="activation-head">
-                                            <Title title={entry.title} open={entry.open} />
-                                            <span class="activation-book">{entry.book}</span>
+                                            <Title label={entry.label} open={entry.open} />
+                                            <span class="activation-book">
+                                                <Labelled label={entry.world} />
+                                            </span>
                                         </div>
                                         <Show when={reason(entry)}>
                                             {(text) => <div class="activation-reason">{text()}</div>}
                                         </Show>
                                         <Show when={entry.via.length > 0}>
                                             <div class="activation-via">
-                                                {t('Brought in by ${0}').replace(
-                                                    '${0}',
-                                                    entry.via
-                                                        .map((i) => panel().entries[i]?.title)
-                                                        .filter(Boolean)
-                                                        .join(', '),
-                                                )}
+                                                {t('Brought in by')}{' '}
+                                                <For each={entry.via.flatMap((i) => panel().entries[i] ?? [])}>
+                                                    {(by, i) => (
+                                                        <>
+                                                            {i() > 0 ? ', ' : ''}
+                                                            <Labelled label={by.label} />
+                                                        </>
+                                                    )}
+                                                </For>
                                             </div>
                                         </Show>
                                     </li>
@@ -162,10 +183,12 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
                             <ol class="activations-list activations-cut">
                                 <For each={panel().cut}>
                                     {(cut) => (
-                                        <li class="activation">
+                                        <li class={`activation ${LOOK_SCOPE_CLASS}`}>
                                             <div class="activation-head">
-                                                <Title title={cut.title} open={cut.open} />
-                                                <span class="activation-book">{cut.book}</span>
+                                                <Title label={cut.label} open={cut.open} />
+                                                <span class="activation-book">
+                                                    <Labelled label={cut.world} />
+                                                </span>
                                             </div>
                                             <div class="activation-reason">{cutReason(cut)}</div>
                                         </li>

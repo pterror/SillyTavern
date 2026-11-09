@@ -156,9 +156,11 @@ type ResolvedLook = { layers: Partial<Record<LookState, Declaration[]>>; picture
 ```
 
 A style's id is the first 16 hex digits of its SHA-256, so a style id always means the same look, the entries of a
-world with no look of their own share one style, and two views' looks merge by key. A thing with no look at all is
-left out of `things`. The page writes each held thing's rules (`lookCss`) and its fonts' faces (`fontFaceCss`) into
-one stylesheet, keeping a thing's rules from the newest view that drew it and dropping them when no held view draws it.
+world with no look of their own share one style, and two views' looks merge by key. `things` lists every thing drawn:
+one with no look at all is under `NO_LOOK_STYLE`, so a newer answer that draws a thing whose look was taken away
+replaces the older answer's rules for it. The page writes each held thing's rules (`thingCss`: the layers' rules and
+the picture's and the note's) and its fonts' faces (`fontFaceCss`) into one stylesheet, keeping a thing's rules from
+the newest holder that drew it and dropping them when no holder draws it (`@st/page/looks`).
 
 The views carry a map, not a look per `Named`: one thing is often drawn many times in one view (a region's target in
 every relations line), and a world's entries share a style.
@@ -169,9 +171,47 @@ worldbuilding area wraps each of its views: it collects every `Named` in the val
 and the worlds the worlds list and the world header show (`thingsDrawn`), and adds their looks.
 
 The looks area keeps, per session, the things each view drew when it was last read. `looks.drawn` is the looks of
-everything the session's views draw; every look edit answers it with the Look screen's view (`looks.look`), so the
-answer carries the changed looks of everything the tab draws, and the user's other tabs get theirs pushed. A view that
-is read again replaces its things; a session that goes drops them.
+everything the session's views draw; every tab holds it open from its start (an area's `openFromStart`, no request),
+and every look edit answers it with the Look screen's view (`looks.look`), so the answer carries the changed looks of
+everything the tab draws, and the user's other tabs get theirs pushed. A view that is read again replaces its things;
+a session that goes drops them.
+
+## The name renderer
+
+One renderer draws every name of the app (`@st/page/name`): `Name` for the new page, `nameElement` with the same markup
+for old page code (`start().names.element`). A name is
+
+```html
+<span class="name-box look-box-T">
+  <img class="name-picture name-picture-before" alt="">     <!-- only where the place draws its things' pictures -->
+  <span class="named named-name look-T" data-thing="T" data-selected>text</span>
+  <img class="name-picture name-picture-after" alt="">
+</span>
+```
+
+The layers style the inner span; the picture sides are shown and the note is written (the box's `::after`, above the
+name, taking no room in the line) by the thing's rules in the same stylesheet, so nothing of a look is drawn by
+anything but that stylesheet. `data-selected` is set by the place that knows the thing is selected (the worldbuilding
+overview's selection). The element that counts as a name's message carries `look-scope`: a chat message, a character
+list row, a group's row and member, a persona, a chat in the chat picker and among the recent chats, a worldbuilding
+card, an activations row.
+
+The client holds every view's `looks` under the view's key (a part that patches adds to it). Old page code holds what
+its own answers carry under the place that draws them (`public/scripts/name-holders.js`), and the server keeps the same
+places as what the tab draws (`pageLooks` in `src/ui-wiring.js`):
+
+| Place | Answer | Its things |
+|---|---|---|
+| `page.characters` | `/api/characters/query` asked with `draws` (rows or hashes; the hashes carry them after everything else, flag `0b1000000`) | the page's characters and its groups' members |
+| `page.groupCandidates` | the same, for the group editor's candidates | the same |
+| `page.chat` | `/api/chats/open` | the chat's character, or its group's members |
+| `page.personas` | `/api/avatars/get` (also as a chat open's part) | every persona, with `things` by avatar |
+| `page.chats` | `/api/chats/search` (the chat picker; a later page adds) | its bookmarks |
+| `page.recent` | `/api/chats/recent` (an older page adds) | the recent chats' characters and bookmarks |
+
+A character's thing comes with it (`thing` on every character object and list row); a persona's from the persona
+answer's `things`; a bookmark's with the chat row that names it (`thing`, `label_thing`). A list page asked with `draws`
+is answered whole even when its token is unchanged, since its looks are part of the answer.
 
 ## Actions
 
@@ -208,5 +248,6 @@ comes every 1,047 entries (was 1,232), and a selection holds 1,571 picked entrie
 - Removing a font from a world, and removing a font file no world lists.
 - Reduced motion: every motion has a still frame (`worldbuilding.md`); the app's keyframes and the page's
   `prefers-reduced-motion` rule are the page's.
-- Other areas' names (the chat's name lines, character lists, personas, bookmarks) carry looks when the one name
-  renderer reaches them (L2).
+- Names drawn in a `<select>`'s options or a `title` (the world link popups, the world button's title) can't be drawn
+  by the renderer; they stay plain until those controls are drawn as lists.
+- Names linked in chat messages: not yet.

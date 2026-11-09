@@ -19,6 +19,7 @@ const { router: avatarsRouter } = await import('./avatars.js');
 const { writeAllSettings, readSettingsAtPaths } = await import('../settings-store.js');
 const { newSessionKey, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
+const { TYPE } = await import('../library-engine.js');
 const { convertedUser, writeLibraryCard, seedMessages, sessionPath, treeOf, namedChat } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-open-test-');
@@ -254,4 +255,25 @@ test('a character opens with the greeting its character info shows in this tab, 
     assert.deepEqual((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, { position: 1, hash: hashGreetingText('Third') });
     await changeGreetings({ directories, store: user.store, actor: null, avatar: 'Shown.png', change: { op: 'delete', position: 1, hash: hashGreetingText('Third') } });
     assert.equal((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, null, 'a deleted greeting gives way to the first');
+});
+
+test('a chat opened by a tab answers the looks of its character, which a look edit answers again', async () => {
+    await writeCharacter('Looked.png', 'Looked', 'Hi.');
+    const tab = newSessionKey();
+    const opened = await open({ avatar_url: 'Looked.png' }, tab);
+    assert.equal(opened.status, 200);
+    const [thing] = await user.store.lib.ids(TYPE.character, ['Looked.png']);
+    assert.deepEqual(Object.keys(opened.body.looks.things), [String(thing)]);
+    assert.deepEqual(opened.body.looks.styles[opened.body.looks.things[String(thing)]], { layers: {}, picture: { before: false, after: false }, note: null, fonts: [] });
+
+    const { looks } = await import('../ui-wiring.js');
+    const uiUser = { handle: 'u', directories };
+    const context = { user: uiUser, session: tab, chat: null, upload: null };
+    const edit = await looks.area.actions['looks.setDeclarations'](context, { level: { thing: String(thing) }, state: 'rest', set: [{ property: 'color', value: 'teal' }], reset: [] });
+    assert.deepEqual(edit.changed, ['looks.look', 'looks.drawn']);
+    const drawn = await looks.area.views['looks.drawn'](context);
+    assert.deepEqual(drawn.looks.styles[drawn.looks.things[String(thing)]].layers.rest, [{ property: 'color', value: 'teal' }]);
+
+    const untabbed = await open({ avatar_url: 'Looked.png' });
+    assert.deepEqual(untabbed.body.looks, { styles: {}, things: {} });
 });

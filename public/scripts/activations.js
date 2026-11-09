@@ -192,10 +192,10 @@ function loreTooltip(el, refresh) {
         box.className = 'lore-tip';
         const head = document.createElement('div');
         const title = document.createElement('strong');
-        title.textContent = entry.title;
+        title.append(labelled(entry.label));
         const book = document.createElement('span');
         book.className = 'lore-tip-book';
-        book.textContent = entry.book;
+        book.append(labelled(entry.world));
         head.append(title, ' ', book);
         box.append(head);
         if (entry.start) {
@@ -207,6 +207,12 @@ function loreTooltip(el, refresh) {
         return [box];
     });
 }
+
+/**
+ * @param {import('@st/activations/protocol').Label} label
+ * @returns {Node}
+ */
+const labelled = label => (label.thing === null ? document.createTextNode(label.text) : newUi().names.element(label));
 
 /** @type {Map<string, import('@st/activations/protocol').PanelView>} */
 const peeked = new Map();
@@ -220,7 +226,12 @@ async function peek(reply) {
     if (view) {
         peeked.delete(reply);
         peeked.set(reply, view);
-        while (peeked.size > 8) peeked.delete(/** @type {string} */ (peeked.keys().next().value));
+        newUi().names.hold(`peeked:${reply}`, view.looks);
+        while (peeked.size > 8) {
+            const oldest = /** @type {string} */ (peeked.keys().next().value);
+            peeked.delete(oldest);
+            newUi().names.drop(`peeked:${oldest}`);
+        }
     }
     return view;
 }

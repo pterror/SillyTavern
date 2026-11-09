@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { defineArea } from '@st/server-ui';
 import type { ActionContext, ActionResult, Upload, User, ViewContext } from '@st/server-ui';
+import { NO_LOOK_STYLE } from '@st/protocol/looks';
 import type { Looks, LookState, ResolvedLook } from '@st/protocol/looks';
 import {
     APP_FONTS,
@@ -130,21 +131,25 @@ export function looksArea(ports: Ports) {
     async function looksFor(user: User, things: string[]): Promise<Looks> {
         const looks: Looks = { styles: {}, things: {} };
         for (const [thing, look] of await resolve(user, things)) {
-            if (isNoLook(look)) continue;
-            const id = styleId(look);
+            const id = isNoLook(look) ? NO_LOOK_STYLE : styleId(look);
             looks.styles[id] = look;
             looks.things[thing] = id;
         }
         return looks;
     }
 
-    async function looksOf(context: ViewContext, view: string, things: string[]): Promise<Looks> {
+    async function looksOf(
+        context: ViewContext,
+        view: string,
+        things: string[],
+        { adding = false }: { adding?: boolean } = {},
+    ): Promise<Looks> {
         let views = drawnBy.get(context.session);
         if (!views) {
             views = new Map();
             drawnBy.set(context.session, views);
         }
-        views.set(view, [...new Set(things)]);
+        views.set(view, [...new Set([...(adding ? (views.get(view) ?? []) : []), ...things])]);
         return looksFor(context.user, things);
     }
 
@@ -260,6 +265,7 @@ export function looksArea(ports: Ports) {
                 return { looks: await looksFor(context.user, things) };
             },
         },
+        openFromStart: [DRAWN_VIEW],
         gone: (session) => {
             sessions.delete(session);
             drawnBy.delete(session);

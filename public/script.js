@@ -204,7 +204,11 @@ import {
     personaAvatar,
     personaCrop,
     personaThumbnail,
+    personaThing,
+    drawYourName,
 } from './scripts/personas.js';
+import { addLooks, drawName, holdLooks } from './scripts/names.js';
+import { CHATS_LOOKS, CHAT_LOOKS } from './scripts/name-holders.js';
 import { frameImage, shownThumbnail } from './scripts/shown-thumbnail.js';
 import { startNewUi, takeViews, chatClosed, newUi, newUiStarted } from './scripts/new-ui.js';
 import { loader } from './scripts/action-loader.js';
@@ -1325,6 +1329,16 @@ async function firstLoadInit() {
     await getSettings(initLoaderHandle, setStage);
 
     setStage('Loading user data');
+    startNewUi({
+        quietPrompt: prompt => generateQuietPrompt({ quietPrompt: prompt }),
+        currentChat: () => {
+            if (selected_group != null) return { group: String(selected_group) };
+            const avatar = getCurrentCharacter()?.avatar;
+            return typeof avatar === 'string' && avatar !== '' && chat.length > 0 ? { avatar } : null;
+        },
+        alternatives: alternativesOldPage,
+        activations: activationsOldPage,
+    });
     await checkOpenRouterAuth();
     initKeyboard();
     initDynamicStyles();
@@ -1344,16 +1358,6 @@ async function firstLoadInit() {
     setupCharacterChangeStream();
 
     setStage('Loading assets');
-    startNewUi({
-        quietPrompt: prompt => generateQuietPrompt({ quietPrompt: prompt }),
-        currentChat: () => {
-            if (selected_group != null) return { group: String(selected_group) };
-            const avatar = getCurrentCharacter()?.avatar;
-            return typeof avatar === 'string' && avatar !== '' && chat.length > 0 ? { avatar } : null;
-        },
-        alternatives: alternativesOldPage,
-        activations: activationsOldPage,
-    });
     bindChatCompletionSettings(newUi().settings);
     bindTextGenSettings(newUi().settings);
     bindSharedSettings(newUi().settings);
@@ -2683,6 +2687,18 @@ export function showMessageCount(mesId, mes) {
 }
 
 /**
+ * The thing a message's name line is drawn by: its persona, or the character that said it.
+ * @param {ChatMessage} mes
+ * @returns {string | undefined}
+ */
+function messageThing(mes) {
+    if (mes.is_system) return undefined;
+    if (mes.is_user) return personaThing(mes.persona ?? user_avatar);
+    const avatar = mes.original_avatar ?? (getSelectionState().type === 'character' ? getCurrentCharacter()?.avatar : undefined);
+    return avatar ? charactersStore.get(avatar)?.thing : undefined;
+}
+
+/**
  * Creates the element of a single message as if it were the last message or at forceMesId
  * @param {ChatMessage} mes Message object
  * @param {object} [options] Options
@@ -2728,7 +2744,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     });
 
     messageElement.find('.avatar img').attr('src', avatarImg);
-    messageElement.find('.ch_name .name_text').text(mes.name);
+    drawName(messageElement.find('.ch_name .name_text'), messageThing(mes), mes.name);
     messageElement.find('.timestamp').text(timestamp).attr('title', `${mes.extra?.api ? mes.extra.api + ' - ' : ''}${mes.extra?.model ?? ''}`);
     messageElement.find('.mesIDDisplay').text(`#${messageId}`);
     renderMessageCount(messageElement, mes);
@@ -5632,6 +5648,7 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
  * @property {number} [settings_hash]
  * @property {string[]} [stored_sends]
  * @property {{ key: string, version: number, value: unknown }[]} [ui_views]
+ * @property {import('@st/protocol/looks').Looks} [looks] The looks of the chat's speakers' names.
  */
 
 /**
@@ -5676,6 +5693,7 @@ export function takeChatOpenAnswer(body, answer) {
     if (body.avatar_url) takeShownGreeting(String(body.avatar_url), answer.greeting_shown ?? null);
     takeChatOpenParts(answer.chat, answer.parts);
     takeViews(answer.ui_views);
+    if (answer.looks) holdLooks(CHAT_LOOKS, answer.looks);
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
     setActiveGroup(answer.active_group);
@@ -5899,7 +5917,7 @@ function changeMainAPI(api = null) {
 export function setUserName(value, { toastPersonaNameChange = true } = {}) {
     setName1Raw(value === undefined || value == '' ? default_user_name : value);
     console.log(`User name changed to ${name1}`);
-    $('#your_name').text(name1);
+    drawYourName();
     if (toastPersonaNameChange && power_user.persona_show_notifications && !isPersonaPanelOpen()) {
         toastr.success(t`Your messages will now be sent as ${name1}`, t`Persona Changed`);
     }
@@ -6008,7 +6026,7 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         Object.assign(serverKeyHashes, data.keyHashes);
         if (settings.username !== undefined && settings.username !== '') {
             setName1Raw(settings.username);
-            $('#your_name').text(name1);
+            drawYourName();
         }
 
         accountStorage.init(settings?.accountStorage);
@@ -6871,6 +6889,7 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
             }
             const page = await response.json();
             if (list !== chatPickerList) return;
+            if (page.looks) (cursor || scanCursor ? addLooks : holdLooks)(CHATS_LOOKS, page.looks);
             for (const chat of page.results) {
                 if (shown.has(chat.file_name)) continue;
                 shown.add(chat.file_name);
@@ -6881,7 +6900,7 @@ async function displayChats(searchQuery, currentChat, displayName, avatarImg, se
                     template.find('.select_chat_block').attr('node_id', chat.node_id);
                 }
                 template.find('.avatar img').attr('src', avatarImg);
-                template.find('.select_chat_block_filename').text(chat.label ?? chat.file_name);
+                drawName(template.find('.select_chat_block_filename'), chat.thing, chat.label ?? chat.file_name);
                 template.find('.chat_file_size').text(chat.file_size ? `(${chat.file_size},` : '(');
                 template.find('.chat_messages_num').text(`${chat.message_count} 💬)`);
                 template.find('.select_chat_block_mes').text(chat.preview_message);
@@ -7227,7 +7246,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
 
     // Don't update the navbar name if we're peeking the group member defs
     if (!selected_group) {
-        $('#rm_button_selected_ch').children('h2').text(character.name);
+        drawName($('#rm_button_selected_ch').children('h2'), character.thing, character.name);
     }
 
     $('#add_avatar_button').val('');
@@ -7909,7 +7928,7 @@ async function openCharacterWorldPopup() {
     const linksUnlistedName = worldId !== '' && !linksEmbeddedBook && !world_names.includes(worldId);
     const unlistedNameValue = 'unlisted';
     const template = $('#character_world_template .character_world').clone();
-    template.find('.character_name').text(charName);
+    drawName(template.find('.character_name'), menu_type == 'create' ? undefined : worldCharacter?.thing, charName);
 
     // --- Event Handlers ---
     async function handlePrimaryWorldSelect() {

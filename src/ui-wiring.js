@@ -10,6 +10,7 @@ import { activationsArea } from '@st/activations/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
 import { looksArea } from '@st/looks/server';
 import { looksPorts } from './looks-store.js';
+import { sessionHeaderOf } from './request-session.js';
 import { References } from './world-info/references.js';
 import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
 import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
@@ -436,6 +437,7 @@ const whereOf = sources => sources.flatMap(s => {
 
 /** @type {import('@st/activations/server').Ports} */
 const activationsPorts = {
+    looksOf: (context, view, things) => looks.looksOf(context, view, things),
     async panel(user, message) {
         const store = await userStore(directoriesOf(user), user.handle);
         const [id] = await store.chats.messageIds([message]);
@@ -448,6 +450,13 @@ const activationsPorts = {
 
         const entryIds = [...new Set(refs.filter(r => typeof r?.entry === 'string').map(r => r.entry))];
         const entries = new Map((await store.lib.books.describeEntries(entryIds.map(BigInt))).map((e, i) => [entryIds[i], e]));
+        const byWorld = Map.groupBy(entryIds.filter(id => entries.get(id)), id => /** @type {any} */ (entries.get(id)).world);
+        /** @type {Map<string, import('@st/protocol/looks').Named>} */
+        const labels = new Map();
+        for (const [world, ids] of byWorld) {
+            const read = await store.lib.store.worldRead('worldbuildingLabels', { book: BigInt(world), entities: ids.map(BigInt) });
+            ids.forEach((id, i) => read[i] && labels.set(id, read[i]));
+        }
 
         let avatar = typeof content.original_avatar === 'string' ? content.original_avatar : null;
         if (avatar === null) {
@@ -458,23 +467,25 @@ const activationsPorts = {
         const cardEntries = Array.isArray(card?.data?.character_book?.entries) ? card.data.character_book.entries : [];
         const cardName = typeof card?.data?.name === 'string' ? card.data.name : (typeof card?.name === 'string' ? card.name : '');
 
-        /** @returns {{ title: string, book: string, start: string, open: import('@st/activations/protocol').Opener }} */
+        /** @param {string} text */
+        const plain = text => ({ thing: /** @type {null} */ (null), text });
+        /** @returns {{ label: import('@st/activations/protocol').Label, world: import('@st/activations/protocol').Label, start: string, open: import('@st/activations/protocol').Opener }} */
         const described = ref => {
             if (typeof ref?.card === 'string') {
                 const found = cardEntries.find((e, index) => String(e.id ?? index) === ref.card);
                 return {
-                    title: found ? entryTitle(found.comment, found.keys) : 'A removed entry',
-                    book: cardName ? `${cardName}'s card` : 'The character card',
+                    label: plain(found ? entryTitle(found.comment, found.keys) : 'A removed entry'),
+                    world: plain(cardName ? `${cardName}'s card` : 'The character card'),
                     start: startOf(found?.content),
                     open: avatar ? { card: avatar } : null,
                 };
             }
             const entry = entries.get(ref?.entry) ?? null;
-            if (!entry) return { title: 'A removed entry', book: 'A lorebook', start: '', open: null };
+            if (!entry) return { label: plain('A removed entry'), world: plain('A lorebook'), start: '', open: null };
             const uid = Number(entry.uid);
             return {
-                title: entryTitle(entry.comment, entry.key),
-                book: entry.bookName,
+                label: labels.get(ref.entry) ?? plain(''),
+                world: { thing: entry.world, text: entry.bookName, shownAs: 'name' },
                 start: startOf(entry.content),
                 open: Number.isFinite(uid) ? { book: entry.book, uid } : null,
             };
@@ -519,7 +530,7 @@ onUserStoreOpened(({ events, root, handle }) => {
     });
 });
 
-const looks = looksArea(looksPorts({ libOf }));
+export const looks = looksArea(looksPorts({ libOf }));
 
 /** @type {import('@st/worldbuilding/server').Ports} */
 const worldbuildingPorts = {
@@ -621,6 +632,22 @@ export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(setti
         return tree === null || tree === undefined ? null : { tree: String(tree) };
     },
 });
+
+/**
+ * The looks of what an old page's answer draws, kept as what that place of the tab draws (`holder`), so a look's edit
+ * answers them again. A thing's look is drawn by its entity id; a request with no tab draws none.
+ * @param {import('express').Request} request
+ * @param {string} holder
+ * @param {(string | bigint | null | undefined)[]} things
+ * @param {{ adding?: boolean }} [o] more of what the holder draws, kept with what it drew
+ * @returns {Promise<import('@st/protocol/looks').Looks>}
+ */
+export async function pageLooks(request, holder, things, { adding = false } = {}) {
+    const session = sessionHeaderOf(request);
+    const drawn = [...new Set(things.filter(t => t !== null && t !== undefined).map(String))];
+    if (!request.user || session === undefined || session === 'none') return { styles: {}, things: {} };
+    return looks.looksOf({ user: uiUser(request), session, chat: null }, holder, drawn, { adding });
+}
 
 /**
  * @param {import('express').Request} request

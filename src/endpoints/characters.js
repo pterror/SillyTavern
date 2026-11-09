@@ -45,9 +45,13 @@ import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, linkWithAvatar, wr
 import { writeUserImage } from '../image-entities.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, moveToChatNamed } from '../chat-request.js';
 import { requestSession, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
-import { ALTERNATIVES_VIEWS, ui, uiUser } from '../ui-wiring.js';
+import { ALTERNATIVES_VIEWS, pageLooks, ui, uiUser } from '../ui-wiring.js';
+import { CANDIDATE_LOOKS, LIST_LOOKS } from '../../public/scripts/name-holders.js';
 
 import { groupDigests, groupObjects } from './groups.js';
+
+const DRAWING_LISTS = new Set([LIST_LOOKS, CANDIDATE_LOOKS]);
+
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
 export const FULL_BATCH_MAX = 200;
@@ -447,6 +451,7 @@ export async function characterObjects(request, avatars, { shallow }) {
         const json = JSON.stringify(card);
         const character = getCharaCardV2(JSON.parse(json), request.user.directories, false);
         character.avatar = e.key;
+        character.thing = String(e.id);
         assignThumbnails(character, thumbnailsOf(e, 'avatar'));
         character.avatar_ref = avatarRefString(TYPE.character, e.key);
         character.json_data = json;
@@ -937,6 +942,7 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
 
     const update = structuredClone(updateData);
     delete update.json_data;
+    delete update.thing;
     delete character.json_data;
 
     const forbiddenGreetingPaths = ['data.alternate_greetings', 'data.first_mes', 'alternate_greetings', 'first_mes'];
@@ -1842,7 +1848,8 @@ async function runQuery(request, body, { compat = true } = {}) {
         : DEFAULT_QUERY_PAGE_SIZE;
 
     const { seq, token } = await queryVersion(lib);
-    if (typeof body.ifToken === 'string' && body.ifToken.length > 0 && body.ifToken === token) {
+    const draws = typeof body.draws === 'string' && DRAWING_LISTS.has(body.draws) ? body.draws : null;
+    if (!draws && typeof body.ifToken === 'string' && body.ifToken.length > 0 && body.ifToken === token) {
         return queryReply(200, { seq, token, unchanged: true });
     }
 
@@ -1885,6 +1892,7 @@ async function runQuery(request, body, { compat = true } = {}) {
 
     const groupKeys = keys.filter(k => k.group).map(k => k.key);
     const groups = new Map((compat && groupKeys.length ? await groupObjects(request, groupKeys) : []).filter(g => g !== null).map(g => [(g).id, g]));
+    const looks = draws ? await listLooks(request, draws, lib, keys, ids, [...groups.values()], body.drawsMore === true) : undefined;
 
     if (wantHashes) {
         const hashRows = /** @type {any[]} */ (result.hashRows).map((r, i) => {
@@ -1902,17 +1910,18 @@ async function runQuery(request, body, { compat = true } = {}) {
             hashes: {
                 seq, token, total: wantTotal ? Number(result.total) : undefined, approxTotal: !!result.approxTotal, hashRows,
                 ...extra,
+                ...(looks ? { looks } : {}),
                 ...(wantHidden ? { hidden: Number(result.hidden), approxHidden: !!result.approxHidden } : {}),
                 ...(favHashRows ? { favHashRows } : {}),
             },
         };
     }
     /** @type {Record<string, unknown>} */
-    const payload = { seq, token, ...extra };
+    const payload = { seq, token, ...extra, ...(looks ? { looks } : {}) };
     if (wantRows) {
         const rows = /** @type {any[]} */ (result.rows).map((r, i) => {
             const group = r.type === 'group' ? groups.get(r.id) : undefined;
-            const item = r.type === 'group' ? { ...r.item, chat_id: group?.chat_id ?? chatOf(i), chats: group?.chats ?? [] } : { ...r.item, chat: chatOf(i) };
+            const item = r.type === 'group' ? { ...r.item, chat_id: group?.chat_id ?? chatOf(i), chats: group?.chats ?? [] } : { ...r.item, chat: chatOf(i), ...(ids[i] === null ? {} : { thing: String(ids[i]) }) };
             return { type: r.type, item };
         });
         payload.rows = includeGroups ? rows : rows.map(r => r.item);
@@ -1920,6 +1929,22 @@ async function runQuery(request, body, { compat = true } = {}) {
     if (wantTotal && want.includes('total')) payload.total = result.approxTotal ? `~${result.total}` : result.total;
     if (wantHidden) payload.hidden = result.approxHidden ? `~${result.hidden}` : result.hidden;
     return queryReply(200, payload);
+}
+
+/**
+ * The looks of a list page's names: its characters' and its groups' members'.
+ * @param {import('express').Request} request
+ * @param {string} holder
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {{ key: string, group: boolean }[]} keys
+ * @param {(bigint | null)[]} ids
+ * @param {any[]} groups
+ * @param {boolean} more the rest of a page whose start was answered already
+ */
+async function listLooks(request, holder, lib, keys, ids, groups, more) {
+    const members = [...new Set(groups.flatMap(g => (Array.isArray(g?.members) ? g.members.filter(m => typeof m === 'string') : [])))];
+    const memberIds = members.length ? await lib.ids(TYPE.character, members) : [];
+    return pageLooks(request, holder, [...keys.flatMap((k, i) => (k.group ? [] : [ids[i]])), ...memberIds], { adding: more });
 }
 
 async function handleQuery(request, response) {
@@ -2042,15 +2067,17 @@ function writeHashRow(buf, offset, row) {
 }
 
 /**
- * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string, favHashRows?:object[]}} params
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string, favHashRows?:object[], looks?:import('@st/protocol/looks').Looks}} params
  * @returns {Buffer}
  */
-export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, hidden, approxHidden = false, more = false, cursor, favHashRows }) {
+export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, hidden, approxHidden = false, more = false, cursor, favHashRows, looks }) {
     const hasTotal = typeof total === 'number';
     const hasCursor = typeof cursor === 'string' && cursor.length > 0;
     const cursorBytes = hasCursor ? Buffer.byteLength(cursor, 'utf8') : 0;
     const hasHidden = typeof hidden === 'number';
     const hasFavs = Array.isArray(favHashRows);
+    const looksJson = looks === undefined ? null : JSON.stringify(looks);
+    const looksBytes = looksJson === null ? 0 : Buffer.byteLength(looksJson, 'utf8');
 
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
     let totalSize = 1 + 8 + 8 + 2;
@@ -2062,12 +2089,13 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
         totalSize += 2;
         for (const row of favHashRows) totalSize += hashRowSize(row);
     }
+    if (looksJson !== null) totalSize += 4 + looksBytes;
 
     const buf = Buffer.allocUnsafe(totalSize);
     let offset = 0;
 
     const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0)
-        | (hasHidden ? 0b10000 : 0) | (hasFavs ? 0b100000 : 0);
+        | (hasHidden ? 0b10000 : 0) | (hasFavs ? 0b100000 : 0) | (looksJson !== null ? 0b1000000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
     buf.writeDoubleLE(hasTotal ? total : 0, offset); offset += 8;
@@ -2089,6 +2117,10 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
     if (hasFavs) {
         buf.writeUInt16LE(favHashRows.length, offset); offset += 2;
         for (const row of favHashRows) offset = writeHashRow(buf, offset, row);
+    }
+    if (looksJson !== null) {
+        buf.writeUInt32LE(looksBytes, offset); offset += 4;
+        buf.write(looksJson, offset, looksBytes, 'utf8'); offset += looksBytes;
     }
 
     return buf;

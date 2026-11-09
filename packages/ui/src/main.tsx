@@ -5,6 +5,9 @@ export type { ViewFrame } from '@st/protocol';
 export { SERVER_OWNED } from '@st/settings/page';
 export * from '@st/occlusion';
 import { createClient } from '@st/page/client';
+import { documentLookSheet } from '@st/page/looks';
+import { nameElement } from '@st/page/name';
+import type { Declaration, LookState } from '@st/protocol/looks';
 import { UiProvider } from '@st/page/context';
 import type { Ui } from '@st/page/context';
 import { AnimationOption, BackgroundLayer, Backgrounds, backgroundsCompat } from '@st/backgrounds/page';
@@ -53,7 +56,8 @@ export type StartOptions = {
 };
 
 export function start(options: StartOptions) {
-    const client = createClient({ headers: options.headers });
+    const looks = documentLookSheet(document);
+    const client = createClient({ headers: options.headers, looks });
     const ui: Ui = { client, t: options.t };
     const mount = (container: HTMLElement, surface: () => JSX.Element) =>
         render(() => <UiProvider value={ui}>{surface()}</UiProvider>, container);
@@ -109,6 +113,23 @@ export function start(options: StartOptions) {
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         alternatives: alternativesCompat(setLook),
         activations,
+        names: {
+            element: nameElement,
+            hold: looks.hold,
+            add: looks.add,
+            drop: looks.drop,
+        },
+        looks: {
+            setDeclarations: async (
+                level: { theme: true } | { thing: string },
+                state: LookState,
+                set: Declaration[],
+                reset: string[],
+            ): Promise<string | null> => {
+                const answer = await client.send('looks.setDeclarations', { level, state, set, reset });
+                return answer.ok ? null : answer.error;
+            },
+        },
         settings: {
             ...settingsCompat(client),
             setSupport,

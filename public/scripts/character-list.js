@@ -24,6 +24,8 @@ import { getPermanentAssistantAvatar } from './welcome-screen.js';
 import { event_types, eventSource } from './events.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characterThumbnail, per_page_default, selectCharacterByAvatar } from '../script.js';
+import { drawName, holdLooks } from './names.js';
+import { LIST_LOOKS } from './name-holders.js';
 
 let saveCharactersPage = 0;
 
@@ -87,7 +89,8 @@ function renderCharacterBlock(template, item, id) {
     template.attr({ 'data-avatar': item.avatar });
     template.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', item.name);
     template.find('.avatar').attr('title', `${item.name}\nFile: ${item.avatar}`);
-    template.find('.ch_name').text(item.name).attr('title', item.name);
+    drawName(template.find('.ch_name'), item.thing, item.name);
+    template.find('.ch_name').attr('title', item.name);
     template.find('.ch_avatar_url').text(power_user.show_card_avatar_urls ? item.avatar : '');
     template.find('.ch_fav_icon').css('display', 'none');
     const isFav = normalizeFav(item.fav);
@@ -456,7 +459,7 @@ export async function printCharacters(fullRefresh = false) {
             refreshCharacterListCurrentPage();
         };
         const { sort, result: firstPage } = await queryWithSortFallback(filter, wantedSort,
-            trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT, { onFresh: freshFor(1, pageSize), favs: hotswapQuery(trySort !== wantedSort) }));
+            trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT, { onFresh: freshFor(1, pageSize), favs: hotswapQuery(trySort !== wantedSort), draws: LIST_LOOKS }));
         const favs = hotswapQuery(sort !== wantedSort);
 
         let pendingFirstPage = firstPage;
@@ -490,7 +493,7 @@ export async function printCharacters(fullRefresh = false) {
                     ? Promise.resolve(pendingFirstPage)
                     : fresh
                         ? Promise.resolve(fresh)
-                        : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT, { onFresh: freshFor(page, requestedPageSize), favs });
+                        : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT, { onFresh: freshFor(page, requestedPageSize), favs, draws: LIST_LOOKS });
                 pendingFirstPage = undefined;
                 resultPromise
                     .then(async result => {
@@ -507,6 +510,7 @@ export async function printCharacters(fullRefresh = false) {
                             totalApprox: pageTotalApprox,
                         };
                         if (result.favs) showHotswapFavs(result.favs);
+                        if (result.looks) holdLooks(LIST_LOOKS, result.looks);
                         ajaxParams.success({ rows: pageEntities, total: result.total });
                     })
                     .catch(error => {

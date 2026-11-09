@@ -35,6 +35,8 @@ import { getMessageTimeStamp } from './RossAscends-mods.js';
 import { renderTemplateAsync } from './templates.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { clamp, flashHighlight, isElementInViewport, timestampToMoment } from './utils.js';
+import { addLooks, drawName, holdLooks } from './names.js';
+import { RECENT_LOOKS } from './name-holders.js';
 
 const assistantAvatarKey = 'assistant';
 const pinnedChatsKey = 'pinnedChats';
@@ -342,6 +344,14 @@ async function sendWelcomePanel(chats, expand = false, { replace = false, stillS
         };
         const template = await renderTemplateAsync('welcomePanel', templateData);
         const fragment = document.createRange().createContextualFragment(template);
+        fragment.querySelectorAll('.recentChat').forEach((element, i) => {
+            const shown = chats[i];
+            if (!shown) return;
+            const characterName = element.querySelector('.characterName');
+            if (characterName) drawName(characterName, shown.thing, shown.char_name);
+            const label = element.querySelector('.recentChatLabel');
+            if (label) drawName(label, shown.label ? shown.label_thing : shown.thing, shown.display_name);
+        });
         fragment.querySelectorAll('.welcomePanel').forEach((root) => {
             const recentHiddenClass = 'recentHidden';
             const recentHiddenKey = 'WelcomePage_RecentChatsHidden';
@@ -785,6 +795,8 @@ async function openRecentChatsSettingsPopup() {
  * @property {boolean} is_group Indicates if the chat is a group chat
  * @property {boolean} hidden Chat will be hidden by default
  * @property {boolean} pinned Indicates if the chat is pinned
+ * @property {string} [thing] The thing its character's name is drawn by
+ * @property {string} [label_thing] The thing its label is drawn by, when the label is a bookmark's
  */
 /**
  * @param {{ before?: string | null }} [options]
@@ -807,6 +819,7 @@ async function getRecentChats({ before = null } = {}) {
 
     const answer = await response.json();
     recentChatsNext = typeof answer?.next === 'string' ? answer.next : null;
+    if (answer?.looks) (before === null ? holdLooks : addLooks)(RECENT_LOOKS, answer.looks);
     /** @type {RecentChat[]} */
     const data = Array.isArray(answer?.chats) ? answer.chats : [];
 

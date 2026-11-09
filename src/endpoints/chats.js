@@ -29,7 +29,8 @@ import { countedOpeningState, countSent, storedMessageCounts } from '../message-
 import { shownTextCounts } from '../shown-text-counts.js';
 import { metadata_keys } from '../authors-note.js';
 import { SESSION_GONE_HEADER, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
-import { ui, uiUser } from '../ui-wiring.js';
+import { pageLooks, ui, uiUser } from '../ui-wiring.js';
+import { CHATS_LOOKS, CHAT_LOOKS, RECENT_LOOKS } from '../../public/scripts/name-holders.js';
 import { pageSettingsHash } from '../settings-hash.js';
 import { storedForm } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
@@ -778,8 +779,11 @@ async function openChatAnswer(request, response, body) {
     /** @type {Promise<any> | null} */
     let group = null;
     const wholeGroup = () => (group ??= body.group_id ? groupObjects(request, [String(body.group_id)]).then(([found]) => found ?? null) : Promise.resolve(null));
+    const members = body.group_id ? (await wholeGroup())?.members : null;
+    const speakers = Array.isArray(members) ? await chat.store.lib.ids(TYPE.character, members.filter(m => typeof m === 'string')) : [chat.tree];
     const common = {
         ui_views,
+        looks: await pageLooks(request, CHAT_LOOKS, speakers),
         chat: chatId,
         chat_metadata: { ...metadata },
         messages,
@@ -1546,6 +1550,7 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
                 node_id: r.at,
                 file_name: id,
                 label: r.name ?? null,
+                ...(typeof r.bookmark === 'string' ? { thing: `bookmark-${r.bookmark}` } : {}),
                 file_size: null,
                 message_count: r.message_count,
                 last_mes: r.last_activity ?? '',
@@ -1562,7 +1567,9 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
             const after = typeof request.body.cursor === 'string' && /^\d+:\d+$/.test(request.body.cursor) ? request.body.cursor : undefined;
             const scanCursor = typeof request.body.scan_cursor === 'string' && /^m\d+$/.test(request.body.scan_cursor) ? request.body.scan_cursor : undefined;
             const page = await chat.store.chats.searchChatList({ tree: chat.tree, search, session, after, limit, scanCursor });
-            return response.send({ results: await rowsOf(page.rows), cursor: page.more && page.next !== undefined ? page.next : null, scan_cursor: page.scanCursor ?? null, exact: page.exact });
+            const results = await rowsOf(page.rows);
+            const looks = await pageLooks(request, CHATS_LOOKS, results.map(r => r.thing), { adding: after !== undefined || scanCursor !== undefined });
+            return response.send({ results, looks, cursor: page.more && page.next !== undefined ? page.next : null, scan_cursor: page.scanCursor ?? null, exact: page.exact });
         }
         const results = [];
         const seen = new Set();
@@ -1642,10 +1649,12 @@ router.post('/recent', async function (request, response) {
             if (!key) return null;
             return key.type === TYPE.group ? { group: key.key } : { avatar: key.key };
         };
-        const info = (/** @type {Record<string, any>} */ r, /** @type {object} */ owner, /** @type {string} */ id) => ({
+        const info = (/** @type {Record<string, any>} */ r, /** @type {{ avatar?: string, group?: string }} */ owner, /** @type {string} */ id) => ({
             node_id: r.at,
             file_name: `${id}.jsonl`,
             label: r.name ?? null,
+            ...(owner.avatar !== undefined && r.tree !== undefined ? { thing: String(r.tree) } : {}),
+            ...(typeof r.bookmark === 'string' ? { label_thing: `bookmark-${r.bookmark}` } : {}),
             ...owner,
             file_size: 0,
             chat_items: r.message_count,
@@ -1676,7 +1685,9 @@ router.post('/recent', async function (request, response) {
         }
         if (paged) {
             const last = recent.rows.length ? recent.rows[recent.rows.length - 1] : null;
-            return response.send({ chats: [...pinned, ...rows], next: recent.more && last !== null ? String(last.position) : null });
+            const shown = [...pinned, ...rows];
+            const looks = await pageLooks(request, RECENT_LOOKS, shown.flatMap(c => [c.thing, c.label_thing]), { adding: before !== undefined });
+            return response.send({ chats: shown, looks, next: recent.more && last !== null ? String(last.position) : null });
         }
         return response.send([...pinned, ...rows]);
     } catch (error) {

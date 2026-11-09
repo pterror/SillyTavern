@@ -6,7 +6,9 @@
         "./client": "./src/client.ts",
         "./context": "./src/context.ts",
         "./classes": "./src/classes.ts",
-        "./dialog": "./src/layers/dialog.tsx"
+        "./dialog": "./src/layers/dialog.tsx",
+        "./looks": "./src/looks.ts",
+        "./name": "./src/name.tsx"
     },
     "dependencies": {
         "@st/protocol": "*",
