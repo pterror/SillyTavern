@@ -25,6 +25,17 @@ export const LIBRARY_LABELS = Object.freeze({
     id: [LIBRARY_FIELD.id],
 });
 
+export const WORLD_FIELD = Object.freeze({ key: 0, group: 1, title: 2, secondary: 3, text: 4, uid: 5, automationId: 6 });
+
+export const WORLD_LABELS = Object.freeze({
+    key: [WORLD_FIELD.key],
+    keys: [WORLD_FIELD.key],
+    title: [WORLD_FIELD.title],
+    text: [WORLD_FIELD.text],
+    group: [WORLD_FIELD.group],
+    secondary: [WORLD_FIELD.secondary],
+});
+
 /** @typedef {{ text: string, fields?: number[], negate: boolean, quoted: boolean }} Clause */
 
 /**

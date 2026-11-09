@@ -604,6 +604,28 @@ fn drawn_js(
     Ok(Js::Obj(fields))
 }
 
+pub fn lone_card(
+    view: &View,
+    book: u64,
+    grouping_kind: Option<u64>,
+    card_text_characters: usize,
+    keys_list: Option<u64>,
+    entity: u64,
+    occurrence: String,
+) -> Result<Js, StoreError> {
+    let grouping = Grouping::World {
+        book,
+        kind: grouping_kind,
+    };
+    let layout = OverviewLayout {
+        regions_by_nesting_level: &[],
+        card_text_characters,
+    };
+    let mut drawn = draw_entry(view, grouping, &[], &mut vec![entity])?;
+    drawn.occurrence = occurrence;
+    drawn_js(view, grouping, &layout, keys_list, &drawn)
+}
+
 pub fn read_overview(
     view: &View,
     grouping: Grouping,

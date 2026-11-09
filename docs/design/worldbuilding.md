@@ -164,9 +164,11 @@ Everything works at 10 billion entries with no cost per entry. The page holds on
 - **"+N more"** comes from a count of relations per (kind, target) kept on each write, never counted on read.
 - **Cells** of a board or grid are intersections of filters. Their cards are read a page at a time from the indexes.
   Their counts cannot be kept on write, so a cell's count is read up to a cap and shown as "1,000+" beyond it.
-- **At any depth** is answered by walking down from the target through the index of relations by target, keeping a
-  visited set, so
-  its cost grows with the results, not with the world, and cycles end the walk.
+- **At any depth** is answered, for a search's hits, by walking up from each hit through its relations of the kind,
+  keeping a visited set and what earlier walks learned, so its cost grows with the hits and their ancestors, not with
+  the world or the region; with no words to search, by walking down from the target through the index of relations
+  by target in drawing order, cutting repeats along the path, so its cost grows with the results. Cycles end either
+  walk (`worldbuilding-store.md`, The filter).
 - **Rows** are read a page at a time in the view's order, from that order's index.
 - **Selections** are a filter plus exceptions, so selecting and acting on millions of entries costs the same as on a
   few.

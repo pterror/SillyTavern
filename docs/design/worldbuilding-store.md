@@ -415,6 +415,13 @@ One area, `@st/worldbuilding`. Views:
   would have had (`compareBookKeys`: `<name>.json` by the server's locale); `entries` is the book's kept count
   (`book_stats`), so no world's entries are read.
 - `worldbuilding.world`: the shown world's header, the same fields, or `{id: null}` when no world is shown.
+- `worldbuilding.results`: the session's filter on the shown world and what it finds (The filter, below): `{book,
+  filter: {query, chips}, pages}`, each chip `{kind, kindName, target, targetDeleted, depth}` (its target's
+  label, the last one shown once the target is deleted), each page `{cursor, entries, next}`: the pages the page
+  asked for and nothing else, each the cards its cursor reads, drawn as the overview draws a top-level card with no
+  region; `{book: null}` with no filter.
+- `worldbuilding.found`: the session's search for a target entry (Move to, Also put in, + relation's target step):
+  `{book, query, entries, next}`, the first `FOUND_PER_QUERY` (20) labels of the best matches.
 
 Actions:
 
@@ -467,6 +474,17 @@ Actions:
   choices it shows follow; `exportWorld` answers `{fileName, json}` in the action's answer; `setUsedInEveryChat` writes
   the user's global selection choice. A delete clears every session showing the world.
 
+- `worldbuilding.setFilter` (book, query, chips, page size within one read): sets the filter of the world the session
+  shows and opens the results at their first page, closing an open entry (typing on an entry's page goes to the
+  world's page); refused when a chip names no live entry of the world; an empty query with no chips clears it. It
+  holds the first page. `showResults` (cursors, null for the first page) names the window of pages the page wants,
+  and the session holds those and nothing else; it is refused when they would read more than one read's cards, or
+  when a cursor is another filter's: the page sees each store cursor as `<generation>.<cursor>`, the generation
+  counting each filter set, so a cursor of an earlier filter is never read under a later one. Opening another world
+  clears the filter; every action that answers the overview answers the results, re-reading the held pages by their
+  cursors, and job steps push them.
+- `worldbuilding.findEntries` (book, query): one request per changed query.
+
 The engine answers each read in one snapshot (`overview.rs`: `read_overview`, `step_in_reading_order`, each for the
 world's top level or for the sources pointing at an entry, and `read_pointing_at`;
 `relations.rs`: `relation_edit`, `unreached_among`; `entry_page.rs`: `read_entry`, `labels`, `place_after`). A relation
@@ -489,6 +507,41 @@ no step. So:
 - **parent** is the key without its last part; **first child** is the first of the held region's cells, else `stepOverview`;
 - **inside region** `k` is "starts with `k/`".
 
+## The filter
+
+A filter has no kept counts (`worldbuilding.md`, Cells), so its results have no ranks: they are read by cursor as the
+reader scrolls, without totals (`world_search.rs`). Its words are the app's one search (`src/search-clauses.js`, the
+card library's syntax: `field:word`, `-field:word`, quotes) over the world's search index (`searched.rs`, one scope per
+book, holding only live entries), with a world's fields as labels: `key`/`keys`, `title`, `text`, `group`,
+`secondary`. A chip is a relation filter: kind, target, and **directly** or **at any depth**; chips and words all
+must hold. The chip's target is never in its own results.
+
+- **With words**, the results are the search's own hits in its order (relevance, as the card library's), a page per
+  cursor (the last hit's score and entity, and the query's word weights from the first page, so a later page scores
+  as the first did). A chip is a check on each hit the search considers: directly is one get of
+  `RELATIONS_OF_ENTRY (e, k, t)` in use; at any depth walks **up** from the hit through its relations in use of kind
+  `k` (weak ones too, since a weak relation draws its source in the target's region), breadth first with a visited
+  set, until it meets `t`. Walking up costs the hit's ancestry of kind `k` (one scan of `RELATIONS_OF_ENTRY (e, k, ·)`
+  per entry met), and what one walk learns (reached, or not reached after a full walk) is kept for the rest of the read,
+  so a read's walks cost about the hits plus their distinct ancestors: the same order as the search's own work.
+  Walking **down** from `t` would cost `t`'s whole subtree before the first hit, at any size of it; so the walk goes
+  up. A walk past `CHIP_WALK_VISITS` (12,000, one request's budget at two reads a visit) answers no; only a hit with
+  more ancestors of the kind than that reaches it.
+- **With no words**, there is no relevance, and walking the world to check each entry would cost the world, so the
+  first directly chip (else the first chip) leads and the others check. Directly reads `RELATIONS_BY_TARGET (b, t,
+  k)` in position order: the region's own order. At any depth reads the region in its drawing order, pre-order, each
+  source followed by its own region, an entry already on the path from `t` not entered again (as the overview cuts
+  repeats along the drawing path, never by walking the graph), so an entry in two places of the region is listed at
+  each, as the overview draws it. The cursor is the path from `t` with the position reached at each level. A page
+  reads at most `WALK_STEPS_PER_PAGE` (12,000) keys; one that reaches it ends there, with a cursor that goes on.
+- **Cards** are the overview's, with no region; a card's key is its entity with words, else its path from the
+  leading chip's target. Every page held is read again in one snapshot when the view is read, so a cursor reads the
+  same page while nothing changed. A cursor the store can't use for this search (not its form, or a word weights
+  list of other words) reads an empty last page rather than failing the read.
+
+**Finding a target** (`worldbuildingFind`) is the same search over keys (so names) and titles only, the first page of
+its hits as labels; no words find nothing.
+
 ## Existing stores
 
 Entries written before the tree aren't in it, and a later `entryIndex` write or deletion of one is refused (the tree
@@ -510,12 +563,5 @@ a run counts every key again from nothing. It prints only totals. Running it twi
 ### Other
 
 - Whether the "+N more" tile is a stop in reading order (it is now).
-- The search box (the view's filter): see below.
-
-### The filter (not built)
-
-A filter has no kept counts (`worldbuilding.md`, Cells), so a filtered overview has no ranks: it is read by cursor as
-the reader scrolls, without totals. It needs: the filter compiled to a per-entry check over the book's search index
-(the library's `DocCheck` shape); the top level walked in the world's order from a cursor, keeping the entries that
-pass; a region's entries walked from `RELATIONS_BY_TARGET` the same way, each region read up to a cap ("1,000+");
-and what a filtered region shows when entries in it match but its own entry doesn't (the owner's).
+- What a filtered region shows when entries in it match but its own entry doesn't (the owner's). Until decided, the
+  results are plain cards in the search's order, each with its relations line (The filter).

@@ -9,6 +9,8 @@ export const ENTRY_VIEW = 'worldbuilding.entry';
 export const WORLDS_VIEW = 'worldbuilding.worlds';
 export const WORLD_VIEW = 'worldbuilding.world';
 export const POINTING_AT_VIEW = 'worldbuilding.pointingAt';
+export const RESULTS_VIEW = 'worldbuilding.results';
+export const FOUND_VIEW = 'worldbuilding.found';
 
 export const READS_PER_REQUEST = 24_000;
 // A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
@@ -17,6 +19,7 @@ export const READS_PER_CARD = 10;
 export const READS_PER_LOOP_CHECK_VISIT = 2;
 export const MAX_CARDS_PER_READ = READS_PER_REQUEST / READS_PER_CARD;
 export const LOOP_CHECK_VISITS_PER_WRITE = READS_PER_REQUEST / READS_PER_LOOP_CHECK_VISIT;
+export const FOUND_PER_QUERY = 20;
 
 export type Named = { thing: string; text: string; shownAs: 'name' | 'title' | 'opening' };
 
@@ -194,6 +197,20 @@ export type WorldView = World | { id: null };
 
 export type ExportedWorld = { fileName: string; json: string };
 
+export type Depth = 'directly' | 'anyDepth';
+
+export type Chip = { kind: string; target: string; depth: Depth };
+
+export type ShownChip = { kind: string; kindName: string | null; target: Named; targetDeleted: boolean; depth: Depth };
+
+export type ResultsPage = { cursor: string | null; entries: EntryCell[]; next: string | null };
+
+export type ResultsView =
+    | { book: string; filter: { query: string; chips: ShownChip[] }; pages: ResultsPage[] }
+    | { book: null };
+
+export type FoundView = { book: string; query: string; entries: Named[]; next: string | null } | { book: null };
+
 export function cardsPerTopLevelEntry(levels: RegionLayout[]): number {
     let cards = 1;
     let atLevel = 1;
@@ -255,6 +272,8 @@ const pointingAtShown = v.pipe(
 );
 const keyText = v.pipe(v.string(), v.trim(), v.minLength(1));
 const keyAs = v.picklist(['name', 'trigger']);
+const cursor = v.pipe(v.string(), v.minLength(1));
+const chip = v.object({ kind: kindId, target: entityId, depth: v.picklist(['directly', 'anyDepth']) });
 
 export const actions = {
     'worldbuilding.openOverview': v.pipe(
@@ -306,7 +325,7 @@ export const actions = {
         v.object({ kind: kindId, from: pointingAtOccurrenceKey, to: v.picklist(['parent', 'firstChild']) }),
     ]),
     'worldbuilding.closeEntry': v.object({}),
-    'worldbuilding.showMoreMentions': v.object({ cursor: v.pipe(v.string(), v.minLength(1)) }),
+    'worldbuilding.showMoreMentions': v.object({ cursor }),
     'worldbuilding.setEntryText': v.object({ ...entryNamed, text: v.string() }),
     'worldbuilding.setEntryTitle': v.object({ ...entryNamed, title: v.string() }),
     'worldbuilding.addKey': v.object({ ...entryNamed, key: keyText, as: keyAs }),
@@ -338,4 +357,14 @@ export const actions = {
     'worldbuilding.importWorld': v.object(opensWorld),
     'worldbuilding.exportWorld': v.object({ book: entityId }),
     'worldbuilding.setUsedInEveryChat': v.object({ book: entityId, used: v.boolean() }),
+    'worldbuilding.setFilter': v.object({
+        book: entityId,
+        query: v.string(),
+        chips: v.array(chip),
+        pageSize: v.pipe(positiveWholeNumber, v.maxValue(MAX_CARDS_PER_READ)),
+    }),
+    'worldbuilding.showResults': v.object({
+        cursors: v.pipe(v.array(v.nullable(cursor)), v.minLength(1), v.maxLength(MAX_CARDS_PER_READ)),
+    }),
+    'worldbuilding.findEntries': v.object({ book: entityId, query: v.string() }),
 } satisfies ActionSchemas;

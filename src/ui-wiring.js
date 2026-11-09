@@ -12,6 +12,7 @@ import { worldbuildingArea } from '@st/worldbuilding/server';
 import { References } from './world-info/references.js';
 import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
 import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
+import { worldbuildingSearchPorts } from './world-info/worldbuilding-search.js';
 import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
 import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
@@ -545,7 +546,7 @@ onUserStoreOpened(({ events, root, handle }) => {
     /** @type {import('@st/server-ui').User} */
     const user = /** @type {any} */ ({ handle, directories: { root } });
     events.on('worldbuildingJobStep', () => {
-        ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview', 'worldbuilding.pointingAt']).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
+        ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview', 'worldbuilding.results', 'worldbuilding.pointingAt']).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
     });
 });
 
@@ -570,6 +571,7 @@ const worldbuildingPorts = {
             }
         },
     }),
+    ...worldbuildingSearchPorts({ libOf }),
     async readLoopsLeftByJobs(user, book) {
         return (await libOf(user)).books.jobs.loopsLeft(BigInt(book));
     },

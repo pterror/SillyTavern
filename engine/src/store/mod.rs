@@ -28,6 +28,7 @@ pub mod stats;
 pub mod tags;
 pub mod token_cache;
 pub mod world_order_tree;
+pub mod world_search;
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
@@ -637,6 +638,26 @@ impl Store {
             }
             partial = Some(p);
         }
+    }
+
+    pub fn world_results(&self, read: &world_search::ResultsRead) -> StoreResult<chat_read::Js> {
+        let (found, tighten) =
+            self.derived(|v| world_search::read_results(v, &self.inner.search_stats, read))?;
+        self.inner.tighten(&tighten);
+        Ok(found)
+    }
+
+    pub fn world_find(
+        &self,
+        book: u64,
+        clauses: &[crate::search::query::Clause],
+        limit: usize,
+    ) -> StoreResult<chat_read::Js> {
+        let (found, tighten) = self.derived(|v| {
+            world_search::find_entries(v, &self.inner.search_stats, book, clauses, limit)
+        })?;
+        self.inner.tighten(&tighten);
+        Ok(found)
     }
 
     pub fn library_entities(&self, ids: &[u64]) -> StoreResult<Vec<Option<library_read::Entity>>> {
@@ -2004,3 +2025,5 @@ mod tags_tests;
 mod tests;
 #[cfg(test)]
 mod token_cache_tests;
+#[cfg(test)]
+mod world_search_tests;

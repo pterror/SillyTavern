@@ -490,7 +490,12 @@ fn stored_relation(
         .transpose()
 }
 
-fn strong_targets_in_use_of_kind(view: &View, source: u64, kind: u64) -> Result<Vec<u64>, StoreError> {
+fn targets_in_use_of_kind_where(
+    view: &View,
+    source: u64,
+    kind: u64,
+    keep: impl Fn(&StoredRelation) -> bool,
+) -> Result<Vec<u64>, StoreError> {
     let mut prefix = key::id(RELATIONS_OF_ENTRY, source);
     put_u64(&mut prefix, kind);
     let mut out = Vec::new();
@@ -499,11 +504,19 @@ fn strong_targets_in_use_of_kind(view: &View, source: u64, kind: u64) -> Result<
         let target = get_u64(&stored_key, &mut read_at)
             .ok_or_else(|| corrupt("a relation key doesn't decode"))?;
         let stored = stored_relation_of_value(&value)?;
-        if stored.state == RelationState::InUse && !stored.relation.weak {
+        if stored.state == RelationState::InUse && keep(&stored) {
             out.push(target);
         }
     }
     Ok(out)
+}
+
+fn strong_targets_in_use_of_kind(view: &View, source: u64, kind: u64) -> Result<Vec<u64>, StoreError> {
+    targets_in_use_of_kind_where(view, source, kind, |stored| !stored.relation.weak)
+}
+
+pub fn targets_in_use_of_kind(view: &View, source: u64, kind: u64) -> Result<Vec<u64>, StoreError> {
+    targets_in_use_of_kind_where(view, source, kind, |_| true)
 }
 
 pub fn position_in_use(

@@ -3039,6 +3039,51 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "worldbuildingResults" => {
+            use crate::store::world_search::{Chip, Depth, ResultsRead};
+            let book = req_integer(a, "book")?;
+            let mut chips = Vec::new();
+            for chip in a.get::<Vec<Object>>("chips")?.unwrap_or_default() {
+                let depth = match chip.get::<String>("depth")?.as_deref() {
+                    Some("directly") => Depth::Directly,
+                    Some("anyDepth") => Depth::AnyDepth,
+                    _ => return Err(invalid("a chip's depth is directly or anyDepth".into())),
+                };
+                chips.push(Chip {
+                    kind: req_integer(&chip, "kind")?,
+                    target: req_integer(&chip, "target")?,
+                    depth,
+                });
+            }
+            let mut pages = Vec::new();
+            for cursor in a
+                .get::<Vec<Unknown>>("pages")?
+                .ok_or_else(|| invalid("worldbuildingResults takes the pages' cursors".into()))?
+            {
+                pages.push(match cursor.get_type()? {
+                    ValueType::Null => None,
+                    _ => Some(
+                        String::from_utf8(string("cursor", cursor)?)
+                            .map_err(|_| invalid("a cursor is text".into()))?,
+                    ),
+                });
+            }
+            let read = ResultsRead {
+                book,
+                grouping_kind: opt_integer(a, "groupBy")?,
+                card_text_characters: req_integer(a, "cardTextCharacters")? as usize,
+                clauses: clauses_from_js(a, Scope::book(book))?,
+                chips,
+                pages,
+                limit: req_integer(a, "limit")? as usize,
+            };
+            Box::new(move |store| store.world_results(&read).map(JsTree))
+        }
+        "worldbuildingFind" => {
+            let (book, limit) = (req_integer(a, "book")?, req_integer(a, "limit")? as usize);
+            let clauses = clauses_from_js(a, Scope::book(book))?;
+            Box::new(move |store| store.world_find(book, &clauses, limit).map(JsTree))
+        }
         "worldbuildingRelationsKept" => {
             use crate::store::relations;
             let (book, entity) = (req_integer(a, "book")?, req_integer(a, "entity")?);

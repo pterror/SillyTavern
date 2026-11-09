@@ -2,6 +2,8 @@ import {
     actions,
     cardsPerTopLevelEntry,
     ENTRY_VIEW,
+    FOUND_PER_QUERY,
+    FOUND_VIEW,
     LAST_CHANGE_VIEW,
     LOOPS_LEFT_BY_JOBS_VIEW,
     MAX_CARDS_PER_READ,
@@ -10,10 +12,15 @@ import {
     READ_REFUSAL,
     readFitsTheBudget,
     RELATION_KINDS_VIEW,
+    RESULTS_VIEW,
     WORLD_VIEW,
     WORLDS_VIEW,
 } from './protocol.ts';
 import type {
+    Chip,
+    EntryCell,
+    FoundView,
+    ResultsView,
     EntryView,
     ExportedWorld,
     World,
@@ -96,6 +103,23 @@ export type EntryWriteRefusal = 'missing' | 'no entry' | { refused: string };
 
 export type NewWorld = { book: string } | { refused: string };
 
+export type ResultsQuery = {
+    book: string;
+    groupBy: string | null;
+    layout: OverviewLayout;
+    query: string;
+    chips: Chip[];
+    pageSize: number;
+    pages: (string | null)[];
+};
+
+export type ResultsRead = {
+    chips: { kindName: string | null; target: Named | null }[];
+    pages: { entries: EntryCell[]; next: string | null }[];
+};
+
+export type Found = { entries: Named[]; next: string | null };
+
 export type Ports = {
     readWorlds(user: User): Promise<World[]>;
     readWorld(user: User, book: string): Promise<World | null>;
@@ -115,6 +139,9 @@ export type Ports = {
         query: { book: string; entry: string; kind: string; layout: OverviewLayout } & OverviewStep,
     ): Promise<StepLanding | null>;
     readRelationKinds(user: User, book: string): Promise<RelationKind[] | null>;
+    labelEntries(user: User, book: string, entries: string[]): Promise<(Named | null)[]>;
+    readResults(user: User, query: ResultsQuery): Promise<ResultsRead>;
+    findEntries(user: User, query: { book: string; query: string; limit: number }): Promise<Found>;
     readLoopsLeftByJobs(user: User, book: string): Promise<UnreachedLoop[]>;
     createRelationKind(who: Who, book: string, name: string): Promise<string | null>;
     renameRelationKind(who: Who, book: string, kind: string, name: string): Promise<'ok' | 'missing' | 'no kind'>;
@@ -186,7 +213,13 @@ const NO_ENTRY: EntryView = { book: null };
 const NOTHING_POINTED_AT: PointingAtView = { book: null };
 
 // The views that show how many entries a world has; an action that adds or takes away an entry answers them all.
-const VIEWS_COUNTING_ENTRIES = [OVERVIEW_VIEW, WORLDS_VIEW, WORLD_VIEW];
+const VIEWS_COUNTING_ENTRIES = [OVERVIEW_VIEW, RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, WORLD_VIEW];
+
+const VIEWS_OF_CARDS = [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW];
+
+const NO_RESULTS: ResultsView = { book: null };
+
+const NOTHING_FOUND: FoundView = { book: null };
 
 const NO_WORLD: WorldView = { id: null };
 
@@ -198,6 +231,7 @@ const NO_SUCH_KIND = 'This world has no such relation kind.';
 const BEING_MERGED = 'That kind is being merged, or another kind is being merged into it.';
 const NO_SUCH_ENTRY = "That entry isn't in this world.";
 const NO_ENTRY_OPEN = 'No entry is open.';
+const NO_FILTER = 'Nothing is searched for.';
 
 export function rangeAround(rank: number, firstRank: number, endRank: number): { firstRank: number; endRank: number } {
     if (rank >= firstRank && rank < endRank) return { firstRank, endRank };
@@ -216,14 +250,36 @@ export type OpenEntry = {
     pointingAt: ShownPointingAt;
 };
 
+export type HeldChip = Chip & { label: Named };
+
+// `pages` are the store's cursors of the pages held; the page sees each as `<generation>.<cursor>`, so a cursor of an
+// earlier filter is never read under this one.
+export type ShownFilter = {
+    book: string;
+    query: string;
+    chips: HeldChip[];
+    pageSize: number;
+    generation: number;
+    pages: (string | null)[];
+};
+
 type SessionState = {
     overview: ShownOverview | null;
     kindsOfBook: string | null;
     entry: OpenEntry | null;
     lastChange: LastChangeView;
+    filter: ShownFilter | null;
+    finding: { book: string; query: string } | null;
 };
 
-const NO_SESSION_STATE: SessionState = { overview: null, kindsOfBook: null, entry: null, lastChange: NOTHING_CHANGED };
+const NO_SESSION_STATE: SessionState = {
+    overview: null,
+    kindsOfBook: null,
+    entry: null,
+    lastChange: NOTHING_CHANGED,
+    filter: null,
+    finding: null,
+};
 
 const opened = (book: string, entry: string, { endRank, layout }: PointingAtShown): OpenEntry => ({
     book,
@@ -248,6 +304,7 @@ const heldRange = (shown: ShownPointingAt, kind: string): PointingAtRange =>
 
 export function worldbuildingArea(ports: Ports) {
     const bySession = new Map<string, SessionState>();
+    let filtersSet = 0;
 
     const stateOf = (session: string) => bySession.get(session) ?? NO_SESSION_STATE;
 
@@ -285,13 +342,13 @@ export function worldbuildingArea(ports: Ports) {
                 unreachedLoops: answer.unreachedLoops,
             },
         });
-        return { changed: [OVERVIEW_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
+        return { changed: [...VIEWS_OF_CARDS, LAST_CHANGE_VIEW] };
     };
 
     const refusedWrite = (refusal: EntryWriteRefusal): ActionResult => {
         if (refusal === 'missing') return { refused: WORLD_GONE };
         if (refusal === 'no entry') {
-            return { refused: NO_SUCH_ENTRY, changed: [OVERVIEW_VIEW, ENTRY_VIEW, POINTING_AT_VIEW] };
+            return { refused: NO_SUCH_ENTRY, changed: [...VIEWS_OF_CARDS, FOUND_VIEW] };
         }
         return { refused: refusal.refused };
     };
@@ -303,7 +360,7 @@ export function worldbuildingArea(ports: Ports) {
         edit: EntryEdit,
     ): Promise<ActionResult> => {
         const done = await ports.editEntry(who(context), book, entry, edit);
-        return done === 'ok' ? { changed: [OVERVIEW_VIEW, ENTRY_VIEW, POINTING_AT_VIEW] } : refusedWrite(done);
+        return done === 'ok' ? { changed: [...VIEWS_OF_CARDS, FOUND_VIEW] } : refusedWrite(done);
     };
 
     const readEntryView = async (context: ViewContext): Promise<EntryView> => {
@@ -334,6 +391,61 @@ export function worldbuildingArea(ports: Ports) {
         return { book, entry, sections: sections ?? [] };
     };
 
+    const readResultsView = async (context: ViewContext): Promise<ResultsView> => {
+        const { filter: shown, overview } = stateOf(context.session);
+        if (!shown || overview?.book !== shown.book) return NO_RESULTS;
+        const read = await ports.readResults(context.user, {
+            book: shown.book,
+            groupBy: overview.groupBy,
+            layout: overview.layout,
+            query: shown.query,
+            chips: shown.chips.map(({ kind, target, depth }) => ({ kind, target, depth })),
+            pageSize: shown.pageSize,
+            pages: shown.pages,
+        });
+        const chips = shown.chips.map((chip, at) => {
+            const target = read.chips[at]?.target ?? null;
+            return {
+                ...chip,
+                kindName: read.chips[at]?.kindName ?? null,
+                label: target ?? chip.label,
+                targetDeleted: !target,
+            };
+        });
+        const shownCursor = (cursor: string | null) => (cursor === null ? null : `${shown.generation}.${cursor}`);
+        const pages = shown.pages.map((cursor, at) => ({
+            cursor: shownCursor(cursor),
+            entries: read.pages[at]?.entries ?? [],
+            next: shownCursor(read.pages[at]?.next ?? null),
+        }));
+        const current = stateOf(context.session);
+        if (current.filter === shown) {
+            const held = chips.map(({ kind, target, depth, label }) => ({ kind, target, depth, label }));
+            bySession.set(context.session, { ...current, filter: { ...shown, chips: held } });
+        }
+        return {
+            book: shown.book,
+            filter: {
+                query: shown.query,
+                chips: chips.map(({ kind, kindName, label, targetDeleted, depth }) => ({
+                    kind,
+                    kindName,
+                    target: label,
+                    targetDeleted,
+                    depth,
+                })),
+            },
+            pages,
+        };
+    };
+
+    const readFoundView = async (context: ViewContext): Promise<FoundView> => {
+        const finding = stateOf(context.session).finding;
+        if (!finding) return NOTHING_FOUND;
+        const found = await ports.findEntries(context.user, { ...finding, limit: FOUND_PER_QUERY });
+        return { ...finding, ...found };
+    };
+
     const withOpenEntry =
         <P>(run: (context: ActionContext, shown: OpenEntry, payload: P) => Promise<ActionResult>) =>
         async (context: ActionContext, payload: P): Promise<ActionResult> => {
@@ -348,10 +460,17 @@ export function worldbuildingArea(ports: Ports) {
     ): Promise<{ changed: string[]; opensViews: string[] }> => {
         const opened = await ports.openWorld(who(context), book);
         if (opened === null) {
-            remember(context.session, { overview: null, kindsOfBook: null, entry: null, lastChange: NOTHING_CHANGED });
+            remember(context.session, {
+                overview: null,
+                kindsOfBook: null,
+                entry: null,
+                lastChange: NOTHING_CHANGED,
+                filter: null,
+            });
             return {
                 changed: [
                     OVERVIEW_VIEW,
+                    RESULTS_VIEW,
                     RELATION_KINDS_VIEW,
                     LAST_CHANGE_VIEW,
                     LOOPS_LEFT_BY_JOBS_VIEW,
@@ -378,8 +497,15 @@ export function worldbuildingArea(ports: Ports) {
                 };
             }
         }
-        remember(context.session, { overview, kindsOfBook: opened, lastChange: NOTHING_CHANGED });
-        return { changed: [], opensViews: VIEWS_OF_A_WORLD };
+        const filter = stateOf(context.session).filter;
+        const filterStays = filter?.book === opened;
+        remember(context.session, {
+            overview,
+            kindsOfBook: opened,
+            lastChange: NOTHING_CHANGED,
+            ...(filterStays ? {} : { filter: null }),
+        });
+        return { changed: filter && !filterStays ? [RESULTS_VIEW] : [], opensViews: VIEWS_OF_A_WORLD };
     };
 
     const newWorldShown = async (
@@ -395,12 +521,15 @@ export function worldbuildingArea(ports: Ports) {
 
     const forgetWorld = (book: string) => {
         for (const [session, state] of bySession) {
-            if (state.overview?.book !== book && state.kindsOfBook !== book && state.entry?.book !== book) continue;
+            const shows = [state.overview?.book, state.kindsOfBook, state.entry?.book, state.finding?.book];
+            if (!shows.includes(book)) continue;
             bySession.set(session, {
                 ...state,
                 overview: state.overview?.book === book ? null : state.overview,
                 kindsOfBook: state.kindsOfBook === book ? null : state.kindsOfBook,
                 entry: state.entry?.book === book ? null : state.entry,
+                filter: state.overview?.book === book ? null : state.filter,
+                finding: state.finding?.book === book ? null : state.finding,
             });
         }
     };
@@ -428,6 +557,8 @@ export function worldbuildingArea(ports: Ports) {
             },
             [ENTRY_VIEW]: readEntryView,
             [POINTING_AT_VIEW]: readPointingAtView,
+            [RESULTS_VIEW]: readResultsView,
+            [FOUND_VIEW]: readFoundView,
             [LAST_CHANGE_VIEW]: async (context: ViewContext): Promise<LastChangeView> =>
                 stateOf(context.session).lastChange,
             [LOOPS_LEFT_BY_JOBS_VIEW]: async (context: ViewContext): Promise<LoopsLeftByJobsView> => {
@@ -478,7 +609,7 @@ export function worldbuildingArea(ports: Ports) {
                 const done = await ports.renameRelationKind(who(context), book, kind, name);
                 if (done === 'missing') return { refused: WORLD_GONE };
                 if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
-                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, POINTING_AT_VIEW] };
+                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW, POINTING_AT_VIEW] };
             },
             'worldbuilding.deleteRelationKind': async (context, { book, kind }) => {
                 const done = await ports.deleteRelationKind(who(context), book, kind);
@@ -494,7 +625,7 @@ export function worldbuildingArea(ports: Ports) {
                 if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
                 if (done === 'same kind') return { refused: 'A kind is merged into another kind.' };
                 if (done === 'being merged') return { refused: BEING_MERGED };
-                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, POINTING_AT_VIEW] };
+                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW, POINTING_AT_VIEW] };
             },
             'worldbuilding.addRelation': (context, relation) =>
                 relationChanged(context, { change: 'add', ...relation }),
@@ -632,6 +763,8 @@ export function worldbuildingArea(ports: Ports) {
                 return {
                     changed: [
                         OVERVIEW_VIEW,
+                        RESULTS_VIEW,
+                        FOUND_VIEW,
                         RELATION_KINDS_VIEW,
                         LOOPS_LEFT_BY_JOBS_VIEW,
                         ENTRY_VIEW,
@@ -654,6 +787,46 @@ export function worldbuildingArea(ports: Ports) {
                 const done = await ports.setUsedInEveryChat(who(context), book, used);
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 return { changed: [WORLDS_VIEW, WORLD_VIEW] };
+            },
+            'worldbuilding.setFilter': withOverview(async (context, overview, { book, query, chips, pageSize }) => {
+                if (overview.book !== book) return { refused: "That world isn't shown." };
+                if (query.trim() === '' && chips.length === 0) {
+                    remember(context.session, { filter: null });
+                    return { changed: [RESULTS_VIEW] };
+                }
+                const labels = await ports.labelEntries(
+                    context.user,
+                    book,
+                    chips.map((chip) => chip.target),
+                );
+                const held: HeldChip[] = [];
+                for (const [at, chip] of chips.entries()) {
+                    const label = labels[at];
+                    if (!label) return { refused: NO_SUCH_ENTRY };
+                    held.push({ ...chip, label });
+                }
+                const closes = stateOf(context.session).entry !== null;
+                remember(context.session, {
+                    filter: { book, query, chips: held, pageSize, generation: ++filtersSet, pages: [null] },
+                    entry: null,
+                });
+                return { changed: closes ? [ENTRY_VIEW, POINTING_AT_VIEW] : [], opensViews: [RESULTS_VIEW] };
+            }),
+            'worldbuilding.showResults': async (context, { cursors }) => {
+                const shown = stateOf(context.session).filter;
+                if (!shown) return { refused: NO_FILTER, changed: [RESULTS_VIEW] };
+                if (cursors.length * shown.pageSize > MAX_CARDS_PER_READ) return { refused: READ_REFUSAL };
+                const ours = `${shown.generation}.`;
+                if (cursors.some((cursor) => cursor !== null && !cursor.startsWith(ours))) {
+                    return { refused: 'Those results are no longer shown.', changed: [RESULTS_VIEW] };
+                }
+                const pages = cursors.map((cursor) => (cursor === null ? null : cursor.slice(ours.length)));
+                remember(context.session, { filter: { ...shown, pages } });
+                return { changed: [RESULTS_VIEW] };
+            },
+            'worldbuilding.findEntries': async (context, { book, query }) => {
+                remember(context.session, { finding: { book, query } });
+                return { changed: [], opensViews: [FOUND_VIEW] };
             },
         },
     });
