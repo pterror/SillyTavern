@@ -34,6 +34,7 @@ import {
     world_info,
     getWorldInfoSettings,
     setWorldInfoSettings,
+    bindWorldInfoSettings,
     world_names,
     openEmbeddedLoreEditor,
     checkEmbeddedWorld,
@@ -1356,6 +1357,7 @@ async function firstLoadInit() {
     bindChatCompletionSettings(newUi().settings);
     bindTextGenSettings(newUi().settings);
     bindSharedSettings(newUi().settings);
+    bindWorldInfoSettings(newUi().settings);
     await initTokenizers();
     initAuthorsNote();
     await initPersonas();

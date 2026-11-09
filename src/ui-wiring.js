@@ -16,7 +16,7 @@ import { worldbuildingSearchPorts } from './world-info/worldbuilding-search.js';
 import { worldbuildingBulkPorts } from './world-info/worldbuilding-bulk.js';
 import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
-import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
+import { WORLD_INFO_GLOBAL_DEFAULTS, worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
 import { readUserSettings } from './settings-reads.js';
 
 import { onUserStoreOpened, userStore } from './user-stores.js';
@@ -281,7 +281,7 @@ const settingsPorts = {
         return key.type === TYPE.group ? { group: key.key } : { avatar: key.key };
     },
     models: (user, source) => modelListOf(user.directories, source),
-    defaults: () => ({ oai_settings: chatCompletionDefaults }),
+    defaults: () => ({ oai_settings: chatCompletionDefaults, world_info_settings: WORLD_INFO_GLOBAL_DEFAULTS }),
 };
 
 export const ALTERNATIVES_VIEWS = ['alternatives.list', 'alternatives.counts', 'alternatives.matches'];

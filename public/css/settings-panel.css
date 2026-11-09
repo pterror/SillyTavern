@@ -78,3 +78,57 @@
     margin-left: 3px;
     opacity: 0.7;
 }
+
+.wi-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.wi-settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wi-settings-title {
+    margin: 0;
+}
+
+.wi-settings-label {
+    display: grid;
+    grid-template-columns: 7em minmax(0, 1fr);
+    gap: 8px;
+    align-items: start;
+    cursor: pointer;
+}
+
+.wi-settings-control {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.wi-settings-number {
+    width: 7em;
+    margin: 0;
+}
+
+.wi-settings-control:has(.wi-settings-select) {
+    grid-column: 1 / -1;
+    order: 1;
+}
+
+.wi-settings-select {
+    width: 100%;
+    margin: 0;
+}
+
+.wi-settings-words {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.wi-settings-tip {
+    opacity: 0.7;
+}

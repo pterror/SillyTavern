@@ -53,6 +53,7 @@ export function settingsCompat(client: Client) {
                 createEffect(on(key, () => run(), { defer: true }));
             });
         },
+        value: (path: string): unknown => view()?.values[path],
         setValue: async (path: string, value: unknown) => (await client.send('settings.set', { path, value })).ok,
         fitContext: async (size: number) => (await client.send('settings.fitContext', { size })).ok,
         mirror(path: string, apply: (value: unknown) => void) {

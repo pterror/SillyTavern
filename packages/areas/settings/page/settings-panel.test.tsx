@@ -13,6 +13,7 @@ import { CommonLengths } from './common.tsx';
 import type { Support } from './cc.tsx';
 import { isShown } from './fields.tsx';
 import { settingsCompat } from './compat.ts';
+import { WorldInfoSettings } from './world-info.tsx';
 
 function viewOf(over: Partial<SettingsView> = {}): SettingsView {
     return {
@@ -284,4 +285,64 @@ test("the shared lengths show for the text APIs, each API's streaming under the 
     expect(host.querySelector('#streaming_novel')).not.toBeNull();
     setCurrent(view('openai'));
     expect(host.querySelector('#amount_gen')).toBeNull();
+});
+
+const worldInfo = (values: Record<string, unknown> = {}) =>
+    viewOf({
+        values: {
+            'world_info_settings.world_info_depth': 2,
+            'world_info_settings.world_info_budget': 25,
+            'world_info_settings.world_info_min_activations': 0,
+            'world_info_settings.world_info_max_recursion_steps': 3,
+            'world_info_settings.world_info_character_strategy': 1,
+            'world_info_settings.world_info_recursive': true,
+            ...values,
+        },
+    });
+
+test('how worlds are used in replies: every World Info field once, with its words, its value and an edit each', async () => {
+    const { host, sent, setCurrent } = mount(worldInfo(), () => <WorldInfoSettings />);
+    const drawn = [...host.querySelectorAll('[data-field]')].map((block) => block.getAttribute('data-field') ?? '');
+    expect(drawn.toSorted((one, other) => one.localeCompare(other))).toEqual(
+        FIELDS.filter((f) => f.family === 'worldInfo')
+            .map((f) => f.id)
+            .toSorted((one, other) => one.localeCompare(other)),
+    );
+    const depth = host.querySelector<HTMLInputElement>('#wi_scan_depth');
+    expect(depth?.value).toBe('2');
+    expect(depth?.closest('label')?.textContent).toContain('How far back to look for keys (messages)');
+    expect(host.querySelector<HTMLSelectElement>('#wi_character_strategy')?.value).toBe('1');
+    expect(host.querySelector<HTMLInputElement>('#wi_recursive')?.checked).toBe(true);
+
+    const least = host.querySelector<HTMLInputElement>('#wi_min_activations');
+    if (!least || !depth) throw new Error('no control');
+    least.value = '4';
+    least.dispatchEvent(new Event('change', { bubbles: true }));
+    const strategy = host.querySelector<HTMLSelectElement>('#wi_character_strategy');
+    if (!strategy) throw new Error('no strategy');
+    strategy.value = '2';
+    strategy.dispatchEvent(new Event('change', { bubbles: true }));
+    host.querySelector<HTMLInputElement>('#wi_overflow_alert')?.click();
+    await settle();
+    expect(sent).toEqual([
+        { type: 'settings.set', payload: { path: 'world_info_settings.world_info_min_activations', value: 4 } },
+        { type: 'settings.set', payload: { path: 'world_info_settings.world_info_character_strategy', value: 2 } },
+        { type: 'settings.set', payload: { path: 'world_info_settings.world_info_overflow_alert', value: true } },
+    ]);
+
+    setCurrent(
+        worldInfo({
+            'world_info_settings.world_info_min_activations': 4,
+            'world_info_settings.world_info_max_recursion_steps': 0,
+        }),
+    );
+    expect(host.querySelector<HTMLInputElement>('#wi_max_recursion_steps')?.value).toBe('0');
+});
+
+test("the old page reads a setting's value from the view", () => {
+    const { client, setCurrent } = stand(worldInfo());
+    const settings = settingsCompat(client);
+    expect(settings.value('world_info_settings.world_info_overflow_alert')).toBeUndefined();
+    setCurrent(worldInfo({ 'world_info_settings.world_info_overflow_alert': true }));
+    expect(settings.value('world_info_settings.world_info_overflow_alert')).toBe(true);
 });

@@ -58,7 +58,10 @@ function world() {
         },
         ownerOf: async (_user, chat) => ({ avatar: `${chat.tree}.png` }),
         models: (_user, source) => models[source] ?? [],
-        defaults: () => ({ oai_settings: { temp_openai: 1, wi_format: '{0}' } }),
+        defaults: () => ({
+            oai_settings: { temp_openai: 1, wi_format: '{0}' },
+            world_info_settings: { world_info_depth: 2, world_info_min_activations: 0 },
+        }),
     };
     const area = settingsArea(ports);
     const context = (session = 's1', chat: { tree: string } | null = { tree: 'cara' }): ActionContext => ({
@@ -253,4 +256,50 @@ test("fitting the context to a model's sets it, unlocking past the locked limit,
     expect(w.batches.at(-1)).toBe(2);
     expect(w.levels.user['power_user.max_context_unlocked']).toBe(true);
     expect(await w.act('settings.fitContext', { size: 10_000_000 })).toMatchObject({ refused: expect.any(String) });
+});
+
+const DEPTH = 'world_info_settings.world_info_depth';
+const LEAST = 'world_info_settings.world_info_min_activations';
+const ROUNDS = 'world_info_settings.world_info_max_recursion_steps';
+
+test("World Info's activation settings are the view's, their defaults where nothing sets them", async () => {
+    const w = world();
+    w.levels.user[ROUNDS] = 2;
+    const view = await w.view();
+    expect(view.values[DEPTH]).toBe(2);
+    expect(view.values[ROUNDS]).toBe(2);
+    expect(view.sources[ROUNDS]).toBe('user');
+});
+
+test('a World Info count is a whole number in its range', async () => {
+    const w = world();
+    for (const [path, value] of [
+        [DEPTH, 1001],
+        [DEPTH, -1],
+        [DEPTH, 2.5],
+        ['world_info_settings.world_info_budget', 0],
+        ['world_info_settings.world_info_budget', 101],
+        [ROUNDS, 11],
+        ['world_info_settings.world_info_character_strategy', 3],
+        ['world_info_settings.world_info_recursive', 1],
+    ] as const)
+        expect(await w.act('settings.set', { path, value }), `${path} ${value}`).toMatchObject({
+            refused: expect.any(String),
+        });
+    expect(w.writes).toEqual([]);
+    await w.act('settings.set', { path: DEPTH, value: 1000 });
+    expect(w.writes.at(-1)).toMatchObject({ path: DEPTH, value: 1000 });
+});
+
+test('looking further back and rounds of entries exclude each other: setting one turns the other off at once', async () => {
+    const w = world();
+    w.levels.user[ROUNDS] = 3;
+    await w.act('settings.set', { path: LEAST, value: 4 });
+    expect(w.batches).toEqual([2]);
+    expect((await w.view()).values).toMatchObject({ [LEAST]: 4, [ROUNDS]: 0 });
+    await w.act('settings.set', { path: ROUNDS, value: 2 });
+    expect((await w.view()).values).toMatchObject({ [LEAST]: 0, [ROUNDS]: 2 });
+    await w.act('settings.set', { path: ROUNDS, value: 0 });
+    await w.act('settings.set', { path: LEAST, value: 0 });
+    expect(w.batches).toEqual([2, 2, 1, 1]);
 });

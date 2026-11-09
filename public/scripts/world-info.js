@@ -64,7 +64,7 @@ let world_info_min_activations_depth_max = WORLD_INFO_GLOBAL_DEFAULTS.world_info
 let world_info_budget = WORLD_INFO_GLOBAL_DEFAULTS.world_info_budget;
 let world_info_include_names = WORLD_INFO_GLOBAL_DEFAULTS.world_info_include_names;
 let world_info_recursive = WORLD_INFO_GLOBAL_DEFAULTS.world_info_recursive;
-export let world_info_overflow_alert = WORLD_INFO_GLOBAL_DEFAULTS.world_info_overflow_alert;
+let world_info_overflow_alert = WORLD_INFO_GLOBAL_DEFAULTS.world_info_overflow_alert;
 let world_info_case_sensitive = WORLD_INFO_GLOBAL_DEFAULTS.world_info_case_sensitive;
 let world_info_match_whole_words = WORLD_INFO_GLOBAL_DEFAULTS.world_info_match_whole_words;
 let world_info_use_group_scoring = WORLD_INFO_GLOBAL_DEFAULTS.world_info_use_group_scoring;
@@ -696,7 +696,41 @@ async function fetchBookVersion(name) {
     return versionOf(await response.json());
 }
 
-export function setWorldInfoSettings(settings, data) {
+const GLOBAL_PATHS = Object.keys(WORLD_INFO_GLOBAL_DEFAULTS).map(key => `world_info_settings.${key}`);
+
+/** @type {import('/ui/entry.js').NewUi['settings'] | null} */
+let globalSettings = null;
+
+/**
+ * The settings area holds World Info's activation settings; the drawer shows its values and edits through it.
+ * @param {import('/ui/entry.js').NewUi['settings']} settings
+ */
+export function bindWorldInfoSettings(settings) {
+    globalSettings = settings;
+    const shown = () => Object.fromEntries(GLOBAL_PATHS.map(path => [path.slice('world_info_settings.'.length), settings.value(path)]));
+    takeGlobals(shown());
+    settings.watch(GLOBAL_PATHS, () => {
+        takeGlobals(shown());
+        eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
+    });
+}
+
+/**
+ * @param {string} key
+ * @param {unknown} value
+ */
+function setGlobal(key, value) {
+    if (!globalSettings) return;
+    void globalSettings.setValue(`world_info_settings.${key}`, value).then(ok => {
+        if (!ok) takeGlobals(getWorldInfoSettings());
+    });
+}
+
+/**
+ * Takes World Info's activation settings and shows them in the drawer.
+ * @param {Record<string, unknown>} settings
+ */
+function takeGlobals(settings) {
     if (settings.world_info_depth !== undefined)
         world_info_depth = Number(settings.world_info_depth);
     if (settings.world_info_min_activations !== undefined)
@@ -733,19 +767,6 @@ export function setWorldInfoSettings(settings, data) {
         world_info_use_group_scoring = false;
     }
 
-    // Reset selected world from old string and delete old keys
-    // TODO: Remove next release
-    const existingWorldInfo = settings.world_info;
-    if (typeof existingWorldInfo === 'string') {
-        delete settings.world_info;
-        selected_world_info = [existingWorldInfo];
-    } else if (Array.isArray(existingWorldInfo)) {
-        delete settings.world_info;
-        selected_world_info = existingWorldInfo;
-    }
-
-    world_info = settings.world_info ?? {};
-
     $('#world_info_depth_counter').val(world_info_depth);
     $('#world_info_depth').val(world_info_depth);
 
@@ -773,6 +794,23 @@ export function setWorldInfoSettings(settings, data) {
 
     $('#world_info_max_recursion_steps').val(world_info_max_recursion_steps);
     $('#world_info_max_recursion_steps_counter').val(world_info_max_recursion_steps);
+}
+
+export function setWorldInfoSettings(settings, data) {
+    if (!globalSettings) takeGlobals(settings);
+
+    // Reset selected world from old string and delete old keys
+    // TODO: Remove next release
+    const existingWorldInfo = settings.world_info;
+    if (typeof existingWorldInfo === 'string') {
+        delete settings.world_info;
+        selected_world_info = [existingWorldInfo];
+    } else if (Array.isArray(existingWorldInfo)) {
+        delete settings.world_info;
+        selected_world_info = existingWorldInfo;
+    }
+
+    world_info = settings.world_info ?? {};
 
     world_names = data.world_names?.length ? data.world_names : [];
 
@@ -6421,93 +6459,36 @@ export function initWorldInfo() {
     $('#world_editor_select').on('change', () => selectEditorBook());
     $('#world_editor_select').trigger('change');
 
-    const saveSettings = () => {
-        saveSettingsDebounced('world_info_settings');
-        eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
+    const numbers = {
+        world_info_depth: '#world_info_depth',
+        world_info_min_activations: '#world_info_min_activations',
+        world_info_min_activations_depth_max: '#world_info_min_activations_depth_max',
+        world_info_budget: '#world_info_budget',
+        world_info_budget_cap: '#world_info_budget_cap',
+        world_info_max_recursion_steps: '#world_info_max_recursion_steps',
     };
-
-    $('#world_info_depth').on('input', function () {
-        world_info_depth = Number($(this).val());
-        $('#world_info_depth_counter').val($(this).val());
-        saveSettings();
-    });
-
-    $('#world_info_min_activations').on('input', function () {
-        world_info_min_activations = Number($(this).val());
-        $('#world_info_min_activations_counter').val(world_info_min_activations);
-
-        if (world_info_min_activations !== 0 && world_info_max_recursion_steps !== 0) {
-            $('#world_info_max_recursion_steps').val(0).trigger('input');
-            flashHighlight($('#world_info_max_recursion_steps').parent()); // flash the other control to show it has changed
-            console.info('[WI] Max recursion steps set to 0, as min activations is set to', world_info_min_activations);
-        } else {
-            saveSettings();
-        }
-    });
-
-    $('#world_info_min_activations_depth_max').on('input', function () {
-        world_info_min_activations_depth_max = Number($(this).val());
-        $('#world_info_min_activations_depth_max_counter').val($(this).val());
-        saveSettings();
-    });
-
-    $('#world_info_budget').on('input', function () {
-        world_info_budget = Number($(this).val());
-        $('#world_info_budget_counter').val($(this).val());
-        saveSettings();
-    });
-
-    $('#world_info_include_names').on('input', function () {
-        world_info_include_names = !!$(this).prop('checked');
-        saveSettings();
-    });
-
-    $('#world_info_recursive').on('input', function () {
-        world_info_recursive = !!$(this).prop('checked');
-        saveSettings();
-    });
-
-    $('#world_info_case_sensitive').on('input', function () {
-        world_info_case_sensitive = !!$(this).prop('checked');
-        saveSettings();
-    });
-
-    $('#world_info_match_whole_words').on('input', function () {
-        world_info_match_whole_words = !!$(this).prop('checked');
-        saveSettings();
-    });
-
+    for (const [key, control] of Object.entries(numbers)) {
+        const send = debounce((/** @type {number} */ value) => setGlobal(key, value), debounce_timeout.short);
+        $(control).on('input', function () {
+            $(`${control}_counter`).val($(this).val());
+            send(Number($(this).val()));
+        });
+    }
+    const checks = {
+        world_info_include_names: '#world_info_include_names',
+        world_info_recursive: '#world_info_recursive',
+        world_info_case_sensitive: '#world_info_case_sensitive',
+        world_info_match_whole_words: '#world_info_match_whole_words',
+        world_info_overflow_alert: '#world_info_overflow_alert',
+        world_info_use_group_scoring: '#world_info_use_group_scoring',
+    };
+    for (const [key, control] of Object.entries(checks)) {
+        $(control).on('change', function () {
+            setGlobal(key, !!$(this).prop('checked'));
+        });
+    }
     $('#world_info_character_strategy').on('change', function () {
-        world_info_character_strategy = Number($(this).val());
-        saveSettings();
-    });
-
-    $('#world_info_overflow_alert').on('change', function () {
-        world_info_overflow_alert = !!$(this).prop('checked');
-        saveSettingsDebounced('world_info_settings');
-    });
-
-    $('#world_info_use_group_scoring').on('change', function () {
-        world_info_use_group_scoring = !!$(this).prop('checked');
-        saveSettingsDebounced('world_info_settings');
-    });
-
-    $('#world_info_budget_cap').on('input', function () {
-        world_info_budget_cap = Number($(this).val());
-        $('#world_info_budget_cap_counter').val(world_info_budget_cap);
-        saveSettings();
-    });
-
-    $('#world_info_max_recursion_steps').on('input', function () {
-        world_info_max_recursion_steps = Number($(this).val());
-        $('#world_info_max_recursion_steps_counter').val(world_info_max_recursion_steps);
-        if (world_info_max_recursion_steps !== 0 && world_info_min_activations !== 0) {
-            $('#world_info_min_activations').val(0).trigger('input');
-            flashHighlight($('#world_info_min_activations').parent()); // flash the other control to show it has changed
-            console.info('[WI] Min activations set to 0, as max recursion steps is set to', world_info_max_recursion_steps);
-        } else {
-            saveSettings();
-        }
+        setGlobal('world_info_character_strategy', Number($(this).val()));
     });
 
     $('#world_button').on('click', async function (event) {

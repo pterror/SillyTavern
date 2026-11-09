@@ -34,3 +34,32 @@ test('a context-limited field follows the unlock; one with meaningful low values
     });
     expect(rangeOf(response, true)).toEqual(LIMITS.response.unlocked);
 });
+
+test("World Info's activation settings are fields where the server reads them, and what one excludes is a field", () => {
+    const worldInfo = FIELDS.filter((f) => f.family === 'worldInfo');
+    expect(worldInfo.map((f) => f.path).toSorted((one, other) => one.localeCompare(other))).toEqual(
+        [
+            'world_info_depth',
+            'world_info_min_activations',
+            'world_info_min_activations_depth_max',
+            'world_info_budget',
+            'world_info_include_names',
+            'world_info_recursive',
+            'world_info_overflow_alert',
+            'world_info_case_sensitive',
+            'world_info_match_whole_words',
+            'world_info_character_strategy',
+            'world_info_budget_cap',
+            'world_info_use_group_scoring',
+            'world_info_max_recursion_steps',
+        ]
+            .map((key) => `world_info_settings.${key}`)
+            .toSorted((one, other) => one.localeCompare(other)),
+    );
+    for (const field of FIELDS.filter((f) => f.excludes !== undefined)) {
+        const other = FIELDS.find((f) => f.path === field.excludes);
+        expect(other?.kind, field.id).toBe('number');
+        expect(other?.min, field.id).toBe(0);
+    }
+    for (const field of worldInfo) expect(field.tip?.length, field.id).toBeGreaterThan(0);
+});

@@ -213,7 +213,9 @@ export function settingsArea(ports: Ports) {
                     MINUS_ONE_BACKENDS.includes(textAt(shown.settings, 'textgenerationwebui_settings.type'))
                 )
                     return { refused: 'This backend has no mirostat mode 1.' };
-                await ports.write(context.user, owner, range, [[path, value]]);
+                const entries: [string, unknown][] = [[path, value]];
+                if (field.excludes !== undefined && value !== 0) entries.push([field.excludes, 0]);
+                await ports.write(context.user, owner, range, entries);
                 return changed;
             },
             'settings.unset': async (context, { path }) => {

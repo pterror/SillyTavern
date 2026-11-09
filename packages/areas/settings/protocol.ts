@@ -14,7 +14,10 @@ export type Field = {
     step?: number;
     options?: { value: string | number; label: string }[];
     inputs?: string[];
-    family: 'cc' | 'textgen' | 'common';
+    family: 'cc' | 'textgen' | 'common' | 'worldInfo';
+    whole?: true;
+    // The path of a number field this one turns off: set to anything but 0, this sets that one to 0 in the same write.
+    excludes?: string;
     group?: { id: string | null; label: string };
     sources?: string[];
     textgen?: { only: string[] } | { except: string[] };
@@ -96,7 +99,7 @@ export function zenOf(id: string): Zen {
 
 export type SamplerSelect = { manual: boolean; shown: readonly string[] };
 
-export const SERVER_FAMILIES: readonly Field['family'][] = ['cc', 'textgen', 'common'];
+export const SERVER_FAMILIES: readonly Field['family'][] = ['cc', 'textgen', 'common', 'worldInfo'];
 
 export const LIMITS = {
     context: { locked: { min: 512, max: 8192, step: 64 }, unlocked: { min: 512, max: 512 * 1024, step: 512 } },
@@ -1621,6 +1624,141 @@ export const FIELDS: readonly Field[] = [
         family: 'common',
         api: ['novel'],
     },
+    {
+        id: 'wi_scan_depth',
+        path: 'world_info_settings.world_info_depth',
+        kind: 'number',
+        label: 'How far back to look for keys (messages)',
+        tip: "The newest messages whose text is searched for entries' keys.",
+        min: 0,
+        max: 1000,
+        step: 1,
+        whole: true,
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_budget',
+        path: 'world_info_settings.world_info_budget',
+        kind: 'number',
+        label: 'Room for entries (% of the context)',
+        tip: 'Entries that would go past this share of the context are left out.',
+        min: 1,
+        max: 100,
+        step: 1,
+        whole: true,
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_budget_cap',
+        path: 'world_info_settings.world_info_budget_cap',
+        kind: 'number',
+        label: 'Room for entries at most (tokens)',
+        tip: 'A limit in tokens on top of the share; 0 for none.',
+        min: 0,
+        max: 65536,
+        step: 1,
+        whole: true,
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_min_activations',
+        path: 'world_info_settings.world_info_min_activations',
+        kind: 'number',
+        label: 'Look further back until this many entries come in',
+        tip: 'Older messages are searched until this many entries come in or there is no room left; 0 for off. Turns off rounds of entries bringing up entries.',
+        min: 0,
+        max: 100,
+        step: 1,
+        whole: true,
+        excludes: 'world_info_settings.world_info_max_recursion_steps',
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_min_activations_depth_max',
+        path: 'world_info_settings.world_info_min_activations_depth_max',
+        kind: 'number',
+        label: 'Looking further back stops at (messages)',
+        tip: '0 to read the whole chat if needed.',
+        min: 0,
+        max: 100,
+        step: 1,
+        whole: true,
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_max_recursion_steps',
+        path: 'world_info_settings.world_info_max_recursion_steps',
+        kind: 'number',
+        label: 'Rounds of entries bringing up entries, at most',
+        tip: '0 for no limit, 1 for none at all, 2 for one round, and so on. Turns off looking further back for more entries.',
+        min: 0,
+        max: 10,
+        step: 1,
+        whole: true,
+        excludes: 'world_info_settings.world_info_min_activations',
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_character_strategy',
+        path: 'world_info_settings.world_info_character_strategy',
+        kind: 'select',
+        label: "When there isn't room for every entry, keep first",
+        tip: 'Entries of the chat and of your persona always come first.',
+        options: [
+            { value: 0, label: 'Entries by their order, whatever their world' },
+            { value: 1, label: "The character's worlds" },
+            { value: 2, label: 'Worlds used in every chat' },
+        ],
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_include_names',
+        path: 'world_info_settings.world_info_include_names',
+        kind: 'checkbox',
+        label: "Search speakers' names too",
+        tip: "Each message is searched with its sender's name in front of it.",
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_recursive',
+        path: 'world_info_settings.world_info_recursive',
+        kind: 'checkbox',
+        label: 'Entries can bring up other entries',
+        tip: "The text of an entry that comes in is searched for other entries' keys.",
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_case_sensitive',
+        path: 'world_info_settings.world_info_case_sensitive',
+        kind: 'checkbox',
+        label: 'Keys match capital letters exactly',
+        tip: '"Rose" no longer finds "rose".',
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_match_whole_words',
+        path: 'world_info_settings.world_info_match_whole_words',
+        kind: 'checkbox',
+        label: 'Keys match whole words only',
+        tip: '"cat" no longer finds "category".',
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_use_group_scoring',
+        path: 'world_info_settings.world_info_use_group_scoring',
+        kind: 'checkbox',
+        label: 'When only one of a group comes in, pick from the best matches',
+        tip: 'Only the entries of the group that match the most keys can be picked.',
+        family: 'worldInfo',
+    },
+    {
+        id: 'wi_overflow_alert',
+        path: 'world_info_settings.world_info_overflow_alert',
+        kind: 'checkbox',
+        label: "Tell me when entries didn't fit",
+        tip: 'A notice after a reply that left entries out for lack of room.',
+        family: 'worldInfo',
+    },
 ];
 
 export const SAMPLER_NAMES: readonly string[] = [
@@ -1686,6 +1824,7 @@ export function refusalOf(field: Field, value: unknown, range: Range): string | 
         case 'range':
         case 'number': {
             if (typeof value !== 'number' || !Number.isFinite(value)) return `${field.label}: not a number`;
+            if (field.whole === true && !Number.isInteger(value)) return `${field.label}: a whole number`;
             if (range.min !== undefined && value < range.min) return `${field.label}: at least ${range.min}`;
             if (range.max !== undefined && value > range.max) return `${field.label}: at most ${range.max}`;
             return null;

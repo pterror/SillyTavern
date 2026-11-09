@@ -32,7 +32,7 @@ import { uuidv4 } from './utils.js';
 import { stopServerGenerations, takeStreamStopResult } from './generation-stop.js';
 import { sendGeneration, settingsSavedOf, wholeReplyOf } from './generation-request.js';
 import { getRequestHeaders } from './request-headers.js';
-import { world_info_overflow_alert } from './world-info.js';
+import { newUi } from './new-ui-page.js';
 import { pageMacroFacts } from './macros/engine/MacroEnvBuilder.js';
 
 /** @type {StreamingProcessor|null} */
@@ -268,7 +268,7 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
     const updated = updateMessage(mesId, updates);
     if (received) markServerFinishedReply(mesId);
     const activations = storedExtra.activations;
-    if (received && world_info_overflow_alert && activations?.cut?.some(c => c.why === 'budget')) {
+    if (received && newUi().settings.value('world_info_settings.world_info_overflow_alert') === true && activations?.cut?.some(c => c.why === 'budget')) {
         toastr.warning(t`World info budget reached after ${activations.entries?.length ?? 0} entries.`, t`World Info`);
     }
     if (updated) updateMessageItemizedPromptButton(updated, { messageId: mesId });
