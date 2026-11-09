@@ -17,6 +17,8 @@ export type ToView = {
     scanned: boolean;
     unresolved: string[];
     next: string | null;
+    lookedThrough: number;
+    stoppedForBound: boolean;
 };
 
 export type Issue =

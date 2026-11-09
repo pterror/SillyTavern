@@ -12,6 +12,7 @@ const lib = user.store.lib;
 const NAMES = [
     'cat', 'Elara', 'tavern', 'Sir Rowan of Vale', 'Rowan Vale', 'the old mill road', '/dr(a|e)gon/i', '/^Vale/',
     '{{char}}', '!!!', 'οδος', 'i̇stanbul', '東京', 'x', 'drEgon', 'Bob', 'averyveryverylongsinglewordname',
+    '/the old (mill|road)/i', '/Sir Rowan of/',
 ];
 const WORDS = [
     'the', 'tavern', 'Elara', 'elara\'s', 'concatenate', 'bobcat', 'BOB', 'dragon', 'dregon', 'Sir', 'Rowan', 'of', 'Vale',
@@ -152,6 +153,106 @@ test('a name that only the index can answer reads candidates, never the whole bo
     } finally {
         store.worldRead = original;
     }
+});
+
+/**
+ * Counts the entries each read hands back the text of.
+ * @param {(texts: number[], ops: string[]) => Promise<void>} body
+ */
+async function counting(body) {
+    const store = lib.store;
+    const original = store.worldRead.bind(store);
+    /** @type {number[]} */
+    const texts = [];
+    /** @type {string[]} */
+    const ops = [];
+    store.worldRead = (op, args) => {
+        ops.push(op);
+        if (op === 'entryTexts') texts.push(args.entries.length);
+        return original(op, args);
+    };
+    try {
+        await body(texts, ops);
+    } finally {
+        store.worldRead = original;
+    }
+}
+
+/**
+ * Every page from the first, each read at the cursor the one before ends at.
+ * @param {(cursor: string | undefined) => Promise<any>} read
+ */
+async function pages(read) {
+    const out = [];
+    let cursor;
+    for (let i = 0; i < 1000; i++) {
+        const page = await read(cursor);
+        out.push(page);
+        if (page.next === null) return out;
+        cursor = page.next;
+    }
+    throw new Error('no end');
+}
+
+test('a name the index can\'t look up walks the world, looking through at most the bound per read and going on from its cursor', async () => {
+    /** @type {Record<number, object>} */
+    const entries = { 0: { uid: 0, key: ['Ilse'], content: 'x' } };
+    for (let uid = 1; uid <= 25; uid++) entries[uid] = { uid, key: [], content: uid % 10 === 0 ? 'Ilse was here' : 'nothing' };
+    await lib.books.write('Bounded', { entries });
+    const book = await bookOf('Bounded');
+    const uidOf = await ids(book);
+    const back = new Map([...uidOf].map(([uid, id]) => [id, uid]));
+    const refs = new References(lib, { defaults: LOOSE });
+    await counting(async texts => {
+        const read = await pages(cursor => refs.to(book, uidOf.get(0), { cursor, checksAtMost: 7 }));
+        assert.ok(read.every(page => page.scanned));
+        assert.deepEqual(read.map(page => page.lookedThrough), [7, 14, 21, 25]);
+        assert.deepEqual(read.map(page => page.stoppedForBound), [true, true, true, false]);
+        assert.deepEqual(new Set(read.flatMap(page => page.references.map((/** @type {any} */ r) => back.get(r.entry)))), new Set([10, 20]));
+        assert.ok(texts.every(n => n <= 7 + 1), `texts read per call: ${texts}`);
+    });
+    const filled = await refs.to(book, uidOf.get(0), { limit: 1 });
+    assert.equal(filled.references.length, 1);
+    assert.equal(filled.stoppedForBound, false, 'a page that fills is not stopped by the bound');
+    assert.notEqual(filled.next, null);
+});
+
+test('a name the index looks up still looks through at most the bound per read', async () => {
+    /** @type {Record<number, object>} */
+    const entries = { 0: { uid: 0, key: ['Lord of Winter'], content: 'x' } };
+    for (let uid = 1; uid <= 12; uid++) entries[uid] = { uid, key: [], content: uid === 9 ? 'the Lord of Winter came' : 'a tale of nothing' };
+    entries[13] = { uid: 13, key: [], content: 'Winter came' };
+    await lib.books.write('Common', { entries });
+    const book = await bookOf('Common');
+    const uidOf = await ids(book);
+    const refs = new References(lib, { defaults: LOOSE });
+    await counting(async (texts, ops) => {
+        const read = await pages(cursor => refs.to(book, uidOf.get(0), { cursor, checksAtMost: 5 }));
+        assert.ok(read.every(page => !page.scanned));
+        assert.ok(!ops.includes('entries'), `read ${ops}`);
+        assert.deepEqual(read.map(page => page.lookedThrough), [5, 10, 12]);
+        assert.deepEqual(read.flatMap(page => page.references.map((/** @type {any} */ r) => r.entry)), [uidOf.get(9)]);
+        assert.ok(texts.every(n => n <= 5), `texts read per call: ${texts}`);
+    });
+});
+
+test('a regular expression key is looked up by a word every match of it holds, and found exactly', async () => {
+    const contents = ['The Old King sat', 'the old  king', 'old king', 'bathe old queen', 'they old king', 'THE OLD QUEENS'];
+    await lib.books.write('Regex', {
+        entries: {
+            0: { uid: 0, key: ['/the old (king|queen)/i'], content: 'x' },
+            ...Object.fromEntries(contents.map((content, at) => [at + 1, { uid: at + 1, key: [], content }])),
+        },
+    });
+    const book = await bookOf('Regex');
+    const uidOf = await ids(book);
+    const back = new Map([...uidOf].map(([uid, id]) => [id, uid]));
+    await counting(async (_texts, ops) => {
+        const to = await new References(lib, { defaults: LOOSE }).to(book, uidOf.get(0));
+        assert.equal(to.scanned, false);
+        assert.ok(!ops.includes('entries'), `read ${ops}`);
+        assert.deepEqual(to.references.map(r => back.get(r.entry)).sort(), [1, 4, 6]);
+    });
 });
 
 test('a mention by a form the name doesn\'t match is an unlinked mention; a macro name is reported as unresolved', async () => {

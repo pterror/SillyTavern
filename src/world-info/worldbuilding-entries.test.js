@@ -6,7 +6,7 @@ import { References } from './references.js';
 import { matchDefaultsOf } from './key-matching.js';
 import { worldInfoGlobalsOf } from '../../public/scripts/world-info-globals.js';
 import { GENERATION_TYPE_TRIGGERS } from '../../public/scripts/constants.js';
-import { TRIGGERS } from '@st/worldbuilding/protocol';
+import { MENTION_CHECKS_PER_REQUEST, MENTIONS_PER_PAGE, TRIGGERS } from '@st/worldbuilding/protocol';
 
 const { emptyUser } = await import('../../tests/converted-user.fixture.js');
 const user = await emptyUser('st-worldbuilding-entries-test-');
@@ -85,6 +85,8 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
             sentence: { before: '', mention: 'Ilse', after: ' Varro lives here, mostly.' },
         }],
         next: null,
+        lookedThrough: 1,
+        stoppedForBound: false,
     }] });
     assert.deepEqual(read.links, [], 'a key that is no name links nothing');
     assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Ilse', limit: 5 }), { entries: [{ thing: second, text: 'The Lantern House', shownAs: 'title' }], more: false });
@@ -159,14 +161,30 @@ test('what mentions an entry is read as a run of pages, each from the cursor the
     await lib.books.write('Mentioned', { entries: { 1: { uid: 1, key: ['Ilse'], comment: '', content: 'Ilse.', displayIndex: 0, extensions: { names: ['Ilse'] } }, ...sources } });
     const { id: book } = /** @type {{ id: bigint }} */ (await lib.books.find('Mentioned'));
     const ilse = String((await lib.books.storedEntries(book)).find(({ entity }) => entity.key.endsWith(':1'))?.entity.id);
-    const run = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: null, pages: 5 })).mentionedIn.pages;
-    assert.ok(run.length > 1 && run.length <= 5);
+    const run = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: null, pages: 30 })).mentionedIn.pages;
+    assert.equal(run.length, Math.ceil(many / MENTIONS_PER_PAGE));
     assert.equal(run.reduce((/** @type {number} */ sum, /** @type {any} */ page) => sum + page.entries.length, 0), many);
     assert.equal(run[0].cursor, null);
     for (let at = 1; at < run.length; at++) assert.equal(run[at].cursor, run[at - 1].next, 'each page is read from where the one before ends');
     assert.equal(run.at(-1).next, null);
     const later = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: run[0].next, pages: 1 })).mentionedIn.pages;
     assert.deepEqual(later, [run[1]]);
+});
+
+test('a run of mention pages looks through at most MENTION_CHECKS_PER_REQUEST entries in all, ending at the page that reaches it', async () => {
+    const others = MENTION_CHECKS_PER_REQUEST + 10;
+    const sources = Object.fromEntries(Array.from({ length: others }, (_, at) => [at + 2, { uid: at + 2, key: [], comment: '', content: at === others - 1 ? 'Ilse, at last.' : 'nobody', displayIndex: at + 1 }]));
+    await lib.books.write('Far', { entries: { 1: { uid: 1, key: ['Ilse'], comment: '', content: 'Ilse.', displayIndex: 0, extensions: { names: ['Ilse'] } }, ...sources } });
+    const { id: book } = /** @type {{ id: bigint }} */ (await lib.books.find('Far'));
+    const ilse = String((await lib.books.storedEntries(book)).find(({ entity }) => entity.key.endsWith(':1'))?.entity.id);
+    const run = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: null, pages: 3 })).mentionedIn.pages;
+    assert.equal(run.length, 1, 'the run ends at the page that stopped for the bound');
+    assert.deepEqual([run[0].entries, run[0].lookedThrough, run[0].stoppedForBound], [[], MENTION_CHECKS_PER_REQUEST, true]);
+    assert.notEqual(run[0].next, null);
+    const further = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: run[0].next, pages: 3 })).mentionedIn.pages;
+    assert.equal(further.length, 1);
+    assert.equal(further[0].entries.length, 1);
+    assert.deepEqual([further[0].lookedThrough, further[0].stoppedForBound, further[0].next], [others, false, null]);
 });
 
 after(async () => {

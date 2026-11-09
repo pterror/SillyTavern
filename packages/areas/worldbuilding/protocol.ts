@@ -20,8 +20,12 @@ export const READS_PER_REQUEST = 24_000;
 // label (its title, keys, names and, with neither a title nor a name, its text): 10 with one relation.
 export const READS_PER_CARD = 10;
 export const READS_PER_LOOP_CHECK_VISIT = 2;
+// An entry checked for a mention reads its place (in the world's order, or in the index's list for a name), whether it
+// is in the world, and its text's head and record.
+export const READS_PER_MENTION_CHECK = 4;
 export const MAX_CARDS_PER_READ = READS_PER_REQUEST / READS_PER_CARD;
 export const LOOP_CHECK_VISITS_PER_WRITE = READS_PER_REQUEST / READS_PER_LOOP_CHECK_VISIT;
+export const MENTION_CHECKS_PER_REQUEST = READS_PER_REQUEST / READS_PER_MENTION_CHECK;
 export const FOUND_PER_QUERY = 20;
 export const MENTIONS_PER_PAGE = 20;
 export const MENTION_PAGES_AT_MOST = MAX_CARDS_PER_READ / MENTIONS_PER_PAGE;
@@ -151,14 +155,20 @@ export type KeyOfEntry = { text: string; isName: boolean; alsoBringsUp: number }
 
 export type Sentence = { before: string; mention: string; after: string };
 
-// A page read at `cursor` (null: the first), and the cursor of the page after it (null: the last).
+// A page read at `cursor` (null: the first), and the cursor of the page after it (null: the last). `lookedThrough`
+// counts the entries looked through from the first page to this one's end; `stoppedForBound` says the page ended at
+// the request's MENTION_CHECKS_PER_REQUEST with more to look through, not because it filled or the world ended.
 export type MentionsPage = {
     cursor: string | null;
     entries: { from: Named; sentence: Sentence }[];
     next: string | null;
+    lookedThrough: number;
+    stoppedForBound: boolean;
 };
 
 // The run of pages the page asked for: the first at the cursor asked from, each next the page after the one before.
+// One read looks through at most MENTION_CHECKS_PER_REQUEST entries in all, so the run ends at a page that stopped for
+// it.
 export type MentionedIn = { pages: MentionsPage[] };
 
 // Where the entry's text names another entry: `from` and `to` are UTF-16 offsets into `text`, in order, never overlapping.

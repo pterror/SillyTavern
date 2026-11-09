@@ -3206,7 +3206,7 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
             let book = req_integer(a, "book")?;
             Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))
         }
-        "nameCandidates" | "mentionCandidates" => {
+        "nameCandidates" => {
             use crate::store::references as r;
             let (book, after, limit) = (
                 req_integer(a, "book")?,
@@ -3218,16 +3218,41 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                 a.get::<Unknown>("text")?
                     .ok_or_else(|| invalid(format!("{op} needs a text")))?,
             )?;
-            let names = op == "nameCandidates";
             Box::new(move |s| {
-                s.chat_read(|v| {
-                    if names {
-                        r::name_candidates(v, book, &text, after, limit)
-                    } else {
-                        r::mention_candidates(v, book, &text, after, limit)
-                    }
-                })
-                .map(JsTree)
+                s.chat_read(|v| r::name_candidates(v, book, &text, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "mentionCandidates" => {
+            use crate::store::references as r;
+            let (book, after, limit) = (
+                req_integer(a, "book")?,
+                opt_integer(a, "after")?,
+                req_integer(a, "limit")? as usize,
+            );
+            let mut names = Vec::new();
+            for name in a
+                .get::<Vec<Object>>("names")?
+                .ok_or_else(|| invalid(format!("{op} needs names")))?
+            {
+                let text = string(
+                    "text",
+                    name.get::<Unknown>("text")?
+                        .ok_or_else(|| invalid("a name needs a text".into()))?,
+                )?;
+                let regex_flags = name.get::<String>("regexFlags")?;
+                names.push(r::MentionName { text, regex_flags });
+            }
+            Box::new(move |s| {
+                s.chat_read(|v| r::mention_candidates(v, book, &names, after, limit))
+                    .map(JsTree)
+            })
+        }
+        "entryTexts" => {
+            let (book, entries) = (req_integer(a, "book")?, integers(a, "entries")?);
+            Box::new(move |s| {
+                s.chat_read(|v| crate::store::references::entry_texts(v, book, &entries))
+                    .map(JsTree)
             })
         }
         "unindexedNames" => {

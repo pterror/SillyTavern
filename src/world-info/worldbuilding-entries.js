@@ -1,4 +1,4 @@
-import { MENTIONS_PER_PAGE } from '@st/worldbuilding/protocol';
+import { MENTION_CHECKS_PER_REQUEST, MENTIONS_PER_PAGE } from '@st/worldbuilding/protocol';
 import { TYPE } from '../library-codes.js';
 import { entryObject, keysOfEntry } from '../world-info-engine.js';
 import { newWorldInfoEntryDefinition, newWorldInfoEntryTemplate } from '../../public/scripts/world-info-entry-defaults.js';
@@ -173,7 +173,8 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
     const actorOf = (/** @type {import('@st/worldbuilding/server').Who} */ who) => ({ user: who.user.handle, session: who.session });
 
     /**
-     * The run of pages of what mentions the entry: the page at `from`, then each page after the one before.
+     * The run of pages of what mentions the entry: the page at `from`, then each page after the one before, looking
+     * through at most MENTION_CHECKS_PER_REQUEST entries in all; the run ends at the page that reaches it.
      * @param {import('@st/server-ui').User} user
      * @param {bigint} book
      * @param {bigint} entry
@@ -182,16 +183,18 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
      */
     const mentionsOf = async (user, book, entry, { from, pages }) => {
         const references = await referencesOf(user);
-        /** @type {{ cursor: string | null, found: { entry: bigint, text: string, span: [number, number] | undefined }[], next: string | null }[]} */
+        /** @type {{ cursor: string | null, found: { entry: bigint, text: string, span: [number, number] | undefined }[], next: string | null, lookedThrough: number, stoppedForBound: boolean }[]} */
         const read = [];
         /** @type {string | null} */
         let cursor = from;
+        let checksLeft = MENTION_CHECKS_PER_REQUEST;
         while (read.length < pages) {
-            const page = await references.to(book, entry, { ...(cursor === null ? {} : { cursor }), limit: MENTIONS_PER_PAGE, withText: true });
+            const page = await references.to(book, entry, { ...(cursor === null ? {} : { cursor }), limit: MENTIONS_PER_PAGE, withText: true, checksAtMost: checksLeft });
             if (!page) break;
             const found = page.references.map(reference => ({ entry: reference.entry, text: reference.text ?? '', span: reference.spans[0] }));
-            read.push({ cursor, found, next: page.next });
-            if (page.next === null) break;
+            read.push({ cursor, found, next: page.next, lookedThrough: page.lookedThrough, stoppedForBound: page.stoppedForBound });
+            checksLeft -= page.checked;
+            if (page.next === null || page.stoppedForBound) break;
             cursor = page.next;
         }
         const sources = read.flatMap(page => page.found.map(found => found.entry));
@@ -200,13 +203,15 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
         const labels = sources.length === 0 ? [] : await lib.store.worldRead('worldbuildingLabels', { book, entities: sources });
         let at = 0;
         return {
-            pages: read.map(({ cursor: readAt, found, next }) => ({
+            pages: read.map(({ cursor: readAt, found, next, lookedThrough, stoppedForBound }) => ({
                 cursor: readAt,
                 entries: found.flatMap(({ text, span }) => {
                     const source = labels[at++];
                     return source ? [{ from: source, sentence: sentenceAround(text, span) }] : [];
                 }),
                 next,
+                lookedThrough,
+                stoppedForBound,
             })),
         };
     };

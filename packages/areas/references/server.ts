@@ -34,7 +34,16 @@ export function referencesArea(ports: Ports) {
     };
 
     const emptyFrom: FromView = { entry: null, references: [], unresolved: [], next: null };
-    const emptyTo: ToView = { entry: null, references: [], unlinked: [], scanned: false, unresolved: [], next: null };
+    const emptyTo: ToView = {
+        entry: null,
+        references: [],
+        unlinked: [],
+        scanned: false,
+        unresolved: [],
+        next: null,
+        lookedThrough: 0,
+        stoppedForBound: false,
+    };
 
     return defineArea({
         schemas: actions,

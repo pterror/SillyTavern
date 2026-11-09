@@ -250,6 +250,8 @@ function world(
         cursor: at === 0 ? null : `p${at}`,
         entries: [{ from: named(`m${at}`, `name m${at}`), sentence: { before: '', mention: 'Ilse', after: '.' } }],
         next: at < 2 ? `p${at + 1}` : null,
+        lookedThrough: at + 1,
+        stoppedForBound: false,
     });
     const entryRead = (entry: string, { from, pages }: PagesRun): EntryRead => {
         const found = entries.get(entry);

@@ -512,7 +512,9 @@ const referencesPorts = {
     },
     async to(user, book, entry, cursor) {
         const page = await (await referencesOf(user)).to(BigInt(book), BigInt(entry), cursor === null ? {} : { cursor });
-        return page && { ...page, references: withIds(page.references), unlinked: withIds(page.unlinked) };
+        if (!page) return null;
+        const { references, unlinked, scanned, unresolved, next, lookedThrough, stoppedForBound } = page;
+        return { references: withIds(references), unlinked: withIds(unlinked), scanned, unresolved, next, lookedThrough, stoppedForBound };
     },
     async issues(user, book, cursor) {
         const page = await (await referencesOf(user)).issues(BigInt(book), cursor === null ? {} : { after: cursor });

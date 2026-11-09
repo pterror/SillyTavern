@@ -430,7 +430,11 @@ per read (not measured; I don't know the real figure, and it should be measured 
   times the cards each draws, checked by the schema on `openOverview` and by the handler on `showRange` and
   `stepOverview` (a step crossing `n` top-level entries draws each);
 - a loop check visit costs about 2 reads, so one write's check visits at most 12,000 entries
-  (`LOOP_CHECK_VISITS_PER_WRITE`), the cap on `loopCheckLimit` and the limit of writes that carry none.
+  (`LOOP_CHECK_VISITS_PER_WRITE`), the cap on `loopCheckLimit` and the limit of writes that carry none;
+- an entry checked for a mention costs about 4 reads (its place: a slot of the world's order, or a doc of the index's
+  list for the names; whether it is in the world; its text's head and record), so one read of what mentions an entry
+  looks through at most 6,000 entries (`MENTION_CHECKS_PER_REQUEST`), a run of pages sharing them, whether the index
+  names the candidates or the read walks the world.
 
 Everything else is unbounded: levels, columns, rows, the card text's length (one read per card whatever its length; the
 answer's size follows the entries' own text), the range's width, a step's length, a key's or a name's length.
@@ -454,8 +458,9 @@ One area, `@st/worldbuilding`. Views:
   `key`, `comment` and `content`, as stored, missing ones at upstream's defaults, `public/scripts/world-info-entry-defaults.js`,
   and whether any differs from them), its text in tokens as the chosen connection counts them, and what mentions it:
   the run of pages of the references to it the page names (`src/world-info/references.js`; the first page until
-  `showMentions` names another), each page `{cursor, entries, next}`, each source's label with the sentence around its
-  first mention. A deleted entry shows as deleted, under the label it was last shown with.
+  `showMentions` names another), each page `{cursor, entries, next, lookedThrough, stoppedForBound}`, each source's
+  label with the sentence around its first mention (What mentions an entry, below). A deleted entry shows as deleted,
+  under the label it was last shown with.
 - `worldbuilding.pointingAt`: what points at the session's open entry: `{book, entry, sections}`, one section per kind
   with a relation in use targeting it, in kind id order (the kinds read by one seek each, never from the sources),
   each `{kind, kindName, count, firstRank, entries, stepLanding}`: its sources ranked by their tree, each drawn as a
@@ -577,6 +582,32 @@ no step. So:
 - **Step** within what's held is the held entries in pre-order; past it, `stepOverview`;
 - **parent** is the key without its last part; **first child** is the first of the held region's cells, else `stepOverview`;
 - **inside region** `k` is "starts with `k/`".
+
+## What mentions an entry
+
+A source mentions an entry when the activation matcher finds one of the entry's names in the source's text
+(`References.to`). The book's search index keeps every whole token of every text, so it names the candidates when
+every name holds a token any matching text holds whole (`references::mention_candidates`, one list in id order for all
+the names):
+
+- a plain name: a word with a separator on both sides inside the name (its second word, so a name of three words or
+  more), since the matcher finds the name as a substring;
+- a regular expression: the longest such word of the literal text every match holds (`references::regex_runs`: a
+  group, a class, an escape of a letter or digit, an anchor or `.` ends a literal, a quantifier that allows none of its
+  atom takes it off, and an alternation outside a group leaves none). Under `i` only ASCII words between ASCII
+  separators count, and under `i` with `u` none with an `s`, which U+017F folds to.
+
+A candidate is still checked by the matcher, so the index only narrows. With any name it can't look up (a regular
+expression with no such word, a name of one or two words, one with an unresolved macro), the read walks the world in
+its order. Either way a request looks through at most `MENTION_CHECKS_PER_REQUEST` entries (One request's budget):
+a page ends when it holds `MENTIONS_PER_PAGE`, at the world's end, or at the bound, which it says
+(`stoppedForBound`), with the cursor to go on from and how many entries were looked through from the first page
+(`lookedThrough`, carried in the cursor). A run of pages shares the bound and ends at the page that reaches it.
+
+The page reads on as the reader scrolls, but never past a page that stopped for the bound having found nothing. While
+the run's last page stopped for the bound, the list ends with "Looked through N entries so far" and **Look further**,
+which starts the list at the page after it (one request); what the list held before it is left behind, since one
+request can't read both.
 
 ## The filter
 

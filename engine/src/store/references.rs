@@ -230,6 +230,200 @@ pub fn mention_terms(name: &[u8]) -> Option<Vec<(String, bool)>> {
     Some(terms.into_iter().collect())
 }
 
+fn skip_class(chars: &[char], mut at: usize) -> Option<usize> {
+    at += 1;
+    while at < chars.len() {
+        match chars[at] {
+            '\\' => at += 2,
+            ']' => return Some(at + 1),
+            _ => at += 1,
+        }
+    }
+    None
+}
+
+fn skip_group(chars: &[char], mut at: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    while at < chars.len() {
+        match chars[at] {
+            '\\' => at += 2,
+            '[' => at = skip_class(chars, at)?,
+            '(' => {
+                depth += 1;
+                at += 1;
+            }
+            ')' => {
+                depth -= 1;
+                at += 1;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    None
+}
+
+fn skip_to(chars: &[char], at: usize, close: char) -> Option<usize> {
+    chars[at..].iter().position(|&c| c == close).map(|i| at + i + 1)
+}
+
+fn counted_quantifier(chars: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while chars.get(*i).is_some_and(char::is_ascii_digit) {
+            *i += 1;
+        }
+        *i > start
+    };
+    if !digits(&mut i) {
+        return None;
+    }
+    if chars.get(i) == Some(&',') {
+        i += 1;
+        digits(&mut i);
+    }
+    (chars.get(i) == Some(&'}')).then_some(i + 1)
+}
+
+/// Text every match of the JavaScript regular expression `source` holds verbatim; None with an alternation outside a
+/// group.
+pub fn regex_runs(source: &str) -> Option<Vec<Vec<char>>> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut runs: Vec<Vec<char>> = Vec::new();
+    let mut run: Vec<char> = Vec::new();
+    let mut literal_last = false;
+    let mut at = 0;
+    let mut end = |run: &mut Vec<char>| {
+        if !run.is_empty() {
+            runs.push(std::mem::take(run));
+        }
+    };
+    while at < chars.len() {
+        let c = chars[at];
+        let quantified = match c {
+            '|' | ')' => return None,
+            '(' => {
+                at = skip_group(&chars, at)?;
+                end(&mut run);
+                false
+            }
+            '[' => {
+                at = skip_class(&chars, at)?;
+                end(&mut run);
+                false
+            }
+            '*' | '?' => {
+                if literal_last {
+                    run.pop();
+                }
+                at += 1;
+                end(&mut run);
+                true
+            }
+            '+' => {
+                at += 1;
+                end(&mut run);
+                true
+            }
+            '{' => match counted_quantifier(&chars, at) {
+                Some(next) => {
+                    if literal_last {
+                        run.pop();
+                    }
+                    at = next;
+                    end(&mut run);
+                    true
+                }
+                None => {
+                    at += 1;
+                    end(&mut run);
+                    false
+                }
+            },
+            '.' | '^' | '$' => {
+                at += 1;
+                end(&mut run);
+                false
+            }
+            '\\' => {
+                let escaped = *chars.get(at + 1)?;
+                at += 2;
+                if escaped.is_ascii_alphanumeric() {
+                    end(&mut run);
+                    match chars.get(at) {
+                        Some('{') => at = skip_to(&chars, at, '}')?,
+                        Some('<') if escaped == 'k' => at = skip_to(&chars, at, '>')?,
+                        _ => {}
+                    }
+                    literal_last = false;
+                    continue;
+                }
+                run.push(escaped);
+                literal_last = true;
+                continue;
+            }
+            _ => {
+                run.push(c);
+                at += 1;
+                literal_last = true;
+                continue;
+            }
+        };
+        literal_last = false;
+        if quantified && chars.get(at) == Some(&'?') {
+            at += 1;
+        }
+    }
+    end(&mut run);
+    Some(runs)
+}
+
+/// Under `i` a match can hold another case of the run, so only ASCII words between ASCII separators count, and under
+/// `u` none with an `s`, which U+017F folds to.
+fn bounded_words(run: &[char], ignore_case: bool, unicode: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < run.len() {
+        if !run[at].is_alphanumeric() {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < run.len() && run[at].is_alphanumeric() {
+            at += 1;
+        }
+        if start == 0 || at == run.len() {
+            continue;
+        }
+        let word: String = run[start..at].iter().collect();
+        if ignore_case
+            && (!word.is_ascii()
+                || !run[start - 1].is_ascii()
+                || !run[at].is_ascii()
+                || (unicode && word.to_ascii_lowercase().contains('s')))
+        {
+            continue;
+        }
+        out.extend(tokens(word.as_bytes()));
+    }
+    out
+}
+
+pub fn regex_mention_terms(source: &[u8], flags: &str) -> Option<Vec<(String, bool)>> {
+    let source = std::str::from_utf8(source).ok()?;
+    let (ignore_case, unicode) = (flags.contains('i'), flags.contains('u') || flags.contains('v'));
+    let word = regex_runs(source)?
+        .iter()
+        .flat_map(|run| bounded_words(run, ignore_case, unicode))
+        .max_by_key(|w| w.chars().count())?;
+    let mut terms = BTreeSet::new();
+    sigma_variants(word, &mut terms, false);
+    Some(terms.into_iter().collect())
+}
+
 fn page(docs: (Vec<u64>, bool)) -> Js {
     let (docs, more) = docs;
     Js::Obj(vec![
@@ -250,18 +444,46 @@ pub fn name_candidates(
     Ok(page(docs_with_terms(view, Scope::book(book), &terms, mask, after, limit)?))
 }
 
+pub struct MentionName {
+    pub text: Vec<u8>,
+    pub regex_flags: Option<String>,
+}
+
 pub fn mention_candidates(
     view: &View,
     book: u64,
-    name: &[u8],
+    names: &[MentionName],
     after: Option<u64>,
     limit: usize,
 ) -> Result<Js, StoreError> {
-    let Some(terms) = mention_terms(name) else {
-        return Ok(Js::Null);
-    };
+    let mut terms = BTreeSet::new();
+    for name in names {
+        let found = match &name.regex_flags {
+            Some(flags) => regex_mention_terms(&name.text, flags),
+            None => mention_terms(&name.text),
+        };
+        let Some(found) = found else {
+            return Ok(Js::Null);
+        };
+        terms.extend(found);
+    }
+    let terms: Vec<(String, bool)> = terms.into_iter().collect();
     let mask = 1u64 << CONTENT_FIELD;
     Ok(page(docs_with_terms(view, Scope::book(book), &terms, mask, after, limit)?))
+}
+
+pub fn entry_texts(view: &View, book: u64, entries: &[u64]) -> Result<Js, StoreError> {
+    let mut out = Vec::with_capacity(entries.len());
+    for &entry in entries {
+        out.push(match super::overview::uid_in(view, book, entry)? {
+            Some(_) => {
+                let content = FieldRef::Code(super::entry_label::CONTENT);
+                Js::Text(text_value(view, entry, &content)?.unwrap_or_default())
+            }
+            None => Js::Null,
+        });
+    }
+    Ok(Js::Arr(out))
 }
 
 pub fn stats(view: &View, book: u64, entries: &[u64]) -> Result<Js, StoreError> {

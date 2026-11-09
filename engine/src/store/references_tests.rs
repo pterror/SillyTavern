@@ -425,7 +425,11 @@ fn candidates(s: &Store, book: u64, t: &str, names: bool) -> Option<Vec<u64>> {
             if names {
                 references::name_candidates(v, book, t.as_bytes(), after, 2)
             } else {
-                references::mention_candidates(v, book, t.as_bytes(), after, 2)
+                let names = [references::MentionName {
+                    text: t.as_bytes().to_vec(),
+                    regex_flags: None,
+                }];
+                references::mention_candidates(v, book, &names, after, 2)
             }
         });
         if page == Js::Null {
@@ -530,4 +534,49 @@ fn a_field_write_touches_only_its_own_entry_and_book_totals() {
     assert_eq!(after.entries, before.entries);
     assert_eq!(after.bytes - before.bytes, "renamed".len() as i64 - "name11".len() as i64);
     let _ = (KEY_FIELD, CONTENT_FIELD);
+}
+
+fn regex_term(source: &str, flags: &str) -> Option<Vec<String>> {
+    references::regex_mention_terms(source.as_bytes(), flags)
+        .map(|terms| terms.into_iter().map(|(term, _)| term).collect())
+}
+
+#[test]
+fn a_regex_key_is_looked_up_by_a_word_every_match_holds_whole_and_only_then() {
+    let some = |words: &[&str]| Some(words.iter().map(|w| w.to_string()).collect::<Vec<_>>());
+    assert_eq!(regex_term("the old (king|queen)", ""), some(&["old"]));
+    assert_eq!(regex_term("lord of the north", ""), some(&["the"]));
+    assert_eq!(regex_term(r"x\.miller\.y", ""), some(&["miller"]));
+    assert_eq!(regex_term("x mill (?:a|b) the end", ""), some(&["mill"]));
+    assert_eq!(regex_term("x? the old  y", ""), some(&["old"]));
+    assert_eq!(regex_term(r"\p{L}x mill y", ""), some(&["mill"]));
+    assert_eq!(regex_term(r"\k<n>x mill y", ""), some(&["mill"]));
+    assert_eq!(regex_term("a mill road", "i"), some(&["mill"]));
+    assert_eq!(regex_term("a mill road", "iu"), some(&["mill"]));
+    assert_eq!(regex_term("a sir road", "i"), some(&["sir"]));
+    assert_eq!(regex_term("a sir road", "iu"), None);
+    assert_eq!(regex_term("a Μῆνιν b", ""), some(&["μηνιν"]));
+    assert_eq!(regex_term("a Μῆνιν b", "i"), None);
+    assert_eq!(regex_term("a ΟΔΟΣ b", ""), some(&["οδος", "οδοσ"]));
+    for unknown in [
+        "dragon",
+        "dr(a|e)gon",
+        "^Vale",
+        "cat|dog",
+        "a (b) c",
+        "a [bc] d",
+        "x mills? y",
+        "x mill+ y",
+        "x mill* y",
+        "x mil{2} y",
+        "x mill{0,2} y",
+        "x m.ll y",
+        r"\bmill\b",
+        r"a\smill\sb",
+        r"\p{L} mill",
+        r"\k<n> mill",
+        "(a",
+    ] {
+        assert_eq!(regex_term(unknown, ""), None, "{unknown}");
+    }
 }
