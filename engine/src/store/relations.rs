@@ -1043,6 +1043,12 @@ pub fn world_order_conversion_step(
     };
     let found = view.scan(&start, &key::prefix_end(prefix), batch)?;
     let mut local = BTreeMap::new();
+    if after.is_none() {
+        let mut cleared = Out::default();
+        super::references::key_items_cleared(view, &mut cleared)?;
+        out.entries.extend(cleared.entries.iter().cloned());
+        cleared.apply(&mut local);
+    }
     for (stored_key, value) in &found {
         let layered_view = view.with_layer(&local);
         let mut read_at = prefix.len();
@@ -1075,6 +1081,11 @@ pub fn world_order_conversion_step(
             &own_key,
             json.as_deref(),
         )?;
+        out.entries.extend(derived.entries.iter().cloned());
+        derived.apply(&mut local);
+        let layered_view = view.with_layer(&local);
+        let mut derived = Out::default();
+        super::references::entry_keys_came(&layered_view, &mut derived, book, entity)?;
         out.entries.extend(derived.entries.iter().cloned());
         derived.apply(&mut local);
     }
@@ -1900,6 +1911,43 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
         ("before", text_js(before)),
         ("json", Js::Text(json)),
     ]))
+}
+
+pub fn relations_of_new_entry(view: &View, book: u64, kind: u64, target: u64) -> Result<Js, StoreError> {
+    if relation_kind_name(view, book, kind)?.is_none() {
+        return Ok(refusal("This world has no such relation kind."));
+    }
+    if relation_kind_being_merged_into(view, book, kind)?.is_some() {
+        return Ok(refusal(
+            "This relation kind is being merged into another; pick that one.",
+        ));
+    }
+    if entry_key_in(view, book, target)?.is_none() {
+        return Ok(refusal("The target isn't an entry of this world."));
+    }
+    let prefix = relations_of_kind_targeting_prefix(book, kind, target);
+    let last = view
+        .scan_vals_rev(&prefix, &key::prefix_end(&prefix), 1)?
+        .into_iter()
+        .next()
+        .map(|(stored_key, _)| position_and_source_of_relation_of_kind_targeting(&prefix, &stored_key))
+        .transpose()?
+        .map(|(position, _)| position);
+    let position = position_between(last.as_deref(), None)
+        .or(last)
+        .unwrap_or_default();
+    let mut json = b"[".to_vec();
+    json.extend_from_slice(&item_json(
+        kind,
+        target,
+        &Relation {
+            position,
+            weak: false,
+            item: Vec::new(),
+        },
+    ));
+    json.push(b']');
+    Ok(Js::Obj(vec![("json", Js::Text(json))]))
 }
 
 pub struct UnreachedLoop {

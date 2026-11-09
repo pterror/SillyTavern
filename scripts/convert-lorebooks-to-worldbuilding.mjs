@@ -45,4 +45,4 @@ for (const handle of users) {
     }
 }
 
-console.log(`Users: ${users.length}. Relations fields rewritten to name targets by entity: ${rewritten}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed.`);
+console.log(`Users: ${users.length}. Relations fields rewritten to name targets by entity: ${rewritten}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed and its keys counted.`);

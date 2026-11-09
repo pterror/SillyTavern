@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::StoreError;
 use super::book_stats::{book_stat, entry_stat};
@@ -6,8 +6,8 @@ use super::chat_read::Js;
 use super::books::{BOOK, OWNED};
 use super::derive::{Out, View};
 use super::kinds::{key, text_value};
-use super::library::{ITEM_BASE, LISTS, entity_info};
-use crate::keyspace::val::get_u64;
+use super::library::{ITEM_BASE, LISTS, counter, entity_info};
+use crate::keyspace::val::{get_u64, put_bytes};
 use crate::log::format::FieldRef;
 use crate::search::query::docs_with_terms;
 use crate::search::text::{GRAM_MAX, tokens};
@@ -16,6 +16,7 @@ use crate::search::Scope;
 pub const KEY_FIELD: u32 = 0;
 pub const CONTENT_FIELD: u32 = 4;
 pub const UNINDEXED: u64 = 222;
+pub const KEY_ITEMS_BY_TEXT: u64 = 239;
 
 const WORLD_KEYS: u64 = 0;
 const OWNED_KEYS: u64 = 3;
@@ -43,6 +44,71 @@ fn unindexed_key(book: u64, entry: u64, code: u64) -> Vec<u8> {
     k
 }
 
+fn is_key_item(code: u64, list: Option<u64>) -> bool {
+    code >= ITEM_BASE && Some((code - ITEM_BASE) % LISTS) == list
+}
+
+pub fn key_items_by_text_key(book: u64, key_text: &[u8]) -> Vec<u8> {
+    let mut stored_key = key::id(KEY_ITEMS_BY_TEXT, book);
+    put_bytes(&mut stored_key, key_text);
+    stored_key
+}
+
+pub fn key_items_with_text(view: &View, book: u64, key_text: &[u8]) -> Result<u64, StoreError> {
+    Ok(counter(view, &key_items_by_text_key(book, key_text))?.max(0) as u64)
+}
+
+fn change_key_items(
+    view: &View,
+    out: &mut Out,
+    book: u64,
+    changes: BTreeMap<Vec<u8>, i64>,
+) -> Result<(), StoreError> {
+    for (key_text, change) in changes {
+        if change == 0 {
+            continue;
+        }
+        let stored_key = key_items_by_text_key(book, &key_text);
+        if counter(view, &stored_key)? + change == 0 {
+            out.del(stored_key);
+        } else {
+            out.add(stored_key, change);
+        }
+    }
+    Ok(())
+}
+
+fn key_texts_of(view: &View, book: u64, entry: u64) -> Result<Vec<Vec<u8>>, StoreError> {
+    let list = key_list(view, book)?;
+    let prefix = key::id(key::HEAD, entry);
+    let mut texts = Vec::new();
+    for (head_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+        let field = super::library::field_after(&head_key, key::HEAD)?;
+        let FieldRef::Code(code) = field else {
+            continue;
+        };
+        if is_key_item(code, list)
+            && let Some(key_text) = text_value(view, entry, &field)?
+        {
+            texts.push(key_text);
+        }
+    }
+    Ok(texts)
+}
+
+fn counted(texts: Vec<Vec<u8>>, change: i64) -> BTreeMap<Vec<u8>, i64> {
+    let mut changes = BTreeMap::new();
+    for key_text in texts {
+        *changes.entry(key_text).or_insert(0) += change;
+    }
+    changes
+}
+
+pub fn entry_keys_came(view: &View, out: &mut Out, book: u64, entry: u64) -> Result<(), StoreError> {
+    let texts = key_texts_of(view, book, entry)?;
+    change_key_items(view, out, book, counted(texts, 1))
+}
+
 pub fn key_written(
     view: &View,
     out: &mut Out,
@@ -50,11 +116,12 @@ pub fn key_written(
     entry: u64,
     f: &FieldRef,
     new: Option<&[u8]>,
+    entry_is_new: bool,
 ) -> Result<(), StoreError> {
     let FieldRef::Code(c) = f else {
         return Ok(());
     };
-    if *c < ITEM_BASE || Some((c - ITEM_BASE) % LISTS) != key_list(view, book)? {
+    if !is_key_item(*c, key_list(view, book)?) {
         return Ok(());
     }
     let k = unindexed_key(book, entry, *c);
@@ -62,13 +129,32 @@ pub fn key_written(
         Some(t) if unindexable(t) => out.put(k, Vec::new()),
         _ => out.del(k),
     }
-    Ok(())
+    if entry_is_new {
+        return Ok(());
+    }
+    let mut changes = BTreeMap::new();
+    if let Some(old) = text_value(view, entry, f)? {
+        *changes.entry(old).or_insert(0) -= 1;
+    }
+    if let Some(new) = new {
+        *changes.entry(new.to_vec()).or_insert(0) += 1;
+    }
+    change_key_items(view, out, book, changes)
 }
 
 pub fn entry_gone(view: &View, out: &mut Out, book: u64, entry: u64) -> Result<(), StoreError> {
     let p = key::ids(UNINDEXED, book, entry);
     for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
         out.del(k);
+    }
+    let texts = key_texts_of(view, book, entry)?;
+    change_key_items(view, out, book, counted(texts, -1))
+}
+
+pub fn key_items_cleared(view: &View, out: &mut Out) -> Result<(), StoreError> {
+    let prefix = key::of(KEY_ITEMS_BY_TEXT);
+    for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+        out.del(stored_key);
     }
     Ok(())
 }

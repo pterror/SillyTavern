@@ -70,6 +70,16 @@ and as a title otherwise; with no title, the first name; with neither, the openi
 character that isn't white space to the end of that line, at most 120 characters). A label is
 `{ thing, text, shownAs }`, `thing` being the entry's entity id.
 
+## Keys shared between entries
+
+An entry's page says, per key, how many other live entries of its world have the same key (`alsoBringsUp`). The count
+is kept, never counted on read: `KEY_ITEMS_BY_TEXT (b, key text) → count` (Add), the number of key items of the world's
+live entries with exactly that text. Every write of a key item passes the one hook every text write of a counted book's
+entry passes (`references::key_written`): the old text's count goes down by one, the new text's up by one, and a count
+that reaches 0 is deleted. An entry's creation and restore count all its keys (`references::entry_keys_came`), its
+deletion uncounts them (`references::entry_gone`). The read is one get per key: the count less the entry's own items with
+that text. The same text twice in one other entry counts twice.
+
 ## The stored relation
 
 One extension field of the entry, `extensions.relations`, stored as the entry's JSON field `\u0001relations`
@@ -401,7 +411,8 @@ the server stopped, then deleted with what only it uses:
 2. Puts every entry of every counted book in its world's order and indexes its relations
    (`relations::world_order_conversion_step`).
 
-It prints only totals. Running it twice changes nothing.
+Its first step also deletes every `KEY_ITEMS_BY_TEXT` count, and each step counts the keys of the entries it passes, so
+a run counts every key again from nothing. It prints only totals. Running it twice changes nothing.
 
 ## Open
 

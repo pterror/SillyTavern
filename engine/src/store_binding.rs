@@ -3003,6 +3003,44 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "worldbuildingEntry" => {
+            let (book, entity) = (req_integer(a, "book")?, req_integer(a, "entry")?);
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| crate::store::entry_page::read_entry(view, book, entity))
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingLabels" => {
+            let (book, entities) = (req_integer(a, "book")?, integers(a, "entities")?);
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| crate::store::entry_page::labels(view, book, &entities))
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingPlaceAfter" => {
+            let (book, after) = (req_integer(a, "book")?, opt_integer(a, "after")?);
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| crate::store::entry_page::place_after(view, book, after))
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingRelationsOfNewEntry" => {
+            let (book, kind, target) = (
+                req_integer(a, "book")?,
+                req_integer(a, "kind")?,
+                req_integer(a, "target")?,
+            );
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| {
+                        crate::store::relations::relations_of_new_entry(view, book, kind, target)
+                    })
+                    .map(JsTree)
+            })
+        }
         "resolving" => {
             let book = req_integer(a, "book")?;
             Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))

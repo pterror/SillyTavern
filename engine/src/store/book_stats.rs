@@ -142,9 +142,10 @@ pub fn value_changed(
     let Some(o) = owner(view, e)? else {
         return Ok(());
     };
-    owned_value_changed(view, out, &o, e, f, json, new)
+    owned_value_changed(view, out, &o, e, f, json, new, false)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn owned_value_changed(
     view: &View,
     out: &mut Out,
@@ -153,10 +154,11 @@ fn owned_value_changed(
     f: &FieldRef,
     json: bool,
     new: Option<&[u8]>,
+    entry_is_new: bool,
 ) -> Result<(), StoreError> {
     if let Owner::Entry { book, own_key } = o {
         if !json {
-            super::references::key_written(view, out, *book, e, f, new)?;
+            super::references::key_written(view, out, *book, e, f, new, entry_is_new)?;
         } else if super::relations::is_relations_field(f) {
             super::relations::relations_field_written(view, out, *book, e, own_key, new)?;
         }
@@ -236,11 +238,14 @@ pub fn created(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Resul
     for (hk, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
         let f = super::library::field_after(&hk, key::HEAD)?;
         if let Some(t) = super::kinds::text_value(view, e, &f)? {
-            owned_value_changed(view, out, &o, e, &f, false, Some(&t))?;
+            owned_value_changed(view, out, &o, e, &f, false, Some(&t), true)?;
         }
         if let Some(j) = super::history::json_value(view, e, &f)? {
-            owned_value_changed(view, out, &o, e, &f, true, Some(&j))?;
+            owned_value_changed(view, out, &o, e, &f, true, Some(&j), true)?;
         }
+    }
+    if let Owner::Entry { book, .. } = &o {
+        super::references::entry_keys_came(view, out, *book, e)?;
     }
     Ok(())
 }

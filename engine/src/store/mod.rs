@@ -9,6 +9,7 @@ pub mod choices;
 pub mod commit_checks;
 pub mod derive;
 pub mod entry_label;
+pub mod entry_page;
 pub mod history;
 pub mod kinds;
 pub mod library;
@@ -1975,6 +1976,8 @@ mod carriers_tests;
 mod chat_tests;
 #[cfg(test)]
 mod choices_tests;
+#[cfg(test)]
+mod entry_page_tests;
 #[cfg(test)]
 mod fault_tests;
 #[cfg(test)]

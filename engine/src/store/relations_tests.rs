@@ -675,7 +675,7 @@ fn top_of(store: &Store, kind: Option<u64>) -> Vec<u64> {
     })
 }
 
-fn derive_job<T: Send + 'static>(
+pub(super) fn derive_job<T: Send + 'static>(
     store: &Store,
     field: impl FnOnce(&derive::View, &mut derive::Out) -> StoreResult<T> + Send + 'static,
 ) -> T {
