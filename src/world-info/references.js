@@ -1,4 +1,4 @@
-import { MENTION_CHECKS_PER_REQUEST } from '@st/worldbuilding/protocol';
+import { MENTION_CHECKS_PER_REQUEST, TEXT_LINK_READS_PER_REQUEST } from '@st/worldbuilding/protocol';
 
 import { TYPE } from '../library-codes.js';
 import { entryObject } from '../world-info-engine.js';
@@ -8,8 +8,6 @@ import { findKeySpans, matchKeys, parseRegexFromString } from './key-matching.js
 
 const PAGE = 500;
 const LOOSE = { caseSensitive: false, matchWholeWords: false };
-export const HEAVY_FACTOR = 4;
-export const HEAVY_MIN_ENTRIES = 4;
 
 /**
  * @typedef {import('./key-matching.js').MatchDefaults} Defaults
@@ -17,12 +15,6 @@ export const HEAVY_MIN_ENTRIES = 4;
  * @typedef {{ id: bigint, key: string[], names: string[], content: string, constant: boolean, caseSensitive: boolean | null, matchWholeWords: boolean | null, broken: string | null }} Facts
  * @typedef {{ entry: bigint, name: string, spans: [number, number][] }} Reference
  */
-
-/**
- * @param {bigint} a
- * @param {bigint} b
- */
-const byId = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
  * A cursor: after an entity id (`i`) or a place in the world's order (`p`), and how many entries the reads before it
@@ -130,108 +122,28 @@ export class References {
     }
 
     /**
-     * @param {string} op
+     * Where `text`, the text of `entry`, writes a name of another entry: every span of every name, in order; of
+     * overlapping spans the one that starts first is kept, and of those starting together the longest. The store names
+     * the entries whose names the text may write (`textLinkCandidates`) in at most `readsAtMost` reads, and the matcher
+     * checks each; `complete` is false when the store stopped at that bound, so a name it hadn't reached may be unlinked.
      * @param {bigint} book
+     * @param {bigint} entry
      * @param {string} text
-     * @returns {Promise<bigint[] | null>}
+     * @param {{ readsAtMost?: number }} [bound]
+     * @returns {Promise<{ links: { entry: bigint, from: number, to: number }[], complete: boolean } | null>}
      */
-    async candidates(op, book, text) {
-        /** @type {bigint[]} */
-        const out = [];
-        let after;
-        for (;;) {
-            const page = await this.store.worldRead(op, { book, text, limit: PAGE, ...(after === undefined ? {} : { after }) });
-            if (page === null) return null;
-            out.push(...page.entries);
-            if (!page.more) return out;
-            after = page.entries[page.entries.length - 1];
-        }
-    }
-
-    /**
-     * @param {bigint} book
-     * @returns {Promise<bigint[]>}
-     */
-    async unindexed(book) {
-        /** @type {Set<bigint>} */
-        const out = new Set();
-        let after;
-        for (;;) {
-            const page = await this.store.worldRead('unindexedNames', { book, limit: PAGE, ...(after === undefined ? {} : { after }) });
-            for (const n of page.names) out.add(n.entry);
-            if (!page.more) return [...out];
-            after = page.names[page.names.length - 1].entry;
-        }
-    }
-
-    /**
-     * @param {bigint} book
-     * @param {bigint} entry
-     * @param {{ cursor?: string, limit?: number }} [page]
-     * @returns {Promise<{ references: Reference[], unresolved: string[], next: string | null } | null>}
-     */
-    async from(book, entry, { cursor, limit = 100 } = {}) {
-        const owned = await this.owned(book);
-        if (owned === null) return null;
-        const [source] = await this.facts([entry], owned);
-        if (!source) return null;
-        const after = parseCursor(cursor).id;
-        const indexed = (await this.candidates('nameCandidates', book, source.content)) ?? [];
-        const ids = [...new Set([...indexed, ...(await this.unindexed(book))])]
-            .filter(id => id !== entry && (after === undefined || id > after))
-            .sort(byId);
-        /** @type {Reference[]} */
-        const references = [];
-        /** @type {Set<string>} */
-        const unresolved = new Set();
-        let next = null;
-        for (let at = 0; at < ids.length && next === null; at += PAGE) {
-            for (const target of await this.facts(ids.slice(at, at + PAGE), owned)) {
-                if (references.length === limit) {
-                    next = `i${references[limit - 1].entry}`;
-                    break;
-                }
-                for (const raw of target.key) {
-                    const name = nameOf(raw, this.macroContext);
-                    if (name === null) {
-                        if (raw.includes('{{')) unresolved.add(raw);
-                        continue;
-                    }
-                    const m = mention(source.content, name, target, this.defaults);
-                    if (m.linked) {
-                        references.push({ entry: target.id, name, spans: m.spans });
-                        break;
-                    }
-                }
-            }
-        }
-        return { references, unresolved: [...unresolved], next };
-    }
-
-    /**
-     * Where an entry's text names another entry: every span of every name, in order; of overlapping spans the one that
-     * starts first is kept, and of those starting together the longest.
-     * @param {bigint} book
-     * @param {bigint} entry
-     * @returns {Promise<{ entry: bigint, from: number, to: number }[] | null>}
-     */
-    async links(book, entry) {
-        const owned = await this.owned(book);
-        if (owned === null) return null;
-        const [source] = await this.facts([entry], owned);
-        if (!source) return null;
-        const indexed = (await this.candidates('nameCandidates', book, source.content)) ?? [];
-        const ids = [...new Set([...indexed, ...(await this.unindexed(book))])].filter(id => id !== entry).sort(byId);
+    async links(book, entry, text, { readsAtMost = TEXT_LINK_READS_PER_REQUEST } = {}) {
+        /** @type {{ candidates: { entry: bigint, names: string[], caseSensitive: boolean | null, matchWholeWords: boolean | null }[], complete: boolean } | null} */
+        const found = await this.store.worldRead('textLinkCandidates', { book, entry, text, readsAtMost });
+        if (found === null) return null;
         /** @type {{ entry: bigint, from: number, to: number }[]} */
         const spans = [];
-        for (let at = 0; at < ids.length; at += PAGE) {
-            for (const target of await this.facts(ids.slice(at, at + PAGE), owned)) {
-                for (const raw of target.names) {
-                    const name = nameOf(raw, this.macroContext);
-                    if (name === null) continue;
-                    const m = mention(source.content, name, target, this.defaults);
-                    for (const [from, to] of m.spans) spans.push({ entry: target.id, from, to });
-                }
+        for (const candidate of found.candidates) {
+            const target = /** @type {Facts} */ ({ caseSensitive: candidate.caseSensitive, matchWholeWords: candidate.matchWholeWords });
+            for (const raw of candidate.names) {
+                const name = nameOf(raw, this.macroContext);
+                if (name === null) continue;
+                for (const [from, to] of mention(text, name, target, this.defaults).spans) spans.push({ entry: candidate.entry, from, to });
             }
         }
         spans.sort((a, b) => a.from - b.from || b.to - a.to);
@@ -240,32 +152,7 @@ export class References {
         for (const span of spans) {
             if (span.from >= (links[links.length - 1]?.to ?? 0)) links.push(span);
         }
-        return links;
-    }
-
-    /**
-     * The other entries of the book with `key` among their keys, by id, at most `limit` of them.
-     * @param {bigint} book
-     * @param {bigint} entry
-     * @param {string} key
-     * @param {{ limit: number }} page
-     * @returns {Promise<{ entries: bigint[], more: boolean } | null>}
-     */
-    async sharingKey(book, entry, key, { limit }) {
-        const owned = await this.owned(book);
-        if (owned === null) return null;
-        const indexed = parseRegexFromString(key) ? [] : ((await this.candidates('nameCandidates', book, key)) ?? []);
-        const ids = [...new Set([...indexed, ...(await this.unindexed(book))])].filter(id => id !== entry).sort(byId);
-        /** @type {bigint[]} */
-        const entries = [];
-        for (let at = 0; at < ids.length; at += PAGE) {
-            for (const other of await this.facts(ids.slice(at, at + PAGE), owned)) {
-                if (!other.key.includes(key)) continue;
-                if (entries.length === limit) return { entries, more: true };
-                entries.push(other.id);
-            }
-        }
-        return { entries, more: false };
+        return { links, complete: found.complete };
     }
 
     /**
@@ -390,53 +277,5 @@ export class References {
             if (stop !== undefined) return answer(stop, true);
             position = places[places.length - 1].position;
         }
-    }
-
-    /**
-     * @param {bigint} book
-     * @param {{ after?: number, limit?: number }} [page]
-     */
-    async issues(book, { after, limit = 100 } = {}) {
-        const owned = await this.owned(book);
-        if (owned === null) return null;
-        const page = await this.store.worldRead('entries', { book, limit, ...(after === undefined ? {} : { after }) });
-        const ids = page.entries.map((/** @type {any} */ p) => p.id);
-        const stats = await this.store.worldRead('bookStats', { book, entries: ids });
-        const average = stats.entries > 0 ? stats.bytes / stats.entries : 0;
-        const size = new Map(stats.of.map((/** @type {any} */ s) => [s.entry, s.bytes]));
-        const facts = await this.facts(ids, owned);
-        /** @type {{ entry: bigint, issues: object[] }[]} */
-        const out = [];
-        for (const f of facts) {
-            /** @type {object[]} */
-            const issues = [];
-            if (f.broken) issues.push({ kind: 'broken', why: f.broken });
-            const names = f.key.map(k => k.trim()).filter(Boolean);
-            if (!names.length && !f.constant) issues.push({ kind: 'never' });
-            const bytes = size.get(f.id) ?? 0;
-            if (stats.entries >= HEAVY_MIN_ENTRIES && bytes > HEAVY_FACTOR * average) {
-                issues.push({ kind: 'heavy', bytes, average: Math.round(average), always: f.constant });
-            }
-            for (const name of names) {
-                if (parseRegexFromString(name) || name.includes('{{')) continue;
-                const found = (await this.candidates('nameCandidates', book, name)) ?? [];
-                const others = (await this.facts(found.filter(id => id !== f.id), owned))
-                    .filter(o => o.key.some(k => k.trim().toLowerCase() === name.toLowerCase()))
-                    .map(o => o.id);
-                if (others.length) issues.push({ kind: 'shared', name, with: others });
-            }
-            if (issues.length) out.push({ entry: f.id, issues });
-        }
-        const next = page.more && page.entries.length ? page.entries[page.entries.length - 1].position : null;
-        return { issues: out, next };
-    }
-
-    /**
-     * @param {bigint} book
-     * @param {bigint[]} entries
-     */
-    async sizes(book, entries) {
-        const s = await this.store.worldRead('bookStats', { book, entries });
-        return { bytes: s.bytes, hash: s.hash, entries: s.entries, of: s.of };
     }
 }

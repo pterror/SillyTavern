@@ -18,7 +18,7 @@ const { setConfigFilePath } = await import('../src/util.js');
 setConfigFilePath(path.join(ROOT, 'default', 'config.yaml'));
 const { loadEngine } = await import('../engine/load.js');
 const { LibraryEngine } = await import('../src/library-engine.js');
-const { WORLDBUILDING_INDEXED, STORE_DIR } = await import('../src/user-stores.js');
+const { WORLDBUILDING_MARKERS, STORE_DIR } = await import('../src/user-stores.js');
 
 const engine = loadEngine().binding;
 const users = fs.readdirSync(dataRoot, { withFileTypes: true })
@@ -30,8 +30,8 @@ let steps = 0;
 let rewritten = 0;
 for (const handle of users) {
     const dir = path.join(dataRoot, handle, STORE_DIR);
-    const marker = path.join(dir, WORLDBUILDING_INDEXED);
-    if (fs.existsSync(marker)) {
+    const markers = WORLDBUILDING_MARKERS.map(marker => path.join(dir, marker));
+    if (markers.every(marker => fs.existsSync(marker))) {
         skipped++;
         continue;
     }
@@ -51,7 +51,7 @@ for (const handle of users) {
     } finally {
         await lib.close();
     }
-    fs.writeFileSync(marker, '');
+    for (const marker of markers) fs.writeFileSync(marker, '');
 }
 
-console.log(`Users: ${users.length} (${skipped} already converted). Relations fields rewritten to name targets by entity: ${rewritten}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed and placed among their target's sources, its keys counted and whether it is named or offered names kept.`);
+console.log(`Users: ${users.length} (${skipped} already converted). Relations fields rewritten to name targets by entity: ${rewritten}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed and placed among their target's sources, its keys counted with the entries that have them, its names indexed, and whether it is named or offered names kept.`);

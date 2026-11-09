@@ -6,7 +6,7 @@ use super::derive::{Deriver, Loc, Out, View};
 use super::entry_label::{self, COMMENT};
 use super::kinds::{bytes, dead, id, key, loc_bytes, text_value};
 use super::library::counter;
-use super::references::{is_key_item, key_items_of, key_list};
+use super::references::{is_key_item, key_items_of, key_list, names_written};
 use crate::log::format::{FieldRef, Record, get_uvarint};
 
 // (e) → NAMED | OFFERED; no key when neither.
@@ -72,35 +72,38 @@ pub fn trimmed(text: &[u8]) -> &[u8] {
 }
 
 enum Written<'a> {
-    Nothing,
     Title(Option<&'a [u8]>),
     Names(Option<&'a [u8]>),
     Key(u64, Option<&'a [u8]>),
 }
 
+#[derive(Clone)]
 struct Fields {
     title: Option<Vec<u8>>,
     names: Option<Vec<u8>>,
     keys: Vec<(u64, Vec<u8>)>,
 }
 
-fn fields(view: &View, book: u64, e: u64, written: &Written) -> Result<Fields, StoreError> {
-    let title = match written {
-        Written::Title(title) => title.map(<[u8]>::to_vec),
-        _ => text_value(view, e, &FieldRef::Code(COMMENT))?,
-    };
-    let names = match written {
-        Written::Names(names) => names.map(<[u8]>::to_vec),
-        _ => super::history::json_value(view, e, &entry_label::names_field())?,
-    };
-    let mut keys = key_items_of(view, book, e)?;
-    if let Written::Key(code, text) = written {
-        keys.retain(|(item, _)| item != code);
-        if let Some(text) = text {
-            keys.push((*code, text.to_vec()));
+fn stored_fields(view: &View, book: u64, e: u64) -> Result<Fields, StoreError> {
+    Ok(Fields {
+        title: text_value(view, e, &FieldRef::Code(COMMENT))?,
+        names: super::history::json_value(view, e, &entry_label::names_field())?,
+        keys: key_items_of(view, book, e)?,
+    })
+}
+
+fn with_written(mut fields: Fields, written: &Written) -> Fields {
+    match written {
+        Written::Title(title) => fields.title = title.map(<[u8]>::to_vec),
+        Written::Names(names) => fields.names = names.map(<[u8]>::to_vec),
+        Written::Key(code, text) => {
+            fields.keys.retain(|(item, _)| item != code);
+            if let Some(text) = text {
+                fields.keys.push((*code, text.to_vec()));
+            }
         }
     }
-    Ok(Fields { title, names, keys })
+    fields
 }
 
 fn marked_strings(names: Option<&[u8]>) -> Option<BTreeSet<Vec<u8>>> {
@@ -108,6 +111,14 @@ fn marked_strings(names: Option<&[u8]>) -> Option<BTreeSet<Vec<u8>>> {
         None => Some(BTreeSet::new()),
         Some(json) => super::relations::json_strings_of_list(json).map(|list| list.into_iter().collect()),
     }
+}
+
+/// The entry's names: its keys the names field marks.
+fn names_of(fields: &Fields) -> BTreeSet<Vec<u8>> {
+    let Some(marked) = marked_strings(fields.names.as_deref()) else {
+        return BTreeSet::new();
+    };
+    fields.keys.iter().filter(|(_, key_text)| marked.contains(key_text)).map(|(_, key_text)| key_text.clone()).collect()
 }
 
 fn title_keys_not_names<'a>(
@@ -169,8 +180,10 @@ fn set_state(out: &mut Out, book: u64, e: u64, old: u8, new: u8) {
 }
 
 fn refresh(view: &View, out: &mut Out, book: u64, e: u64, written: &Written) -> Result<(), StoreError> {
-    let new = state_of(&fields(view, book, e, written)?);
-    set_state(out, book, e, stored_state(view, e)?, new);
+    let stored = stored_fields(view, book, e)?;
+    let new = with_written(stored.clone(), written);
+    set_state(out, book, e, stored_state(view, e)?, state_of(&new));
+    names_written(out, book, e, &names_of(&stored), &names_of(&new));
     Ok(())
 }
 
@@ -233,11 +246,16 @@ pub fn entry_value_written(
 }
 
 pub fn entry_came(view: &View, out: &mut Out, book: u64, e: u64) -> Result<(), StoreError> {
-    refresh(view, out, book, e, &Written::Nothing)
+    let fields = stored_fields(view, book, e)?;
+    set_state(out, book, e, stored_state(view, e)?, state_of(&fields));
+    names_written(out, book, e, &BTreeSet::new(), &names_of(&fields));
+    Ok(())
 }
 
 pub fn entry_gone(view: &View, out: &mut Out, book: u64, e: u64) -> Result<(), StoreError> {
     set_state(out, book, e, stored_state(view, e)?, 0);
+    let fields = stored_fields(view, book, e)?;
+    names_written(out, book, e, &names_of(&fields), &BTreeSet::new());
     drop_mark(view, out, book, e)
 }
 

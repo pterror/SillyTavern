@@ -265,6 +265,7 @@ function world(
             keys: [{ text: `name ${entry}`, isName: true, alsoBringsUp: 0 }],
             text: found.text,
             links: [],
+            linksComplete: true,
             relations: [],
             placement: PLACEMENT,
             placementDiffersFromDefaults: false,

@@ -226,10 +226,11 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             const stored = await lib.books.entryIn(b, e);
             const { placement, differs } = placementOf(stored ? /** @type {Record<string, unknown>} */ (entryObject(stored, false)) : {});
             const counts = await countTokens(user, [read.text]);
-            const links = (await (await referencesOf(user)).links(b, e)) ?? [];
+            const found = (await (await referencesOf(user)).links(b, e, read.text)) ?? { links: [], complete: true };
             return {
                 ...read,
-                links: links.map(link => ({ ...link, entry: String(link.entry) })),
+                links: found.links.map(link => ({ ...link, entry: String(link.entry) })),
+                linksComplete: found.complete,
                 placement: /** @type {import('@st/worldbuilding/protocol').Placement} */ (placement),
                 placementDiffersFromDefaults: differs,
                 tokens: counts?.[0] ?? null,
@@ -237,13 +238,8 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             };
         },
         async readKeySharers(user, { book, entry, key, limit }) {
-            const b = BigInt(book);
-            const found = await (await referencesOf(user)).sharingKey(b, BigInt(entry), key, { limit });
-            if (found === null) return null;
             const lib = await libOf(user);
-            /** @type {(import('@st/worldbuilding/protocol').Named | null)[]} */
-            const labels = found.entries.length === 0 ? [] : await lib.store.worldRead('worldbuildingLabels', { book: b, entities: found.entries });
-            return { entries: labels.flatMap(label => (label ? [label] : [])), more: found.more };
+            return lib.store.worldRead('worldbuildingKeySharers', { book: BigInt(book), entry: BigInt(entry), key, limit });
         },
         async editEntry(who, book, entry, edit) {
             const lib = await libOf(who.user);

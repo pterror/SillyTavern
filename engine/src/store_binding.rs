@@ -3206,20 +3206,35 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
             let book = req_integer(a, "book")?;
             Box::new(move |s| s.chat_read(|v| b::resolving_page(v, book)).map(JsTree))
         }
-        "nameCandidates" => {
-            use crate::store::references as r;
-            let (book, after, limit) = (
+        "textLinkCandidates" => {
+            let (book, entry, reads_at_most) = (
                 req_integer(a, "book")?,
-                opt_integer(a, "after")?,
+                req_integer(a, "entry")?,
+                req_integer(a, "readsAtMost")? as usize,
+            );
+            let text = a
+                .get::<String>("text")?
+                .ok_or_else(|| invalid(format!("{op} needs a text")))?;
+            Box::new(move |s| {
+                s.chat_read(|v| {
+                    crate::store::references::link_candidates(v, book, entry, &text, reads_at_most)
+                })
+                .map(JsTree)
+            })
+        }
+        "worldbuildingKeySharers" => {
+            let (book, entry, limit) = (
+                req_integer(a, "book")?,
+                req_integer(a, "entry")?,
                 req_integer(a, "limit")? as usize,
             );
-            let text = string(
-                "text",
-                a.get::<Unknown>("text")?
-                    .ok_or_else(|| invalid(format!("{op} needs a text")))?,
+            let key_text = string(
+                "key",
+                a.get::<Unknown>("key")?
+                    .ok_or_else(|| invalid(format!("{op} needs a key")))?,
             )?;
             Box::new(move |s| {
-                s.chat_read(|v| r::name_candidates(v, book, &text, after, limit))
+                s.chat_read(|v| crate::store::references::key_sharers(v, book, entry, &key_text, limit))
                     .map(JsTree)
             })
         }
@@ -3252,17 +3267,6 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
             let (book, entries) = (req_integer(a, "book")?, integers(a, "entries")?);
             Box::new(move |s| {
                 s.chat_read(|v| crate::store::references::entry_texts(v, book, &entries))
-                    .map(JsTree)
-            })
-        }
-        "unindexedNames" => {
-            let (book, after, limit) = (
-                req_integer(a, "book")?,
-                opt_integer(a, "after")?,
-                req_integer(a, "limit")? as usize,
-            );
-            Box::new(move |s| {
-                s.chat_read(|v| crate::store::references::unindexed_page(v, book, after, limit))
                     .map(JsTree)
             })
         }

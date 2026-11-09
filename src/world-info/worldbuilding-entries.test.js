@@ -89,6 +89,7 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
         stoppedForBound: false,
     }] });
     assert.deepEqual(read.links, [], 'a key that is no name links nothing');
+    assert.equal(read.linksComplete, true);
     assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Ilse', limit: 5 }), { entries: [{ thing: second, text: 'The Lantern House', shownAs: 'title' }], more: false });
     assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Ilse', limit: 0 }), { entries: [], more: true });
     assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Varro', limit: 5 }), { entries: [], more: false });

@@ -49,18 +49,18 @@ test('a store without the worldbuilding marker is refused, naming the script; a 
     const fresh = path.join(data, 'v');
     fs.mkdirSync(fresh);
     await stores.userStore({ root: fresh });
-    expect(fs.existsSync(path.join(fresh, stores.STORE_DIR, stores.WORLDBUILDING_INDEXED))).toBe(true);
+    for (const marker of stores.WORLDBUILDING_MARKERS) expect(fs.existsSync(path.join(fresh, stores.STORE_DIR, marker))).toBe(true);
     expect(await stores.oldFormatLine({ root: fresh })).toBeNull();
     await stores.closeUserStores();
 });
 
-test('the script converts a store without the marker, keeps its counts, writes the marker, and skips the store after', async () => {
+test('the script converts a store without the markers, keeps its counts, lists and names, writes the markers, and skips the store after', async () => {
     const data = dataRoot();
     const root = path.join(data, 'u');
     const store = await stores.userStore({ root });
     await store.lib.books.write('Imported', {
         entries: {
-            0: { uid: 0, key: ['Ilse', 'lamp'], comment: 'Ilse', content: 'Ilse keeps the lamp.', displayIndex: 0 },
+            0: { uid: 0, key: ['Ilse', 'lamp'], comment: 'Ilse', content: 'Ilse keeps the lamp of Varro.', displayIndex: 0 },
             1: { uid: 1, key: ['Ilse', 'house'], comment: 'The House', content: 'A house.', displayIndex: 1 },
             2: { uid: 2, key: ['Varro'], comment: 'Varro', content: 'Varro.', displayIndex: 2, extensions: { names: ['Varro'] } },
         },
@@ -70,21 +70,26 @@ test('the script converts a store without the marker, keeps its counts, writes t
     const counts = async (/** @type {any} */ lib) => ({
         offer: await lib.books.namesOffer(book),
         keys: await Promise.all(entities.map(async entry => (await lib.store.worldRead('worldbuildingEntry', { book, entry })).keys)),
+        sharers: await lib.store.worldRead('worldbuildingKeySharers', { book, entry: entities[0], key: 'Ilse', limit: 5 }),
+        links: (await lib.store.worldRead('textLinkCandidates', { book, entry: entities[0], text: 'Ilse keeps the lamp of Varro.', readsAtMost: 1000 })).candidates,
     });
     const before = await counts(store.lib);
     expect(before.offer).toMatchObject({ namedEntries: 1, offeredEntries: 1 });
     expect(before.keys[0]).toEqual([{ text: 'Ilse', isName: false, alsoBringsUp: 1 }, { text: 'lamp', isName: false, alsoBringsUp: 0 }]);
+    expect(before.sharers).toEqual({ entries: [{ thing: String(entities[1]), text: 'The House', shownAs: 'title' }], more: false });
+    expect(before.links).toEqual([{ entry: entities[2], names: ['Varro'], caseSensitive: null, matchWholeWords: null }]);
     await stores.closeUserStores();
 
-    const marker = path.join(root, stores.STORE_DIR, stores.WORLDBUILDING_INDEXED);
-    fs.rmSync(marker);
+    const markers = stores.WORLDBUILDING_MARKERS.map(marker => path.join(root, stores.STORE_DIR, marker));
+    for (const marker of markers) fs.rmSync(marker);
     expect(await stores.oldFormatLine({ root })).toContain('convert-lorebooks-to-worldbuilding.mjs');
     expect(convert(data)).toContain('Users: 1 (0 already converted). Relations fields rewritten to name targets by entity: 0. Steps of 2000 entries: 1.');
-    expect(fs.existsSync(marker)).toBe(true);
+    for (const marker of markers) expect(fs.existsSync(marker)).toBe(true);
     expect(await stores.oldFormatLine({ root })).toBeNull();
     expect(convert(data)).toContain('Users: 1 (1 already converted). Relations fields rewritten to name targets by entity: 0. Steps of 2000 entries: 0.');
 
-    fs.rmSync(marker);
+    fs.rmSync(markers[1]);
+    expect(await stores.oldFormatLine({ root })).toContain('convert-lorebooks-to-worldbuilding.mjs');
     expect(convert(data)).toContain('Users: 1 (0 already converted).');
     const after = await stores.userStore({ root });
     expect(await counts(after.lib)).toEqual(before);

@@ -86,6 +86,27 @@ fn set_json(e: u64, f: u64, j: &str) -> Record {
     )
 }
 
+fn set_names(e: u64, names: &[&str]) -> Record {
+    rec(
+        "jsonValue",
+        vec![
+            Value::Sel(0, e),
+            Value::Field(super::entry_label::names_field()),
+            text(&names_json(names)),
+            Value::Absent,
+            Value::Absent,
+        ],
+    )
+}
+
+fn names_json(names: &[&str]) -> String {
+    let quoted: Vec<String> = names
+        .iter()
+        .map(|n| format!("\"{}\"", n.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect();
+    format!("[{}]", quoted.join(","))
+}
+
 fn drop_value(e: u64, f: u64) -> Record {
     rec(
         "valueDelete",
@@ -162,6 +183,7 @@ impl Rng {
 #[derive(Default, Clone)]
 struct Ent {
     values: BTreeMap<(u64, bool), String>,
+    names: Option<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -172,7 +194,7 @@ struct Model {
 const WORDS: &[&str] = &[
     "the", "tavern", "Elara", "elara's", "concatenate", "cat", "bobcat", "/dr(a|e)gon/i", "dragon",
     "drEgon", "{{char}}", "!!!", "Sir Rowan of Vale", "rowan", "Vale", "ΟΔΟΣ", "οδος", "İstanbul",
-    "東京に行く", "東京", "x", "_cat_",
+    "東京に行く", "東京", "x", "_cat_", " Elara\u{feff}", "\u{85}cat", "  ", "/Vale/", "the Vale",
 ];
 
 fn hash_of(values: &BTreeMap<(u64, bool), String>) -> (i64, i64) {
@@ -185,25 +207,79 @@ fn hash_of(values: &BTreeMap<(u64, bool), String>) -> (i64, i64) {
     (bytes, hash)
 }
 
+fn ent_hash(ent: &Ent) -> (i64, i64) {
+    let (mut bytes, mut hash) = hash_of(&ent.values);
+    if let Some(names) = &ent.names {
+        let json = names_json(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        bytes += json.len() as i64;
+        hash = hash.wrapping_add(book_stats::field_hash(&super::entry_label::names_field(), true, json.as_bytes()));
+    }
+    (bytes, hash)
+}
+
+fn keys_of_ent(ent: &Ent, list: u64) -> Vec<String> {
+    ent.values
+        .iter()
+        .filter(|((f, json), _)| !json && *f >= library::ITEM_BASE && (f - library::ITEM_BASE) % library::LISTS == list)
+        .map(|(_, v)| v.clone())
+        .collect()
+}
+
+fn js_trimmed(name: &str) -> &str {
+    name.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}')
+}
+
+/// Every name of another entry the text's fold holds, and every name with a pattern's shape or a macro.
+fn names_in(text: &str, entry: u64, entries: &BTreeMap<u64, Ent>, list: u64) -> BTreeSet<(u64, String)> {
+    let folded = references::names_fold(text);
+    let mut found = BTreeSet::new();
+    for (e, ent) in entries {
+        if *e == entry {
+            continue;
+        }
+        let keys = keys_of_ent(ent, list);
+        for name in ent.names.iter().flatten().filter(|n| keys.contains(n)) {
+            let trimmed = js_trimmed(name);
+            let shaped = trimmed.len() > 2
+                && trimmed.starts_with('/')
+                && trimmed[1..].rfind('/').is_some_and(|i| i > 0 && trimmed[2 + i..].chars().all(|c| "gimsuy".contains(c)));
+            if name.contains("{{") || shaped || (!trimmed.is_empty() && folded.contains(&references::names_fold(trimmed))) {
+                found.insert((*e, name.clone()));
+            }
+        }
+    }
+    found
+}
+
+fn candidates_found(page: &Js) -> BTreeSet<(u64, String)> {
+    let Js::Arr(list) = field(page, "candidates") else {
+        panic!("no candidates")
+    };
+    let mut found = BTreeSet::new();
+    for candidate in list {
+        let Js::Big(e) = field(candidate, "entry") else { panic!() };
+        let Js::Arr(names) = field(candidate, "names") else { panic!() };
+        for name in names {
+            let Js::Text(t) = name else { panic!() };
+            found.insert((*e, String::from_utf8(t.clone()).unwrap()));
+        }
+    }
+    found
+}
+
 impl Model {
     fn check(&self, s: &Store) {
         for (book, (list, entries, own)) in &self.books {
             let (mut bytes, mut hash) = hash_of(own);
-            let mut unindexed = BTreeSet::new();
+            let mut key_entries: BTreeMap<(String, u64), i64> = BTreeMap::new();
             for (e, ent) in entries {
-                let (b, h) = hash_of(&ent.values);
+                let (b, h) = ent_hash(ent);
                 let got = read(s, |v| entry_stat(v, *e));
                 assert_eq!((got.bytes, got.hash), (b, h), "entry {e}");
                 bytes += b;
                 hash = hash.wrapping_add(h);
-                for ((f, json), v) in &ent.values {
-                    if !json
-                        && *f >= library::ITEM_BASE
-                        && (f - library::ITEM_BASE) % library::LISTS == *list
-                        && references::unindexable(v.as_bytes())
-                    {
-                        unindexed.insert((*e, v.clone()));
-                    }
+                for key_text in keys_of_ent(ent, *list) {
+                    *key_entries.entry((key_text, *e)).or_insert(0) += 1;
                 }
             }
             let got = read(s, |v| book_stat(v, *book));
@@ -212,24 +288,24 @@ impl Model {
                 (bytes, hash, entries.len() as i64),
                 "book {book}"
             );
-            let mut seen = BTreeSet::new();
-            let mut after = None;
-            loop {
-                let page = read(s, |v| references::unindexed_page(v, *book, after, 3));
-                let Js::Arr(names) = field(&page, "names") else {
-                    panic!()
-                };
-                for n in names {
-                    let Js::Big(e) = field(n, "entry") else { panic!() };
-                    let Js::Text(t) = field(n, "name") else { panic!() };
-                    seen.insert((*e, String::from_utf8(t.clone()).unwrap()));
-                    after = Some(*e);
+            let prefix = super::kinds::key::id(references::KEY_ENTRIES_BY_TEXT, *book);
+            let stored: BTreeMap<(String, u64), i64> = read(s, |v| {
+                let mut stored = BTreeMap::new();
+                for (k, _) in v.scan(&prefix, &super::kinds::key::prefix_end(&prefix), usize::MAX)? {
+                    let mut at = prefix.len();
+                    let text = crate::keyspace::val::get_bytes(&k, &mut at).unwrap();
+                    let e = crate::keyspace::val::get_u64(&k, &mut at).unwrap();
+                    stored.insert((String::from_utf8(text).unwrap(), e), library::counter(v, &k)?);
                 }
-                if field(&page, "more") != &Js::Bool(true) {
-                    break;
-                }
+                Ok(stored)
+            });
+            assert_eq!(stored, key_entries, "book {book} entries per key text");
+            for (e, ent) in entries {
+                let content = ent.values.get(&(CONTENT, false)).cloned().unwrap_or_default();
+                let page = read(s, |v| references::link_candidates(v, *book, *e, &content, usize::MAX));
+                assert_eq!(field(&page, "complete"), &Js::Bool(true));
+                assert_eq!(candidates_found(&page), names_in(&content, *e, entries, *list), "book {book} entry {e}: {content}");
             }
-            assert_eq!(seen, unindexed, "book {book} unindexed names");
         }
     }
 }
@@ -246,7 +322,7 @@ fn step(s: &Store, m: &mut Model, rng: &mut Rng, next: &mut u64) {
             .join(" ")
     };
     let (records, apply): (Vec<Record>, Box<dyn FnOnce(&mut BTreeMap<u64, Ent>)>) =
-        match rng.next() % 9 {
+        match rng.next() % 11 {
             0 | 1 => {
                 let id = *next;
                 *next += 1;
@@ -342,6 +418,19 @@ fn step(s: &Store, m: &mut Model, rng: &mut Rng, next: &mut u64) {
                     }),
                 )
             }
+            8 | 9 if !ids.is_empty() => {
+                let e = rng.pick(&ids);
+                let mut names: Vec<String> = keys_of_ent(&entries[&e], list);
+                names.push(rng.pick(WORDS).to_string());
+                let names: Vec<String> = names.into_iter().filter(|_| !rng.next().is_multiple_of(3)).collect();
+                let as_str: Vec<&str> = names.iter().map(String::as_str).collect();
+                (
+                    vec![set_names(e, &as_str)],
+                    Box::new(move |es| {
+                        es.get_mut(&e).unwrap().names = Some(names);
+                    }),
+                )
+            }
             _ => return,
         };
     s.commit_wait(records).unwrap();
@@ -363,7 +452,7 @@ fn setup(s: &Store, m: &mut Model) {
 }
 
 #[test]
-fn sizes_hashes_and_unindexed_names_follow_every_write_reopens_and_cleaning() {
+fn sizes_hashes_key_entries_and_names_in_texts_follow_every_write_reopens_and_cleaning() {
     let dir = temp_dir("model");
     let mut m = Model::default();
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
@@ -398,6 +487,8 @@ fn a_deleted_book_takes_its_totals_and_its_entries_leave_nothing() {
         create(10, ENTRY, "1:10"),
         set_text(10, CONTENT, "the tavern"),
         set_text(10, key_field(0, 0), "/tav/i"),
+        set_text(10, key_field(0, 1), "Tavern"),
+        set_names(10, &["/tav/i", "Tavern"]),
     ])
     .unwrap();
     assert_eq!(read(&s, |v| book_stat(v, 1)).entries, 1);
@@ -413,24 +504,28 @@ fn a_deleted_book_takes_its_totals_and_its_entries_leave_nothing() {
     ])
     .unwrap();
     assert_eq!(read(&s, |v| book_stat(v, 1)), Default::default());
-    let page = read(&s, |v| references::unindexed_page(v, 1, None, 10));
-    assert_eq!(field(&page, "names"), &Js::Arr(Vec::new()));
+    for structure in [references::KEY_ENTRIES_BY_TEXT, references::NAMES_BY_FOLD, references::NAMES_CHECKED_ONE_BY_ONE] {
+        let prefix = super::kinds::key::of(structure);
+        let left = read(&s, |v| v.scan(&prefix, &super::kinds::key::prefix_end(&prefix), usize::MAX));
+        assert!(left.is_empty(), "structure {structure} keeps {} keys", left.len());
+    }
 }
 
-fn candidates(s: &Store, book: u64, t: &str, names: bool) -> Option<Vec<u64>> {
+fn linked(s: &Store, book: u64, t: &str) -> Vec<u64> {
+    let page = read(s, |v| references::link_candidates(v, book, 0, t, usize::MAX));
+    candidates_found(&page).into_iter().map(|(e, _)| e).collect()
+}
+
+fn mentioning(s: &Store, book: u64, t: &str) -> Option<Vec<u64>> {
     let mut out = Vec::new();
     let mut after = None;
     loop {
         let page = read(s, |v| {
-            if names {
-                references::name_candidates(v, book, t.as_bytes(), after, 2)
-            } else {
-                let names = [references::MentionName {
-                    text: t.as_bytes().to_vec(),
-                    regex_flags: None,
-                }];
-                references::mention_candidates(v, book, &names, after, 2)
-            }
+            let names = [references::MentionName {
+                text: t.as_bytes().to_vec(),
+                regex_flags: None,
+            }];
+            references::mention_candidates(v, book, &names, after, 2)
         });
         if page == Js::Null {
             return None;
@@ -445,7 +540,7 @@ fn candidates(s: &Store, book: u64, t: &str, names: bool) -> Option<Vec<u64>> {
 }
 
 #[test]
-fn a_text_finds_every_entry_whose_name_it_contains_and_a_long_name_every_text_containing_it() {
+fn a_text_finds_every_entry_whose_name_it_holds_and_a_long_name_every_text_containing_it() {
     let dir = temp_dir("candidates");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();
     let mut m = Model::default();
@@ -465,11 +560,11 @@ fn a_text_finds_every_entry_whose_name_it_contains_and_a_long_name_every_text_co
     for (e, n) in names {
         r.push(create(*e, ENTRY, &format!("1:{e}")));
         r.push(set_text(*e, key_field(0, 0), n));
+        r.push(set_names(*e, &[n]));
         r.push(set_text(*e, CONTENT, &format!("about {n}, and more about the Vale")));
     }
     s.commit_wait(r).unwrap();
-    let found = |t: &str| candidates(&s, 1, t, true).unwrap();
-    let has = |t: &str, e: u64| found(t).contains(&e);
+    let has = |t: &str, e: u64| linked(&s, 1, t).contains(&e);
     assert!(has("a CONCATENATED string", 10));
     assert!(has("bobcat", 10));
     assert!(has("ELARA's sword", 11));
@@ -481,10 +576,11 @@ fn a_text_finds_every_entry_whose_name_it_contains_and_a_long_name_every_text_co
     assert!(has("xaveryveryverylongsinglewordnamesss", 17));
     assert!(!has("a dog", 11));
     assert!(!has("averyveryvery", 17));
+    assert!(!has("Sir Rowan of", 12));
 
-    assert_eq!(candidates(&s, 1, "cat", false), None);
-    assert_eq!(candidates(&s, 1, "Rowan Vale", false), None);
-    let long = candidates(&s, 1, "Sir Rowan of Vale", false).unwrap();
+    assert_eq!(mentioning(&s, 1, "cat"), None);
+    assert_eq!(mentioning(&s, 1, "Rowan Vale"), None);
+    let long = mentioning(&s, 1, "Sir Rowan of Vale").unwrap();
     assert!(long.contains(&12));
     assert!(!long.contains(&11));
 
@@ -493,8 +589,8 @@ fn a_text_finds_every_entry_whose_name_it_contains_and_a_long_name_every_text_co
         set_text(20, CONTENT, "hailing from Rowan's lands"),
     ])
     .unwrap();
-    assert!(candidates(&s, 1, "lord rowan's lands", false).unwrap().contains(&20));
-    assert!(!candidates(&s, 1, "lord rowan's lands", false).unwrap().contains(&10));
+    assert!(mentioning(&s, 1, "lord rowan's lands").unwrap().contains(&20));
+    assert!(!mentioning(&s, 1, "lord rowan's lands").unwrap().contains(&10));
 }
 
 #[test]
@@ -524,11 +620,17 @@ fn a_field_write_touches_only_its_own_entry_and_book_totals() {
         .iter()
         .filter(|k| {
             let s = crate::keyspace::val::get_u64(k, &mut 0).unwrap();
-            [book_stats::STAT_FIELD, book_stats::STAT_ENTRY, book_stats::STAT_BOOK, references::UNINDEXED]
-                .contains(&s)
+            [
+                book_stats::STAT_FIELD,
+                book_stats::STAT_ENTRY,
+                book_stats::STAT_BOOK,
+                references::KEY_ITEMS_BY_TEXT,
+                references::KEY_ENTRIES_BY_TEXT,
+            ]
+            .contains(&s)
         })
         .collect();
-    assert!(stat_keys.len() <= 6, "{} stat keys for one field write", stat_keys.len());
+    assert!(stat_keys.len() <= 10, "{} stat keys for one field write", stat_keys.len());
     s.commit_wait(vec![rename]).unwrap();
     let after = read(&s, |v| book_stat(v, 1));
     assert_eq!(after.entries, before.entries);
@@ -579,4 +681,87 @@ fn a_regex_key_is_looked_up_by_a_word_every_match_holds_whole_and_only_then() {
     ] {
         assert_eq!(regex_term(unknown, ""), None, "{unknown}");
     }
+}
+
+#[test]
+fn a_text_finds_names_by_their_fold_and_stops_at_its_bound_saying_so() {
+    let dir = temp_dir("links");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut m = Model::default();
+    setup(&s, &mut m);
+    let names: &[(u64, &str)] = &[
+        (10, "ΟΔΟΣ"),
+        (11, "İstanbul"),
+        (12, "Ilse"),
+        (13, "Ilse Varro"),
+        (14, "/Vale/i"),
+        (15, "{{char}}"),
+        (16, "  "),
+    ];
+    let mut r = Vec::new();
+    for (e, n) in names {
+        r.push(create(*e, ENTRY, &format!("1:{e}")));
+        r.push(set_text(*e, key_field(0, 0), n));
+        r.push(set_text(*e, key_field(0, 1), "a trigger"));
+        r.push(set_names(*e, &[n]));
+    }
+    r.push(set_json(12, 131, "true"));
+    r.push(set_json(12, 132, "false"));
+    s.commit_wait(r).unwrap();
+    let entries = |t: &str| linked(&s, 1, t);
+    assert_eq!(entries("the οδοσa road"), vec![10, 14, 15], "a sigma in a word is the name's final sigma");
+    assert_eq!(entries("to i̇stanbul"), vec![11, 14, 15]);
+    assert_eq!(entries("ILSE VARRO"), vec![12, 13, 14, 15], "case is the matcher's to check");
+    assert_eq!(entries("a trigger"), vec![14, 15], "a key that is no name links nothing");
+
+    let page = read(&s, |v| references::link_candidates(v, 1, 0, "Ilse Varro", usize::MAX));
+    let Js::Arr(list) = field(&page, "candidates") else { panic!() };
+    let ilse = list.iter().find(|c| field(c, "entry") == &Js::Big(12)).unwrap();
+    assert_eq!((field(ilse, "caseSensitive"), field(ilse, "matchWholeWords")), (&Js::Bool(true), &Js::Bool(false)));
+    let Js::Num(all) = field(&page, "reads") else { panic!() };
+    let bounded = read(&s, |v| references::link_candidates(v, 1, 0, "Ilse Varro", *all as usize - 1));
+    assert_eq!(field(&bounded, "complete"), &Js::Bool(false));
+    assert!(candidates_found(&bounded).is_subset(&candidates_found(&page)));
+    let Js::Num(spent) = field(&bounded, "reads") else { panic!() };
+    assert!(*spent < *all);
+    assert_eq!(field(&read(&s, |v| references::link_candidates(v, 1, 12, "Ilse", usize::MAX)), "complete"), &Js::Bool(true));
+    assert!(!linked(&s, 1, "Ilse").is_empty());
+    let own = read(&s, |v| references::link_candidates(v, 1, 12, "Ilse", usize::MAX));
+    assert!(!candidates_found(&own).iter().any(|(e, _)| *e == 12), "an entry's own names are left out");
+
+    s.commit_wait(vec![set_names(13, &[])]).unwrap();
+    assert_eq!(entries("ILSE VARRO"), vec![12, 14, 15]);
+    s.commit_wait(vec![delete(12)]).unwrap();
+    assert_eq!(entries("ILSE VARRO"), vec![14, 15]);
+}
+
+#[test]
+fn the_entries_with_a_key_are_listed_by_id_without_the_entry_asking() {
+    let dir = temp_dir("sharers");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut m = Model::default();
+    setup(&s, &mut m);
+    let mut r = Vec::new();
+    for e in 10..16 {
+        r.push(create(e, ENTRY, &format!("1:{e}")));
+        r.push(set_text(e, key_field(0, 0), if e == 15 { "Ledger" } else { "ledger" }));
+        r.push(set_text(e, COMMENT, &format!("entry {e}")));
+    }
+    r.push(set_text(11, key_field(0, 1), "ledger"));
+    s.commit_wait(r).unwrap();
+    let sharers = |entry: u64, limit: usize| {
+        let page = read(&s, |v| references::key_sharers(v, 1, entry, b"ledger", limit));
+        let Js::Arr(list) = field(&page, "entries") else { panic!() };
+        let things: Vec<Js> = list.iter().map(|named| field(named, "thing").clone()).collect();
+        (things, field(&page, "more").clone())
+    };
+    let thing = |e: u64| Js::Text(e.to_string().into_bytes());
+    assert_eq!(sharers(10, 10), (vec![thing(11), thing(12), thing(13), thing(14)], Js::Bool(false)));
+    assert_eq!(sharers(12, 2), (vec![thing(10), thing(11)], Js::Bool(true)));
+    assert_eq!(sharers(14, 4), (vec![thing(10), thing(11), thing(12), thing(13)], Js::Bool(false)));
+    s.commit_wait(vec![drop_value(11, key_field(0, 0))]).unwrap();
+    assert_eq!(sharers(10, 10).0, vec![thing(11), thing(12), thing(13), thing(14)], "its other item still has the key");
+    s.commit_wait(vec![drop_value(11, key_field(0, 1)), delete(13)]).unwrap();
+    assert_eq!(sharers(10, 10).0, vec![thing(12), thing(14)]);
+    assert_eq!(read(&s, |v| references::key_sharers(v, 99, 10, b"ledger", 3)), Js::Null);
 }

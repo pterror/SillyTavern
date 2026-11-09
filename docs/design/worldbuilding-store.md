@@ -80,6 +80,12 @@ that reaches 0 is deleted. An entry's creation and restore count all its keys (`
 deletion uncounts them (`references::entry_gone`). The read is one get per key: the count less the entry's own items with
 that text. The same text twice in one other entry counts twice.
 
+The same writes keep the entries with each key, `KEY_ENTRIES_BY_TEXT (b, key text, e) → count` (Add): the entry's own
+items with that text, deleted at 0 (`references::change_key_items` writes both). A key's popover lists the others
+("Also brings up …", `worldbuilding.keySharers`) as one page of that index in entity id order: at most
+`KEY_SHARERS_SHOWN` + 2 keys read (the entry's own is skipped), each drawn as a label, and `more` when one is left over
+(`references::key_sharers`), whatever the world's size.
+
 ## The imported-book offer
 
 An imported book has no names (`worldbuilding.md`, Imported books). The world's header offers, once, to mark as names
@@ -434,7 +440,14 @@ per read (not measured; I don't know the real figure, and it should be measured 
 - an entry checked for a mention costs about 4 reads (its place: a slot of the world's order, or a doc of the index's
   list for the names; whether it is in the world; its text's head and record), so one read of what mentions an entry
   looks through at most 6,000 entries (`MENTION_CHECKS_PER_REQUEST`), a run of pages sharing them, whether the index
-  names the candidates or the read walks the world.
+  names the candidates or the read walks the world;
+- looking for the names a text writes reads one key per seek of the names index, per entry listed under a name it
+  found and per name checked one by one, and two per entry it names (that entry's case and whole-word flags), so one
+  read does at most 24,000 of them (`TEXT_LINK_READS_PER_REQUEST`, The names a text writes).
+
+The entry view answers its text's links and its run of mention pages in the same request, and `openEntry` answers
+`worldbuilding.pointingAt` with it, each read held to its own bound, so the request does a few bounds' work. I don't know
+whether that fits the 200 ms; it isn't divided between them here.
 
 Everything else is unbounded: levels, columns, rows, the card text's length (one read per card whatever its length; the
 answer's size follows the entries' own text), the range's width, a step's length, a key's or a name's length.
@@ -456,7 +469,8 @@ One area, `@st/worldbuilding`. Views:
 - `worldbuilding.entry`: the session's open entry: its label, title, keys (each a name or a trigger, with how many other
   live entries of the world have it), text, relations line (each target a label), placement (every upstream field but
   `key`, `comment` and `content`, as stored, missing ones at upstream's defaults, `public/scripts/world-info-entry-defaults.js`,
-  and whether any differs from them), its text in tokens as the chosen connection counts them, and what mentions it:
+  and whether any differs from them), its text in tokens as the chosen connection counts them, where its text writes
+  names of other entries (`links`, and `linksComplete`: The names a text writes), and what mentions it:
   the run of pages of the references to it the page names (`src/world-info/references.js`; the first page until
   `showMentions` names another), each page `{cursor, entries, next, lookedThrough, stoppedForBound}`, each source's
   label with the sentence around its first mention (What mentions an entry, below). A deleted entry shows as deleted,
@@ -609,6 +623,43 @@ the run's last page stopped for the bound, the list ends with "Looked through N 
 which starts the list at the page after it (one request); what the list held before it is left behind, since one
 request can't read both.
 
+## The names a text writes
+
+An entry's text links a name of another entry of its world where the activation matcher finds that name in the text
+(`References.links`, then of overlapping spans the one that starts first, and of those the longest). The matcher finds a
+name trimmed of JavaScript's white space; one empty so is never found. A name holding `{{` (a macro) or of a regular
+expression's shape (`/…/` and flags) can't be looked up, so it is checked one by one; every other name is found as text
+inside the text, with the text's case (case-sensitive) or both lowercased (`toLowerCase`), and as a whole word only
+when it is one word under `matchWholeWords`, which is inside the text too.
+
+**The fold.** `references::names_fold` lowercases each character on its own and makes every sigma `σ`. `toLowerCase`
+maps each character on its own but for `Σ`, which becomes `σ` or `ς` by its neighbours (Final_Sigma, the one context
+rule of the locale-free mapping), and the fold of a string is the concatenation of its characters' folds. So when a text
+holds a name, or its lowercasing holds the name's, the text's fold holds the name's fold: the fold never loses a name the
+matcher finds, and every name it finds is checked by the matcher, so the links are exact. The fold uses Rust's Unicode
+tables and the matcher V8's; a character whose case mapping one has and the other hasn't (a Unicode version apart) could
+be missed. I don't know of one.
+
+**The index.** `NAMES_BY_FOLD (b, fold, e) → the entry's names with that fold`, and `NAMES_CHECKED_ONE_BY_ONE (b, e,
+name) → ()`, kept by the hook every write of a key item or the names field passes (`names_offer::entry_value_written`,
+with the entry's names before and after it: `references::names_written`), by creation and restore, and by deletion.
+
+**The read** (`references::link_candidates`, one snapshot). For each character of the text's fold where a name can start
+(any but white space), the names whose fold starts there are found by seeks down from the rest of the fold `q`: the
+greatest fold at most `q[..k]` (one reverse seek); if it is a prefix of `q` it is found, its entries are listed (once per
+read), and the next seek is below it, `k` its length less one; else no fold between it and `q[..k]` agrees with `q`
+further than it does, so the next seek is at `k` = what they share. Each seek is one read and `k` falls each time, so a
+start costs one seek when no name starts there and about one more per name that does. Then the names checked one by one
+are listed. Each entry named reads its `caseSensitive` and `matchWholeWords` (a world's own fields, a card book's
+extensions), and the matcher checks each of its names (`References.links`). At most `TEXT_LINK_READS_PER_REQUEST` reads: a text of up
+to about 24,000 characters in a world with few names sharing a start is looked through whole; a longer text, a name
+shared by very many entries, or very many names checked one by one stops at the bound.
+
+**At the bound** the read answers the links it found in what it reached (names starting earlier in the text, then the
+names checked one by one in id order) and `linksComplete: false`. The links found are right; a word after where it
+stopped may be a name it doesn't link, and the page says so under the text ("Not every name in this text could be
+looked for"), so an unlinked word is never claimed to be no name. Overlaps are resolved among the spans found.
+
 ## The filter
 
 A filter has no kept counts (`worldbuilding.md`, Cells), so its results have no ranks: they are read by cursor as the
@@ -703,8 +754,10 @@ Entries written before the tree aren't in it, and a later `entryIndex` write or 
 never guesses). The server refuses a store until `scripts/convert-lorebooks-to-worldbuilding.mjs` has run on it: it
 names the script and doesn't start, as for the greeting conversions (`CONVERSIONS` in `src/user-stores.js`). The
 script, run once with the server stopped and deleted later with what only it uses, does two things per store, in
-steps, then writes the store's marker (`store/worldbuilding-indexed`); a new store gets the marker when it is made, and
-the script skips a store that has it:
+steps, then writes the store's markers (`WORLDBUILDING_MARKERS`: `store/worldbuilding-indexed` and
+`store/worldbuilding-keys-and-names-indexed`); a new store gets them when it is made, and the script skips a store that
+has them all. A store marked only `worldbuilding-indexed` was converted before the entries per key and the names index
+existed, so it is refused and converted again:
 
 1. Rewrites every relations field still naming targets by key (`"target"`) to name them by entity id
    (`"targetEntry"`), as a history edit of that field, leaving out relations whose key names no entry of the world
@@ -714,8 +767,10 @@ the script skips a store that has it:
    included (`relations::world_order_conversion_step`). A relation indexed before the trees of sources existed gets
    its place in its tree, and the counts per (world, kind, target) those trees replaced are deleted.
 
-Its first step also deletes every `KEY_ITEMS_BY_TEXT` count, and each step counts the keys of the entries it passes, so
-a run counts every key again from nothing. Each step also sets each entry's names offer state (The imported-book
+Its first step also deletes every `KEY_ITEMS_BY_TEXT` count, every `KEY_ENTRIES_BY_TEXT` count, the names index
+(`NAMES_BY_FOLD`, `NAMES_CHECKED_ONE_BY_ONE`) and what an earlier engine kept of names the search index couldn't look
+up (`UNINDEXED_BEFORE_NAMES_INDEX`, read by nothing else), and each step counts and lists the keys and indexes the names
+of the entries it passes, so a run builds them again from nothing. Each step also sets each entry's names offer state (The imported-book
 offer) from its fields, counting only what differs from the state stored, so a store written before the offer gets
 its counts from the run. It prints only totals. The steps change nothing on a store they have already converted, so a
 run on a store converted before the marker existed only fills in what that run didn't build.

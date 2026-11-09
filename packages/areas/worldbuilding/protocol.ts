@@ -26,6 +26,9 @@ export const READS_PER_MENTION_CHECK = 4;
 export const MAX_CARDS_PER_READ = READS_PER_REQUEST / READS_PER_CARD;
 export const LOOP_CHECK_VISITS_PER_WRITE = READS_PER_REQUEST / READS_PER_LOOP_CHECK_VISIT;
 export const MENTION_CHECKS_PER_REQUEST = READS_PER_REQUEST / READS_PER_MENTION_CHECK;
+// Looking for the names an entry's text writes reads one key per seek of the names index, per entry listed under a name
+// found and per name checked one by one, and two (its case and whole-word flags) per entry it names.
+export const TEXT_LINK_READS_PER_REQUEST = READS_PER_REQUEST;
 export const FOUND_PER_QUERY = 20;
 export const MENTIONS_PER_PAGE = 20;
 export const MENTION_PAGES_AT_MOST = MAX_CARDS_PER_READ / MENTIONS_PER_PAGE;
@@ -172,6 +175,8 @@ export type MentionsPage = {
 export type MentionedIn = { pages: MentionsPage[] };
 
 // Where the entry's text names another entry: `from` and `to` are UTF-16 offsets into `text`, in order, never overlapping.
+// `linksComplete` is false when the read stopped at TEXT_LINK_READS_PER_REQUEST before it had looked for every name, so
+// words it hadn't reached may be names it doesn't link.
 export type TextLink = { entry: string; from: number; to: number };
 
 export const TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet'] as const;
@@ -230,6 +235,7 @@ export type OpenEntryView = EntryAt & {
     keys: KeyOfEntry[];
     text: string;
     links: TextLink[];
+    linksComplete: boolean;
     relations: RelationOnCard[];
     placement: Placement;
     placementDiffersFromDefaults: boolean;

@@ -7,7 +7,6 @@ import { backgroundsArea } from '@st/backgrounds/server';
 import { settingsArea } from '@st/settings/server';
 import { alternativesArea } from '@st/alternatives/server';
 import { activationsArea } from '@st/activations/server';
-import { referencesArea } from '@st/references/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
 import { References } from './world-info/references.js';
 import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
@@ -498,46 +497,6 @@ const referencesOf = async user => new References((await userStore(directoriesOf
     defaults: matchDefaultsOf(worldInfoGlobalsOf(readUserSettings(directoriesOf(user), ['world_info_settings']).world_info_settings)),
 });
 
-/**
- * @template {{ entry: bigint }} T
- * @param {T[]} list
- */
-const withIds = list => list.map(x => ({ ...x, entry: String(x.entry) }));
-
-/** @type {import('@st/references/server').Ports} */
-const referencesPorts = {
-    async from(user, book, entry, cursor) {
-        const page = await (await referencesOf(user)).from(BigInt(book), BigInt(entry), cursor === null ? {} : { cursor });
-        return page && { ...page, references: withIds(page.references) };
-    },
-    async to(user, book, entry, cursor) {
-        const page = await (await referencesOf(user)).to(BigInt(book), BigInt(entry), cursor === null ? {} : { cursor });
-        if (!page) return null;
-        const { references, unlinked, scanned, unresolved, next, lookedThrough, stoppedForBound } = page;
-        return { references: withIds(references), unlinked: withIds(unlinked), scanned, unresolved, next, lookedThrough, stoppedForBound };
-    },
-    async issues(user, book, cursor) {
-        const page = await (await referencesOf(user)).issues(BigInt(book), cursor === null ? {} : { after: cursor });
-        if (!page) return null;
-        return {
-            next: page.next,
-            issues: page.issues.map(i => ({
-                entry: String(i.entry),
-                issues: /** @type {import('@st/references/protocol').Issue[]} */ (i.issues.map(x => ('with' in x ? { ...x, with: /** @type {bigint[]} */ (x.with).map(String) } : x))),
-            })),
-        };
-    },
-    async sizes(user, book, entries) {
-        const s = await (await referencesOf(user)).sizes(BigInt(book), entries.map(e => BigInt(e)));
-        return {
-            bytes: s.bytes,
-            hash: String(s.hash),
-            entries: s.entries,
-            of: s.of.map((/** @type {any} */ x) => ({ entry: String(x.entry), bytes: x.bytes, hash: String(x.hash) })),
-        };
-    },
-};
-
 /** @param {import('@st/worldbuilding/protocol').OverviewLayout} layout */
 const regionLayout = layout => ({
     regionColumns: layout.regionsByNestingLevel.map(region => region.columns),
@@ -649,7 +608,7 @@ const worldbuildingPorts = {
     },
 };
 
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), referencesArea(referencesPorts), worldbuildingArea(worldbuildingPorts)], {
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts)], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);

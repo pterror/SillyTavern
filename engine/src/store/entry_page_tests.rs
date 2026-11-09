@@ -126,6 +126,30 @@ fn a_key_says_how_many_other_entries_of_the_world_it_brings_up_from_a_count_kept
     assert_eq!(counted(&store, "Varro"), None, "a count that reaches nothing is no key at all");
 
     let before = counted(&store, "Ilse");
+    let indexes = [references::KEY_ENTRIES_BY_TEXT, references::NAMES_BY_FOLD, references::NAMES_CHECKED_ONE_BY_ONE];
+    let dump = |store: &Store| {
+        read(store, |view| {
+            let mut all = Vec::new();
+            for structure in indexes {
+                let prefix = key::of(structure);
+                all.extend(view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)?);
+            }
+            Ok(all)
+        })
+    };
+    let built = dump(&store);
+    assert_eq!(built.len(), 3, "{built:?}");
+    derive_job(&store, move |view, out| {
+        for structure in indexes {
+            let prefix = key::of(structure);
+            for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+                out.del(stored_key);
+            }
+        }
+        out.put(key::ids(references::UNINDEXED_BEFORE_NAMES_INDEX, 1, 101), Vec::new());
+        Ok(())
+    });
+    assert!(dump(&store).is_empty());
     let mut after: Option<Vec<u8>> = None;
     loop {
         let from = after.clone();
@@ -135,6 +159,9 @@ fn a_key_says_how_many_other_entries_of_the_world_it_brings_up_from_a_count_kept
         }
     }
     assert_eq!(counted(&store, "Ilse"), before, "the conversion counts every key again, the same");
+    assert_eq!(dump(&store), built, "the conversion lists every key's entries and every name again, the same");
+    let unindexed = key::of(references::UNINDEXED_BEFORE_NAMES_INDEX);
+    assert!(read(&store, |view| view.scan(&unindexed, &key::prefix_end(&unindexed), 1)).is_empty());
     assert_eq!(also_brings_up(&store, 101)[0], ("Ilse".into(), 0.0));
     store.close();
     let _ = fs::remove_dir_all(&dir);

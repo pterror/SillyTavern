@@ -7,28 +7,33 @@ use super::books::{BOOK, OWNED};
 use super::derive::{Out, View};
 use super::kinds::{key, text_value};
 use super::library::{ITEM_BASE, LISTS, counter, entity_info};
-use crate::keyspace::val::{get_u64, put_bytes};
+use crate::keyspace::val::{get_bytes, get_u64, put_bytes};
 use crate::log::format::FieldRef;
 use crate::search::query::docs_with_terms;
-use crate::search::text::{GRAM_MAX, tokens};
+use crate::search::text::tokens;
 use crate::search::Scope;
 
 pub const KEY_FIELD: u32 = 0;
 pub const CONTENT_FIELD: u32 = 4;
-pub const UNINDEXED: u64 = 222;
+// (b, e, item) → (): what names the search index couldn't look up were, before the names index; only the lorebook
+// conversion's first step reads it, to delete it.
+pub const UNINDEXED_BEFORE_NAMES_INDEX: u64 = 222;
 pub const KEY_ITEMS_BY_TEXT: u64 = 239;
+// (b, key text, e) → count (Add): the entry's key items with exactly that text.
+pub const KEY_ENTRIES_BY_TEXT: u64 = 248;
+// (b, folded name, e) → the entry's names with that fold (each `put_bytes`): names the index finds in a text.
+pub const NAMES_BY_FOLD: u64 = 249;
+// (b, e, name) → (): names that are checked one by one, never looked up (patterns and names with a macro).
+pub const NAMES_CHECKED_ONE_BY_ONE: u64 = 250;
 
 const WORLD_KEYS: u64 = 0;
 const OWNED_KEYS: u64 = 3;
 
-pub fn unindexable(text: &[u8]) -> bool {
-    let regex_shape = text.len() > 2
-        && text[0] == b'/'
-        && text[1..].iter().rposition(|&c| c == b'/').is_some_and(|i| {
-            i > 0 && text[2 + i..].iter().all(|c| b"gimsuy".contains(c))
-        });
-    regex_shape || tokens(text).is_empty() || text.windows(2).any(|w| w == b"{{")
-}
+// An entry's `caseSensitive` and `matchWholeWords`: a world's own fields, a card book's extensions.
+const WORLD_CASE_SENSITIVE: u64 = 131;
+const WORLD_MATCH_WHOLE_WORDS: u64 = 132;
+const CARD_CASE_SENSITIVE: u64 = 174;
+const CARD_MATCH_WHOLE_WORDS: u64 = 175;
 
 pub fn key_list(view: &View, book: u64) -> Result<Option<u64>, StoreError> {
     Ok(match entity_info(view, book)? {
@@ -36,12 +41,6 @@ pub fn key_list(view: &View, book: u64) -> Result<Option<u64>, StoreError> {
         Some((OWNED, bk, _)) if bk.ends_with(b":c") => Some(OWNED_KEYS),
         _ => None,
     })
-}
-
-fn unindexed_key(book: u64, entry: u64, code: u64) -> Vec<u8> {
-    let mut k = key::ids(UNINDEXED, book, entry);
-    crate::keyspace::val::put_u64(&mut k, code);
-    k
 }
 
 pub fn is_key_item(code: u64, list: Option<u64>) -> bool {
@@ -58,22 +57,36 @@ pub fn key_items_with_text(view: &View, book: u64, key_text: &[u8]) -> Result<u6
     Ok(counter(view, &key_items_by_text_key(book, key_text))?.max(0) as u64)
 }
 
+fn key_entries_by_text_key(book: u64, key_text: &[u8], entry: u64) -> Vec<u8> {
+    let mut stored_key = key::id(KEY_ENTRIES_BY_TEXT, book);
+    put_bytes(&mut stored_key, key_text);
+    crate::keyspace::val::put_u64(&mut stored_key, entry);
+    stored_key
+}
+
+fn add_to_count(view: &View, out: &mut Out, stored_key: Vec<u8>, change: i64) -> Result<(), StoreError> {
+    if counter(view, &stored_key)? + change == 0 {
+        out.del(stored_key);
+    } else {
+        out.add(stored_key, change);
+    }
+    Ok(())
+}
+
+// The world's count of key items per text and the entry's own, which list the entries with a key.
 fn change_key_items(
     view: &View,
     out: &mut Out,
     book: u64,
+    entry: u64,
     changes: BTreeMap<Vec<u8>, i64>,
 ) -> Result<(), StoreError> {
     for (key_text, change) in changes {
         if change == 0 {
             continue;
         }
-        let stored_key = key_items_by_text_key(book, &key_text);
-        if counter(view, &stored_key)? + change == 0 {
-            out.del(stored_key);
-        } else {
-            out.add(stored_key, change);
-        }
+        add_to_count(view, out, key_items_by_text_key(book, &key_text), change)?;
+        add_to_count(view, out, key_entries_by_text_key(book, &key_text, entry), change)?;
     }
     Ok(())
 }
@@ -110,7 +123,7 @@ fn counted(texts: Vec<Vec<u8>>, change: i64) -> BTreeMap<Vec<u8>, i64> {
 
 pub fn entry_keys_came(view: &View, out: &mut Out, book: u64, entry: u64) -> Result<(), StoreError> {
     let texts = key_texts_of(view, book, entry)?;
-    change_key_items(view, out, book, counted(texts, 1))
+    change_key_items(view, out, book, entry, counted(texts, 1))
 }
 
 pub fn key_written(
@@ -125,15 +138,7 @@ pub fn key_written(
     let FieldRef::Code(c) = f else {
         return Ok(());
     };
-    if !is_key_item(*c, key_list(view, book)?) {
-        return Ok(());
-    }
-    let k = unindexed_key(book, entry, *c);
-    match new {
-        Some(t) if unindexable(t) => out.put(k, Vec::new()),
-        _ => out.del(k),
-    }
-    if entry_is_new {
+    if entry_is_new || !is_key_item(*c, key_list(view, book)?) {
         return Ok(());
     }
     let mut changes = BTreeMap::new();
@@ -143,54 +148,391 @@ pub fn key_written(
     if let Some(new) = new {
         *changes.entry(new.to_vec()).or_insert(0) += 1;
     }
-    change_key_items(view, out, book, changes)
+    change_key_items(view, out, book, entry, changes)
 }
 
 pub fn entry_gone(view: &View, out: &mut Out, book: u64, entry: u64) -> Result<(), StoreError> {
-    let p = key::ids(UNINDEXED, book, entry);
-    for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
-        out.del(k);
-    }
     let texts = key_texts_of(view, book, entry)?;
-    change_key_items(view, out, book, counted(texts, -1))
+    change_key_items(view, out, book, entry, counted(texts, -1))
 }
 
+// The lorebook conversion's first step: every count and index of keys and names goes, for the steps to build again.
 pub fn key_items_cleared(view: &View, out: &mut Out) -> Result<(), StoreError> {
-    let prefix = key::of(KEY_ITEMS_BY_TEXT);
-    for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
-        out.del(stored_key);
+    for structure in [
+        KEY_ITEMS_BY_TEXT,
+        KEY_ENTRIES_BY_TEXT,
+        NAMES_BY_FOLD,
+        NAMES_CHECKED_ONE_BY_ONE,
+        UNINDEXED_BEFORE_NAMES_INDEX,
+    ] {
+        let prefix = key::of(structure);
+        for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+            out.del(stored_key);
+        }
     }
     Ok(())
 }
 
-pub fn unindexed_page(
+/// The other entries of the world with a key of exactly `key_text`, by id: the first `limit` labels.
+pub fn key_sharers(
     view: &View,
     book: u64,
-    after: Option<u64>,
+    entry: u64,
+    key_text: &[u8],
     limit: usize,
 ) -> Result<Js, StoreError> {
-    let p = key::id(UNINDEXED, book);
-    let start = match after {
-        Some(a) => key::ids(UNINDEXED, book, a + 1),
-        None => p.clone(),
+    let Some(list) = key_list(view, book)? else {
+        return Ok(Js::Null);
     };
-    let mut names: Vec<Js> = Vec::new();
-    let mut last: Option<u64> = None;
+    let mut prefix = key::id(KEY_ENTRIES_BY_TEXT, book);
+    put_bytes(&mut prefix, key_text);
+    let mut entries = Vec::new();
     let mut more = false;
-    for (k, _) in view.scan(&start, &key::prefix_end(&p), usize::MAX)? {
-        let mut at = p.len();
-        let bad = || StoreError::Entry("an unindexed name key doesn't decode".into());
-        let entry = get_u64(&k, &mut at).ok_or_else(bad)?;
-        let code = get_u64(&k, &mut at).ok_or_else(bad)?;
-        if last != Some(entry) && names.len() >= limit {
+    for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), limit + 2)? {
+        let other = get_u64(&stored_key, &mut prefix.len())
+            .ok_or_else(|| StoreError::Entry("a key's entry doesn't decode".into()))?;
+        if other == entry {
+            continue;
+        }
+        if entries.len() == limit {
             more = true;
             break;
         }
-        last = Some(entry);
-        let text = text_value(view, entry, &FieldRef::Code(code))?.unwrap_or_default();
-        names.push(Js::Obj(vec![("entry", Js::Big(entry)), ("name", Js::Text(text))]));
+        entries.push(super::entry_label::named(view, Some(list), other)?.js());
     }
-    Ok(Js::Obj(vec![("names", Js::Arr(names)), ("more", Js::Bool(more))]))
+    Ok(Js::Obj(vec![("entries", Js::Arr(entries)), ("more", Js::Bool(more))]))
+}
+
+/// JavaScript's `String.prototype.trim` white space.
+fn js_space(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n'
+            | '\u{b}'
+            | '\u{c}'
+            | '\r'
+            | ' '
+            | '\u{a0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
+    )
+}
+
+/// Each character lowercased on its own and every sigma made `σ`. Lowercasing a text maps each character on its own
+/// but for a capital sigma, which becomes `σ` or `ς` by what is around it, so where a text holds a name, with its case
+/// or lowercased as the matcher compares them, its fold holds the name's fold.
+pub fn names_fold(text: &str) -> String {
+    let mut folded = String::with_capacity(text.len());
+    for c in text.chars() {
+        for lower in c.to_lowercase() {
+            folded.push(if lower == 'ς' { 'σ' } else { lower });
+        }
+    }
+    folded
+}
+
+/// What the matcher reads as a regular expression is of this shape (more of this shape fail to parse and are read as
+/// text).
+fn pattern_shaped(name: &str) -> bool {
+    let text = name.as_bytes();
+    text.len() > 2
+        && text[0] == b'/'
+        && text[1..].iter().rposition(|&c| c == b'/').is_some_and(|i| {
+            i > 0 && text[2 + i..].iter().all(|c| b"gimsuy".contains(c))
+        })
+}
+
+enum NameLookup {
+    Folded(Vec<u8>),
+    OneByOne,
+    Never,
+}
+
+/// How a name is found in a text: the matcher reads the name trimmed, never one that is empty so, and a name with a
+/// macro or a pattern can't be looked up.
+fn name_lookup(name: &[u8]) -> NameLookup {
+    if name.windows(2).any(|w| w == b"{{") {
+        return NameLookup::OneByOne;
+    }
+    let Ok(text) = std::str::from_utf8(name) else {
+        return NameLookup::OneByOne;
+    };
+    let trimmed = text.trim_matches(js_space);
+    if trimmed.is_empty() {
+        NameLookup::Never
+    } else if pattern_shaped(trimmed) {
+        NameLookup::OneByOne
+    } else {
+        NameLookup::Folded(names_fold(trimmed).into_bytes())
+    }
+}
+
+type NamesIndexed = (BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>, BTreeSet<Vec<u8>>);
+
+fn names_indexed(names: &BTreeSet<Vec<u8>>) -> NamesIndexed {
+    let (mut folded, mut one_by_one) = (BTreeMap::new(), BTreeSet::new());
+    for name in names {
+        match name_lookup(name) {
+            NameLookup::Folded(fold) => {
+                folded.entry(fold).or_insert_with(BTreeSet::new).insert(name.clone());
+            }
+            NameLookup::OneByOne => {
+                one_by_one.insert(name.clone());
+            }
+            NameLookup::Never => {}
+        }
+    }
+    (folded, one_by_one)
+}
+
+fn names_by_fold_key(book: u64, fold: &[u8], entry: u64) -> Vec<u8> {
+    let mut stored_key = key::id(NAMES_BY_FOLD, book);
+    put_bytes(&mut stored_key, fold);
+    crate::keyspace::val::put_u64(&mut stored_key, entry);
+    stored_key
+}
+
+fn one_by_one_key(book: u64, entry: u64, name: &[u8]) -> Vec<u8> {
+    let mut stored_key = key::ids(NAMES_CHECKED_ONE_BY_ONE, book, entry);
+    put_bytes(&mut stored_key, name);
+    stored_key
+}
+
+/// Every change of an entry's names passes here (`names_offer`): its names before and after.
+pub fn names_written(out: &mut Out, book: u64, entry: u64, old: &BTreeSet<Vec<u8>>, new: &BTreeSet<Vec<u8>>) {
+    if old == new {
+        return;
+    }
+    let ((old_folded, old_one), (new_folded, new_one)) = (names_indexed(old), names_indexed(new));
+    for fold in old_folded.keys().chain(new_folded.keys()).collect::<BTreeSet<_>>() {
+        match (old_folded.get(fold), new_folded.get(fold)) {
+            (was, Some(now)) if was != Some(now) => {
+                let mut value = Vec::new();
+                for name in now {
+                    put_bytes(&mut value, name);
+                }
+                out.put(names_by_fold_key(book, fold, entry), value);
+            }
+            (Some(_), None) => out.del(names_by_fold_key(book, fold, entry)),
+            _ => {}
+        }
+    }
+    for name in old_one.difference(&new_one) {
+        out.del(one_by_one_key(book, entry, name));
+    }
+    for name in new_one.difference(&old_one) {
+        out.put(one_by_one_key(book, entry, name), Vec::new());
+    }
+}
+
+fn corrupt_names(what: &str) -> StoreError {
+    StoreError::Entry(format!("{what} doesn't decode"))
+}
+
+fn flag_of(view: &View, entry: u64, code: u64) -> Result<Js, StoreError> {
+    Ok(match super::history::json_value(view, entry, &FieldRef::Code(code))?.as_deref() {
+        Some(b"true") => Js::Bool(true),
+        Some(b"false") => Js::Bool(false),
+        _ => Js::Null,
+    })
+}
+
+struct Candidate {
+    names: BTreeSet<Vec<u8>>,
+    case_sensitive: Js,
+    match_whole_words: Js,
+}
+
+struct LinkLookup<'a, 'b> {
+    view: &'a View<'b>,
+    book: u64,
+    entry: u64,
+    flags: (u64, u64),
+    reads: usize,
+    reads_at_most: usize,
+    candidates: BTreeMap<u64, Candidate>,
+}
+
+impl LinkLookup<'_, '_> {
+    fn spend(&mut self, reads: usize) -> bool {
+        if self.reads + reads > self.reads_at_most {
+            return false;
+        }
+        self.reads += reads;
+        true
+    }
+
+    fn candidate(&mut self, other: u64, names: impl IntoIterator<Item = Vec<u8>>) -> Result<bool, StoreError> {
+        if other == self.entry {
+            return Ok(true);
+        }
+        if !self.candidates.contains_key(&other) {
+            if !self.spend(2) {
+                return Ok(false);
+            }
+            let found = Candidate {
+                names: BTreeSet::new(),
+                case_sensitive: flag_of(self.view, other, self.flags.0)?,
+                match_whole_words: flag_of(self.view, other, self.flags.1)?,
+            };
+            self.candidates.insert(other, found);
+        }
+        if let Some(found) = self.candidates.get_mut(&other) {
+            found.names.extend(names);
+        }
+        Ok(true)
+    }
+
+    /// The greatest name ≤ `q` with any entry after it, as its fold.
+    fn name_at_most(&self, q: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        let book_prefix = key::id(NAMES_BY_FOLD, self.book);
+        let mut end = book_prefix.clone();
+        put_bytes(&mut end, q);
+        let end = key::prefix_end(&end);
+        let found = self.view.scan_vals_rev(&book_prefix, &end, 1)?;
+        let Some((stored_key, _)) = found.first() else {
+            return Ok(None);
+        };
+        let mut at = book_prefix.len();
+        Ok(Some(get_bytes(stored_key, &mut at).ok_or_else(|| corrupt_names("a name's fold"))?))
+    }
+
+    /// Every entry with a name of this fold; false when the bound came first.
+    fn entries_named(&mut self, fold: &[u8]) -> Result<bool, StoreError> {
+        let mut prefix = key::id(NAMES_BY_FOLD, self.book);
+        put_bytes(&mut prefix, fold);
+        let mut after = prefix.clone();
+        loop {
+            let page = self.view.scan(&after, &key::prefix_end(&prefix), 64)?;
+            for (stored_key, value) in &page {
+                if !self.spend(1) {
+                    return Ok(false);
+                }
+                let other = get_u64(stored_key, &mut prefix.len()).ok_or_else(|| corrupt_names("a name's entry"))?;
+                let mut names = Vec::new();
+                let mut at = 0;
+                while at < value.len() {
+                    names.push(get_bytes(value, &mut at).ok_or_else(|| corrupt_names("a name"))?);
+                }
+                if !self.candidate(other, names)? {
+                    return Ok(false);
+                }
+            }
+            let Some((last, _)) = page.last().filter(|_| page.len() == 64) else {
+                return Ok(true);
+            };
+            after = last.clone();
+            after.push(0);
+        }
+    }
+
+    /// Every name whose fold starts `q`, longest first: each seek finds the greatest name at most `q[..k]`; one that is
+    /// a prefix of `q` is found and the next seek is below it, else no name is between it and `q[..k]` that agrees with
+    /// `q` further than it does, so the next seek is at what they share.
+    fn names_starting(&mut self, q: &[u8], listed: &mut BTreeSet<Vec<u8>>) -> Result<bool, StoreError> {
+        let mut k = q.len();
+        while k > 0 {
+            if !self.spend(1) {
+                return Ok(false);
+            }
+            let Some(fold) = self.name_at_most(&q[..k])? else {
+                return Ok(true);
+            };
+            let shared = fold.iter().zip(&q[..k]).take_while(|(a, b)| a == b).count();
+            if shared < fold.len() {
+                k = shared;
+                continue;
+            }
+            if listed.insert(fold.clone()) && !self.entries_named(&fold)? {
+                return Ok(false);
+            }
+            k = fold.len() - 1;
+        }
+        Ok(true)
+    }
+
+    fn checked_one_by_one(&mut self) -> Result<bool, StoreError> {
+        let prefix = key::id(NAMES_CHECKED_ONE_BY_ONE, self.book);
+        let mut after = prefix.clone();
+        loop {
+            let page = self.view.scan(&after, &key::prefix_end(&prefix), 64)?;
+            for (stored_key, _) in &page {
+                if !self.spend(1) {
+                    return Ok(false);
+                }
+                let mut at = prefix.len();
+                let other = get_u64(stored_key, &mut at).ok_or_else(|| corrupt_names("a name's entry"))?;
+                let name = get_bytes(stored_key, &mut at).ok_or_else(|| corrupt_names("a name"))?;
+                if !self.candidate(other, [name])? {
+                    return Ok(false);
+                }
+            }
+            let Some((last, _)) = page.last().filter(|_| page.len() == 64) else {
+                return Ok(true);
+            };
+            after = last.clone();
+            after.push(0);
+        }
+    }
+}
+
+/// The entries whose names `text` may write, each with those names and its matching flags, for the matcher to check:
+/// every name the index finds in the text's fold, then every name checked one by one, in at most `reads_at_most`
+/// reads. `complete` is false when the bound came first; what was found until then is kept.
+pub fn link_candidates(
+    view: &View,
+    book: u64,
+    entry: u64,
+    text: &str,
+    reads_at_most: usize,
+) -> Result<Js, StoreError> {
+    let flags = match entity_info(view, book)? {
+        Some((BOOK, _, _)) => (WORLD_CASE_SENSITIVE, WORLD_MATCH_WHOLE_WORDS),
+        Some((OWNED, bk, _)) if bk.ends_with(b":c") => (CARD_CASE_SENSITIVE, CARD_MATCH_WHOLE_WORDS),
+        _ => return Ok(Js::Null),
+    };
+    let mut lookup = LinkLookup {
+        view,
+        book,
+        entry,
+        flags,
+        reads: 0,
+        reads_at_most,
+        candidates: BTreeMap::new(),
+    };
+    let folded = names_fold(text);
+    let mut listed = BTreeSet::new();
+    let mut complete = true;
+    for (at, c) in folded.char_indices() {
+        if !js_space(c) && !lookup.names_starting(&folded.as_bytes()[at..], &mut listed)? {
+            complete = false;
+            break;
+        }
+    }
+    complete = complete && lookup.checked_one_by_one()?;
+    let candidates = lookup
+        .candidates
+        .into_iter()
+        .map(|(other, found)| {
+            Js::Obj(vec![
+                ("entry", Js::Big(other)),
+                ("names", Js::Arr(found.names.into_iter().map(Js::Text).collect())),
+                ("caseSensitive", found.case_sensitive),
+                ("matchWholeWords", found.match_whole_words),
+            ])
+        })
+        .collect();
+    Ok(Js::Obj(vec![
+        ("candidates", Js::Arr(candidates)),
+        ("complete", Js::Bool(complete)),
+        ("reads", Js::Num(lookup.reads as f64)),
+    ]))
 }
 
 fn sigma_variants(term: String, out: &mut BTreeSet<(String, bool)>, as_prefix: bool) {
@@ -200,24 +542,6 @@ fn sigma_variants(term: String, out: &mut BTreeSet<(String, bool)>, as_prefix: b
         out.insert((format!("{stem}σ"), as_prefix));
     }
     out.insert((term, as_prefix));
-}
-
-pub fn name_terms(text: &[u8]) -> Vec<(String, bool)> {
-    let mut terms = BTreeSet::new();
-    let distinct: BTreeSet<String> = tokens(text).into_iter().collect();
-    for tok in distinct {
-        let chars: Vec<char> = tok.chars().collect();
-        for i in 0..chars.len() {
-            let rest = chars.len() - i;
-            for len in 1..=rest.min(GRAM_MAX) {
-                sigma_variants(chars[i..i + len].iter().collect(), &mut terms, false);
-            }
-            if rest > GRAM_MAX {
-                sigma_variants(chars[i..i + GRAM_MAX].iter().collect(), &mut terms, true);
-            }
-        }
-    }
-    terms.into_iter().collect()
 }
 
 pub fn mention_terms(name: &[u8]) -> Option<Vec<(String, bool)>> {
@@ -430,18 +754,6 @@ fn page(docs: (Vec<u64>, bool)) -> Js {
         ("entries", Js::Arr(docs.into_iter().map(Js::Big).collect())),
         ("more", Js::Bool(more)),
     ])
-}
-
-pub fn name_candidates(
-    view: &View,
-    book: u64,
-    text: &[u8],
-    after: Option<u64>,
-    limit: usize,
-) -> Result<Js, StoreError> {
-    let terms = name_terms(text);
-    let mask = 1u64 << KEY_FIELD;
-    Ok(page(docs_with_terms(view, Scope::book(book), &terms, mask, after, limit)?))
 }
 
 pub struct MentionName {
