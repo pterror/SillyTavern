@@ -2604,22 +2604,25 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
             Box::new(move |s| s.chat_read(|v| cr::itemized(v, after, limit)).map(JsTree))
         }
         "tokenCache" => {
-            let (table, identity, hash) = (
+            let (table, identity, hashes) = (
                 req_integer(a, "table")?,
                 bytes_of(a, "identity")?,
-                bytes_of(a, "hash")?,
+                byte_list(a, "hashes")?,
             );
             Box::new(move |s| {
                 s.chat_read(|v| {
-                    Ok(
-                        match crate::store::token_cache::get(v, table, &identity, &hash)? {
-                            Some((used, value)) => cr::Js::Obj(vec![
-                                ("used", cr::Js::Num(used as f64)),
-                                ("value", cr::Js::Bytes(value)),
-                            ]),
-                            None => cr::Js::Null,
-                        },
-                    )
+                    Ok(cr::Js::Arr(
+                        crate::store::token_cache::get(v, table, &identity, &hashes)?
+                            .into_iter()
+                            .map(|found| match found {
+                                Some((used, value)) => cr::Js::Obj(vec![
+                                    ("used", cr::Js::Num(used as f64)),
+                                    ("value", cr::Js::Bytes(value)),
+                                ]),
+                                None => cr::Js::Null,
+                            })
+                            .collect(),
+                    ))
                 })
                 .map(JsTree)
             })

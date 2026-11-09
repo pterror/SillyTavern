@@ -72,15 +72,38 @@ export class TokenCache {
         this.limits = limits;
         /** @type {Map<number, Promise<void>>} */
         this.evicting = new Map();
+        /** @type {Map<string, { table: number, identity: string, asks: { hash: string, resolve: (found: any) => void, reject: (error: unknown) => void }[] }>} */
+        this.asked = new Map();
     }
 
     /**
+     * Reads asked for in the same turn of the event loop go to the store as one read per table and tokenizer.
      * @param {number} table
      * @param {string} identity
      * @param {string} hash
+     * @returns {Promise<{ used: number, value: Uint8Array } | null>}
      */
-    async read(table, identity, hash) {
-        return this.store.chatRead('tokenCache', { table, identity, hash: Buffer.from(hash, 'hex') });
+    read(table, identity, hash) {
+        return new Promise((resolve, reject) => {
+            const key = `${table}\n${identity}`;
+            let batch = this.asked.get(key);
+            if (!batch) {
+                if (this.asked.size === 0) setImmediate(() => this.readAsked());
+                batch = { table, identity, asks: [] };
+                this.asked.set(key, batch);
+            }
+            batch.asks.push({ hash, resolve, reject });
+        });
+    }
+
+    readAsked() {
+        const batches = [...this.asked.values()];
+        this.asked.clear();
+        for (const { table, identity, asks } of batches) {
+            Promise.resolve()
+                .then(() => this.store.chatRead('tokenCache', { table, identity, hashes: asks.map(ask => Buffer.from(ask.hash, 'hex')) }))
+                .then(found => asks.forEach((ask, i) => ask.resolve(found[i] ?? null)), error => asks.forEach(ask => ask.reject(error)));
+        }
     }
 
     /**

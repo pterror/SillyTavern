@@ -226,6 +226,30 @@ try {
     }
 
     {
+        const many = Array.from({ length: 50 }, (_, i) => `Batched text ${i}`);
+        const seed = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs });
+        await Promise.all(many.map(text => seed.countText(text)));
+        await writeBack(storedDirs, seed.pending);
+        resetFake();
+        const engineStore = store.tokens.store;
+        const chatRead = engineStore.chatRead.bind(engineStore);
+        let reads = 0;
+        engineStore.chatRead = (kind, args) => {
+            if (kind === 'tokenCache') reads++;
+            return chatRead(kind, args);
+        };
+        try {
+            const counter = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs });
+            const counts = await Promise.all([...many, 'Not stored yet'].map(text => counter.countText(text)));
+            assert.deepEqual(counts, [...many, 'Not stored yet'].map(bytes));
+            assert.equal(reads, 1, 'the stored counts an answer needs are read at once');
+            assert.deepEqual(fakeTokenize.contents, ['Not stored yet'], 'only what isn\'t stored is counted');
+        } finally {
+            engineStore.chatRead = chatRead;
+        }
+    }
+
+    {
         resetFake();
         const recounter = createStoredCounter({ resolved: llamaCpp(), identity: llamaIdentity, directories: storedDirs, recount: true });
         assert.equal(await recounter.countText(t1), bytes(t1));

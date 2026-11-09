@@ -910,7 +910,7 @@ async function run() {
      * @param {string} identity
      * @param {string} hash
      */
-    const cached = (table, identity, hash) => user.store.chats.store.chatRead('tokenCache', { table, identity, hash: Buffer.from(hash, 'hex') });
+    const cached = async (table, identity, hash) => (await user.store.chats.store.chatRead('tokenCache', { table, identity, hashes: [Buffer.from(hash, 'hex')] }))[0];
     async function storedRowsUnder(identity) {
         let rows = 0;
         let newest = 0;

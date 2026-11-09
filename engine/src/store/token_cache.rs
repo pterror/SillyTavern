@@ -50,11 +50,13 @@ pub fn get(
     view: &View,
     table: u64,
     identity: &[u8],
-    hash: &[u8],
-) -> Result<Option<(u64, Vec<u8>)>, StoreError> {
-    view.get(&val_key(table, identity, hash))?
-        .map(|b| decode(&b))
-        .transpose()
+    hashes: &[Vec<u8>],
+) -> Result<Vec<Option<(u64, Vec<u8>)>>, StoreError> {
+    let keys: Vec<Vec<u8>> = hashes.iter().map(|h| val_key(table, identity, h)).collect();
+    view.get_many(&keys)?
+        .into_iter()
+        .map(|b| b.map(|b| decode(&b)).transpose())
+        .collect()
 }
 
 pub fn count(view: &View, table: u64) -> Result<u64, StoreError> {

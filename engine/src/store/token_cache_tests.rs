@@ -58,8 +58,20 @@ fn p(table: u64, n: u64, value: &[u8], replace: bool) -> Put {
 }
 
 fn get(s: &Store, table: u64, n: u64) -> Option<(u64, Vec<u8>)> {
-    s.chat_read(|v| token_cache::get(v, table, b"tok\0id", format!("hash-{n}").as_bytes()))
+    s.chat_read(|v| token_cache::get(v, table, b"tok\0id", &[format!("hash-{n}").into_bytes()]))
         .unwrap()
+        .remove(0)
+}
+
+#[test]
+fn many_results_are_read_at_once_in_the_order_asked() {
+    let dir = temp_dir("many");
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    put(&s, vec![p(0, 1, &[1], false), p(0, 3, &[3], false)], 1000);
+    let hashes: Vec<Vec<u8>> = [3, 2, 1, 3].iter().map(|n| format!("hash-{n}").into_bytes()).collect();
+    let found = s.chat_read(|v| token_cache::get(v, 0, b"tok\0id", &hashes)).unwrap();
+    let values: Vec<Option<Vec<u8>>> = found.into_iter().map(|f| f.map(|(_, value)| value)).collect();
+    assert_eq!(values, vec![Some(vec![3]), None, Some(vec![1]), Some(vec![3])]);
 }
 
 #[test]
