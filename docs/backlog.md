@@ -115,6 +115,13 @@ State and other
 - Character management: names have no line cap; the arrow buttons shift as the position numbers change width.
 - Messages: the edit bar is a separate UI with its own controls; buttons are small and inconsistently sized; the send buttons sit in a different element from the burger menu beside them. The WYSIWYG editor's UI needs a UX pass. `<details>` doesn't stop click-to-edit. CodeMirror shows comments as the HTML preview under the markup.
 - UI consistency: every piece (the greetings/alternatives modal most of all) is built its own way; one component library (interact) and one design system. The expanded editor is a modal, not a sidebar drawer: "bring the modal back, sidebar drawer is unacceptable" (owner, 2026-10-02T00:59:40).
+- After the worldbuilding page: the chat API lets the page invent identities and create stored rows on their own
+  (`provisionalNodeId` from an opening's text, `ensureOpeningRow`, `rememberCardOpening` matching by text,
+  `public/scripts/chat-store.js:785-793`). So greeting ids sit beside a text-based identity, and the edit path still
+  runs on the old one. That is why an edit of a card greeting in the chat isn't saved, why an edit isn't placed after
+  that greeting's earlier edits, and why an edit back to the card's text isn't linked again. First a model of every
+  endpoint and page path across chats that creates rows or makes identities; then the page sends only actions naming
+  what the server gave it (a greeting id or a stored node), with no endpoint that creates a row on its own.
 - Greetings:
   - An in-chat greeting equal to a card greeting links back to it (the other direction of "go"), so editing the card's updates the chat, and an edit in the chat can be applied to the card.
   - Editing a greeting in the chat twice with no message after it doesn't keep the first edit as a separate alternative.
