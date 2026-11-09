@@ -2068,6 +2068,7 @@ export function updateMessageBlock(messageId, message, { rerenderMessage = true 
     updateReasoningUI(messageElement);
     updateMessageItemizedPromptButton(message, { messageId, messageElement });
     updateLoreMark(message, messageElement);
+    renderMessageCount(messageElement, message);
 
     addCopyToCodeBlocks(messageElement);
     appendMediaToMessage(message, messageElement);
@@ -2667,19 +2668,27 @@ function countShownMessage(mesId) {
 async function fillTokenCounters(mesIds, { recount = false } = {}) {
     const shown = mesIds
         .map(mesId => ({ mesId, message: chat[mesId] }))
-        .filter(({ message }) => message && !message.is_system);
+        .filter(({ mesId, message }) => message && !message.is_system && !isReplyGenerating(mesId));
     const texts = shown.map(({ message }) => (message.extra?.reasoning || '') + message.mes);
     if (!texts.some(text => text.length > 0)) return;
     const counts = await getMessageTokenCounts(texts, { recount });
     shown.forEach(({ mesId }, k) => {
         const current = chat[mesId];
-        if (!current || !counts[k] || (current.extra?.reasoning || '') + current.mes !== texts[k]) return;
+        if (!current || !counts[k] || isReplyGenerating(mesId) || (current.extra?.reasoning || '') + current.mes !== texts[k]) return;
         setUnstoredExtra(mesId, { token_count: counts[k] });
-        const element = chatElement.find(`.mes[mesid="${mesId}"]`);
-        element.find('.tokenCounterDisplay').text(`${counts[k]}t`);
-        const { timerValue, timerTitle } = formatGenerationTimer(current.gen_started, current.gen_finished, counts[k], current.extra?.reasoning_duration, current.extra?.time_to_first_token);
-        if (timerValue) element.find('.mes_timer').attr('title', timerTitle).text(timerValue);
+        renderMessageCount(chatElement.find(`.mes[mesid="${mesId}"]`), chat[mesId]);
     });
+}
+
+/**
+ * @param {JQuery<HTMLElement>} messageElement
+ * @param {ChatMessage} mes
+ */
+function renderMessageCount(messageElement, mes) {
+    const tokenCount = mes.extra?.token_count;
+    messageElement.find('.tokenCounterDisplay').text(tokenCount ? `${tokenCount}t` : '');
+    const { timerValue, timerTitle } = formatGenerationTimer(mes.gen_started, mes.gen_finished, tokenCount, mes.extra?.reasoning_duration, mes.extra?.time_to_first_token);
+    messageElement.find('.mes_timer').attr('title', timerTitle ?? '').text(timerValue ?? '');
 }
 
 /**
@@ -2714,8 +2723,6 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     const momentDate = timestampToMoment(mes.send_date);
     const timestamp = momentDate.isValid() ? momentDate.format('LL LT') : '';
     const messageHTML = getMessageTextHTML(mes, { messageId });
-    const tokenCount = mes.extra?.token_count;
-    const { timerValue, timerTitle } = formatGenerationTimer(mes.gen_started, mes.gen_finished, mes.extra?.token_count, mes.extra?.reasoning_duration, mes.extra?.time_to_first_token);
 
     messageElement.attr({
         'mesid': messageId,
@@ -2733,9 +2740,8 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     messageElement.find('.ch_name .name_text').text(mes.name);
     messageElement.find('.timestamp').text(timestamp).attr('title', `${mes.extra?.api ? mes.extra.api + ' - ' : ''}${mes.extra?.model ?? ''}`);
     messageElement.find('.mesIDDisplay').text(`#${messageId}`);
-    tokenCount && messageElement.find('.tokenCounterDisplay').text(`${tokenCount}t`);
+    renderMessageCount(messageElement, mes);
     mes.title && messageElement.attr('title', mes.title);
-    timerValue && messageElement.find('.mes_timer').attr('title', timerTitle).text(timerValue);
 
     if (mes.extra?.bias !== '') {
         const bias = messageFormatting(mes.extra?.bias, '', false, false, -1, {}, false);

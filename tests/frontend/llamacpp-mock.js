@@ -3,10 +3,10 @@ import { expect } from './fixtures.js';
 import { openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 /**
- * @param {{ model?: string, reply?: (n: number) => string, delayMs?: number }} [options]
+ * @param {{ model?: string, reply?: (n: number) => string, delayMs?: number, pieceDelayMs?: number }} [options]
  * @returns {Promise<{ url: string, log: { url: string, body: any }[], close: () => Promise<void> }>}
  */
-export function startLlamaCpp({ model = 'mock-llamacpp-model', reply = n => `Mock reply ${n}.`, delayMs = 0 } = {}) {
+export function startLlamaCpp({ model = 'mock-llamacpp-model', reply = n => `Mock reply ${n}.`, delayMs = 0, pieceDelayMs = 0 } = {}) {
     /** @type {{ url: string, body: any }[]} */
     const log = [];
     let n = 0;
@@ -33,8 +33,17 @@ export function startLlamaCpp({ model = 'mock-llamacpp-model', reply = n => `Moc
                 setTimeout(() => {
                     if (/** @type {any} */ (body).stream) {
                         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-                        res.write(`data: ${JSON.stringify({ content: text, stop: false })}\n\n`);
-                        res.end(`data: ${JSON.stringify({ content: '', stop: true })}\n\n`);
+                        const pieces = pieceDelayMs > 0 ? text.split(/(?=\s)/) : [text];
+                        let closed = false;
+                        res.on('close', () => { closed = true; });
+                        (async () => {
+                            for (const [i, piece] of pieces.entries()) {
+                                if (closed) return;
+                                if (i > 0) await new Promise(resolve => setTimeout(resolve, pieceDelayMs));
+                                res.write(`data: ${JSON.stringify({ content: piece, stop: false })}\n\n`);
+                            }
+                            res.end(`data: ${JSON.stringify({ content: '', stop: true })}\n\n`);
+                        })();
                         return;
                     }
                     json({ content: text, stop: true, model, tokens_predicted: 4, tokens_evaluated: 10 });

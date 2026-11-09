@@ -233,7 +233,7 @@ window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
         updates.swipe_info = swipeInfo;
     }
     const updated = updateMessage(mesId, updates);
-    const shown = typeof mes === 'string' ? applyStoredReply(mesId, { mes, extra: event.detail?.extra ?? {} }) : updated;
+    const shown = typeof mes === 'string' ? applyStoredReply(mesId, { mes, extra: event.detail?.extra ?? {}, counted_with: event.detail?.counted_with ?? null }) : updated;
     if (shown) {
         markStoredAs(nodeId, shown);
         updateMessageBlock(mesId, shown);
@@ -279,13 +279,12 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
 }
 
 /**
- * @param {string|null|undefined} mes
- * @param {Record<string, any>|null|undefined} extra
+ * @param {import('./generation-stop.js').StopResult} stop
  */
-function _showStoredReplyText(mes, extra) {
+function _showStoredReplyText({ mes, extra, counted_with }) {
     if (typeof mes !== 'string') return;
     const mesId = chat.length - 1;
-    const updated = applyStoredReply(mesId, { mes, extra: extra ?? {} });
+    const updated = applyStoredReply(mesId, { mes, extra: extra ?? {}, counted_with: counted_with ?? null });
     if (updated) updateMessageBlock(mesId, updated);
 }
 
@@ -296,7 +295,7 @@ export async function finishStreamedReplyPersistence({ assistantNodeId }) {
         _stampAssistantNodeId(assistantNodeId);
     } else if (stop !== undefined) {
         if (stop && isStoredNodeId(stop.node_id)) {
-            _showStoredReplyText(stop.mes, stop.extra);
+            _showStoredReplyText(stop);
             _stampAssistantNodeId(stop.node_id);
         } else {
             if (!stop || stop.state === 'stopping') {

@@ -12,7 +12,7 @@ const STOP_WAIT_MS = 15000;
  * @property {boolean} stopped
  * @property {Array<() => void>} flushHooks
  * @property {Array<() => void|Promise<void>>} aborts
- * @property {{mes: string, node_id: string, extra?: object}|null} persisted
+ * @property {{mes: string, node_id: string, extra?: object, counted_with?: object|null}|null} persisted
  * @property {{pending: object, text: string, reason: string, warning: object}|null} [unsaved]
  * @property {boolean} done
  * @property {number} startedAt
@@ -134,7 +134,7 @@ export function onGenerationStopFlush(response, fn) {
 
 /**
  * @param {StopEntry|undefined} entry
- * @param {{mes: string, node_id: string, extra?: object}|null} persisted
+ * @param {{mes: string, node_id: string, extra?: object, counted_with?: object|null}|null} persisted
  */
 export function recordGenerationPersisted(entry, persisted) {
     if (entry && persisted) entry.persisted = persisted;
@@ -143,7 +143,7 @@ export function recordGenerationPersisted(entry, persisted) {
 /**
  * @param {string} id
  * @param {string|undefined} handle
- * @returns {Promise<{state: 'unknown'} | {state: 'stopped'|'finished'|'stopping', mes: string|null, node_id: string|null, extra: object|null}>}
+ * @returns {Promise<{state: 'unknown'} | {state: 'stopped'|'finished'|'stopping', mes: string|null, node_id: string|null, extra: object|null, counted_with: object|null}>}
  */
 export async function stopGenerationById(id, handle) {
     const entry = entries.get(id);
@@ -174,7 +174,7 @@ export async function stopGenerationById(id, handle) {
     ]);
     clearTimeout(timer);
     const state = timedOut ? 'stopping' : (entry.stopped ? 'stopped' : 'finished');
-    return { state, mes: entry.persisted?.mes ?? null, node_id: entry.persisted?.node_id ?? null, extra: entry.persisted?.extra ?? null };
+    return { state, mes: entry.persisted?.mes ?? null, node_id: entry.persisted?.node_id ?? null, extra: entry.persisted?.extra ?? null, counted_with: entry.persisted?.counted_with ?? null };
 }
 
 /**
