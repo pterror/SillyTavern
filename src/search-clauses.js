@@ -1,3 +1,6 @@
+export { searchClauses } from '@st/protocol/search';
+export { WORLD_FIELD, WORLD_LABELS } from '@st/worldbuilding/protocol';
+
 export const LIBRARY_FIELD = Object.freeze({
     name: 0, description: 1, mes_example: 2, scenario: 3, personality: 4, first_mes: 5, creator_notes: 6,
     creator: 7, tags: 8, alternate_greetings: 9, members: 10, id: 11,
@@ -24,44 +27,6 @@ export const LIBRARY_LABELS = Object.freeze({
     members: [LIBRARY_FIELD.members],
     id: [LIBRARY_FIELD.id],
 });
-
-export const WORLD_FIELD = Object.freeze({ key: 0, group: 1, title: 2, secondary: 3, text: 4, uid: 5, automationId: 6 });
-
-export const WORLD_LABELS = Object.freeze({
-    key: [WORLD_FIELD.key],
-    keys: [WORLD_FIELD.key],
-    title: [WORLD_FIELD.title],
-    text: [WORLD_FIELD.text],
-    group: [WORLD_FIELD.group],
-    secondary: [WORLD_FIELD.secondary],
-});
-
-/** @typedef {{ text: string, fields?: number[], negate: boolean, quoted: boolean }} Clause */
-
-/**
- * @param {string} search
- * @param {Readonly<Record<string, number[]>>} [labels]
- * @returns {Clause[]}
- */
-export function searchClauses(search, labels = {}) {
-    const tokens = String(search ?? '').match(/[^\s"]*"[^"]*"|[^\s"]*"[^"]*$|\S+/g) ?? [];
-    /** @type {Clause[]} */
-    const out = [];
-    for (const token of tokens) {
-        const m = token.match(/^(-)?([A-Za-z][A-Za-z0-9_]*):(.+)$/s);
-        const label = m && Object.hasOwn(labels, m[2].toLowerCase()) ? m[2].toLowerCase() : null;
-        const raw = label && m ? m[3] : token;
-        const quote = raw.indexOf('"');
-        const closed = quote === 0 && raw.length >= 2 && raw.endsWith('"');
-        const text = closed ? raw.slice(1, -1) : quote === 0 ? raw.slice(1) : raw;
-        if (!text.trim()) continue;
-        /** @type {Clause} */
-        const clause = { text, negate: !!(label && m?.[1]), quoted: closed };
-        if (label) clause.fields = [...labels[label]];
-        out.push(clause);
-    }
-    return out;
-}
 
 /**
  * @param {string} list

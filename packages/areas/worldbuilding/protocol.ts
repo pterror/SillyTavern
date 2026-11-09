@@ -31,6 +31,26 @@ export const PICKED_AT_MOST = MAX_CARDS_PER_READ;
 export const LOOPS_SHOWN = 3;
 export const ENTRIES_NAMED_PER_LOOP = 3;
 
+// A world's fields as its search index numbers them, and the labels its search syntax gives them.
+export const WORLD_FIELD = Object.freeze({
+    key: 0,
+    group: 1,
+    title: 2,
+    secondary: 3,
+    text: 4,
+    uid: 5,
+    automationId: 6,
+});
+
+export const WORLD_LABELS = Object.freeze({
+    key: [WORLD_FIELD.key],
+    keys: [WORLD_FIELD.key],
+    title: [WORLD_FIELD.title],
+    text: [WORLD_FIELD.text],
+    group: [WORLD_FIELD.group],
+    secondary: [WORLD_FIELD.secondary],
+});
+
 export type Named = { thing: string; text: string; shownAs: 'name' | 'title' | 'opening' };
 
 export type RelationOnCard = {
