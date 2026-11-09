@@ -25,7 +25,7 @@ export function recordStored(response, stored) {
     response.locals.storedMessages ??= [];
     response.locals.storedMessages.push(stored);
     reportStoredOnErrorAnswers(response);
-    if (isStoredMessage(stored)) countStoredOnceAnswered(response);
+    if (isStoredMessage(stored)) countStoredSoon(response);
 }
 
 const NOT_MESSAGE_KEYS = ['integrity', 'variables', 'global_variables', 'openings', 'metadata_not_saved'];
@@ -38,21 +38,33 @@ export function isStoredMessage(stored) {
 }
 
 /**
- * The page learns a stored message's node from the answer, so its count is pushed once the answer is sent.
+ * A count can be pushed before the answer names its node: the page holds it until then.
  * @param {import('express').Response} response
  */
-function countStoredOnceAnswered(response) {
+function countStoredSoon(response) {
     const request = response.req;
-    if (response.locals.countsStored || !request || typeof response.once !== 'function') return;
-    response.locals.countsStored = true;
-    const body = request?.body ?? {};
-    const owner = { avatar: body.character_avatar || body.avatar_url, group: body.group_id };
-    response.once('finish', () => {
-        const nodeIds = (storedMessagesOf(response) ?? []).filter(isStoredMessage).map(s => s.node_id);
-        import('./message-count-service.js')
-            .then(service => service.pushStoredCounts(request, owner, nodeIds))
-            .catch(error => console.error('Could not count the stored messages:', error));
-    });
+    if (!request || typeof response.once !== 'function') return;
+    if (!response.locals.countStored) {
+        const body = request.body ?? {};
+        const owner = { avatar: body.character_avatar || body.avatar_url, group: body.group_id };
+        /** @type {Set<string>} */
+        const counted = new Set();
+        let soon = false;
+        response.locals.countStored = () => {
+            if (soon) return;
+            soon = true;
+            setImmediate(() => {
+                soon = false;
+                const nodeIds = (storedMessagesOf(response) ?? []).filter(isStoredMessage).map(s => s.node_id).filter(id => !counted.has(id));
+                nodeIds.forEach(id => counted.add(id));
+                if (!nodeIds.length) return;
+                import('./message-count-service.js')
+                    .then(service => service.pushStoredCounts(request, owner, nodeIds))
+                    .catch(error => console.error('Could not count the stored messages:', error));
+            });
+        };
+    }
+    response.locals.countStored();
 }
 
 /**

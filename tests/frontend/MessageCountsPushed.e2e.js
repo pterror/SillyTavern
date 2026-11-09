@@ -5,14 +5,14 @@ import { startLlamaCpp, createCharacter, openCharacter, connectLlamaCpp } from '
 /**
  * @param {import('@playwright/test').Page} page
  */
-async function enableCounts(page) {
-    await page.evaluate(async () => {
+async function enableCounts(page, streaming = false) {
+    await page.evaluate(async (streaming) => {
         // @ts-ignore
         const context = stTest.context();
         context.powerUserSettings.message_token_count_enabled = true;
-        context.textCompletionSettings.streaming = false;
+        context.textCompletionSettings.streaming = streaming;
         await (await import('/script.js')).saveSettings();
-    });
+    }, streaming);
 }
 
 /**
@@ -71,14 +71,22 @@ function counter(page, mesId) {
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  */
-async function setUp(page, name) {
-    const mock = await startLlamaCpp();
+async function setUp(page, name, { streaming = false, mockOptions = {} } = {}) {
+    const mock = await startLlamaCpp(mockOptions);
     await testSetup.awaitST({ page });
     const avatar = await createCharacter(page, name, `Greeting of ${name}`);
     await openCharacter(page, avatar);
     await connectLlamaCpp(page, mock.url);
-    await enableCounts(page);
+    await enableCounts(page, streaming);
     return { mock, avatar };
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ */
+function generating(page) {
+    // @ts-ignore
+    return page.evaluate(() => stTest.context().chat.some((_, mesId) => stTest.context().isReplyGenerating?.(mesId)) || document.querySelector('#mes_stop')?.checkVisibility());
 }
 
 test('counts the server has to make come after the answer, newest first, into counters that keep their place', async ({ page }) => {
@@ -211,3 +219,36 @@ test('a model the backend swapped in recounts the shown messages with its own to
         await mock.close();
     }
 });
+
+for (const inGroup of [false, true]) {
+    test(`a sent message's count comes while its reply still streams${inGroup ? ' (group)' : ''}`, async ({ page }) => {
+        const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
+        const { mock, avatar } = await setUp(page, `Streaming ${s}`, { streaming: true, mockOptions: { reply: () => `Reply ${s} ${long}`, delayMs: 500, pieceDelayMs: 150 } });
+        try {
+            if (inGroup) {
+                await page.evaluate(async (members) => {
+                    // @ts-ignore
+                    const context = stTest.context();
+                    const response = await fetch('/api/groups/create', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ name: `Streaming group ${Date.now()}`, members }) });
+                    if (!response.ok) throw new Error(`group create failed: ${response.status}`);
+                    const { openGroupById } = await import('/scripts/group-chats.js');
+                    await openGroupById(String((await response.json()).id));
+                }, [avatar]);
+                await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
+            }
+            const requested = countRequests(page);
+            await chatBox(page).fill(`Hello ${s}, a message with a few words`);
+            await page.locator('#send_but').click();
+            await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('word1', { timeout: 15000 });
+            await expect(counter(page, 1)).toHaveText(/^\d+t$/, { timeout: 5000 });
+            await expect(counter(page, 0)).toHaveText(/^\d+t$/);
+            expect(await generating(page)).toBe(true);
+            await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).not.toContainText('word59');
+            await expect(page.locator('#send_but')).toBeVisible({ timeout: 30000 });
+            expect(requested).toEqual([]);
+        } finally {
+            await mock.close();
+        }
+    });
+}
