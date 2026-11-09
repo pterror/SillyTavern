@@ -118,8 +118,9 @@ State and other
 - After the worldbuilding page: the chat API lets the page invent identities and create stored rows on their own
   (`provisionalNodeId` from an opening's text, `ensureOpeningRow`, `rememberCardOpening` matching by text,
   `public/scripts/chat-store.js:785-793`). So greeting ids sit beside a text-based identity, and the edit path still
-  runs on the old one. That is why an edit of a card greeting in the chat isn't saved, why an edit isn't placed after
-  that greeting's earlier edits, and why an edit back to the card's text isn't linked again. First a model of every
+  runs on the old one. Among its symptoms, likely not the only ones: an edit of a card greeting in the chat isn't
+  saved, an edit isn't placed after that greeting's earlier edits, an edit back to the card's text isn't linked again.
+  They are not fixed one by one; they go when the construction changes. First a model of every
   endpoint and page path across chats that creates rows or makes identities; then the page sends only actions naming
   what the server gave it (a greeting id or a stored node), with no endpoint that creates a row on its own.
 - Greetings:
