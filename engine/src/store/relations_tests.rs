@@ -7,8 +7,8 @@ use super::books::{BOOK, ENTRY, EntryKey};
 use super::chat_read::Js;
 use super::relations::{
     self, DELETION_IN_PROGRESS, KEPT_RELATIONS_BY_KIND, KEPT_RELATIONS_BY_TARGET, KIND_MERGE_RECORDS_DUE,
-    KINDS_BEING_MERGED, RELATION_COUNT_BY_KIND_AND_TARGET, RELATIONS_BY_TARGET, RELATIONS_OF_DELETED_ENTRIES_BY_KIND,
-    RELATIONS_OF_ENTRY, RESTORE_IN_PROGRESS,
+    KINDS_BEING_MERGED, RELATIONS_BY_TARGET, RELATIONS_OF_DELETED_ENTRIES_BY_KIND, RELATIONS_OF_ENTRY,
+    RESTORE_IN_PROGRESS, SOURCES_ORDER_COUNT, SOURCES_ORDER_EDGE,
 };
 use super::world_order_tree::{self as tree, ORDER_TREE_COUNT, ORDER_TREE_EDGE, ORDER_TREE_HELD};
 use super::*;
@@ -285,6 +285,11 @@ impl Model {
             }
             Ok(())
         });
+        let sources_by_group: BTreeMap<(u64, u64), Vec<u64>> = groups
+            .into_iter()
+            .map(|(pair, sources)| (pair, sources.into_iter().map(|(_, source)| source).collect()))
+            .collect();
+        assert_eq!(sources_trees(store), sources_by_group);
     }
 
     fn pointers_rewritten(&self, gone: u64) -> Vec<(u64, String)> {
@@ -321,6 +326,59 @@ impl Model {
     fn entity_ids(&self) -> Vec<u64> {
         self.entries.keys().copied().collect()
     }
+}
+
+// Every tree of sources against RELATIONS_BY_TARGET: the same sources in the same order, each found at its rank and
+// ranked where it is found, and no tree for a (kind, target) nothing in use targets. Answers the trees' sources.
+fn sources_trees(store: &Store) -> BTreeMap<(u64, u64), Vec<u64>> {
+    read(store, |view| {
+        let mut by_target: BTreeMap<(u64, u64), SourcesByPosition> = BTreeMap::new();
+        let prefix = kinds::key::id(RELATIONS_BY_TARGET, B);
+        for (stored_key, _) in view.scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)? {
+            let mut read_at = prefix.len();
+            let target = crate::keyspace::val::get_u64(&stored_key, &mut read_at).unwrap();
+            let kind = crate::keyspace::val::get_u64(&stored_key, &mut read_at).unwrap();
+            let (position, source) = relations::position_and_source_of_relation_of_kind_targeting(
+                &relations::relations_of_kind_targeting_prefix(B, kind, target),
+                &stored_key,
+            )?;
+            by_target.entry((kind, target)).or_default().push((position, source));
+        }
+        let mut trees = BTreeMap::new();
+        let roots = kinds::key::of(SOURCES_ORDER_COUNT.id());
+        for (stored_key, _) in view.scan(&roots, &kinds::key::prefix_end(&roots), usize::MAX)? {
+            let mut read_at = roots.len();
+            assert_eq!(crate::keyspace::val::get_u64(&stored_key, &mut read_at), Some(B));
+            let kind = crate::keyspace::val::get_u64(&stored_key, &mut read_at).unwrap();
+            let target = crate::keyspace::val::get_u64(&stored_key, &mut read_at).unwrap();
+            assert!(by_target.contains_key(&(kind, target)), "a tree for ({kind}, {target}) that nothing targets");
+        }
+        for ((kind, target), in_order) in by_target {
+            let sources = relations::sources_tree(B, kind, target);
+            let every = tree::Counted::Every;
+            assert_eq!(tree::count(view, &sources, every)?, in_order.len() as u64);
+            assert_eq!(relations::count_of_relations_of_kind_targeting(view, B, kind, target)?, in_order.len() as u64);
+            let leaves = tree::from_rank(view, &sources, every, 0, usize::MAX)?;
+            let want: Vec<Vec<u8>> = in_order
+                .iter()
+                .map(|(position, source)| relations::source_leaf(position, *source))
+                .collect();
+            assert_eq!(leaves, want, "({kind}, {target})");
+            for (rank, leaf) in want.iter().enumerate() {
+                assert_eq!(tree::rank(view, &sources, leaf, every)?, rank as u64);
+                assert_eq!(tree::from_rank(view, &sources, every, rank as u64, 1)?, vec![leaf.clone()]);
+                assert_eq!(
+                    tree::from_rank(view, &sources, every, rank as u64, 2)?,
+                    want[rank..(rank + 2).min(want.len())].to_vec()
+                );
+            }
+            trees.insert(
+                (kind, target),
+                leaves.iter().map(|leaf| relations::source_of_leaf(leaf)).collect::<Result<_, _>>()?,
+            );
+        }
+        Ok(trees)
+    })
 }
 
 struct Rng(u64);
@@ -373,7 +431,8 @@ fn dump(store: &Store) -> Vec<(Vec<u8>, Vec<u8>)> {
         ORDER_TREE_HELD.id(),
         RELATIONS_OF_ENTRY,
         RELATIONS_BY_TARGET,
-        RELATION_COUNT_BY_KIND_AND_TARGET,
+        SOURCES_ORDER_EDGE,
+        SOURCES_ORDER_COUNT.id(),
         DELETION_IN_PROGRESS,
         RESTORE_IN_PROGRESS,
         KEPT_RELATIONS_BY_TARGET,
@@ -622,6 +681,138 @@ fn a_position_between_two_is_strictly_between_them() {
     }
     assert_eq!(relations::position_between(Some(b"a"), Some(b"a\x00")), None);
     assert_eq!(relations::position_between(Some(b"b"), Some(b"a")), None);
+}
+
+#[test]
+fn positions_made_at_either_end_grow_by_a_byte_per_62_fold_and_go_beyond_any_position_a_file_holds() {
+    let mut last = relations::position_between(None, None).unwrap();
+    let mut first = last.clone();
+    for _ in 0..10_000 {
+        let after = relations::position_between(Some(&last), None).unwrap();
+        assert!(after > last, "{after:?} after {last:?}");
+        last = after;
+        let before = relations::position_between(None, Some(&first)).unwrap();
+        assert!(before < first, "{before:?} before {first:?}");
+        first = before;
+    }
+    assert!(last.len() <= 4 && first.len() <= 4, "{last:?} {first:?}");
+    for held in ["", "a", "a0V", "m", "z", "zz", "zzzz", "~", "é", "Zz", "Z0", "A", "A0", "0", "\u{1}"] {
+        let held = held.as_bytes();
+        let after = relations::position_between(Some(held), None).unwrap();
+        assert!(after.as_slice() > held && std::str::from_utf8(&after).is_ok(), "after {held:?}");
+        if let Some(before) = relations::position_between(None, Some(held)) {
+            assert!(before.as_slice() < held && std::str::from_utf8(&before).is_ok(), "before {held:?}");
+        } else {
+            assert!(held.is_empty() || held == b"\x01", "nothing before {held:?}");
+        }
+    }
+}
+
+const LIKES: u64 = 3;
+
+#[test]
+fn every_tree_of_sources_orders_them_as_relations_by_target_through_deletes_restores_steps_and_merges() {
+    let seeds: u64 = std::env::var("ST_MODEL_SEEDS")
+        .ok()
+        .and_then(|view| view.parse().ok())
+        .unwrap_or(3);
+    let steps: usize = std::env::var("ST_MODEL_STEPS")
+        .ok()
+        .and_then(|view| view.parse().ok())
+        .unwrap_or(300);
+    for seed in 0..seeds {
+        let dir = temp_dir("sources");
+        let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+        history_user(&store);
+        book(&store, B, "one");
+        store
+            .commit_wait(vec![set_text(B, relations::relation_kind_field(LIKES), "likes")])
+            .unwrap();
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d ^ (seed + 7).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        let (mut live, mut deleted): (Vec<u64>, Vec<u64>) = (Vec::new(), Vec::new());
+        let (mut next_entity, mut next_key, mut change) = (100, 1, 0);
+        let mut merged = false;
+        for _ in 0..steps {
+            change += 1;
+            let mut targets = live.clone();
+            targets.extend(&deleted);
+            let relations_of = |rng: &mut Rng, targets: &[u64]| {
+                let mut rels = Vec::new();
+                for _ in 0..rng.below(4) {
+                    let kinds: &[u64] = if merged { &[IN, OWES] } else { &[IN, OWES, LIKES] };
+                    let kind = kinds[rng.below(kinds.len() as u64) as usize];
+                    let target = targets[rng.below(targets.len() as u64) as usize];
+                    let position = ["a0", "a1", "a0V", "m", "", "a0"][rng.below(6) as usize];
+                    rels.push((kind, target, position, rng.below(3) == 0));
+                }
+                json_of(&rels)
+            };
+            match rng.below(12) {
+                0..=2 => {
+                    let entity = next_entity;
+                    next_entity += 1;
+                    let mut records = vec![create(entity, ENTRY, &format!("{B}:{next_key}"))];
+                    next_key += 1;
+                    targets.push(entity);
+                    records.push(hist_set_relations(change, entity, &relations_of(&mut rng, &targets)));
+                    store.commit_wait(records).unwrap();
+                    live.push(entity);
+                }
+                3..=5 if !live.is_empty() => {
+                    let entity = live[rng.below(live.len() as u64) as usize];
+                    let json = relations_of(&mut rng, &targets);
+                    match store.commit_wait(vec![hist_set_relations(change, entity, &json)]) {
+                        Err(StoreError::Refused(why)) if why.contains("changes nothing") => {}
+                        written => {
+                            written.unwrap();
+                        }
+                    }
+                }
+                6 if !live.is_empty() => {
+                    let entity = live.remove(rng.below(live.len() as u64) as usize);
+                    store.commit_wait(vec![soft_delete(entity, change)]).unwrap();
+                    deleted.push(entity);
+                }
+                7 if !deleted.is_empty() => {
+                    let entity = deleted.remove(rng.below(deleted.len() as u64) as usize);
+                    store
+                        .commit_wait(vec![restore_record(entity, &format!("{B}:{next_key}"), change)])
+                        .unwrap();
+                    next_key += 1;
+                    live.push(entity);
+                }
+                8..=9 => {
+                    let limit = 1 + rng.below(4) as usize;
+                    derive_job(&store, move |view, out| relations::relation_step(view, out, limit));
+                }
+                10 if !merged => {
+                    merged = true;
+                    store
+                        .commit_wait(vec![set_text(B, relations::relation_kind_merge_field(LIKES), "1")])
+                        .unwrap();
+                    loop {
+                        let (rewrites, more) = rewrites_of(&read(&store, |view| {
+                            relations::rewrites_merging_relation_kind(view, B, LIKES, IN, 2)
+                        }));
+                        for (source, json) in rewrites {
+                            change += 1;
+                            store.commit_wait(vec![hist_set_relations(change, source, &json)]).unwrap();
+                        }
+                        sources_trees(&store);
+                        if !more {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            sources_trees(&store);
+        }
+        while derive_job(&store, |view, out| relations::relation_step(view, out, 1000)).is_some() {}
+        assert!(sources_trees(&store).values().all(|sources| !sources.is_empty()));
+        store.close();
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 fn history_meta(change: u64) -> Vec<Value> {
@@ -1015,7 +1206,8 @@ fn the_conversion_builds_for_a_store_written_before_the_tree_what_its_writes_wou
             ORDER_TREE_HELD.id(),
             RELATIONS_OF_ENTRY,
             RELATIONS_BY_TARGET,
-            RELATION_COUNT_BY_KIND_AND_TARGET,
+            SOURCES_ORDER_EDGE,
+            SOURCES_ORDER_COUNT.id(),
         ] {
             let prefix = kinds::key::of(structure);
             for (stored_key, _) in view.scan(&prefix, &kinds::key::prefix_end(&prefix), usize::MAX)? {

@@ -545,7 +545,7 @@ onUserStoreOpened(({ events, root, handle }) => {
     /** @type {import('@st/server-ui').User} */
     const user = /** @type {any} */ ({ handle, directories: { root } });
     events.on('worldbuildingJobStep', () => {
-        ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview']).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
+        ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview', 'worldbuilding.pointingAt']).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
     });
 });
 
@@ -588,6 +588,23 @@ const worldbuildingPorts = {
     async stepOverview(user, { book, groupBy, layout, ...step }) {
         const lib = await libOf(user);
         return lib.store.worldRead('worldbuildingStep', { book: BigInt(book), groupBy: groupBy === null ? null : Number(groupBy), ...regionLayout(layout), ...step });
+    },
+    async readPointingAt(user, { book, entry, layout, endRank, held, maxCards }) {
+        const lib = await libOf(user);
+        const read = await lib.store.worldRead('worldbuildingPointingAt', {
+            book: BigInt(book),
+            entry: BigInt(entry),
+            firstShown: endRank,
+            maxCards,
+            held: held.map(range => ({ ...range, kind: Number(range.kind) })),
+            cardTextCharacters: layout.cardTextCharacters,
+            ...regionLayout(layout),
+        });
+        return read === null ? null : read.sections;
+    },
+    async stepPointingAt(user, { book, entry, kind, layout, ...step }) {
+        const lib = await libOf(user);
+        return lib.store.worldRead('worldbuildingStep', { book: BigInt(book), entry: BigInt(entry), groupBy: Number(kind), ...regionLayout(layout), ...step });
     },
     async readRelationKinds(user, book) {
         const lib = await libOf(user);

@@ -8,13 +8,13 @@ use super::commit_checks;
 use super::derive::{Out, View};
 use super::kinds::{key, text_value};
 use super::library::entity_info;
-use super::world_order_tree::{self as tree, CountedSlot, LayeredWrites, OrderKey, ReadDerived};
+use super::derive::AddMapKind;
+use super::world_order_tree::{self as tree, CountedSlot, LayeredWrites, OrderKey, ReadDerived, Tree, TreeKind};
 use crate::keyspace::val::{counter_value, get_bytes, get_u64, put_bytes, put_u64};
 use crate::log::format::FieldRef;
 
 pub const RELATIONS_OF_ENTRY: u64 = 228;
 pub const RELATIONS_BY_TARGET: u64 = 229;
-pub const RELATION_COUNT_BY_KIND_AND_TARGET: u64 = 230;
 pub const DELETION_IN_PROGRESS: u64 = 232;
 pub const RESTORE_IN_PROGRESS: u64 = 233;
 pub const KEPT_RELATIONS_BY_TARGET: u64 = 234;
@@ -22,6 +22,8 @@ pub const KINDS_BEING_MERGED: u64 = 235;
 pub const KEPT_RELATIONS_BY_KIND: u64 = 236;
 pub const RELATIONS_OF_DELETED_ENTRIES_BY_KIND: u64 = 237;
 pub const KIND_MERGE_RECORDS_DUE: u64 = 238;
+pub const SOURCES_ORDER_EDGE: u64 = 240;
+pub const SOURCES_ORDER_COUNT: AddMapKind = AddMapKind::new(241);
 
 pub const RELATIONS_FIELD: &[u8] = b"\x01relations";
 pub const RELATION_KIND_FIELD_PREFIX: &[u8] = b"\x01relationKind:";
@@ -100,10 +102,71 @@ pub struct Relation {
 
 pub type RelationSet = BTreeMap<(u64, u64), Relation>;
 
-pub fn order_tree_space(book: u64) -> Vec<u8> {
-    let mut stored_key = Vec::new();
-    put_u64(&mut stored_key, book);
-    stored_key
+pub fn order_tree_space(book: u64) -> Tree {
+    let mut space = Vec::new();
+    put_u64(&mut space, book);
+    Tree::new(&tree::WORLD_ORDER, space)
+}
+
+pub static SOURCES_ORDER: TreeKind = TreeKind::new(SOURCES_ORDER_EDGE, SOURCES_ORDER_COUNT, is_source_leaf);
+
+fn is_source_leaf(prefix: &[u8]) -> bool {
+    let mut read_at = 0;
+    get_bytes(prefix, &mut read_at).is_some()
+        && get_u64(prefix, &mut read_at).is_some()
+        && read_at == prefix.len()
+}
+
+fn sources_space(book: u64, kind: u64, target: u64) -> Vec<u8> {
+    let mut space = Vec::new();
+    put_u64(&mut space, book);
+    put_u64(&mut space, kind);
+    put_u64(&mut space, target);
+    space
+}
+
+pub fn sources_tree(book: u64, kind: u64, target: u64) -> Tree {
+    Tree::new(&SOURCES_ORDER, sources_space(book, kind, target))
+}
+
+pub fn source_leaf(position: &[u8], source: u64) -> Vec<u8> {
+    let mut leaf = Vec::new();
+    put_bytes(&mut leaf, position);
+    put_u64(&mut leaf, source);
+    leaf
+}
+
+pub fn source_of_leaf(leaf: &[u8]) -> Result<u64, StoreError> {
+    let mut read_at = 0;
+    get_bytes(leaf, &mut read_at)
+        .and_then(|_| get_u64(leaf, &mut read_at))
+        .ok_or_else(|| corrupt("a source's leaf doesn't decode"))
+}
+
+fn sources_of_kind_prefix(book: u64, kind: u64) -> Vec<u8> {
+    let mut space = Vec::new();
+    put_u64(&mut space, book);
+    put_u64(&mut space, kind);
+    Tree::count_prefix(&SOURCES_ORDER, &space)
+}
+
+fn next_target_of_relations_in_use_of_kind(
+    reader: &impl ReadDerived,
+    book: u64,
+    kind: u64,
+    after: Option<u64>,
+) -> Result<Option<u64>, StoreError> {
+    let prefix = sources_of_kind_prefix(book, kind);
+    let from = match after {
+        Some(target) => key::prefix_end(&Tree::count_prefix(&SOURCES_ORDER, &sources_space(book, kind, target))),
+        None => prefix.clone(),
+    };
+    let Some((stored_key, _)) = reader.read_first_in(&from, &key::prefix_end(&prefix))? else {
+        return Ok(None);
+    };
+    get_u64(&stored_key, &mut prefix.len())
+        .map(Some)
+        .ok_or_else(|| corrupt("a sources tree's key doesn't decode"))
 }
 
 pub fn sortable_bits(number: f64) -> u64 {
@@ -240,18 +303,6 @@ fn kind_position_and_source_of_relation_targeting(
     Ok((kind, position, source))
 }
 
-pub fn relation_counts_of_kind_prefix(book: u64, kind: u64) -> Vec<u8> {
-    let mut stored_key = key::id(RELATION_COUNT_BY_KIND_AND_TARGET, book);
-    put_u64(&mut stored_key, kind);
-    stored_key
-}
-
-pub fn relation_count_key(book: u64, kind: u64, target: u64) -> Vec<u8> {
-    let mut stored_key = relation_counts_of_kind_prefix(book, kind);
-    put_u64(&mut stored_key, target);
-    stored_key
-}
-
 fn counter_at(reader: &impl ReadDerived, stored_key: &[u8]) -> Result<u64, StoreError> {
     match reader.read(stored_key)? {
         Some(stored) => counter_value(&stored)
@@ -277,7 +328,7 @@ pub fn count_of_relations_of_kind_targeting(
     kind: u64,
     target: u64,
 ) -> Result<u64, StoreError> {
-    counter_at(reader, &relation_count_key(book, kind, target))
+    tree::count(reader, &sources_tree(book, kind, target), tree::Counted::Every)
 }
 
 fn first_under(reader: &impl ReadDerived, prefix: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
@@ -343,7 +394,7 @@ pub fn relation_kind_in_use(
     book: u64,
     kind: u64,
 ) -> Result<bool, StoreError> {
-    Ok(first_under(reader, &relation_counts_of_kind_prefix(book, kind))?.is_some()
+    Ok(first_under(reader, &sources_of_kind_prefix(book, kind))?.is_some()
         || first_under(reader, &kept_by_kind_prefix(book, kind))?.is_some()
         || counter_at(reader, &relations_of_deleted_entries_count_key(book, kind))? > 0)
 }
@@ -455,6 +506,17 @@ fn strong_targets_in_use_of_kind(view: &View, source: u64, kind: u64) -> Result<
     Ok(out)
 }
 
+pub fn position_in_use(
+    reader: &impl ReadDerived,
+    source: u64,
+    kind: u64,
+    target: u64,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    Ok(stored_relation(reader, source, kind, target)?
+        .filter(|stored| stored.state == RelationState::InUse)
+        .map(|stored| stored.relation.position))
+}
+
 pub fn strong_kinds(set: &RelationSet) -> Vec<u64> {
     let kinds_held: BTreeSet<u64> = set
         .iter()
@@ -491,8 +553,12 @@ fn put_into_use(
         relation_by_target_key(book, kind, target, &relation.position, source),
         Vec::new(),
     );
-    change_counter(writes, relation_count_key(book, kind, target), 1)?;
-    Ok(())
+    tree::insert_entry(
+        writes,
+        &sources_tree(book, kind, target),
+        &source_leaf(&relation.position, source),
+        &[],
+    )
 }
 
 fn take_out_of_use(
@@ -510,8 +576,9 @@ fn take_out_of_use(
         &relation.position,
         source,
     ));
-    let left = change_counter(writes, relation_count_key(book, kind, target), -1)?;
-    if left == 0
+    let sources = sources_tree(book, kind, target);
+    tree::remove_entry(writes, &sources, &source_leaf(&relation.position, source), &[])?;
+    if tree::count(writes, &sources, tree::Counted::Every)? == 0
         && let Some(deleting) = deletion_in_progress(writes, target)?
     {
         let order_key = tree::order_key(deleting.order_value, target);
@@ -1373,12 +1440,10 @@ pub fn rewrites_merging_relation_kind(
 ) -> Result<Js, StoreError> {
     let mut sources = BTreeSet::new();
     let mut more = false;
-    let counts = relation_counts_of_kind_prefix(book, merged);
-    'targets: for (count_key, _) in view.scan(&counts, &key::prefix_end(&counts), usize::MAX)? {
-        let mut read_at = counts.len();
-        let target = get_u64(&count_key, &mut read_at)
-            .ok_or_else(|| corrupt("a relation count key doesn't decode"))?;
-        let prefix = relations_of_kind_targeting_prefix(book, merged, target);
+    let mut target = None;
+    'targets: while let Some(next) = next_target_of_relations_in_use_of_kind(view, book, merged, target)? {
+        target = Some(next);
+        let prefix = relations_of_kind_targeting_prefix(book, merged, next);
         for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
             let (_, source) = position_and_source_of_relation_of_kind_targeting(&prefix, &stored_key)?;
             if !sources.contains(&source) && sources.len() == limit {
@@ -1633,7 +1698,105 @@ fn entry_key_in(view: &View, book: u64, entity: u64) -> Result<Option<EntryKey>,
 
 const POSITION_DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
+// A whole number is a head letter and the digits it calls for: 'a'..='z' head 1..=26 digits, 'Z'..='A' head 1..=26
+// digits of the numbers below "a0".
+fn whole_number_digits(head: u8) -> Option<usize> {
+    match head {
+        b'a'..=b'z' => Some(usize::from(head - b'a') + 1),
+        b'A'..=b'Z' => Some(usize::from(b'Z' - head) + 1),
+        _ => None,
+    }
+}
+
+fn whole_number_of(position: &[u8]) -> Option<&[u8]> {
+    let digits = whole_number_digits(*position.first()?)?;
+    let whole = position.get(..1 + digits)?;
+    whole[1..]
+        .iter()
+        .all(|digit| POSITION_DIGITS.contains(digit))
+        .then_some(whole)
+}
+
+fn smallest_with_head(head: u8) -> Option<Vec<u8>> {
+    let mut out = vec![head];
+    out.extend(std::iter::repeat_n(b'0', whole_number_digits(head)?));
+    Some(out)
+}
+
+fn largest_with_head(head: u8) -> Option<Vec<u8>> {
+    let mut out = vec![head];
+    out.extend(std::iter::repeat_n(b'z', whole_number_digits(head)?));
+    Some(out)
+}
+
+fn next_whole_number(whole: &[u8]) -> Option<Vec<u8>> {
+    let mut out = whole.to_vec();
+    for at in (1..out.len()).rev() {
+        let index = POSITION_DIGITS.iter().position(|digit| *digit == out[at])?;
+        if let Some(next) = POSITION_DIGITS.get(index + 1) {
+            out[at] = *next;
+            return Some(out);
+        }
+        out[at] = b'0';
+    }
+    match whole[0] {
+        b'Z' => Some(b"a0".to_vec()),
+        b'z' => None,
+        head => smallest_with_head(head + 1),
+    }
+}
+
+fn previous_whole_number(whole: &[u8]) -> Option<Vec<u8>> {
+    let mut out = whole.to_vec();
+    for at in (1..out.len()).rev() {
+        let index = POSITION_DIGITS.iter().position(|digit| *digit == out[at])?;
+        if index > 0 {
+            out[at] = POSITION_DIGITS[index - 1];
+            return Some(out);
+        }
+        out[at] = b'z';
+    }
+    match whole[0] {
+        b'a' => Some(b"Zz".to_vec()),
+        b'A' => None,
+        head => largest_with_head(head - 1),
+    }
+}
+
+fn position_after(low: &[u8]) -> Option<Vec<u8>> {
+    if let Some(whole) = whole_number_of(low) {
+        return next_whole_number(whole);
+    }
+    match low.first() {
+        None => Some(b"a0".to_vec()),
+        Some(&head) if head < b'a' => Some(b"a0".to_vec()),
+        Some(&head) if head < b'z' => smallest_with_head(head + 1),
+        Some(_) => None,
+    }
+}
+
+fn position_before(high: &[u8]) -> Option<Vec<u8>> {
+    if let Some(whole) = whole_number_of(high) {
+        return previous_whole_number(whole);
+    }
+    match *high.first()? {
+        head if head > b'a' => Some(b"a0".to_vec()),
+        b'a' => Some(b"Zz".to_vec()),
+        head if head > b'A' && head <= b'Z' => largest_with_head(head - 1),
+        _ => None,
+    }
+}
+
 pub fn position_between(low: Option<&[u8]>, high: Option<&[u8]>) -> Option<Vec<u8>> {
+    match (low, high) {
+        (None, None) => Some(b"a0".to_vec()),
+        (Some(low), None) => position_after(low).or_else(|| position_bisecting(Some(low), None)),
+        (None, Some(high)) => position_before(high).or_else(|| position_bisecting(None, Some(high))),
+        (Some(_), Some(_)) => position_bisecting(low, high),
+    }
+}
+
+fn position_bisecting(low: Option<&[u8]>, high: Option<&[u8]>) -> Option<Vec<u8>> {
     if let (Some(low_byte), Some(high_byte)) = (low, high)
         && low_byte >= high_byte
     {

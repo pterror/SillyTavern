@@ -2785,10 +2785,11 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
-        "worldbuildingOverview" | "worldbuildingStep" => {
+        "worldbuildingOverview" | "worldbuildingStep" | "worldbuildingPointingAt" => {
             use crate::store::overview;
             let book = req_integer(a, "book")?;
             let kind = opt_integer(a, "groupBy")?;
+            let pointing_at = opt_integer(a, "entry")?;
             let text = |name: &str| -> Result<Option<String>> {
                 match a.get::<Unknown>(name)? {
                     Some(js_value)
@@ -2812,14 +2813,31 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                 .zip(rows)
                 .map(|(columns, rows)| overview::RegionLayout { columns, rows })
                 .collect();
-            let grouping = overview::Grouping { book, kind };
-            if op == "worldbuildingOverview" {
-                let (first_rank, end_rank, step_landed_on) = (
-                    req_integer(a, "firstRank")?,
-                    req_integer(a, "endRank")?,
-                    text("stepLandedOn")?,
-                );
+            if op == "worldbuildingPointingAt" {
+                let Some(entry) = pointing_at else {
+                    return Err(invalid("worldbuildingPointingAt takes the entry".into()));
+                };
                 let characters = req_integer(a, "cardTextCharacters")? as usize;
+                let (first_shown, max_cards) = (req_integer(a, "firstShown")?, req_integer(a, "maxCards")?);
+                let mut held = Vec::new();
+                for range in a.get::<Vec<Object>>("held")?.unwrap_or_default() {
+                    held.push(overview::HeldRange {
+                        kind: req_integer(&range, "kind")?,
+                        first_rank: req_integer(&range, "firstRank")?,
+                        end_rank: req_integer(&range, "endRank")?,
+                        step_landed_on: match range.get::<Unknown>("stepLandedOn")? {
+                            Some(js_value)
+                                if !matches!(js_value.get_type()?, ValueType::Null | ValueType::Undefined) =>
+                            {
+                                Some(
+                                    String::from_utf8(string("stepLandedOn", js_value)?)
+                                        .map_err(|_| invalid("stepLandedOn isn't text".into()))?,
+                                )
+                            }
+                            _ => None,
+                        },
+                    });
+                }
                 Box::new(move |store| {
                     store
                         .chat_read(|view| {
@@ -2827,45 +2845,72 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                                 regions_by_nesting_level: &regions,
                                 card_text_characters: characters,
                             };
-                            overview::read_overview(
-                                view,
-                                grouping,
-                                &layout,
-                                first_rank,
-                                end_rank,
-                                step_landed_on.as_deref(),
-                            )
+                            overview::read_pointing_at(view, book, entry, &layout, &held, first_shown, max_cards)
                         })
                         .map(JsTree)
                 })
             } else {
-                let from = text("from")?;
-                let by = match a.get::<Unknown>("by")? {
-                    Some(js_value)
-                        if !matches!(js_value.get_type()?, ValueType::Null | ValueType::Undefined) =>
-                    {
-                        Some(signed("by", js_value)?)
-                    }
-                    _ => None,
-                };
-                let step = match (by, text("to")?.as_deref()) {
-                    (Some(steps), None) => overview::OverviewStep::InReadingOrder(steps),
-                    (None, Some("parent")) => overview::OverviewStep::ToParent,
-                    (None, Some("firstChild")) => overview::OverviewStep::ToFirstChild,
-                    _ => {
-                        return Err(invalid(
-                            "worldbuildingStep takes `by` (a whole number) or `to` (parent or firstChild)"
-                                .into(),
-                        ));
+                let grouping = match (pointing_at, kind) {
+                    (None, kind) => overview::Grouping::World { book, kind },
+                    (Some(entry), Some(kind)) => overview::Grouping::PointingAt { book, kind, entry },
+                    (Some(_), None) => {
+                        return Err(invalid("what points at an entry is read by a kind (groupBy)".into()));
                     }
                 };
-                Box::new(move |store| {
-                    store
-                        .chat_read(|view| {
-                            overview::step_in_reading_order(view, grouping, &regions, from.as_deref(), step)
-                        })
-                        .map(JsTree)
-                })
+                if op == "worldbuildingOverview" {
+                    let (first_rank, end_rank, step_landed_on) = (
+                        req_integer(a, "firstRank")?,
+                        req_integer(a, "endRank")?,
+                        text("stepLandedOn")?,
+                    );
+                    let characters = req_integer(a, "cardTextCharacters")? as usize;
+                    Box::new(move |store| {
+                        store
+                            .chat_read(|view| {
+                                let layout = overview::OverviewLayout {
+                                    regions_by_nesting_level: &regions,
+                                    card_text_characters: characters,
+                                };
+                                overview::read_overview(
+                                    view,
+                                    grouping,
+                                    &layout,
+                                    first_rank,
+                                    end_rank,
+                                    step_landed_on.as_deref(),
+                                )
+                            })
+                            .map(JsTree)
+                    })
+                } else {
+                    let from = text("from")?;
+                    let by = match a.get::<Unknown>("by")? {
+                        Some(js_value)
+                            if !matches!(js_value.get_type()?, ValueType::Null | ValueType::Undefined) =>
+                        {
+                            Some(signed("by", js_value)?)
+                        }
+                        _ => None,
+                    };
+                    let step = match (by, text("to")?.as_deref()) {
+                        (Some(steps), None) => overview::OverviewStep::InReadingOrder(steps),
+                        (None, Some("parent")) => overview::OverviewStep::ToParent,
+                        (None, Some("firstChild")) => overview::OverviewStep::ToFirstChild,
+                        _ => {
+                            return Err(invalid(
+                                "worldbuildingStep takes `by` (a whole number) or `to` (parent or firstChild)"
+                                    .into(),
+                            ));
+                        }
+                    };
+                    Box::new(move |store| {
+                        store
+                            .chat_read(|view| {
+                                overview::step_in_reading_order(view, grouping, &regions, from.as_deref(), step)
+                            })
+                            .map(JsTree)
+                    })
+                }
             }
         }
         "worldbuildingRelationEdit" => {

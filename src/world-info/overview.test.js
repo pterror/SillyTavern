@@ -290,6 +290,32 @@ test('moving an entry to another world drops its relations there and removes the
     assert.equal((await overview(fromBook, IN)).topLevelCount, 1);
 });
 
+test('what points at an entry reads a section per kind in kind order, each its sources ranked from the range held, and steps within one', async () => {
+    const entries = [
+        entry(1, 0),
+        entry(2, 1, [{ kind: IN, target: 1, position: 'b' }]),
+        entry(3, 2, [{ kind: IN, target: 1, position: 'a' }]),
+        entry(4, 3, [{ kind: OWES, target: 1, position: 'a' }, { kind: IN, target: 3, position: 'a' }]),
+    ];
+    await lib.books.write('Pointed', { relationKinds: KINDS, entries: Object.fromEntries(entries.map(e => [e.uid, e])) });
+    const { id: book } = await lib.books.find('Pointed');
+    const ids = await idsOf(book);
+    const [a, b, c, d] = [1, 2, 3, 4].map(uid => String(ids.get(uid)));
+    const read = held => lib.store.worldRead('worldbuildingPointingAt', { book, entry: ids.get(1), firstShown: 10, maxCards: 100, held, ...LAYOUT });
+    const { sections } = await read([]);
+    assert.deepEqual(sections.map(section => [section.kind, section.kindName, section.count, section.firstRank]), [['1', 'in', 2, 0], ['2', 'owes', 1, 0]]);
+    const keys = [];
+    for (const item of sections[0].entries) outline(item, keys);
+    assert.deepEqual(keys, [`1@${a}/${c}`, `1@${a}/${c}/${d}`, `1@${a}/${b}`]);
+    assert.deepEqual(sections[0].entries[0].label, { thing: c, text: 'entry 3', shownAs: 'title' });
+    const narrowed = await read([{ kind: IN, firstRank: 1, endRank: 2, stepLandedOn: `1@${a}/${b}` }]);
+    assert.deepEqual(narrowed.sections[0].entries.map(cell => [cell.occurrence, cell.topLevelRank]), [[`1@${a}/${b}`, 1]]);
+    assert.deepEqual(narrowed.sections[0].stepLanding, { occurrence: `1@${a}/${b}`, topLevelRank: 1 });
+    const stepped = await lib.store.worldRead('worldbuildingStep', { book, entry: ids.get(1), groupBy: IN, from: `1@${a}/${c}`, by: 2, regionColumns: [2], regionRows: [2] });
+    assert.deepEqual(stepped, { occurrence: `1@${a}/${b}`, topLevelRank: 1 });
+    assert.equal(await lib.store.worldRead('worldbuildingPointingAt', { book, entry: 999_999n, firstShown: 10, maxCards: 100, held: [], ...LAYOUT }), null);
+});
+
 after(async () => {
     await user.close();
     setImmediate(() => process.exit(0));

@@ -6,6 +6,7 @@ import {
     LOOPS_LEFT_BY_JOBS_VIEW,
     MAX_CARDS_PER_READ,
     OVERVIEW_VIEW,
+    POINTING_AT_VIEW,
     READ_REFUSAL,
     readFitsTheBudget,
     RELATION_KINDS_VIEW,
@@ -26,6 +27,9 @@ import type {
     Placement,
     OverviewLayout,
     OverviewView,
+    PointingAtSection,
+    PointingAtShown,
+    PointingAtView,
     RelationKind,
     RelationKindsView,
     StepLanding,
@@ -48,6 +52,17 @@ export type ShownOverview = Grouping & {
 export type ShownWorld = Omit<ShownOverview, 'book' | 'stepLandedOn'> & { around: string | null };
 
 export type OverviewStep = { from: string | null; by: number } | { from: string; to: 'parent' | 'firstChild' };
+
+export type PointingAtRange = { kind: string; firstRank: number; endRank: number; stepLandedOn: string | null };
+
+export type PointingAtQuery = {
+    book: string;
+    entry: string;
+    layout: OverviewLayout;
+    endRank: number;
+    held: PointingAtRange[];
+    maxCards: number;
+};
 
 export type RelationChange = { entry: string; kind: string; target: string } & (
     | { change: 'add'; weak: boolean; after: string | null; before: string | null }
@@ -94,6 +109,11 @@ export type Ports = {
     setUsedInEveryChat(who: Who, book: string, used: boolean): Promise<'ok' | 'missing'>;
     readOverview(user: User, query: ShownOverview): Promise<Omit<OverviewView, 'book' | 'groupBy'> | null>;
     stepOverview(user: User, query: Grouping & { layout: OverviewLayout } & OverviewStep): Promise<StepLanding | null>;
+    readPointingAt(user: User, query: PointingAtQuery): Promise<PointingAtSection[] | null>;
+    stepPointingAt(
+        user: User,
+        query: { book: string; entry: string; kind: string; layout: OverviewLayout } & OverviewStep,
+    ): Promise<StepLanding | null>;
     readRelationKinds(user: User, book: string): Promise<RelationKind[] | null>;
     readLoopsLeftByJobs(user: User, book: string): Promise<UnreachedLoop[]>;
     createRelationKind(who: Who, book: string, name: string): Promise<string | null>;
@@ -163,6 +183,8 @@ const NOTHING_CHANGED: LastChangeView = {
 
 const NO_ENTRY: EntryView = { book: null };
 
+const NOTHING_POINTED_AT: PointingAtView = { book: null };
+
 // The views that show how many entries a world has; an action that adds or takes away an entry answers them all.
 const VIEWS_COUNTING_ENTRIES = [OVERVIEW_VIEW, WORLDS_VIEW, WORLD_VIEW];
 
@@ -183,7 +205,16 @@ export function rangeAround(rank: number, firstRank: number, endRank: number): {
     return { firstRank: start, endRank: start + (endRank - firstRank) };
 }
 
-export type OpenEntry = { book: string; entry: string; label: Named | null; mentionPages: string[] };
+// `ranges` holds the sections' ranges the page asked for, the most recently asked first.
+export type ShownPointingAt = PointingAtShown & { ranges: PointingAtRange[] };
+
+export type OpenEntry = {
+    book: string;
+    entry: string;
+    label: Named | null;
+    mentionPages: string[];
+    pointingAt: ShownPointingAt;
+};
 
 type SessionState = {
     overview: ShownOverview | null;
@@ -194,7 +225,26 @@ type SessionState = {
 
 const NO_SESSION_STATE: SessionState = { overview: null, kindsOfBook: null, entry: null, lastChange: NOTHING_CHANGED };
 
-const opened = (book: string, entry: string): OpenEntry => ({ book, entry, label: null, mentionPages: [] });
+const opened = (book: string, entry: string, { endRank, layout }: PointingAtShown): OpenEntry => ({
+    book,
+    entry,
+    label: null,
+    mentionPages: [],
+    pointingAt: { endRank, layout, ranges: [] },
+});
+
+const withRange = (shown: ShownPointingAt, range: PointingAtRange): ShownPointingAt => ({
+    ...shown,
+    ranges: [range, ...shown.ranges.filter((held) => held.kind !== range.kind)],
+});
+
+const heldRange = (shown: ShownPointingAt, kind: string): PointingAtRange =>
+    shown.ranges.find((held) => held.kind === kind) ?? {
+        kind,
+        firstRank: 0,
+        endRank: shown.endRank,
+        stepLandedOn: null,
+    };
 
 export function worldbuildingArea(ports: Ports) {
     const bySession = new Map<string, SessionState>();
@@ -235,12 +285,14 @@ export function worldbuildingArea(ports: Ports) {
                 unreachedLoops: answer.unreachedLoops,
             },
         });
-        return { changed: [OVERVIEW_VIEW, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+        return { changed: [OVERVIEW_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
     };
 
     const refusedWrite = (refusal: EntryWriteRefusal): ActionResult => {
         if (refusal === 'missing') return { refused: WORLD_GONE };
-        if (refusal === 'no entry') return { refused: NO_SUCH_ENTRY, changed: [OVERVIEW_VIEW, ENTRY_VIEW] };
+        if (refusal === 'no entry') {
+            return { refused: NO_SUCH_ENTRY, changed: [OVERVIEW_VIEW, ENTRY_VIEW, POINTING_AT_VIEW] };
+        }
         return { refused: refusal.refused };
     };
 
@@ -251,7 +303,7 @@ export function worldbuildingArea(ports: Ports) {
         edit: EntryEdit,
     ): Promise<ActionResult> => {
         const done = await ports.editEntry(who(context), book, entry, edit);
-        return done === 'ok' ? { changed: [OVERVIEW_VIEW, ENTRY_VIEW] } : refusedWrite(done);
+        return done === 'ok' ? { changed: [OVERVIEW_VIEW, ENTRY_VIEW, POINTING_AT_VIEW] } : refusedWrite(done);
     };
 
     const readEntryView = async (context: ViewContext): Promise<EntryView> => {
@@ -267,6 +319,28 @@ export function worldbuildingArea(ports: Ports) {
         return { book: shown.book, entry: shown.entry, ...read };
     };
 
+    const readPointingAtView = async (context: ViewContext): Promise<PointingAtView> => {
+        const shown = stateOf(context.session).entry;
+        if (!shown) return NOTHING_POINTED_AT;
+        const { book, entry, pointingAt } = shown;
+        const sections = await ports.readPointingAt(context.user, {
+            book,
+            entry,
+            layout: pointingAt.layout,
+            endRank: pointingAt.endRank,
+            held: pointingAt.ranges,
+            maxCards: MAX_CARDS_PER_READ,
+        });
+        return { book, entry, sections: sections ?? [] };
+    };
+
+    const withOpenEntry =
+        <P>(run: (context: ActionContext, shown: OpenEntry, payload: P) => Promise<ActionResult>) =>
+        async (context: ActionContext, payload: P): Promise<ActionResult> => {
+            const shown = stateOf(context.session).entry;
+            return shown ? run(context, shown, payload) : { refused: NO_ENTRY_OPEN };
+        };
+
     const showWorld = async (
         context: ActionContext,
         book: string | null,
@@ -276,7 +350,14 @@ export function worldbuildingArea(ports: Ports) {
         if (opened === null) {
             remember(context.session, { overview: null, kindsOfBook: null, entry: null, lastChange: NOTHING_CHANGED });
             return {
-                changed: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, ENTRY_VIEW],
+                changed: [
+                    OVERVIEW_VIEW,
+                    RELATION_KINDS_VIEW,
+                    LAST_CHANGE_VIEW,
+                    LOOPS_LEFT_BY_JOBS_VIEW,
+                    ENTRY_VIEW,
+                    POINTING_AT_VIEW,
+                ],
                 opensViews: [WORLD_VIEW, WORLDS_VIEW],
             };
         }
@@ -346,6 +427,7 @@ export function worldbuildingArea(ports: Ports) {
                 return kinds && book !== null ? { book, kinds } : { book: null, kinds: [] };
             },
             [ENTRY_VIEW]: readEntryView,
+            [POINTING_AT_VIEW]: readPointingAtView,
             [LAST_CHANGE_VIEW]: async (context: ViewContext): Promise<LastChangeView> =>
                 stateOf(context.session).lastChange,
             [LOOPS_LEFT_BY_JOBS_VIEW]: async (context: ViewContext): Promise<LoopsLeftByJobsView> => {
@@ -396,7 +478,7 @@ export function worldbuildingArea(ports: Ports) {
                 const done = await ports.renameRelationKind(who(context), book, kind, name);
                 if (done === 'missing') return { refused: WORLD_GONE };
                 if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
-                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW] };
+                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, POINTING_AT_VIEW] };
             },
             'worldbuilding.deleteRelationKind': async (context, { book, kind }) => {
                 const done = await ports.deleteRelationKind(who(context), book, kind);
@@ -412,7 +494,7 @@ export function worldbuildingArea(ports: Ports) {
                 if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
                 if (done === 'same kind') return { refused: 'A kind is merged into another kind.' };
                 if (done === 'being merged') return { refused: BEING_MERGED };
-                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW] };
+                return { changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, POINTING_AT_VIEW] };
             },
             'worldbuilding.addRelation': (context, relation) =>
                 relationChanged(context, { change: 'add', ...relation }),
@@ -422,14 +504,38 @@ export function worldbuildingArea(ports: Ports) {
                 relationChanged(context, { change: 'remove', ...relation }),
             'worldbuilding.setRelationWeak': (context, relation) =>
                 relationChanged(context, { change: 'setWeak', ...relation }),
-            'worldbuilding.openEntry': async (context, { book, entry }) => {
-                remember(context.session, { entry: opened(book, entry) });
-                return { changed: [], opensViews: [ENTRY_VIEW] };
+            'worldbuilding.openEntry': async (context, { book, entry, pointingAt }) => {
+                remember(context.session, { entry: opened(book, entry, pointingAt) });
+                return { changed: [], opensViews: [ENTRY_VIEW, POINTING_AT_VIEW] };
             },
             'worldbuilding.closeEntry': async (context) => {
                 remember(context.session, { entry: null });
-                return { changed: [ENTRY_VIEW] };
+                return { changed: [ENTRY_VIEW, POINTING_AT_VIEW] };
             },
+            'worldbuilding.showPointingAtRange': withOpenEntry(async (context, shown, { kind, firstRank, endRank }) => {
+                if (!readFitsTheBudget(endRank - firstRank, shown.pointingAt.layout)) return { refused: READ_REFUSAL };
+                const range = { ...heldRange(shown.pointingAt, kind), firstRank, endRank };
+                remember(context.session, { entry: { ...shown, pointingAt: withRange(shown.pointingAt, range) } });
+                return { changed: [POINTING_AT_VIEW] };
+            }),
+            'worldbuilding.stepPointingAt': withOpenEntry(async (context, shown, { kind, ...step }) => {
+                const { layout } = shown.pointingAt;
+                const crossed = 'by' in step ? Math.abs(step.by) + 1 : 1;
+                if (crossed * cardsPerTopLevelEntry(layout.regionsByNestingLevel) > MAX_CARDS_PER_READ) {
+                    return { refused: READ_REFUSAL };
+                }
+                const { book, entry } = shown;
+                const landed = await ports.stepPointingAt(context.user, { book, entry, kind, layout, ...step });
+                if (!landed) return { refused: 'That is no longer shown.', changed: [POINTING_AT_VIEW] };
+                const held = heldRange(shown.pointingAt, kind);
+                const range = {
+                    kind,
+                    ...rangeAround(landed.topLevelRank, held.firstRank, held.endRank),
+                    stepLandedOn: landed.occurrence,
+                };
+                remember(context.session, { entry: { ...shown, pointingAt: withRange(shown.pointingAt, range) } });
+                return { changed: [POINTING_AT_VIEW] };
+            }),
             'worldbuilding.showMoreMentions': async (context, { cursor }) => {
                 const shown = stateOf(context.session).entry;
                 if (!shown) return { refused: NO_ENTRY_OPEN };
@@ -455,7 +561,7 @@ export function worldbuildingArea(ports: Ports) {
                 if (made === 'missing') return { refused: WORLD_GONE };
                 if ('refused' in made) return { refused: made.refused };
                 remember(context.session, {
-                    ...(open ? { entry: opened(book, made.entry) } : {}),
+                    ...(open ? { entry: opened(book, made.entry, open.pointingAt) } : {}),
                     lastChange: {
                         ...NOTHING_CHANGED,
                         createdEntry: { book, entry: made.entry },
@@ -463,8 +569,11 @@ export function worldbuildingArea(ports: Ports) {
                     },
                 });
                 return open
-                    ? { changed: [...VIEWS_COUNTING_ENTRIES, LAST_CHANGE_VIEW], opensViews: [ENTRY_VIEW] }
-                    : { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+                    ? {
+                          changed: [...VIEWS_COUNTING_ENTRIES, LAST_CHANGE_VIEW],
+                          opensViews: [ENTRY_VIEW, POINTING_AT_VIEW],
+                      }
+                    : { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
             },
             'worldbuilding.deleteEntry': async (context, { book, entry }) => {
                 const done = await ports.deleteEntry(who(context), book, entry);
@@ -480,13 +589,13 @@ export function worldbuildingArea(ports: Ports) {
                         unreachedLoops: done.unreachedLoops,
                     },
                 });
-                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
             },
             'worldbuilding.restoreEntry': async (context, { book, entry }) => {
                 const done = await ports.restoreEntry(who(context), book, entry);
                 if (typeof done === 'string' || 'refused' in done) return refusedWrite(done);
                 remember(context.session, { lastChange: { ...NOTHING_CHANGED, unreachedLoops: done.unreachedLoops } });
-                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
             },
             'worldbuilding.moveEntryToWorld': async (context, { book, entry, toBook }) => {
                 if (toBook === book) return { refused: 'The entry is in that world already.' };
@@ -494,14 +603,16 @@ export function worldbuildingArea(ports: Ports) {
                 if (typeof moved === 'string' || 'refused' in moved) return refusedWrite(moved);
                 const shown = stateOf(context.session).entry;
                 remember(context.session, {
-                    ...(shown?.book === book && shown.entry === entry ? { entry: opened(toBook, moved.entry) } : {}),
+                    ...(shown?.book === book && shown.entry === entry
+                        ? { entry: opened(toBook, moved.entry, shown.pointingAt) }
+                        : {}),
                     lastChange: {
                         ...NOTHING_CHANGED,
                         movedEntry: { book, entry, toBook, newEntry: moved.entry },
                         unreachedLoops: moved.unreachedLoops,
                     },
                 });
-                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
             },
             'worldbuilding.openWorlds': async () => ({ changed: [], opensViews: [WORLDS_VIEW] }),
             'worldbuilding.createWorld': async (context, { name, overview }) =>
@@ -519,7 +630,14 @@ export function worldbuildingArea(ports: Ports) {
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 forgetWorld(book);
                 return {
-                    changed: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, ENTRY_VIEW, WORLD_VIEW],
+                    changed: [
+                        OVERVIEW_VIEW,
+                        RELATION_KINDS_VIEW,
+                        LOOPS_LEFT_BY_JOBS_VIEW,
+                        ENTRY_VIEW,
+                        POINTING_AT_VIEW,
+                        WORLD_VIEW,
+                    ],
                     opensViews: [WORLDS_VIEW],
                 };
             },

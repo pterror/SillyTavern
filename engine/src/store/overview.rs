@@ -10,9 +10,50 @@ use super::world_order_tree as tree;
 use crate::log::format::FieldRef;
 
 #[derive(Clone, Copy)]
-pub struct Grouping {
-    pub book: u64,
-    pub kind: Option<u64>,
+pub enum Grouping {
+    World { book: u64, kind: Option<u64> },
+    PointingAt { book: u64, kind: u64, entry: u64 },
+}
+
+impl Grouping {
+    pub fn book(self) -> u64 {
+        match self {
+            Grouping::World { book, .. } | Grouping::PointingAt { book, .. } => book,
+        }
+    }
+
+    pub fn kind(self) -> Option<u64> {
+        match self {
+            Grouping::World { kind, .. } => kind,
+            Grouping::PointingAt { kind, .. } => Some(kind),
+        }
+    }
+
+    fn root(self) -> Option<u64> {
+        match self {
+            Grouping::World { .. } => None,
+            Grouping::PointingAt { entry, .. } => Some(entry),
+        }
+    }
+
+    fn path_from(self, top: u64) -> Vec<u64> {
+        self.root().into_iter().chain([top]).collect()
+    }
+
+    fn list_prefix(self) -> Option<String> {
+        match self {
+            Grouping::World { .. } => None,
+            Grouping::PointingAt { kind, entry, .. } => Some(format!("{kind}@{entry}")),
+        }
+    }
+
+    fn occurrence_of(self, parts: &[&str]) -> String {
+        let joined = parts.join("/");
+        match self.list_prefix() {
+            Some(prefix) => format!("{prefix}/{joined}"),
+            None => joined,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,11 +104,10 @@ pub fn uid_in(view: &View, book: u64, entity: u64) -> Result<Option<EntryKey>, S
     })
 }
 
-fn occurrence_key(path: &[u64]) -> String {
-    path.iter()
-        .map(u64::to_string)
-        .collect::<Vec<_>>()
-        .join("/")
+fn occurrence_key(grouping: Grouping, path: &[u64]) -> String {
+    let below_root = &path[usize::from(grouping.root().is_some())..];
+    let parts: Vec<String> = below_root.iter().map(u64::to_string).collect();
+    grouping.occurrence_of(&parts.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 fn draw_entry(
@@ -77,14 +117,15 @@ fn draw_entry(
     path: &mut Vec<u64>,
 ) -> Result<DrawnEntry, StoreError> {
     let entity = *path.last().expect("a drawn entry is on its path");
-    let (own_key, place_of_deleted_entry) = match uid_in(view, grouping.book, entity)? {
+    let book = grouping.book();
+    let (own_key, place_of_deleted_entry) = match uid_in(view, book, entity)? {
         Some(own_key) => (Some(own_key), false),
         None => match relations::deletion_in_progress(view, entity)? {
-            Some(deleting) if deleting.book == grouping.book => (None, true),
+            Some(deleting) if deleting.book == book => (None, true),
             _ => return Err(StoreError::Entry(format!("{entity} isn't an entry of this world"))),
         },
     };
-    let occurrence = occurrence_key(path);
+    let occurrence = occurrence_key(grouping, path);
     let already_open_above = path[..path.len() - 1].contains(&entity);
     let mut drawn = DrawnEntry {
         entity,
@@ -95,12 +136,12 @@ fn draw_entry(
         cells: Vec::new(),
         own_key,
     };
-    let Some(kind) = grouping.kind else {
+    let Some(kind) = grouping.kind() else {
         return Ok(drawn);
     };
     drawn.grouping_kind_relations_targeting_this =
-        relations::count_of_relations_of_kind_targeting(view, grouping.book, kind, entity)?;
-    let level = path.len() - 1;
+        relations::count_of_relations_of_kind_targeting(view, book, kind, entity)?;
+    let level = path.len() - 1 - usize::from(grouping.root().is_some());
     let Some(region) = layout.get(level) else {
         return Ok(drawn);
     };
@@ -116,7 +157,7 @@ fn draw_entry(
     } else {
         cells - 1
     };
-    let prefix = relations::relations_of_kind_targeting_prefix(grouping.book, kind, entity);
+    let prefix = relations::relations_of_kind_targeting_prefix(book, kind, entity);
     for (stored_key, _) in view.scan(&prefix, &key::prefix_end(&prefix), shown as usize)? {
         let (_, source) =
             relations::position_and_source_of_relation_of_kind_targeting(&prefix, &stored_key)?;
@@ -160,11 +201,44 @@ fn find_occurrence<'d>(drawn: &'d DrawnEntry, occurrence_wanted: &str) -> Option
 }
 
 pub fn top_level_count(view: &View, grouping: Grouping) -> Result<u64, StoreError> {
-    tree::top_level_count(
-        view,
-        &relations::order_tree_space(grouping.book),
-        grouping.kind,
-    )
+    match grouping {
+        Grouping::World { book, kind } => {
+            tree::top_level_count(view, &relations::order_tree_space(book), kind)
+        }
+        Grouping::PointingAt { book, kind, entry } => {
+            relations::count_of_relations_of_kind_targeting(view, book, kind, entry)
+        }
+    }
+}
+
+fn top_level_from_rank(
+    view: &View,
+    grouping: Grouping,
+    rank: u64,
+    amount: usize,
+) -> Result<Vec<u64>, StoreError> {
+    match grouping {
+        Grouping::World { book, kind } => Ok(tree::top_level_from_rank(
+            view,
+            &relations::order_tree_space(book),
+            kind,
+            rank,
+            amount,
+        )?
+        .iter()
+        .map(tree::entity_of_order_key)
+        .collect()),
+        Grouping::PointingAt { book, kind, entry } => tree::from_rank(
+            view,
+            &relations::sources_tree(book, kind, entry),
+            tree::Counted::Every,
+            rank,
+            amount,
+        )?
+        .iter()
+        .map(|leaf| relations::source_of_leaf(leaf))
+        .collect(),
+    }
 }
 
 fn top_level_entry_at(
@@ -173,19 +247,10 @@ fn top_level_entry_at(
     layout: &[RegionLayout],
     rank: u64,
 ) -> Result<Option<DrawnEntry>, StoreError> {
-    let book_tree = relations::order_tree_space(grouping.book);
-    let Some(order_key) =
-        tree::top_level_from_rank(view, &book_tree, grouping.kind, rank, 1)?.pop()
-    else {
+    let Some(top) = top_level_from_rank(view, grouping, rank, 1)?.pop() else {
         return Ok(None);
     };
-    draw_entry(
-        view,
-        grouping,
-        layout,
-        &mut vec![tree::entity_of_order_key(&order_key)],
-    )
-    .map(Some)
+    draw_entry(view, grouping, layout, &mut grouping.path_from(top)).map(Some)
 }
 
 fn top_level_rank_of(
@@ -193,44 +258,91 @@ fn top_level_rank_of(
     grouping: Grouping,
     entity: u64,
 ) -> Result<Option<u64>, StoreError> {
-    let Some(own_key) = uid_in(view, grouping.book, entity)? else {
-        let (Some(kind), Some(deleting)) =
-            (grouping.kind, relations::deletion_in_progress(view, entity)?)
+    let (book, kind) = match grouping {
+        Grouping::World { book, kind } => (book, kind),
+        Grouping::PointingAt { book, kind, entry } => {
+            let Some(position) = relations::position_in_use(view, entity, kind, entry)? else {
+                return Ok(None);
+            };
+            let leaf = relations::source_leaf(&position, entity);
+            let sources = relations::sources_tree(book, kind, entry);
+            return tree::rank(view, &sources, &leaf, tree::Counted::Every).map(Some);
+        }
+    };
+    let Some(own_key) = uid_in(view, book, entity)? else {
+        let (Some(kind), Some(deleting)) = (kind, relations::deletion_in_progress(view, entity)?)
         else {
             return Ok(None);
         };
-        if deleting.book != grouping.book
+        if deleting.book != book
             || relations::count_of_relations_of_kind_targeting(view, deleting.book, kind, entity)? == 0
         {
             return Ok(None);
         }
         let order_key = tree::order_key(deleting.order_value, entity);
         let book_tree = relations::order_tree_space(deleting.book);
-        return tree::top_level_rank(view, &book_tree, &order_key, grouping.kind).map(Some);
+        return tree::top_level_rank(view, &book_tree, &order_key, Some(kind)).map(Some);
     };
-    if let Some(kind) = grouping.kind
+    if let Some(kind) = kind
         && relations::strong_kinds_in_use_of_entry(view, entity)?.contains(&kind)
     {
         return Ok(None);
     }
     let order_key = relations::order_key_of_entry(view, entity, &own_key)?;
-    let book_tree = relations::order_tree_space(grouping.book);
+    let book_tree = relations::order_tree_space(book);
     if !tree::holds_entry(view, &book_tree, &order_key)? {
         return Ok(None);
     }
-    tree::top_level_rank(view, &book_tree, &order_key, grouping.kind).map(Some)
+    tree::top_level_rank(view, &book_tree, &order_key, kind).map(Some)
 }
 
-fn parse_occurrence_key(occurrence: &str) -> Option<Vec<&str>> {
-    let parts: Vec<&str> = occurrence.split('/').collect();
-    let ok = parts.iter().enumerate().all(|(index, part)| {
-        (*part == "+" && index == parts.len() - 1 && index > 0)
-            || (!part.is_empty()
-                && part.len() <= 20
-                && part.bytes().all(|character| character.is_ascii_digit())
-                && (part.len() == 1 || !part.starts_with('0')))
+fn is_entity_part(part: &str) -> bool {
+    !part.is_empty()
+        && part.len() <= 20
+        && part.bytes().all(|character| character.is_ascii_digit())
+        && (part.len() == 1 || !part.starts_with('0'))
+}
+
+enum ParsedOccurrence<'a> {
+    InThisList(Vec<&'a str>),
+    InAnotherList,
+}
+
+fn parse_occurrence_key(grouping: Grouping, occurrence: &str) -> Option<ParsedOccurrence<'_>> {
+    let mut parts: Vec<&str> = occurrence.split('/').collect();
+    let names_a_list = parts[0].split_once('@').is_some_and(|(kind, entry)| {
+        is_entity_part(kind) && is_entity_part(entry)
     });
-    ok.then_some(parts)
+    let in_this_list = match (grouping.list_prefix(), names_a_list) {
+        (Some(prefix), true) => prefix == parts.remove(0),
+        (None, false) => true,
+        (Some(_), false) | (None, true) => return None,
+    };
+    let ok = !parts.is_empty()
+        && parts.iter().enumerate().all(|(index, part)| {
+            (*part == "+" && index == parts.len() - 1 && index > 0) || is_entity_part(part)
+        });
+    if !ok {
+        return None;
+    }
+    Some(if in_this_list {
+        ParsedOccurrence::InThisList(parts)
+    } else {
+        ParsedOccurrence::InAnotherList
+    })
+}
+
+fn parent_of(grouping: Grouping, occurrence: &str) -> String {
+    let below = match grouping.list_prefix() {
+        Some(prefix) => occurrence
+            .strip_prefix(&format!("{prefix}/"))
+            .unwrap_or(occurrence),
+        None => occurrence,
+    };
+    match below.rsplit_once('/') {
+        Some((up, _)) => grouping.occurrence_of(&up.split('/').collect::<Vec<_>>()),
+        None => occurrence.to_string(),
+    }
 }
 
 fn locate_occurrence(
@@ -239,10 +351,14 @@ fn locate_occurrence(
     layout: &[RegionLayout],
     occurrence_wanted: &str,
 ) -> Result<Option<(DrawnEntry, String, u64)>, StoreError> {
-    let Some(parts) = parse_occurrence_key(occurrence_wanted) else {
-        return Err(refused(format!(
-            "{occurrence_wanted:?} isn't an occurrence's key"
-        )));
+    let parts = match parse_occurrence_key(grouping, occurrence_wanted) {
+        Some(ParsedOccurrence::InThisList(parts)) => parts,
+        Some(ParsedOccurrence::InAnotherList) => return Ok(None),
+        None => {
+            return Err(refused(format!(
+                "{occurrence_wanted:?} isn't an occurrence's key"
+            )));
+        }
     };
     let Ok(top) = parts[0].parse::<u64>() else {
         return Ok(None);
@@ -250,12 +366,12 @@ fn locate_occurrence(
     let Some(rank) = top_level_rank_of(view, grouping, top)? else {
         return Ok(None);
     };
-    let drawn = draw_entry(view, grouping, layout, &mut vec![top])?;
+    let drawn = draw_entry(view, grouping, layout, &mut grouping.path_from(top))?;
     let mut order = Vec::new();
     reading_order(&drawn, &mut order);
     let found = (1..=parts.len())
         .rev()
-        .map(|length| parts[..length].join("/"))
+        .map(|length| grouping.occurrence_of(&parts[..length]))
         .find(|occurrence_wanted| order.contains(occurrence_wanted))
         .unwrap_or_else(|| drawn.occurrence.clone());
     Ok(Some((drawn, found, rank)))
@@ -311,13 +427,7 @@ pub fn step_in_reading_order(
         }
     };
     match step {
-        OverviewStep::ToParent => {
-            let up = match occurrence.rsplit_once('/') {
-                Some((up, _)) => up.to_string(),
-                None => occurrence,
-            };
-            Ok(step_landing(up, rank))
-        }
+        OverviewStep::ToParent => Ok(step_landing(parent_of(grouping, &occurrence), rank)),
         OverviewStep::ToFirstChild => {
             let first = find_occurrence(&drawn, &occurrence)
                 .and_then(|drawn| drawn.cells.first())
@@ -462,7 +572,7 @@ fn card(
         ("textCut", Js::Bool(text_cut)),
         ("keys", Js::Arr(keys.into_iter().map(Js::Text).collect())),
         ("names", Js::Arr(names.into_iter().map(Js::Text).collect())),
-        ("relations", Js::Arr(relations_line(view, grouping.book, keys_list, drawn.entity)?)),
+        ("relations", Js::Arr(relations_line(view, grouping.book(), keys_list, drawn.entity)?)),
         ("groupingKindRelationsTargetingThis", Js::Num(drawn.grouping_kind_relations_targeting_this as f64)),
         ("alreadyOpenAbove", Js::Bool(drawn.already_open_above)),
     ])
@@ -505,24 +615,12 @@ pub fn read_overview(
     let total = top_level_count(view, grouping)?;
     let first_rank = first_rank.min(total);
     let end_rank = end_rank.clamp(first_rank, total);
-    let keys_list = super::references::key_list(view, grouping.book)?;
+    let keys_list = super::references::key_list(view, grouping.book())?;
     let mut entries = Vec::new();
-    let book_tree = relations::order_tree_space(grouping.book);
     let levels = layout.regions_by_nesting_level;
-    let found = tree::top_level_from_rank(
-        view,
-        &book_tree,
-        grouping.kind,
-        first_rank,
-        (end_rank - first_rank) as usize,
-    )?;
-    for (index, order_key) in found.iter().enumerate() {
-        let drawn = draw_entry(
-            view,
-            grouping,
-            levels,
-            &mut vec![tree::entity_of_order_key(order_key)],
-        )?;
+    let found = top_level_from_rank(view, grouping, first_rank, (end_rank - first_rank) as usize)?;
+    for (index, top) in found.into_iter().enumerate() {
+        let drawn = draw_entry(view, grouping, levels, &mut grouping.path_from(top))?;
         let Js::Obj(mut fields) = drawn_js(view, grouping, layout, keys_list, &drawn)? else {
             unreachable!("a card is an object")
         };
@@ -542,4 +640,76 @@ pub fn read_overview(
         ("entries", Js::Arr(entries)),
         ("stepLanding", landed),
     ]))
+}
+
+pub struct HeldRange {
+    pub kind: u64,
+    pub first_rank: u64,
+    pub end_rank: u64,
+    pub step_landed_on: Option<String>,
+}
+
+pub fn cards_per_top_level_entry(regions: &[RegionLayout]) -> u64 {
+    let (mut cards, mut at_level) = (1u64, 1u64);
+    for region in regions {
+        at_level = at_level.saturating_mul(region.columns.saturating_mul(region.rows));
+        cards = cards.saturating_add(at_level);
+    }
+    cards
+}
+
+// `held` comes most recently asked first; a range is cut, in that order and then the unasked sections' in kind
+// order, so the whole read draws at most `max_cards` cards.
+pub fn read_pointing_at(
+    view: &View,
+    book: u64,
+    entry: u64,
+    layout: &OverviewLayout,
+    held: &[HeldRange],
+    first_shown: u64,
+    max_cards: u64,
+) -> Result<Js, StoreError> {
+    if uid_in(view, book, entry)?.is_none() {
+        return Ok(Js::Null);
+    }
+    let kinds = relations::kinds_of_relations_in_use_targeting(view, book, entry)?;
+    let per_source = cards_per_top_level_entry(layout.regions_by_nesting_level).max(1);
+    let mut cards_left = max_cards;
+    let mut ranges = std::collections::BTreeMap::new();
+    let asked = held.iter().filter(|range| kinds.contains(&range.kind));
+    let unasked = kinds
+        .iter()
+        .filter(|kind| !held.iter().any(|range| range.kind == **kind))
+        .map(|kind| (*kind, 0, first_shown, None));
+    let in_turn = asked
+        .map(|range| (range.kind, range.first_rank, range.end_rank, range.step_landed_on.as_deref()))
+        .chain(unasked);
+    for (kind, first_rank, end_rank, step_landed_on) in in_turn {
+        let grouping = Grouping::PointingAt { book, kind, entry };
+        let count = top_level_count(view, grouping)?;
+        let first_rank = first_rank.min(count);
+        let fits = cards_left / per_source;
+        let end_rank = end_rank.clamp(first_rank, count).min(first_rank.saturating_add(fits));
+        cards_left -= (end_rank - first_rank) * per_source;
+        ranges.insert(kind, (first_rank, end_rank, step_landed_on));
+    }
+    let mut sections = Vec::new();
+    for (kind, (first_rank, end_rank, step_landed_on)) in ranges {
+        let grouping = Grouping::PointingAt { book, kind, entry };
+        let Js::Obj(read) = read_overview(view, grouping, layout, first_rank, end_rank, step_landed_on)? else {
+            unreachable!("an overview's read is an object")
+        };
+        let mut section = vec![
+            ("kind", Js::Text(kind.to_string().into_bytes())),
+            (
+                "kindName",
+                relations::relation_kind_name(view, book, kind)?.map_or(Js::Null, Js::Text),
+            ),
+        ];
+        for (name, value) in read {
+            section.push((if name == "topLevelCount" { "count" } else { name }, value));
+        }
+        sections.push(Js::Obj(section));
+    }
+    Ok(Js::Obj(vec![("sections", Js::Arr(sections))]))
 }

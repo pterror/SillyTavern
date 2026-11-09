@@ -771,3 +771,45 @@ fn a_scan_reads_on_past_a_buffers_cut_page_whatever_the_runs_hold_beyond_it() {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
+#[test]
+fn a_scan_stops_at_a_cut_page_before_folding_a_key_an_older_buffer_holds_past_it() {
+    let dir = temp_dir("fold-past-cut");
+    let ks = open(&dir);
+    let counts = |pairs: &[(u32, u64)]| Val::Put(val::count_bytes(pairs));
+    let (gone_one, gone_two, held) = (key(1), key(2), key(5));
+    ks.insert(
+        [
+            (gone_one.clone(), counts(&[(1, 1)])),
+            (gone_two.clone(), counts(&[(1, 1)])),
+            (held.clone(), counts(&[(5, 1)])),
+        ],
+        Some((3, 1)),
+    );
+    ks.freeze_at(3);
+    ks.wait_flushed().unwrap();
+    let mut older = Mem::default();
+    let mut newer = Mem::default();
+    for k in [&gone_one, &gone_two] {
+        older.insert(k, Val::AddMap(vec![(1, -1)]), 4, &mem::Readers(&[]));
+    }
+    older.insert(&held, Val::AddMap(vec![(9, 1)]), 4, &mem::Readers(&[]));
+    newer.insert(&held, Val::AddMap(vec![(9, -1)]), 5, &mem::Readers(&[]));
+    let mems = vec![Arc::new(RwLock::new(newer)), Arc::new(RwLock::new(older))];
+    let (start, end) = (key(0), key(9));
+    let runs = ks.version().runs.clone();
+    let found = ks
+        .merge_scan(
+            |from, n| buffer_pages(&mems, from, &end, n, None, |m, n| m.page(from, &end, n)),
+            &runs,
+            &start,
+            &end,
+            1,
+        )
+        .unwrap();
+    let found: Vec<_> = found.into_iter().map(|(k, v)| { let c = v.into_counts(&k); (k, c) }).collect();
+    assert_eq!(found, vec![(held.clone(), Some(vec![(5, 1)]))]);
+    ks.stop();
+    drop(ks);
+    let _ = fs::remove_dir_all(&dir);
+}

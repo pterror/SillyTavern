@@ -893,7 +893,7 @@ impl<'a> MergeRev<'a> {
         }
     }
 
-    pub fn next_entry(&mut self) -> KsResult<Option<(Vec<u8>, Val)>> {
+    fn start(&mut self) {
         if !self.started {
             self.started = true;
             for (i, s) in self.sources.iter().enumerate() {
@@ -902,6 +902,15 @@ impl<'a> MergeRev<'a> {
                 }
             }
         }
+    }
+
+    pub fn next_key(&mut self) -> Option<&[u8]> {
+        self.start();
+        self.heap.peek().map(|(k, _)| k.as_slice())
+    }
+
+    pub fn next_entry(&mut self) -> KsResult<Option<(Vec<u8>, Val)>> {
+        self.start();
         let Some((key, Reverse(first))) = self.heap.pop() else {
             return Ok(None);
         };
@@ -998,6 +1007,11 @@ impl<'a, S: Source + ?Sized + 'a> Merge<'a, S> {
             }
         }
         Ok(())
+    }
+
+    pub fn next_key(&mut self) -> Option<&[u8]> {
+        self.start();
+        self.heap.peek().map(|Reverse((k, _))| k.as_slice())
     }
 
     pub fn next_entry(&mut self) -> KsResult<Option<(Vec<u8>, Val)>> {

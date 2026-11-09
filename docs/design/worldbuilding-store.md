@@ -25,8 +25,8 @@ names is kept as an ordinary field of the book and holds no kinds. Other top-lev
 
 `worldbuilding.createRelationKind` writes a new kind with the next free id (one more than the world's highest);
 `worldbuilding.renameRelationKind` rewrites one; `worldbuilding.deleteRelationKind` removes one that no relation uses
-and that isn't being merged or merged into (one read of `RELATION_COUNT_BY_KIND_AND_TARGET (b, k)` to answer "in use",
-and the end-of-commit check refuses it anyway if one does). The page picks a relation's kind from the list (the
+and that isn't being merged or merged into (one seek among the roots of its trees of sources, `SOURCES_ORDER_COUNT (b,
+k, ·)`, to answer "in use", and the end-of-commit check refuses it anyway if one does). The page picks a relation's kind from the list (the
 `worldbuilding.relationKinds` view, searched ignoring case on the page) and makes a new kind only by that separate
 action; the relation actions take a kind's id, never a name.
 
@@ -42,8 +42,8 @@ The merge job rewrites, in chunks of `RELATION_CHANGES_PER_STEP` source entries,
 writes in between (`worldbuildingKindMergeRewrites`): each live source's relations of kind A become kind B, both those
 in use and those kept while their target is deleted (below); a source that already has the same relation of kind B
 gets one relation, B's item, strong if either was, with A's extra fields added where B's item lacks them. The sources
-are found from A's own indexes (`RELATION_COUNT_BY_KIND_AND_TARGET (b, A, ·)` then `RELATIONS_BY_TARGET (b, t, A, ·)`,
-and `KEPT_RELATIONS_BY_KIND (b, A, ·)`), never by a scan of the world. When no live source has a relation of kind A,
+are found from A's own indexes (the roots of A's trees of sources, `SOURCES_ORDER_COUNT (b, A, ·)`, one seek per
+target, then `RELATIONS_BY_TARGET (b, t, A, ·)`, and `KEPT_RELATIONS_BY_KIND (b, A, ·)`), never by a scan of the world. When no live source has a relation of kind A,
 the job deletes A's name field. Every state partway is valid: each source has its relations in one kind or the other,
 each counted where it is. The merge costs one rewrite per live source with a relation of kind A; an alias (A saying
 "is B" while relations keep A) wouldn't avoid that, since an entry with the same relation in both kinds would be
@@ -92,7 +92,13 @@ One extension field of the entry, `extensions.relations`, stored as the entry's 
 A relation names its target by the target's **entity id** (`targetEntry`, decimal), which the store never gives to
 another entity: deleting an entry and making another under its key (upstream's `uid`) leaves every relation meaning
 what it meant. `position` is a fractional order key compared as bytes, so moving a relation among the others of its
-kind and target rewrites only its source's field (a history edit of a few bytes). `weak: true` makes the relation
+kind and target rewrites only its source's field (a history edit of a few bytes). A position made at either end (a
+relation added last, or placed before the first) is a whole number, a head letter giving its count of digits
+(`a`…`z` for 1 to 26, `Z`…`A` for 1 to 26 below `a0`) then the digits `0-9A-Za-z`, one more or one less than the
+whole number its neighbour starts with (`relations::position_between`), so `n` relations added last are
+`log62(n) + 1` bytes long, not `n / 7` as halving the space above the last one would make them; a neighbour that
+starts with no whole number gets the nearest whole number past it. A position between two is the shortest string
+between them, so only repeated placing at one spot grows a position faster than that. `weak: true` makes the relation
 **weak**: the source is drawn in the target's region like any other source of that kind, but the relation doesn't keep
 it off the top level (below). A value that isn't a list of such objects holds no relations: a third party's
 `relations` extension is read and kept as it is, never refused. A second `(kind, target)` in the list is ignored; the
@@ -146,7 +152,8 @@ is D stops counting: its source shows where it would without it. The relations s
 **kept**: nothing a user wrote is rewritten by the store.
 
 Each relation's derived state (`RELATIONS_OF_ENTRY`) is one of: **in use**; **kept while its target is deleted**; **kept
-while its source is deleted**. Only relations in use are in `RELATIONS_BY_TARGET`, the counts and the held counts.
+while its source is deleted**. Only relations in use are in `RELATIONS_BY_TARGET`, the trees of sources and the held
+counts.
 
 - **The delete itself** (`relations::entry_deleted`). D's own relations become kept while their source is deleted
   (counted per kind in `RELATIONS_OF_DELETED_ENTRIES_BY_KIND`, so their kinds stay in use). If no relation in use
@@ -215,7 +222,7 @@ Per relation (derived, one each):
 |---|---|---|
 | `RELATIONS_OF_ENTRY (e, k, t)` | state (in use, kept while its target is deleted, kept while its source is deleted), strength, `p`, the relation's object as written | the source's own relations: the write's diff (old set without reading the old value), its strong kinds, its relations line, the loop check's walk up |
 | `RELATIONS_BY_TARGET (b, t, k, p, e)` | — | relations in use of kind `k` targeting `t` in position order (a region); every relation in use targeting `t` |
-| `RELATION_COUNT_BY_KIND_AND_TARGET (b, k, t)` | count (Add) | how many relations in use of kind `k` target `t` ("+N not shown"); whether kind `k` is in use |
+| `SOURCES_ORDER_EDGE (b, k, t, P, d)`, `SOURCES_ORDER_COUNT (b, k, t, P)` | the tree of sources of kind `k` targeting `t` (below) | rank ↔ source in a region ("what points at it"); its root's count is how many relations in use of kind `k` target `t` ("+N not shown"); a root under `(b, k)` is kind `k` in use |
 | `KEPT_RELATIONS_BY_TARGET (b, t, e, k)` | — | the relations kept while `t` is deleted, for its restore |
 | `KEPT_RELATIONS_BY_KIND (b, k, e, t)` | — | the same by kind, for a merge and for "kind in use" |
 | `RELATIONS_OF_DELETED_ENTRIES_BY_KIND (b, k)` | count (Add) | relations kept while their source is deleted, for "kind in use" and a merge record's life |
@@ -244,6 +251,26 @@ index ("the entries with no relation of kind `k`") would need every entry of the
 kind is used, and every new entry written into it once per kind: a cost per entry. The complement costs nothing until
 an entry gains the kind. Changing the grouping kind reads a different `ORDER_TREE_HELD`, never a scan. Grouping by
 nothing reads `ORDER_TREE_COUNT` alone. Weak relations aren't counted in it, which is all that makes them weak.
+
+**The sources pointing at an entry** are one counted radix tree per `(b, k, t)` with a relation in use of kind `k`
+targeting `t` (`world_order_tree.rs`, the world's order's tree in another space, `SOURCES_ORDER`), with only the plain
+count (no held slots): its count is the region's count, a range from a rank is a descent skipping by counts, and a
+source's rank is a descent along its path. The tree is written by the two functions every relation's coming into and
+going out of use passes (`relations::put_into_use`, `take_out_of_use`), which also write `RELATIONS_BY_TARGET`: an
+add, a removal, a move (out and in), a deletion's and a restore's steps, a source's deletion and restore, and a
+merge's rewrites. A tree whose last source goes leaves nothing behind.
+
+**Its leaf key is RELATIONS_BY_TARGET's own suffix**, `put_bytes(p) ++ put_u64(e)`: the position escaped (each `0`
+byte as `0 ff`, then `0 1`) and the source's id length-prefixed. So the tree's byte order over its leaves is
+RELATIONS_BY_TARGET's order under `(b, t, k)` by construction: the same bytes, compared the same way. Both parts are
+prefix-free codes, so no leaf is a prefix of another, which is all a path-compressed radix tree needs; a leaf is told
+from a node's prefix by parsing it (`relations::is_source_leaf`). A fixed-width leaf can't order the same: positions
+have no length bound, and two that share their first `w` bytes would tie on any `w`-byte prefix and be ordered by
+source instead of by the rest of the position. A node's key carries its prefix's length in one byte below 255, else
+255 and eight bytes, so the world's order's keys are as they were.
+
+**Its depth** is the number of branching bytes on a leaf's path: about `log62(n) + 1` for positions made at the ends,
+at most the position's length plus 10. Ties (one position, several sources) branch only in the source's id.
 
 ## Loops
 
@@ -285,19 +312,21 @@ Requests that don't carry a limit use `LOOP_CHECK_VISITS_PER_WRITE` (below).
 ## What each write touches
 
 `depth` is the tree's depth at the entry: about `log256(n) + 1` for spread keys (5 at 10 billion), at most 16.
+`depth_s` is a tree of sources' depth at a source's leaf: about `log62(n) + 1` for positions made at the ends (about 4
+at 312,112 sources), at most the position's length + 10.
 
 | Write | Derived writes |
 |---|---|
 | an entry's field other than `relations` | none |
-| relation added, the source already has a strong relation of its kind, or the new one is weak | 3: `RELATIONS_OF_ENTRY`, `RELATIONS_BY_TARGET`, `RELATION_COUNT_BY_KIND_AND_TARGET` (a count that reaches 0 is deleted, so no zero counters are left behind; that reads it first); 3 (the entry's and the two kept indexes) if its target is deleted |
+| relation added, the source already has a strong relation of its kind, or the new one is weak | 2: `RELATIONS_OF_ENTRY`, `RELATIONS_BY_TARGET`; + its tree of sources: `depth_s` counts + 1 edge (a split adds 3), `depth_s` the tree's depth at the leaf, reading the path first; 3 (the entry's and the two kept indexes) if its target is deleted |
 | strong relation added, first strong one of its kind on the source | 3 + `depth` (`HeldByKind` along the source's path) |
-| relation removed | the same, mirrored; + `depth` if it was the last in use of its kind targeting a deleted entry, + `depth` + 1 edge + 1 marker if the last of all |
-| position changed | 3: `RELATIONS_OF_ENTRY`, `RELATIONS_BY_TARGET` out and in |
-| target changed | 6 (one out, one in); + `depth` if the source's last strong one of the kind goes or its first comes |
+| relation removed | the same, mirrored (a node left with one child merges: 2 edges and its count deleted); + `depth` if it was the last in use of its kind targeting a deleted entry, + `depth` + 1 edge + 1 marker if the last of all |
+| position changed | 3: `RELATIONS_OF_ENTRY`, `RELATIONS_BY_TARGET` out and in; + its leaf out of the tree of sources and in at the new position (2 × (`depth_s` + 1 edge)) |
+| target changed | 4 (one out, one in) + a leaf out of one tree of sources and into another; + `depth` if the source's last strong one of the kind goes or its first comes |
 | weak ↔ strong, or an extra field changed | 1: `RELATIONS_OF_ENTRY`; + `depth` if it is the source's only strong relation of its kind |
 | entry created | `depth` + 1 edge; a split adds 3 + one count per slot under the split edge |
 | entry deleted | each own relation made kept (2: its entry key and the count per kind, after its in-use keys go) + `depth` × (its strong kinds) ; if nothing in use targets it, `depth` + 1 edge to leave the tree, else `depth` × (1 + the kinds targeting it) + 1 marker; one seek per kind targeting it; and up to 1,000 relations targeting it made kept (each: 3 in-use keys out, 3 kept keys in, + `depth` if the source loses its last strong one of the kind) |
-| one deletion step | up to 1,000 relations made kept, as above; the end as in "relation removed" |
+| one deletion step | up to 1,000 relations made kept, as above (each one's leaf out of its tree of sources); the end as in "relation removed" |
 | entry restored | its own relations back from its field (each as "relation added"); if its deletion was running, `depth` × (1 + the kinds targeting it) + 1 marker; up to 1,000 kept relations back in use (each the reverse of being made kept), + 1 marker if more remain |
 | one restore step | up to 1,000 kept relations back in use |
 | `displayIndex` changed | delete and insert: 2 × `depth` × (1 + the entry's strong kinds) + 2 edges |
@@ -317,7 +346,10 @@ end-of-commit checks read one key or one bounded scan each and write nothing.
 | top-level count | 4 gets (the root's count and three slots) |
 | top-level range of `n` from rank `r` | a descent skipping by counts: 4 gets per node on the way, `O(depth)` per entry found, `O(n · depth)` worst case |
 | an entry's rank in the top level | 4 gets per node on its path |
-| a region's first `m` entries and how many there are | one page of `m` of `RELATIONS_BY_TARGET (b, t, k)` + 1 get |
+| a region's first `m` entries and how many there are | one page of `m` of `RELATIONS_BY_TARGET (b, t, k)` + 1 get (the tree of sources' root) |
+| the kinds pointing at an entry | one seek per kind in `RELATIONS_BY_TARGET (b, t, ·)` |
+| what points at an entry: `n` sources of kind `k` from rank `r` | a descent of the tree of sources skipping by counts: 1 get per node on the way, `O(depth_s)` per source found, then each source drawn as a top-level entry |
+| a source's rank among those of kind `k` targeting `t` | its `RELATIONS_OF_ENTRY` + 1 get per node on its path |
 | a card | the entry's title, text (cut), keys, names and `RELATIONS_OF_ENTRY`; per relation the target's label (its title, keys, names, and its text when it has neither a title nor a name) and the kind's name |
 | a step in reading order | the top-level entry's drawn tree (bounded by the layout), and the next top-level entry's per one crossed |
 | the kinds list | the book's fields |
@@ -371,6 +403,14 @@ One area, `@st/worldbuilding`. Views:
   the first page of the references to it (`src/world-info/references.js`), each source's label with the sentence
   around its first mention, and the pages `showMoreMentions` added. A deleted entry shows as deleted, under the label
   it was last shown with.
+- `worldbuilding.pointingAt`: what points at the session's open entry: `{book, entry, sections}`, one section per kind
+  with a relation in use targeting it, in kind id order (the kinds read by one seek each, never from the sources),
+  each `{kind, kindName, count, firstRank, entries, stepLanding}`: its sources ranked by their tree, each drawn as a
+  top-level entry of the overview is (its region grouped by the same kind, the same layout and repeat cut, the open
+  entry being on the drawing path, so a source that is the entry itself is a repeat). Each section's range is held per
+  session; one never asked for is ranks `[0, endRank)` from `openEntry`. A read draws at most `MAX_CARDS_PER_READ`
+  cards: the ranges are cut in the order they were last asked for (the one asked last first), then the unasked ones'
+  in kind order, so the range just asked for is always read whole. A deleted entry, or none open, has no sections.
 - `worldbuilding.worlds`: every world, `{id, name, entries, usedInEveryChat}`, in the order of the files their names
   would have had (`compareBookKeys`: `<name>.json` by the server's locale); `entries` is the book's kept count
   (`book_stats`), so no world's entries are read.
@@ -393,11 +433,18 @@ Actions:
   relation rewrites only its `target`, `position` and `weak` fields, keeping every other field of its object and every
   other relation as written.
 
-- `worldbuilding.openEntry` (book, entry; opens the entry view), `closeEntry`, `showMoreMentions` (cursor);
+- `worldbuilding.openEntry` (book, entry, and how the page draws what points at it: the layout and the `endRank` each
+  section starts with, within one read's budget; opens the entry view and `worldbuilding.pointingAt`), `closeEntry`,
+  `showMoreMentions` (cursor);
+- `worldbuilding.showPointingAtRange` (kind, range) and `worldbuilding.stepPointingAt` (kind, from an occurrence or
+  none, `n` on in reading order or to its parent or first child; the section's range follows where it lands), refused
+  past one read's budget as the overview's are; every relation, entry and kind action that answers the entry view or
+  the overview answers `worldbuilding.pointingAt` too, and each job step pushes it;
 - `worldbuilding.setEntryText`, `setEntryTitle` (empty clears it), `addKey` (as a name or a trigger, on any entry of
   the world), `setKeyAs`, `removeKey`, `setPlacement` (a partial set of placement fields, each checked by its own
   schema), each naming its book and entry, each a write of the entry as it is stored at that moment (last write wins);
-- `worldbuilding.createEntry` (after an entry or last, optionally named, optionally with a relation, optionally opened):
+- `worldbuilding.createEntry` (after an entry or last, optionally named, optionally with a relation, optionally opened,
+  with the same layout as `openEntry` takes):
   one commit. It goes right after `after` in the world's order: between its order value and the next entry's, a whole
   number when one fits, else the middle (`entry_page::place_after`). When the next entry has the same order value, the
   entries with that value after `after` (at most 1,000) move to a value between it and the entry after them, and the
@@ -420,7 +467,8 @@ Actions:
   choices it shows follow; `exportWorld` answers `{fileName, json}` in the action's answer; `setUsedInEveryChat` writes
   the user's global selection choice. A delete clears every session showing the world.
 
-The engine answers each read in one snapshot (`overview.rs`: `read_overview`, `step_in_reading_order`;
+The engine answers each read in one snapshot (`overview.rs`: `read_overview`, `step_in_reading_order`, each for the
+world's top level or for the sources pointing at an entry, and `read_pointing_at`;
 `relations.rs`: `relation_edit`, `unreached_among`; `entry_page.rs`: `read_entry`, `labels`, `place_after`). A relation
 action is one commit of the entry's own field, then the check, in the same request. The entry view is the engine's read
 of the entry, then the entry's stored fields for its placement, its count and the references to it, in the same
@@ -431,7 +479,9 @@ opening the overview at a range would have been two requests. An action's result
 (`packages/server-ui`); the tab shows them from then on.
 
 An occurrence's key is the path of entity ids from its top-level entry (`12/45/78`), and a region's "+N more" tile is
-`12/45/+`. So:
+`12/45/+`. In a section of what points at an entry, the key starts with the list it is in, `<kind>@<entry>`, then the
+path from the source (`3@4711/12/45`, `3@4711/12/+`); the open entry itself is never a key's part, and its parent is
+no step. So:
 
 - **KeysAt** is the range; **Locate** of a top-level key is its rank in the held range, else a step by 0;
 - **the tree per region** is each entry's `region`;
@@ -449,8 +499,8 @@ the server stopped, then deleted with what only it uses:
    (`"targetEntry"`), as a history edit of that field, leaving out relations whose key names no entry of the world
    (`WorldInfoEngine.relationsByEntity`). No stored world has any relation yet, so this finds nothing today; it is
    there so the format can't be met half-converted.
-2. Puts every entry of every counted book in its world's order and indexes its relations
-   (`relations::world_order_conversion_step`).
+2. Puts every entry of every counted book in its world's order and indexes its relations, their trees of sources
+   included (`relations::world_order_conversion_step`).
 
 Its first step also deletes every `KEY_ITEMS_BY_TEXT` count, and each step counts the keys of the entries it passes, so
 a run counts every key again from nothing. It prints only totals. Running it twice changes nothing.

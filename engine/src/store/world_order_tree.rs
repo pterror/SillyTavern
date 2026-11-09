@@ -14,7 +14,57 @@ pub const ORDER_KEY_BYTES: usize = 16;
 pub type OrderKey = [u8; ORDER_KEY_BYTES];
 
 fn corrupt(why: &str) -> StoreError {
-    StoreError::Entry(format!("world order tree: {why}"))
+    StoreError::Entry(format!("counted order tree: {why}"))
+}
+
+// No leaf's key may be a prefix of another's: `is_leaf` tells a leaf from a node's prefix by its form alone.
+pub struct TreeKind {
+    edge: u64,
+    count: AddMapKind,
+    held: Option<AddMapKind>,
+    is_leaf: fn(&[u8]) -> bool,
+}
+
+pub static WORLD_ORDER: TreeKind = TreeKind {
+    edge: ORDER_TREE_EDGE,
+    count: ORDER_TREE_COUNT,
+    held: Some(ORDER_TREE_HELD),
+    is_leaf: |prefix| prefix.len() == ORDER_KEY_BYTES,
+};
+
+// A space must be a prefix-free encoding, so no tree's keys are another tree's.
+pub struct Tree {
+    kind: &'static TreeKind,
+    space: Vec<u8>,
+}
+
+impl Tree {
+    pub fn new(kind: &'static TreeKind, space: Vec<u8>) -> Tree {
+        Tree { kind, space }
+    }
+
+    pub fn count_prefix(kind: &'static TreeKind, space: &[u8]) -> Vec<u8> {
+        let mut stored_key = kind.count.prefix();
+        stored_key.extend_from_slice(space);
+        stored_key
+    }
+}
+
+impl TreeKind {
+    pub const fn new(edge: u64, count: AddMapKind, is_leaf: fn(&[u8]) -> bool) -> TreeKind {
+        TreeKind {
+            edge,
+            count,
+            held: None,
+            is_leaf,
+        }
+    }
+
+    pub fn structures(&self) -> Vec<u64> {
+        let mut out = vec![self.edge, self.count.id()];
+        out.extend(self.held.map(AddMapKind::id));
+        out
+    }
 }
 
 pub fn order_key(order: u64, entity: u64) -> OrderKey {
@@ -120,23 +170,29 @@ impl ReadDerived for LayeredWrites<'_, '_> {
     }
 }
 
-fn node_key(book_tree: &[u8], node_prefix: &[u8]) -> Vec<u8> {
-    let mut stored_key = book_tree.to_vec();
-    stored_key.push(node_prefix.len() as u8);
+fn node_key(tree: &Tree, node_prefix: &[u8]) -> Vec<u8> {
+    let mut stored_key = tree.space.clone();
+    match u8::try_from(node_prefix.len()) {
+        Ok(length) if length < u8::MAX => stored_key.push(length),
+        _ => {
+            stored_key.push(u8::MAX);
+            stored_key.extend_from_slice(&(node_prefix.len() as u64).to_be_bytes());
+        }
+    }
     stored_key.extend_from_slice(node_prefix);
     stored_key
 }
 
-fn count_key(book_tree: &[u8], node_prefix: &[u8]) -> Vec<u8> {
-    let mut stored_key = ORDER_TREE_COUNT.prefix();
-    stored_key.extend_from_slice(&node_key(book_tree, node_prefix));
+fn count_key(tree: &Tree, node_prefix: &[u8]) -> Vec<u8> {
+    let mut stored_key = tree.kind.count.prefix();
+    stored_key.extend_from_slice(&node_key(tree, node_prefix));
     stored_key
 }
 
-fn held_prefix(book_tree: &[u8], node_prefix: &[u8]) -> Vec<u8> {
-    let mut stored_key = ORDER_TREE_HELD.prefix();
-    stored_key.extend_from_slice(&node_key(book_tree, node_prefix));
-    stored_key
+fn held_prefix(tree: &Tree, node_prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut stored_key = tree.kind.held?.prefix();
+    stored_key.extend_from_slice(&node_key(tree, node_prefix));
+    Some(stored_key)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,15 +215,16 @@ impl CountedSlot {
     }
 }
 
-fn held_key(book_tree: &[u8], node_prefix: &[u8], slot: CountedSlot) -> Vec<u8> {
-    let mut stored_key = held_prefix(book_tree, node_prefix);
+fn held_key(tree: &Tree, node_prefix: &[u8], slot: CountedSlot) -> Result<Vec<u8>, StoreError> {
+    let mut stored_key =
+        held_prefix(tree, node_prefix).ok_or_else(|| corrupt("a counted slot on a tree that keeps none"))?;
     stored_key.extend_from_slice(&slot.bytes());
-    stored_key
+    Ok(stored_key)
 }
 
-fn edge_key(book_tree: &[u8], node_prefix: &[u8], digit: u8) -> Vec<u8> {
-    let mut stored_key = key::of(ORDER_TREE_EDGE);
-    stored_key.extend_from_slice(&node_key(book_tree, node_prefix));
+fn edge_key(tree: &Tree, node_prefix: &[u8], digit: u8) -> Vec<u8> {
+    let mut stored_key = key::of(tree.kind.edge);
+    stored_key.extend_from_slice(&node_key(tree, node_prefix));
     stored_key.push(digit);
     stored_key
 }
@@ -199,21 +256,31 @@ fn count_at_digit(counts_by_digit: &[(u8, u64)], digit: u8) -> u64 {
 
 fn child_edge(
     reader: &impl ReadDerived,
-    book_tree: &[u8],
+    tree: &Tree,
     node_prefix: &[u8],
     digit: u8,
 ) -> Result<Option<Vec<u8>>, StoreError> {
-    let Some(child) = reader.read(&edge_key(book_tree, node_prefix, digit))? else {
+    let Some(child) = reader.read(&edge_key(tree, node_prefix, digit))? else {
         return Ok(None);
     };
     if child.len() <= node_prefix.len()
-        || child.len() > ORDER_KEY_BYTES
         || child[..node_prefix.len()] != *node_prefix
         || child[node_prefix.len()] != digit
     {
         return Err(corrupt("an edge doesn't extend its node"));
     }
     Ok(Some(child))
+}
+
+fn is_leaf(tree: &Tree, prefix: &[u8]) -> bool {
+    (tree.kind.is_leaf)(prefix)
+}
+
+fn digit_of(entry: &[u8], node_prefix: &[u8]) -> Result<u8, StoreError> {
+    entry
+        .get(node_prefix.len())
+        .copied()
+        .ok_or_else(|| corrupt("a leaf's key is a prefix of a node's"))
 }
 
 fn shared_prefix_length(one: &[u8], other: &[u8]) -> usize {
@@ -225,25 +292,28 @@ fn shared_prefix_length(one: &[u8], other: &[u8]) -> usize {
 
 fn add_along_edge(
     writes: &mut LayeredWrites,
-    book_tree: &[u8],
+    tree: &Tree,
     node_prefix: &[u8],
     digit: u8,
     held: &[CountedSlot],
     amount: i64,
-) {
-    writes.add_at_digit(count_key(book_tree, node_prefix), digit, amount);
+) -> Result<(), StoreError> {
+    writes.add_at_digit(count_key(tree, node_prefix), digit, amount);
     for slot in held {
-        writes.add_at_digit(held_key(book_tree, node_prefix, *slot), digit, amount);
+        writes.add_at_digit(held_key(tree, node_prefix, *slot)?, digit, amount);
     }
+    Ok(())
 }
 
 fn held_under_edge(
     reader: &impl ReadDerived,
-    book_tree: &[u8],
+    tree: &Tree,
     node_prefix: &[u8],
     digit: u8,
 ) -> Result<Vec<(Vec<u8>, u64)>, StoreError> {
-    let prefix = held_prefix(book_tree, node_prefix);
+    let Some(prefix) = held_prefix(tree, node_prefix) else {
+        return Ok(Vec::new());
+    };
     let mut out = Vec::new();
     for (stored_key, value) in reader.read_under(&prefix)? {
         let slot_bytes = stored_key[prefix.len()..].to_vec();
@@ -266,58 +336,52 @@ fn held_under_edge(
 
 pub fn insert_entry(
     writes: &mut LayeredWrites,
-    book_tree: &[u8],
-    entry: &OrderKey,
+    tree: &Tree,
+    entry: &[u8],
     held: &[CountedSlot],
 ) -> Result<(), StoreError> {
+    if !is_leaf(tree, entry) {
+        return Err(corrupt("a key inserted that isn't a leaf's"));
+    }
     let mut node_prefix: Vec<u8> = Vec::new();
     loop {
-        let digit = entry[node_prefix.len()];
-        let Some(child) = child_edge(writes, book_tree, &node_prefix, digit)? else {
-            writes.put(edge_key(book_tree, &node_prefix, digit), entry.to_vec());
-            add_along_edge(writes, book_tree, &node_prefix, digit, held, 1);
+        let digit = digit_of(entry, &node_prefix)?;
+        let Some(child) = child_edge(writes, tree, &node_prefix, digit)? else {
+            writes.put(edge_key(tree, &node_prefix, digit), entry.to_vec());
+            add_along_edge(writes, tree, &node_prefix, digit, held, 1)?;
             return Ok(());
         };
         let shared = shared_prefix_length(&child, entry);
         if shared == child.len() {
-            if shared == ORDER_KEY_BYTES {
+            if is_leaf(tree, &child) {
                 return Err(corrupt("an entry inserted twice"));
             }
-            add_along_edge(writes, book_tree, &node_prefix, digit, held, 1);
+            add_along_edge(writes, tree, &node_prefix, digit, held, 1)?;
             node_prefix = child;
             continue;
         }
         let entries_under_edge = count_at_digit(
-            &digit_counts(writes, &count_key(book_tree, &node_prefix))?,
+            &digit_counts(writes, &count_key(tree, &node_prefix))?,
             digit,
         );
-        let under_held = held_under_edge(writes, book_tree, &node_prefix, digit)?;
+        let under_held = held_under_edge(writes, tree, &node_prefix, digit)?;
         let split_node = entry[..shared].to_vec();
-        writes.put(edge_key(book_tree, &node_prefix, digit), split_node.clone());
-        add_along_edge(writes, book_tree, &node_prefix, digit, held, 1);
-        writes.put(
-            edge_key(book_tree, &split_node, child[shared]),
-            child.clone(),
-        );
+        writes.put(edge_key(tree, &node_prefix, digit), split_node.clone());
+        add_along_edge(writes, tree, &node_prefix, digit, held, 1)?;
+        writes.put(edge_key(tree, &split_node, child[shared]), child.clone());
         writes.add_at_digit(
-            count_key(book_tree, &split_node),
+            count_key(tree, &split_node),
             child[shared],
             entries_under_edge as i64,
         );
         for (slot_bytes, amount) in under_held {
-            let mut split_held_key = held_prefix(book_tree, &split_node);
+            let mut split_held_key =
+                held_prefix(tree, &split_node).expect("held counts come from a tree that keeps them");
             split_held_key.extend_from_slice(&slot_bytes);
-            writes.add_at_digit(
-                split_held_key,
-                child[shared],
-                amount as i64,
-            );
+            writes.add_at_digit(split_held_key, child[shared], amount as i64);
         }
-        writes.put(
-            edge_key(book_tree, &split_node, entry[shared]),
-            entry.to_vec(),
-        );
-        add_along_edge(writes, book_tree, &split_node, entry[shared], held, 1);
+        writes.put(edge_key(tree, &split_node, entry[shared]), entry.to_vec());
+        add_along_edge(writes, tree, &split_node, entry[shared], held, 1)?;
         return Ok(());
     }
 }
@@ -326,21 +390,23 @@ type PathToEntry = Vec<(Vec<u8>, u8)>;
 
 fn path_to(
     reader: &impl ReadDerived,
-    book_tree: &[u8],
-    entry: &OrderKey,
+    tree: &Tree,
+    entry: &[u8],
 ) -> Result<Option<PathToEntry>, StoreError> {
     let mut path = Vec::new();
     let mut node_prefix: Vec<u8> = Vec::new();
     loop {
-        let digit = entry[node_prefix.len()];
-        let Some(child) = child_edge(reader, book_tree, &node_prefix, digit)? else {
+        let Some(&digit) = entry.get(node_prefix.len()) else {
+            return Ok(None);
+        };
+        let Some(child) = child_edge(reader, tree, &node_prefix, digit)? else {
             return Ok(None);
         };
         path.push((node_prefix, digit));
         if child.as_slice() == entry {
             return Ok(Some(path));
         }
-        if shared_prefix_length(&child, entry) < child.len() {
+        if is_leaf(tree, &child) || shared_prefix_length(&child, entry) < child.len() {
             return Ok(None);
         }
         node_prefix = child;
@@ -349,75 +415,85 @@ fn path_to(
 
 pub fn holds_entry(
     reader: &impl ReadDerived,
-    book_tree: &[u8],
-    entry: &OrderKey,
+    tree: &Tree,
+    entry: &[u8],
 ) -> Result<bool, StoreError> {
-    Ok(path_to(reader, book_tree, entry)?.is_some())
+    Ok(path_to(reader, tree, entry)?.is_some())
 }
 
 pub fn remove_entry(
     writes: &mut LayeredWrites,
-    book_tree: &[u8],
-    entry: &OrderKey,
+    tree: &Tree,
+    entry: &[u8],
     held: &[CountedSlot],
 ) -> Result<(), StoreError> {
-    let path = path_to(writes, book_tree, entry)?
+    let path = path_to(writes, tree, entry)?
         .ok_or_else(|| corrupt("an entry removed that isn't in the tree"))?;
     for (node_prefix, digit) in &path {
-        add_along_edge(writes, book_tree, node_prefix, *digit, held, -1);
+        add_along_edge(writes, tree, node_prefix, *digit, held, -1)?;
     }
     let (last, digit) = path.last().expect("a path has its leaf's edge");
-    writes.del(edge_key(book_tree, last, *digit));
+    writes.del(edge_key(tree, last, *digit));
     if last.is_empty() {
         return Ok(());
     }
-    let remaining_counts = digit_counts(writes, &count_key(book_tree, last))?;
+    let remaining_counts = digit_counts(writes, &count_key(tree, last))?;
     let [(only_digit, _)] = remaining_counts[..] else {
         return Ok(());
     };
-    let remaining_child = child_edge(writes, book_tree, last, only_digit)?
+    let remaining_child = child_edge(writes, tree, last, only_digit)?
         .ok_or_else(|| corrupt("a counted digit has no edge"))?;
     let (parent_node, parent_digit) = &path[path.len() - 2];
-    writes.put(
-        edge_key(book_tree, parent_node, *parent_digit),
-        remaining_child,
-    );
-    writes.del(edge_key(book_tree, last, only_digit));
-    writes.del(count_key(book_tree, last));
-    for (stored_key, _) in writes.read_under(&held_prefix(book_tree, last))? {
-        writes.del(stored_key);
+    writes.put(edge_key(tree, parent_node, *parent_digit), remaining_child);
+    writes.del(edge_key(tree, last, only_digit));
+    writes.del(count_key(tree, last));
+    if let Some(prefix) = held_prefix(tree, last) {
+        for (stored_key, _) in writes.read_under(&prefix)? {
+            writes.del(stored_key);
+        }
     }
     Ok(())
 }
 
 pub fn add_held(
     writes: &mut LayeredWrites,
-    book_tree: &[u8],
-    entry: &OrderKey,
+    tree: &Tree,
+    entry: &[u8],
     slot: CountedSlot,
     amount: i64,
 ) -> Result<(), StoreError> {
-    let path = path_to(writes, book_tree, entry)?
+    let path = path_to(writes, tree, entry)?
         .ok_or_else(|| corrupt("a counted slot on an entry that isn't in the tree"))?;
     for (node_prefix, digit) in path {
-        writes.add_at_digit(held_key(book_tree, &node_prefix, slot), digit, amount);
+        writes.add_at_digit(held_key(tree, &node_prefix, slot)?, digit, amount);
     }
     Ok(())
 }
 
-fn not_held_under(
+#[derive(Debug, Clone, Copy)]
+pub enum Counted {
+    Every,
+    TopLevel(Option<u64>),
+}
+
+fn counted_under(
     reader: &impl ReadDerived,
-    book_tree: &[u8],
+    tree: &Tree,
     node_prefix: &[u8],
-    kind: Option<u64>,
+    counted: Counted,
 ) -> Result<Vec<(u8, u64)>, StoreError> {
-    let mut not_held = digit_counts(reader, &count_key(book_tree, node_prefix))?;
-    let counted = |slot| digit_counts(reader, &held_key(book_tree, node_prefix, slot));
-    let deleted = counted(CountedSlot::DeletedWhileRelationsTargetIt)?;
+    let mut not_held = digit_counts(reader, &count_key(tree, node_prefix))?;
+    let Counted::TopLevel(kind) = counted else {
+        return Ok(not_held);
+    };
+    let counted_in = |slot| -> Result<Vec<(u8, u64)>, StoreError> {
+        digit_counts(reader, &held_key(tree, node_prefix, slot)?)
+    };
+    let deleted = counted_in(CountedSlot::DeletedWhileRelationsTargetIt)?;
     let (held, places) = match kind {
         Some(kind) => (
-            counted(CountedSlot::HeldByKind(kind))?,
-            counted(CountedSlot::DeletedEntryPlaceForKind(kind))?,
+            counted_in(CountedSlot::HeldByKind(kind))?,
+            counted_in(CountedSlot::DeletedEntryPlaceForKind(kind))?,
         ),
         None => (Vec::new(), Vec::new()),
     };
@@ -430,76 +506,75 @@ fn not_held_under(
     Ok(not_held)
 }
 
-pub fn top_level_count(
-    reader: &impl ReadDerived,
-    book_tree: &[u8],
-    kind: Option<u64>,
-) -> Result<u64, StoreError> {
-    Ok(not_held_under(reader, book_tree, &[], kind)?
+pub fn count(reader: &impl ReadDerived, tree: &Tree, counted: Counted) -> Result<u64, StoreError> {
+    Ok(counted_under(reader, tree, &[], counted)?
         .iter()
         .map(|(_, amount)| amount)
         .sum())
 }
 
-pub fn top_level_rank(
+// `entry` need not be in the tree.
+pub fn rank(
     reader: &impl ReadDerived,
-    book_tree: &[u8],
-    entry: &OrderKey,
-    kind: Option<u64>,
+    tree: &Tree,
+    entry: &[u8],
+    counted: Counted,
 ) -> Result<u64, StoreError> {
     let mut below = 0;
     let mut node_prefix: Vec<u8> = Vec::new();
     loop {
-        let not_held_here = not_held_under(reader, book_tree, &node_prefix, kind)?;
-        let digit = entry[node_prefix.len()];
-        below += not_held_here
+        let counted_here = counted_under(reader, tree, &node_prefix, counted)?;
+        let Some(&digit) = entry.get(node_prefix.len()) else {
+            return Ok(below);
+        };
+        below += counted_here
             .iter()
             .filter(|(listed_digit, _)| *listed_digit < digit)
             .map(|(_, amount)| amount)
             .sum::<u64>();
-        let Some(child) = child_edge(reader, book_tree, &node_prefix, digit)? else {
+        let Some(child) = child_edge(reader, tree, &node_prefix, digit)? else {
             return Ok(below);
         };
         let shared = shared_prefix_length(&child, entry);
         if shared == child.len() {
-            if shared == ORDER_KEY_BYTES {
+            if is_leaf(tree, &child) {
                 return Ok(below);
             }
             node_prefix = child;
             continue;
         }
-        if child[shared] < entry[shared] {
-            below += count_at_digit(&not_held_here, digit);
+        if shared < entry.len() && child[shared] < entry[shared] {
+            below += count_at_digit(&counted_here, digit);
         }
         return Ok(below);
     }
 }
 
-pub fn top_level_from_rank(
+pub fn from_rank(
     reader: &impl ReadDerived,
-    book_tree: &[u8],
-    kind: Option<u64>,
+    tree: &Tree,
+    counted: Counted,
     skip: u64,
     amount: usize,
-) -> Result<Vec<OrderKey>, StoreError> {
+) -> Result<Vec<Vec<u8>>, StoreError> {
     let mut out = Vec::new();
     let mut skip = skip;
     if amount > 0 {
-        collect_top_level_under(reader, book_tree, kind, &[], &mut skip, amount, &mut out)?;
+        collect_under(reader, tree, counted, &[], &mut skip, amount, &mut out)?;
     }
     Ok(out)
 }
 
-fn collect_top_level_under(
+fn collect_under(
     reader: &impl ReadDerived,
-    book_tree: &[u8],
-    kind: Option<u64>,
+    tree: &Tree,
+    counted: Counted,
     node_prefix: &[u8],
     skip: &mut u64,
     amount: usize,
-    out: &mut Vec<OrderKey>,
+    out: &mut Vec<Vec<u8>>,
 ) -> Result<(), StoreError> {
-    for (digit, entries_under) in not_held_under(reader, book_tree, node_prefix, kind)? {
+    for (digit, entries_under) in counted_under(reader, tree, node_prefix, counted)? {
         if out.len() >= amount {
             return Ok(());
         }
@@ -507,13 +582,45 @@ fn collect_top_level_under(
             *skip -= entries_under;
             continue;
         }
-        let child = child_edge(reader, book_tree, node_prefix, digit)?
+        let child = child_edge(reader, tree, node_prefix, digit)?
             .ok_or_else(|| corrupt("a counted digit has no edge"))?;
-        if child.len() == ORDER_KEY_BYTES {
-            out.push(child.try_into().expect("a leaf holds a whole order key"));
+        if is_leaf(tree, &child) {
+            out.push(child);
         } else {
-            collect_top_level_under(reader, book_tree, kind, &child, skip, amount, out)?;
+            collect_under(reader, tree, counted, &child, skip, amount, out)?;
         }
     }
     Ok(())
+}
+
+pub fn top_level_count(
+    reader: &impl ReadDerived,
+    tree: &Tree,
+    kind: Option<u64>,
+) -> Result<u64, StoreError> {
+    count(reader, tree, Counted::TopLevel(kind))
+}
+
+pub fn top_level_rank(
+    reader: &impl ReadDerived,
+    tree: &Tree,
+    entry: &OrderKey,
+    kind: Option<u64>,
+) -> Result<u64, StoreError> {
+    rank(reader, tree, entry, Counted::TopLevel(kind))
+}
+
+pub fn top_level_from_rank(
+    reader: &impl ReadDerived,
+    tree: &Tree,
+    kind: Option<u64>,
+    skip: u64,
+    amount: usize,
+) -> Result<Vec<OrderKey>, StoreError> {
+    from_rank(reader, tree, Counted::TopLevel(kind), skip, amount)?
+        .into_iter()
+        .map(|leaf| {
+            OrderKey::try_from(leaf.as_slice()).map_err(|_| corrupt("a world order leaf isn't 16 bytes"))
+        })
+        .collect()
 }

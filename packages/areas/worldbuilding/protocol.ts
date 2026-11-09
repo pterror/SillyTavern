@@ -8,6 +8,7 @@ export const LOOPS_LEFT_BY_JOBS_VIEW = 'worldbuilding.loopsLeftByJobs';
 export const ENTRY_VIEW = 'worldbuilding.entry';
 export const WORLDS_VIEW = 'worldbuilding.worlds';
 export const WORLD_VIEW = 'worldbuilding.world';
+export const POINTING_AT_VIEW = 'worldbuilding.pointingAt';
 
 export const READS_PER_REQUEST = 24_000;
 // A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
@@ -170,6 +171,19 @@ export type OpenEntryView = EntryAt & {
 
 export type DeletedEntryView = EntryAt & { deleted: true; label: Named | null };
 
+export type PointingAtSection = {
+    kind: string;
+    kindName: string | null;
+    count: number;
+    firstRank: number;
+    entries: (EntryCell & { topLevelRank: number })[];
+    stepLanding: StepLanding | null;
+};
+
+export type PointingAtView = (EntryAt & { sections: PointingAtSection[] }) | { book: null };
+
+export type PointingAtShown = { endRank: number; layout: OverviewLayout };
+
 export type EntryView = OpenEntryView | DeletedEntryView | { book: null };
 
 export type World = { id: string; name: string; entries: number; usedInEveryChat: boolean };
@@ -199,6 +213,7 @@ export function readFitsTheBudget(topLevelEntries: number, layout: OverviewLayou
 const entityId = v.pipe(v.string(), v.regex(/^\d+$/));
 const kindId = v.pipe(v.string(), v.regex(/^[1-9]\d{0,15}$/));
 const occurrenceKey = v.pipe(v.string(), v.regex(/^\d+(\/\d+)*(\/\+)?$/));
+const pointingAtOccurrenceKey = v.pipe(v.string(), v.regex(/^\d+@\d+(\/\d+)+(\/\+)?$/));
 const topLevelRank = v.pipe(v.number(), v.integer(), v.minValue(0));
 const positiveWholeNumber = v.pipe(v.number(), v.integer(), v.minValue(1));
 const kindName = v.pipe(v.string(), v.trim(), v.minLength(1));
@@ -230,6 +245,14 @@ const shownOverview = v.pipe(
     ),
 );
 const opensWorld = { overview: shownOverview };
+const pointingAtShown = v.pipe(
+    v.object({ endRank: topLevelRank, layout }),
+    v.check(
+        <T extends { endRank: number; layout: OverviewLayout }>(shown: T) =>
+            readFitsTheBudget(shown.endRank, shown.layout),
+        READ_REFUSAL,
+    ),
+);
 const keyText = v.pipe(v.string(), v.trim(), v.minLength(1));
 const keyAs = v.picklist(['name', 'trigger']);
 
@@ -273,7 +296,15 @@ export const actions = {
     }),
     'worldbuilding.removeRelation': v.object({ ...relationNamed, loopCheckLimit }),
     'worldbuilding.setRelationWeak': v.object({ ...relationNamed, weak: v.boolean(), loopCheckLimit }),
-    'worldbuilding.openEntry': v.object(entryNamed),
+    'worldbuilding.openEntry': v.object({ ...entryNamed, pointingAt: pointingAtShown }),
+    'worldbuilding.showPointingAtRange': v.pipe(
+        v.object({ kind: kindId, ...rangeFields }),
+        v.check(rangeRunsForward, RANGE_REFUSAL),
+    ),
+    'worldbuilding.stepPointingAt': v.union([
+        v.object({ kind: kindId, from: v.nullable(pointingAtOccurrenceKey), by: v.pipe(v.number(), v.integer()) }),
+        v.object({ kind: kindId, from: pointingAtOccurrenceKey, to: v.picklist(['parent', 'firstChild']) }),
+    ]),
     'worldbuilding.closeEntry': v.object({}),
     'worldbuilding.showMoreMentions': v.object({ cursor: v.pipe(v.string(), v.minLength(1)) }),
     'worldbuilding.setEntryText': v.object({ ...entryNamed, text: v.string() }),
@@ -293,7 +324,7 @@ export const actions = {
         after: v.nullable(entityId),
         name: v.nullable(keyText),
         relation: v.nullable(v.object({ kind: kindId, target: entityId })),
-        open: v.boolean(),
+        open: v.nullable(v.object({ pointingAt: pointingAtShown })),
         loopCheckLimit,
     }),
     'worldbuilding.deleteEntry': v.object(entryNamed),

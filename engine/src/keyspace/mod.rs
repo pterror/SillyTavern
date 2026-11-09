@@ -633,13 +633,15 @@ impl Keyspace {
             let mut merge = run::MergeRev::new(sources);
             let mut ended = false;
             while out.len() < limit {
+                if let (Some(b), Some(k)) = (bound.as_ref(), merge.next_key())
+                    && k < b.as_slice()
+                {
+                    break;
+                }
                 let Some((k, val)) = merge.next_entry()? else {
                     ended = bound.is_none();
                     break;
                 };
-                if bound.as_ref().is_some_and(|b| k < *b) {
-                    break;
-                }
                 if k.as_slice() < start {
                     ended = true;
                     break;
@@ -686,13 +688,15 @@ impl Keyspace {
             let mut merge = Merge::new(sources);
             let mut ended = false;
             while out.len() < limit {
+                if let (Some(b), Some(k)) = (bound.as_ref(), merge.next_key())
+                    && k > b.as_slice()
+                {
+                    break;
+                }
                 let Some((k, val)) = merge.next_entry()? else {
                     ended = bound.is_none();
                     break;
                 };
-                if bound.as_ref().is_some_and(|b| k > *b) {
-                    break;
-                }
                 if k.as_slice() >= end {
                     ended = true;
                     break;

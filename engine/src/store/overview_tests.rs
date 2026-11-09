@@ -110,7 +110,7 @@ fn outline(item: &Js, out: &mut Vec<String>) {
     }
 }
 
-const IN: Grouping = Grouping {
+const IN: Grouping = Grouping::World {
     book: 1,
     kind: Some(IN_KIND),
 };
@@ -280,7 +280,7 @@ fn the_overview_is_the_top_with_each_region_cut_short_a_count_per_cut_and_repeat
     let ungrouped = read(&store, |view| {
         overview::read_overview(
             view,
-            Grouping {
+            Grouping::World {
                 book: 1,
                 kind: None,
             },
@@ -299,7 +299,7 @@ fn the_overview_is_the_top_with_each_region_cut_short_a_count_per_cut_and_repeat
     let by_owes = read(&store, |view| {
         overview::read_overview(
             view,
-            Grouping {
+            Grouping::World {
                 book: 1,
                 kind: Some(OWES),
             },
@@ -470,7 +470,7 @@ fn every_card_is_labelled_by_its_title_else_its_first_name_else_its_opening() {
     let overview_read = read(&store, |view| {
         overview::read_overview(
             view,
-            Grouping {
+            Grouping::World {
                 book: 1,
                 kind: None,
             },
@@ -491,6 +491,174 @@ fn every_card_is_labelled_by_its_title_else_its_first_name_else_its_opening() {
     assert!(names(&cards[3]).is_empty());
     assert_eq!(field_of(&cards[3], "label"), &named("204", &"é".repeat(120), "opening"));
     assert_eq!(field_of(&cards[4], "label"), &named("205", "", "opening"));
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn pointing_at(entry: u64) -> Grouping {
+    Grouping::PointingAt {
+        book: 1,
+        kind: IN_KIND,
+        entry,
+    }
+}
+
+fn outlined(read_js: &Js) -> Vec<String> {
+    let mut fields = Vec::new();
+    for item in list_of(field_of(read_js, "entries")) {
+        outline(item, &mut fields);
+    }
+    fields
+}
+
+#[test]
+fn what_points_at_an_entry_is_its_sources_ranked_each_drawn_with_its_region_the_entry_itself_a_repeat() {
+    let dir = temp_dir("pointing-at");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    world(&store);
+    let at_lantern_house = read(&store, |view| {
+        overview::read_overview(view, pointing_at(101), &LAYOUT, 0, 10, Some("1@101/102/106"))
+    });
+    assert_eq!(number_of(field_of(&at_lantern_house, "topLevelCount")), 5.0);
+    assert_eq!(
+        outlined(&at_lantern_house),
+        ["1@101/102", "1@101/102/106", "1@101/102/106/107", "1@101/103", "1@101/104", "1@101/105", "1@101/110"]
+    );
+    assert_eq!(
+        text_of(field_of(field_of(&at_lantern_house, "stepLanding"), "occurrence")),
+        "1@101/102/106"
+    );
+    let middle = read(&store, |view| overview::read_overview(view, pointing_at(101), &LAYOUT, 2, 4, None));
+    assert_eq!(outlined(&middle), ["1@101/104", "1@101/105"]);
+    assert_eq!(
+        number_of(field_of(&list_of(field_of(&middle, "entries"))[1], "topLevelRank")),
+        3.0
+    );
+    let itself = read(&store, |view| overview::read_overview(view, pointing_at(109), &LAYOUT, 0, 10, None));
+    assert_eq!(outlined(&itself), ["1@109/109!"]);
+    let holder = read(&store, |view| overview::read_overview(view, pointing_at(108), &LAYOUT, 0, 10, None));
+    assert_eq!(outlined(&holder), ["1@108/109", "1@108/109/109!"]);
+
+    let step = |from: Option<&str>, step: OverviewStep| stepped(&store, pointing_at(101), from, step);
+    let landing = |occurrence: &str, rank: f64| Some((occurrence.to_string(), rank));
+    assert_eq!(step(Some("1@101/103"), OverviewStep::InReadingOrder(1)), landing("1@101/104", 2.0));
+    assert_eq!(step(Some("1@101/102/106/107"), OverviewStep::InReadingOrder(1)), landing("1@101/103", 1.0));
+    assert_eq!(step(Some("1@101/110"), OverviewStep::InReadingOrder(-5)), landing("1@101/102/106", 0.0));
+    assert_eq!(step(None, OverviewStep::InReadingOrder(1)), landing("1@101/102", 0.0));
+    assert_eq!(step(None, OverviewStep::InReadingOrder(-1)), landing("1@101/110", 4.0));
+    assert_eq!(step(Some("1@101/102"), OverviewStep::ToParent), landing("1@101/102", 0.0));
+    assert_eq!(step(Some("1@101/102/106"), OverviewStep::ToParent), landing("1@101/102", 0.0));
+    assert_eq!(step(Some("1@101/102"), OverviewStep::ToFirstChild), landing("1@101/102/106", 0.0));
+    assert_eq!(step(Some("1@108/109"), OverviewStep::InReadingOrder(1)), None, "another list's occurrence");
+    assert_eq!(step(Some("1@101/111"), OverviewStep::InReadingOrder(1)), None, "not a source of this list");
+    let refused = store.chat_read(|view| {
+        overview::step_in_reading_order(view, pointing_at(101), &TWO_BY_TWO_THEN_ONE, Some("102"), OverviewStep::ToParent)
+    });
+    assert!(matches!(refused, Err(StoreError::Refused(_))), "a key of the world's overview names no list here");
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn sections_of(read_js: &Js) -> Vec<(String, f64, f64, Vec<String>)> {
+    list_of(field_of(read_js, "sections"))
+        .iter()
+        .map(|section| {
+            (
+                text_of(field_of(section, "kindName")),
+                number_of(field_of(section, "count")),
+                number_of(field_of(section, "firstRank")),
+                outlined(section),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn an_entrys_page_reads_a_section_per_kind_pointing_at_it_and_cuts_the_ranges_asked_longest_ago_to_one_reads_budget() {
+    let dir = temp_dir("sections");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    world(&store);
+    let flat = OverviewLayout {
+        regions_by_nesting_level: &[],
+        card_text_characters: 10,
+    };
+    let sections = |entry: u64, held: Vec<overview::HeldRange>, first_shown: u64, max_cards: u64| {
+        read(&store, move |view| {
+            overview::read_pointing_at(view, 1, entry, &flat, &held, first_shown, max_cards)
+        })
+    };
+    let both = sections(108, Vec::new(), 10, 100);
+    assert_eq!(
+        sections_of(&both),
+        [
+            ("in".to_string(), 1.0, 0.0, vec!["1@108/109".to_string()]),
+            ("owes".to_string(), 1.0, 0.0, vec!["2@108/105".to_string()]),
+        ]
+    );
+    let held = |kind: u64, first_rank: u64, end_rank: u64| overview::HeldRange {
+        kind,
+        first_rank,
+        end_rank,
+        step_landed_on: None,
+    };
+    let owes_asked = sections(108, vec![held(OWES, 0, 1)], 10, 1);
+    assert_eq!(
+        sections_of(&owes_asked),
+        [
+            ("in".to_string(), 1.0, 0.0, Vec::new()),
+            ("owes".to_string(), 1.0, 0.0, vec!["2@108/105".to_string()]),
+        ],
+        "the range asked last is read first; what is left of the budget goes to the rest"
+    );
+    let lantern = sections(101, vec![held(IN_KIND, 1, 3), held(OWES, 0, 5)], 10, 100);
+    assert_eq!(
+        sections_of(&lantern),
+        [("in".to_string(), 5.0, 1.0, vec!["1@101/103".to_string(), "1@101/104".to_string()])],
+        "a held range of a kind that no longer points at it reads nothing"
+    );
+    assert_eq!(sections(111, Vec::new(), 10, 100), Js::Obj(vec![("sections", Js::Arr(Vec::new()))]));
+    assert_eq!(sections(999, Vec::new(), 10, 100), Js::Null);
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn thousands_of_sources_are_read_and_stepped_from_any_rank_in_their_positions_order() {
+    let dir = temp_dir("many-sources");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, 1, "one");
+    let target = 10;
+    let mut records = vec![create(target, ENTRY, "1:1")];
+    let mut position = relations::position_between(None, None).unwrap();
+    let sources = 3000u64;
+    for at in 0..sources {
+        let source = 100 + (at * 7919) % sources;
+        records.push(create(source, ENTRY, &format!("1:{}", 2 + at)));
+        let written = String::from_utf8(position.clone()).unwrap();
+        records.push(set_json(source, relations::relations_field(), &strong(&[(IN_KIND, target, &written)])));
+        position = relations::position_between(Some(&position), None).unwrap();
+    }
+    store.commit_wait(records).unwrap();
+    let order: Vec<u64> = (0..sources).map(|at| 100 + (at * 7919) % sources).collect();
+    let flat = OverviewLayout {
+        regions_by_nesting_level: &[],
+        card_text_characters: 0,
+    };
+    let range = |first: u64, end: u64| {
+        let read_js = read(&store, |view| overview::read_overview(view, pointing_at(target), &flat, first, end, None));
+        list_of(field_of(&read_js, "entries"))
+            .iter()
+            .map(|cell| text_of(field_of(cell, "entry")).parse::<u64>().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(range(1500, 1504), order[1500..1504]);
+    assert_eq!(range(2998, 3010), order[2998..]);
+    let from = format!("1@{target}/{}", order[1234]);
+    let landed = read(&store, |view| {
+        overview::step_in_reading_order(view, pointing_at(target), &[], Some(&from), OverviewStep::InReadingOrder(700))
+    });
+    assert_eq!(text_of(field_of(&landed, "occurrence")), format!("1@{target}/{}", order[1934]));
+    assert_eq!(number_of(field_of(&landed, "topLevelRank")), 1934.0);
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }
