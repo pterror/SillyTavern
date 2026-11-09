@@ -258,9 +258,16 @@ body.no-blur dialog.alternatives::backdrop {
 
 .alternatives-add {
     display: flex;
+    flex-wrap: wrap;
     align-items: flex-end;
     gap: 6px;
     padding-bottom: 6px;
+}
+
+.alternatives-same {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: calc(var(--mainFontSize) * 0.9);
 }
 
 .alternatives-add textarea {

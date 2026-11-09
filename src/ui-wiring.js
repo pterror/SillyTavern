@@ -387,7 +387,8 @@ const alternativesPorts = {
         const store = await userStore(directories, context.user.handle);
         const actor = { user: context.user.handle, session: context.session };
         const { result, opening } = await changeGreetings({ directories, store, actor, avatar, change: op });
-        return result.ok ? { ok: true, opening } : { ok: false, reason: result.reason ?? 'The greetings changed.' };
+        if (result.ok) return { ok: true, opening };
+        return { ok: false, reason: result.reason ?? 'The greetings changed.', ...(Number.isInteger(result.same) ? { same: result.same } : {}) };
     },
 };
 

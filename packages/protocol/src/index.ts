@@ -6,7 +6,7 @@ export type ViewFrame =
 
 export type ActionAnswer =
     | { ok: true; views: ViewFrame[]; answer?: unknown }
-    | { ok: false; error: string; views: ViewFrame[] };
+    | { ok: false; error: string; views: ViewFrame[]; answer?: unknown };
 
 export type ViewPush = { type: 'views'; views: ViewFrame[] };
 

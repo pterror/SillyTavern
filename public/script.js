@@ -8310,20 +8310,18 @@ async function useShownGreetingInChat() {
 }
 
 /**
- * The card greeting a message is, when it is the opening of a character's chat and still that greeting.
+ * The card greeting the chat's opening is, as the server's openings say: set exactly while the opening is that
+ * greeting with its current text.
  * @param {number} mesId
  * @returns {{ avatar: string, id: number, hash: number } | null}
  */
 function openingGreetingLink(mesId) {
     if (mesId !== 0 || selected_group) return null;
     const message = chat[0];
-    const character = getCurrentCharacter();
-    const id = message?.extra?.greeting_id;
-    if (!character?.avatar || !Number.isInteger(id)) return null;
-    const hash = isStoredNodeId(message.node_id) ? message.extra?.greeting_hash : hashGreetingText(String(message.mes ?? ''));
-    if (!Number.isFinite(hash)) return null;
-    const live = cardToGreetingsModel(character).greetings.some(text => hashGreetingText(text) === hash);
-    return live ? { avatar: character.avatar, id, hash } : null;
+    const avatar = getCurrentCharacter()?.avatar;
+    const greeting = message?.swipe_info?.[message.swipe_id ?? 0]?.greeting;
+    if (!avatar || !greeting || message.swipe_info?.[message.swipe_id ?? 0]?.node_id !== message.node_id) return null;
+    return { avatar, id: greeting.id, hash: greeting.hash };
 }
 
 /**

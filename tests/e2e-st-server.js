@@ -2,8 +2,11 @@ import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { realTmpdir } from './util/temp-run-root.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// The page build of the repo's own folder is the one a running server serves; a test server builds its own.
+const uiDist = path.join(realTmpdir(), 'st-e2e-ui');
 
 /** @returns {Promise<number>} */
 function getFreePort() {
@@ -42,7 +45,7 @@ export async function startServer(dataRoot) {
         '--port', String(port),
         '--listen', 'false',
         '--browserLaunchEnabled', 'false',
-    ], { cwd: repoRoot, stdio: 'inherit' });
+    ], { cwd: repoRoot, stdio: 'inherit', env: { ...process.env, ST_UI_DIST: uiDist } });
     const exited = new Promise(resolve => server.once('exit', resolve));
     const isRunning = () => server.exitCode === null && server.signalCode === null;
     const stop = async () => {

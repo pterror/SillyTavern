@@ -62,8 +62,8 @@ describe('the first message of a character tree', () => {
                 swipes: ['hello', 'Hi'],
                 swipe_id: 0,
                 swipe_info: [
-                    { node_id: 'n1', name: 'You', is_user: true, is_system: false, send_date: 1, extra: {} },
-                    { node_id: provisionalId('Rex', 'Hi'), name: 'Rex', is_user: false, is_system: false, send_date: 1, extra: {} },
+                    { node_id: 'n1', name: 'You', is_user: true, is_system: false, send_date: 1, extra: {}, greeting: null },
+                    { node_id: provisionalId('Rex', 'Hi'), name: 'Rex', is_user: false, is_system: false, send_date: 1, extra: {}, greeting: null },
                 ],
             },
         });
@@ -81,4 +81,12 @@ describe('the first message of a character tree', () => {
     test('a message the page composed is left alone', () => {
         expect(openingView(state([], [card('Hi')], 0), page({ mes: 'typed', node_id: null }))).toEqual({ kind: 'keep' });
     });
+});
+
+test('an opening that stops being its card greeting is updated, though its text and place are the same', () => {
+    const link = { id: 3, hash: 7 };
+    const first = { ...stored('n1', 'hello', true), swipes: ['hello'], swipe_id: 0, swipe_info: [{ node_id: 'n1', greeting: link }] };
+    const view = openingView(state([{ ...stored('n1', 'hello', true), greeting: null }], [], 0), page(first, 3));
+    expect(view).toMatchObject({ kind: 'update', updates: { swipe_info: [{ node_id: 'n1', greeting: null }] } });
+    expect(openingView(state([{ ...stored('n1', 'hello', true), greeting: link }], [], 0), page(first, 3))).toEqual({ kind: 'keep' });
 });

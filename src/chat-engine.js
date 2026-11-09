@@ -867,9 +867,12 @@ export class ChatEngine {
         const order = this.openingsInOrder(rows, card);
         const { user, session } = await this.knownActorIds(actor);
         const lands = await this.store.chatRead('landing', { tree, ...(session === null ? {} : { session }), ...(user === null ? {} : { user }) });
-        const all = order.map(e => ('row' in e
-            ? { ...alternativeEntry(this.externalId(e.row.stored), e.row.message, false), is_system: !!e.row.message?.is_system }
-            : alternativeEntry(/** @type {any} */ (null), e.greeting, false)));
+        const all = order.map(e => ({
+            ...('row' in e
+                ? { ...alternativeEntry(this.externalId(e.row.stored), e.row.message, false), is_system: !!e.row.message?.is_system }
+                : alternativeEntry(/** @type {any} */ (null), e.greeting, false)),
+            greeting: e.holds === null ? null : { id: card.ids[e.holds], hash: hashGreetingText(card.greetings[e.holds].mes) },
+        }));
         let defaultIndex = -1;
         if (lands !== null) {
             const shown = (await this.store.chatRead('path', { tree, at: lands }))[0];

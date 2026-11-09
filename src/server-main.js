@@ -407,7 +407,7 @@ async function preSetupTasks() {
         requestProxy: { enabled: cliArgs.requestProxyEnabled, url: cliArgs.requestProxyUrl, bypass: cliArgs.requestProxyBypass },
     });
 
-    servedUi = await serveUi({ dev: process.env.ST_UI_DEV === '1' });
+    servedUi = await serveUi({ dev: process.env.ST_UI_DEV === '1', ...(process.env.ST_UI_DIST ? { outDir: process.env.ST_UI_DIST } : {}) });
     __mark('serveUi');
 }
 

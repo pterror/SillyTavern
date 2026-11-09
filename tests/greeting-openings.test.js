@@ -273,3 +273,27 @@ test('using a card greeting in the chat goes to the opening that holds it, with 
 
     expect(await chats.useCardGreeting({ tree, card, greetingId: 99, actor })).toEqual({ ok: false, reason: 'no such greeting' });
 });
+
+test('each opening says the card greeting it is, by id and the hash of its current text, exactly while it is that greeting', async () => {
+    const session = '0190a1b2-0000-7000-8000-0000000000f8';
+    const actor = { user: user.user.profile.handle, session };
+    expect((await post('create', { ch_name: 'Linked', first_mes: 'Start', file_name: 'Linked' }, session)).status).toBe(200);
+    const { chats, people } = user.store;
+    const { storedForm } = await import('../src/chat-engine.js');
+    const { hashGreetingText } = await import('../src/greeting-ops.js');
+    const [tree] = await people.trees([{ avatar: 'Linked.png' }]);
+    await chats.appendMessages({ tree, treeSpeaker: null, after: null, contents: [storedForm({ name: 'Linked', is_user: false, mes: 'Start', extra: {}, send_date: Date.now() })], actor });
+    const [start] = (await user.store.lib.greetingModel('Linked.png')).greetings;
+    const added = await post('greetings/add', { avatar_url: 'Linked.png', append: true, text: 'Later' }, session);
+    const later = (await user.store.lib.greetingModel('Linked.png')).greetings[1];
+    expect(added.body.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.greeting])).toEqual([
+        ['Start', { id: start.id, hash: hashGreetingText('Start') }],
+        ['Later', { id: later.id, hash: hashGreetingText('Later') }],
+    ]);
+    const edited = await post('greetings/edit', { avatar_url: 'Linked.png', position: 0, expected_hash: added.body.hashes[0], text: 'Start again' }, session);
+    expect(edited.body.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.greeting])).toEqual([
+        ['Start again', { id: start.id, hash: hashGreetingText('Start again') }],
+        ['Start', null],
+        ['Later', { id: later.id, hash: hashGreetingText('Later') }],
+    ]);
+});

@@ -36,7 +36,7 @@ export type Ports = {
         context: ActionContext,
         avatar: string,
         op: GreetingOp,
-    ): Promise<{ ok: true; opening: unknown } | { ok: false; reason: string }>;
+    ): Promise<{ ok: true; opening: unknown } | { ok: false; reason: string; same?: number }>;
 };
 
 function freshLook(target: Target, tokenizer: TokenizerState | null): Look {
@@ -325,7 +325,13 @@ export function alternativesArea(ports: Ports) {
                         ? { op: 'delete', position: op.position, hash: op.hash }
                         : op;
                 const result = await ports.greeting(context, avatar, sent);
-                if (!result.ok) return { refused: result.reason, changed: [...VIEWS] };
+                if (!result.ok) {
+                    return {
+                        refused: result.reason,
+                        changed: [...VIEWS],
+                        ...(result.same === undefined ? {} : { answer: { same: result.same } }),
+                    };
+                }
                 return { ...all, answer: { opening: result.opening } };
             },
         },

@@ -8,6 +8,8 @@
  * @property {Record<string, unknown>} [extra]
  * @property {string|null} [node_id]
  * @property {number} [index] its place among the tree's openings, in a list of the card's unstored greetings
+ * @property {{ id: number, hash: number } | null} [greeting] the card greeting it is, while it is that greeting with
+ *   its current text
  */
 
 /**
@@ -74,6 +76,7 @@ export function openingView(state, page) {
             is_user: !!alt.is_user,
             is_system: !!alt.is_system,
             node_id: page.isStored(alt.node_id) ? alt.node_id : page.provisionalId(name, alt.mes),
+            greeting: alt.greeting ?? null,
         };
     });
     place(head, head.offset ?? 0);
@@ -106,7 +109,8 @@ export function openingView(state, page) {
     const sameSwipes = () => Array.isArray(first.swipes)
         && first.swipes.length === total
         && swipes.every((text, k) => text === first.swipes[k])
-        && info.every((entry, k) => (entry?.node_id ?? null) === (first.swipe_info?.[k]?.node_id ?? null));
+        && info.every((entry, k) => (entry?.node_id ?? null) === (first.swipe_info?.[k]?.node_id ?? null)
+            && JSON.stringify(entry?.greeting ?? null) === JSON.stringify(first.swipe_info?.[k]?.greeting ?? null));
 
     if (page.isStored(first.node_id) || (page.isProvisional(first.node_id) && page.count > 1)) {
         const at = info.findIndex(entry => entry?.node_id === first.node_id);

@@ -101,6 +101,14 @@ function Dialog(props: {
     const [query, setQuery] = createSignal('');
     const [notice, setNotice] = createSignal<string | null>(null);
     const [editing, setEditing] = createSignal<{ id: string; at?: number } | null>(null);
+    const [same, setSame] = createSignal<{ at: string; position: number } | null>(null);
+    const sameAt = (at: string) => {
+        const found = same();
+        return found?.at === at ? found.position : null;
+    };
+    const forgetSame = (at: string) => {
+        if (same()?.at === at) setSame(null);
+    };
     const [drop, setDrop] = createSignal<{ id: string; side: 'before' | 'after' } | null>(null);
     const [ticks, setTicks] = createSignal<{ top: number; current: boolean }[]>([]);
 
@@ -367,25 +375,47 @@ function Dialog(props: {
         if (sure) await greeting({ op: 'delete', position: item.card!.position, hash: item.card!.hash });
     };
 
-    const greeting = async (op: GreetingOp) => {
+    const greeting = async (op: GreetingOp, at?: string) => {
         const result = await client.send('alternatives.greeting', op);
         const card = list()?.card;
         if (!result.ok) {
-            setNotice(result.error);
+            const position = (result.answer as { same?: unknown } | undefined)?.same;
+            if (at !== undefined && typeof position === 'number') {
+                setNotice(null);
+                setSame({ at, position });
+            } else {
+                setNotice(result.error);
+            }
             return false;
         }
         setNotice(null);
+        if (at !== undefined) forgetSame(at);
         if (card) props.old.greetingsChanged(structuredClone(unwrap(card)), result.answer);
         return true;
     };
-    const add = async (text: string) => text.trim() !== '' && (await greeting({ op: 'add', text }));
+    const add = async (text: string) => text.trim() !== '' && (await greeting({ op: 'add', text }, ADDING));
     const save = async (item: Item, text: string) => {
         if (text.trim() === '') {
             const sure = await ask({ kind: 'confirm', message: t('This greeting is empty now. Delete it?') }, t);
             if (!sure) return;
         }
         const card = item.card!;
-        if (await greeting({ op: 'edit', position: card.position, hash: card.hash, text })) setEditing(null);
+        if (await greeting({ op: 'edit', position: card.position, hash: card.hash, text }, item.id)) setEditing(null);
+    };
+    const endEdit = (id: string) => {
+        forgetSame(id);
+        setEditing(null);
+    };
+    const showSame = (at: string) => {
+        const position = sameAt(at);
+        if (position === null) return;
+        if (at === ADDING) forgetSame(at);
+        else endEdit(at);
+        const item = items().find((each) => each.card?.position === position);
+        if (!item) return;
+        if (hidden(item)) search('');
+        setPicked(item.index);
+        queueMicrotask(() => scrollTo(item.index, true));
     };
     const editAt = (item: Item, event: MouseEvent) => {
         if (!isCardRow(item) || editing()?.id === item.id) return;
@@ -719,8 +749,11 @@ function Dialog(props: {
                                             <Editor
                                                 text={item.text}
                                                 at={edit().at}
+                                                same={sameAt(item.id)}
                                                 onSave={(text) => void save(item, text)}
-                                                onCancel={() => setEditing(null)}
+                                                onCancel={() => endEdit(item.id)}
+                                                onInput={() => forgetSame(item.id)}
+                                                onShowSame={() => showSame(item.id)}
                                             />
                                         )}
                                     </Show>
@@ -741,14 +774,45 @@ function Dialog(props: {
                     </div>
                 </div>
                 <Show when={list()?.card}>
-                    <AddBox onAdd={add} />
+                    <AddBox
+                        onAdd={add}
+                        same={sameAt(ADDING)}
+                        onInput={() => forgetSame(ADDING)}
+                        onShowSame={() => showSame(ADDING)}
+                    />
                 </Show>
             </div>
         </dialog>
     );
 }
 
-function AddBox(props: { onAdd: (text: string) => Promise<boolean> }) {
+const ADDING = '\u0000adding';
+
+function SameNote(props: { position: number; onShow: () => void }) {
+    const { t } = useUi();
+    return (
+        <p class="alternatives-same" role="status">
+            {`${t('Same as greeting')} `}
+            <a
+                href="#"
+                class="alternatives-same-link"
+                onClick={(event) => {
+                    event.preventDefault();
+                    props.onShow();
+                }}
+            >
+                {String(props.position + 1)}
+            </a>
+        </p>
+    );
+}
+
+function AddBox(props: {
+    onAdd: (text: string) => Promise<boolean>;
+    same: number | null;
+    onInput: () => void;
+    onShowSame: () => void;
+}) {
     const { t } = useUi();
     const [text, setText] = createSignal('');
     const [busy, setBusy] = createSignal(false);
@@ -775,7 +839,10 @@ function AddBox(props: { onAdd: (text: string) => Promise<boolean> }) {
                 placeholder={t('New greeting…')}
                 aria-label={t('New greeting')}
                 value={text()}
-                onInput={(event) => setText(event.currentTarget.value)}
+                onInput={(event) => {
+                    setText(event.currentTarget.value);
+                    props.onInput();
+                }}
                 onKeyDown={(event) => {
                     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
                         event.preventDefault();
@@ -790,6 +857,17 @@ function AddBox(props: { onAdd: (text: string) => Promise<boolean> }) {
             <button type="submit" class="menu_button" disabled={busy() || text().trim() === ''}>
                 {t('Add')}
             </button>
+            <Show when={props.same !== null}>
+                {
+                    <SameNote
+                        position={props.same!}
+                        onShow={() => {
+                            setText('');
+                            props.onShowSame();
+                        }}
+                    />
+                }
+            </Show>
         </form>
     );
 }
@@ -797,8 +875,11 @@ function AddBox(props: { onAdd: (text: string) => Promise<boolean> }) {
 function Editor(props: {
     text: string;
     at?: number | undefined;
+    same: number | null;
     onSave: (text: string) => void;
     onCancel: () => void;
+    onInput: () => void;
+    onShowSame: () => void;
 }) {
     const { t } = useUi();
     const [text, setText] = createSignal(props.text);
@@ -814,8 +895,14 @@ function Editor(props: {
                 class="text_pole textarea_compact"
                 rows="8"
                 value={text()}
-                onInput={(event) => setText(event.currentTarget.value)}
+                onInput={(event) => {
+                    setText(event.currentTarget.value);
+                    props.onInput();
+                }}
             />
+            <Show when={props.same !== null}>
+                <SameNote position={props.same!} onShow={props.onShowSame} />
+            </Show>
             <div class="alternative-editor-buttons">
                 <button type="button" class="menu_button" onClick={() => props.onSave(text())}>
                     {t('Save')}

@@ -17,7 +17,7 @@ export type ActionContext = ViewContext & { upload: Upload | null };
 
 export type ActionResult =
     | { changed: string[]; opensViews?: string[]; answer?: unknown }
-    | { refused: string; changed?: string[] };
+    | { refused: string; changed?: string[]; answer?: unknown };
 
 type Handlers<S extends ActionSchemas> = {
     [T in keyof S]: (context: ActionContext, payload: v.InferOutput<S[T]>) => Promise<ActionResult>;
@@ -282,7 +282,12 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             const changed = await spread(user, [...(result.changed ?? []), ...opensViews], tab);
             await answer(
                 'refused' in result
-                    ? { ok: false, error: result.refused, views: changed.frames }
+                    ? {
+                          ok: false,
+                          error: result.refused,
+                          views: changed.frames,
+                          ...(result.answer === undefined ? {} : { answer: result.answer }),
+                      }
                     : { ok: true, views: changed.frames, ...('answer' in result ? { answer: result.answer } : {}) },
                 200,
                 changed.later,
