@@ -15,28 +15,47 @@ export const SELECTION_VIEW = 'worldbuilding.selection';
 export const BULK_JOBS_VIEW = 'worldbuilding.bulkJobs';
 export const KEY_SHARERS_VIEW = 'worldbuilding.keySharers';
 
+export const FOUND_PER_QUERY = 20;
+export const MENTIONS_PER_PAGE = 20;
+export const KEY_SHARERS_SHOWN = 20;
+export const SELECTION_COUNTED_UP_TO = 1000;
+export const LOOPS_SHOWN = 3;
+export const ENTRIES_NAMED_PER_LOOP = 3;
+
+// One request's work: 200 ms at an assumed 8 µs a read (docs/design/worldbuilding-store.md, One request's budget).
 export const READS_PER_REQUEST = 24_000;
 // A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
 // label (its title, keys, names and, with neither a title nor a name, its text): 10 with one relation.
 export const READS_PER_CARD = 10;
+// A label reads the entry's title, keys, names and, with neither a title nor a name, its text.
+export const READS_PER_LABEL = 4;
 export const READS_PER_LOOP_CHECK_VISIT = 2;
 // An entry checked for a mention reads its place (in the world's order, or in the index's list for a name), whether it
-// is in the world, and its text's head and record.
-export const READS_PER_MENTION_CHECK = 4;
-export const MAX_CARDS_PER_READ = READS_PER_REQUEST / READS_PER_CARD;
-export const LOOP_CHECK_VISITS_PER_WRITE = READS_PER_REQUEST / READS_PER_LOOP_CHECK_VISIT;
-export const MENTION_CHECKS_PER_REQUEST = READS_PER_REQUEST / READS_PER_MENTION_CHECK;
+// is in the world, and its text's head and record; one that mentions the entry, its label too.
+export const READS_PER_MENTION_CHECK = 4 + READS_PER_LABEL;
+// The reads bounded by a count of labels: the targets found, the key's sharers, the loops of the last change and of
+// the jobs (each loop its entry, its target and the entries it names), and the world header's example.
+export const READS_OF_COUNTED_LABELS =
+    (FOUND_PER_QUERY + KEY_SHARERS_SHOWN + 2 * LOOPS_SHOWN * (2 + ENTRIES_NAMED_PER_LOOP) + 1) * READS_PER_LABEL;
+// One answer can hold every view of the area and its action's own work (a bulk action answers them all, and a job's
+// step pushes them all), so the request's reads are split in equal shares, one per bounded read an answer can hold:
+// a write's loop check; the action's step or walk (a step's crossing, the entry an opening is around, a bulk chunk's
+// walk); the overview's cards; the results' cards; the results' walk; what points at the open entry; the names its
+// text writes; what mentions it; the selection's count. Whatever an answer holds, its reads stay within the request's.
+export const READ_SHARES = 9;
+export const READS_PER_SHARE = Math.floor((READS_PER_REQUEST - READS_OF_COUNTED_LABELS) / READ_SHARES);
+export const MAX_CARDS_PER_READ = Math.floor(READS_PER_SHARE / READS_PER_CARD);
+export const LOOP_CHECK_VISITS_PER_WRITE = Math.floor(READS_PER_SHARE / READS_PER_LOOP_CHECK_VISIT);
+export const MENTION_CHECKS_PER_READ = Math.floor(READS_PER_SHARE / READS_PER_MENTION_CHECK);
 // Looking for the names an entry's text writes reads one key per seek of the names index, per entry listed under a name
 // found and per name checked one by one, and two (its case and whole-word flags) per entry it names.
-export const TEXT_LINK_READS_PER_REQUEST = READS_PER_REQUEST;
-export const FOUND_PER_QUERY = 20;
-export const MENTIONS_PER_PAGE = 20;
-export const MENTION_PAGES_AT_MOST = MAX_CARDS_PER_READ / MENTIONS_PER_PAGE;
-export const KEY_SHARERS_SHOWN = 20;
-export const SELECTION_COUNTED_UP_TO = 1000;
+export const TEXT_LINK_READS_PER_READ = READS_PER_SHARE;
+// A walk of a chip's region (the results, a selection's count, a bulk chunk with no words) reads a key a step.
+export const WALK_STEPS_PER_READ = READS_PER_SHARE;
+export const MENTION_PAGES_AT_MOST = Math.floor(MAX_CARDS_PER_READ / MENTIONS_PER_PAGE);
 export const PICKED_AT_MOST = MAX_CARDS_PER_READ;
-export const LOOPS_SHOWN = 3;
-export const ENTRIES_NAMED_PER_LOOP = 3;
+// The selection's count checks each picked entry it leaves out (one read each), then walks.
+export const SELECTION_WALK_STEPS = READS_PER_SHARE - PICKED_AT_MOST;
 
 // A world's fields as its search index numbers them, and the labels its search syntax gives them.
 export const WORLD_FIELD = Object.freeze({
@@ -160,7 +179,7 @@ export type Sentence = { before: string; mention: string; after: string };
 
 // A page read at `cursor` (null: the first), and the cursor of the page after it (null: the last). `lookedThrough`
 // counts the entries looked through from the first page to this one's end; `stoppedForBound` says the page ended at
-// the request's MENTION_CHECKS_PER_REQUEST with more to look through, not because it filled or the world ended.
+// the read's MENTION_CHECKS_PER_READ with more to look through, not because it filled or the world ended.
 export type MentionsPage = {
     cursor: string | null;
     entries: { from: Named; sentence: Sentence }[];
@@ -170,12 +189,12 @@ export type MentionsPage = {
 };
 
 // The run of pages the page asked for: the first at the cursor asked from, each next the page after the one before.
-// One read looks through at most MENTION_CHECKS_PER_REQUEST entries in all, so the run ends at a page that stopped for
+// One read looks through at most MENTION_CHECKS_PER_READ entries in all, so the run ends at a page that stopped for
 // it.
 export type MentionedIn = { pages: MentionsPage[] };
 
 // Where the entry's text names another entry: `from` and `to` are UTF-16 offsets into `text`, in order, never overlapping.
-// `linksComplete` is false when the read stopped at TEXT_LINK_READS_PER_REQUEST before it had looked for every name, so
+// `linksComplete` is false when the read stopped at TEXT_LINK_READS_PER_READ before it had looked for every name, so
 // words it hadn't reached may be names it doesn't link.
 export type TextLink = { entry: string; from: number; to: number };
 

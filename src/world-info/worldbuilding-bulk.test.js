@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 
+import { SELECTION_WALK_STEPS as WALK } from '@st/worldbuilding/protocol';
+
 const { emptyUser } = await import('../../tests/converted-user.fixture.js');
 const { RELATION_CHANGES_PER_STEP } = await import('../world-info-engine.js');
 const user = await emptyUser('st-worldbuilding-bulk-test-');
@@ -37,8 +39,8 @@ test('a set over a filter with words runs a chunk in its own request and the res
     const { book, id } = await write('Lamps', [...lamps, ...others]);
     const selection = { selected: { query: 'lamp', chips: [] }, except: [id(3), id(count - 1)] };
 
-    assert.deepEqual(await lib.books.selectionCount(book, selection, 1000), { matching: 1000, capped: true });
-    assert.deepEqual(await lib.books.selectionCount(book, { ...selection, selected: { query: 'harbour', chips: [] } }, 1000), { matching: 3, capped: false });
+    assert.deepEqual(await lib.books.selectionCount(book, selection, 1000, WALK), { matching: 1000, capped: true });
+    assert.deepEqual(await lib.books.selectionCount(book, { ...selection, selected: { query: 'harbour', chips: [] } }, 1000, WALK), { matching: 3, capped: false });
 
     assert.deepEqual(await lib.books.startBulk(book, selection, { set: { order: 7, group: 'kept' } }, LOOPS, { user: 'u', session: 's' }), { unreachedLoops: [] });
     const running = await lib.books.bulkJobs(book);
@@ -59,7 +61,7 @@ test('a set over a filter with words runs a chunk in its own request and the res
 test('a delete over the whole world takes all but its exceptions; one over picked entries stops a chunk where their relations would pass a step', async () => {
     const small = await write('Small', [1, 2, 3, 4, 5].map(uid => entry(uid, `entry ${uid}`)));
     const whole = { selected: { world: true }, except: [small.id(2), small.id(4)] };
-    assert.deepEqual(await lib.books.selectionCount(small.book, whole, 1000), { matching: 3, capped: false });
+    assert.deepEqual(await lib.books.selectionCount(small.book, whole, 1000, WALK), { matching: 3, capped: false });
     assert.deepEqual(await lib.books.startBulk(small.book, whole, { delete: true }, LOOPS), { unreachedLoops: [] });
     assert.deepEqual(await lib.books.bulkJobs(small.book), [], 'a selection that fits one chunk leaves no job behind');
     assert.deepEqual(Object.keys(await entriesOf('Small')).sort(), ['2', '4']);
@@ -87,7 +89,7 @@ test('Move to replaces the relations of its kind, Also put in adds one; the targ
         entry(7, 'Z', [{ kind: IN, target: 3, position: 'a' }]),
     ]);
     const inA = { selected: { query: '', chips: [{ kind: String(IN), target: id(1), depth: 'directly' }] }, except: [] };
-    assert.deepEqual(await lib.books.selectionCount(book, inA, 1000), { matching: 2, capped: false });
+    assert.deepEqual(await lib.books.selectionCount(book, inA, 1000, WALK), { matching: 2, capped: false });
     assert.deepEqual(await lib.books.startBulk(book, inA, { moveTo: { kind: String(IN), target: id(3) } }, LOOPS), { unreachedLoops: [] });
     let stored = await entriesOf('Places');
     assert.deepEqual(targetsOf(stored, 5), ['1:3']);

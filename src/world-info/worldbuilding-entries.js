@@ -1,4 +1,4 @@
-import { MENTION_CHECKS_PER_REQUEST, MENTIONS_PER_PAGE } from '@st/worldbuilding/protocol';
+import { MENTIONS_PER_PAGE } from '@st/worldbuilding/protocol';
 import { TYPE } from '../library-codes.js';
 import { entryObject, keysOfEntry } from '../world-info-engine.js';
 import { newWorldInfoEntryDefinition, newWorldInfoEntryTemplate } from '../../public/scripts/world-info-entry-defaults.js';
@@ -174,20 +174,21 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
 
     /**
      * The run of pages of what mentions the entry: the page at `from`, then each page after the one before, looking
-     * through at most MENTION_CHECKS_PER_REQUEST entries in all; the run ends at the page that reaches it.
+     * through at most `checks` entries in all; the run ends at the page that reaches it.
      * @param {import('@st/server-ui').User} user
      * @param {bigint} book
      * @param {bigint} entry
      * @param {import('@st/worldbuilding/server').PagesRun} run
+     * @param {number} checks
      * @returns {Promise<import('@st/worldbuilding/protocol').MentionedIn>}
      */
-    const mentionsOf = async (user, book, entry, { from, pages }) => {
+    const mentionsOf = async (user, book, entry, { from, pages }, checks) => {
         const references = await referencesOf(user);
         /** @type {{ cursor: string | null, found: { entry: bigint, text: string, span: [number, number] | undefined }[], next: string | null, lookedThrough: number, stoppedForBound: boolean }[]} */
         const read = [];
         /** @type {string | null} */
         let cursor = from;
-        let checksLeft = MENTION_CHECKS_PER_REQUEST;
+        let checksLeft = checks;
         while (read.length < pages) {
             const page = await references.to(book, entry, { ...(cursor === null ? {} : { cursor }), limit: MENTIONS_PER_PAGE, withText: true, checksAtMost: checksLeft });
             if (!page) break;
@@ -217,7 +218,7 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
     };
 
     return {
-        async readEntry(user, book, entry, mentions) {
+        async readEntry(user, book, entry, { mentions, mentionChecks, textLinkReads }) {
             const lib = await libOf(user);
             const [b, e] = [BigInt(book), BigInt(entry)];
             const read = await lib.store.worldRead('worldbuildingEntry', { book: b, entry: e });
@@ -226,7 +227,7 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             const stored = await lib.books.entryIn(b, e);
             const { placement, differs } = placementOf(stored ? /** @type {Record<string, unknown>} */ (entryObject(stored, false)) : {});
             const counts = await countTokens(user, [read.text]);
-            const found = (await (await referencesOf(user)).links(b, e, read.text)) ?? { links: [], complete: true };
+            const found = (await (await referencesOf(user)).links(b, e, read.text, { readsAtMost: textLinkReads })) ?? { links: [], complete: true };
             return {
                 ...read,
                 links: found.links.map(link => ({ ...link, entry: String(link.entry) })),
@@ -234,7 +235,7 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
                 placement: /** @type {import('@st/worldbuilding/protocol').Placement} */ (placement),
                 placementDiffersFromDefaults: differs,
                 tokens: counts?.[0] ?? null,
-                mentionedIn: await mentionsOf(user, b, e, mentions),
+                mentionedIn: await mentionsOf(user, b, e, mentions, mentionChecks),
             };
         },
         async readKeySharers(user, { book, entry, key, limit }) {

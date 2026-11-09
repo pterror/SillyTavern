@@ -3116,6 +3116,7 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     _ => None,
                 },
                 limit: req_integer(a, "limit")? as usize,
+                walk_steps: req_integer(a, "walkSteps")? as usize,
                 action,
             };
             Box::new(move |store| store.world_bulk_chunk(&read).map(JsTree))
@@ -3125,7 +3126,8 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
             let selected = selected_from_js(a, book)?;
             let except: std::collections::HashSet<u64> = integers(a, "except")?.into_iter().collect();
             let cap = req_integer(a, "cap")? as usize;
-            Box::new(move |store| store.world_selection_count(book, &selected, &except, cap).map(JsTree))
+            let walk_steps = req_integer(a, "walkSteps")? as usize;
+            Box::new(move |store| store.world_selection_count(book, &selected, &except, cap, walk_steps).map(JsTree))
         }
         "worldbuildingResults" => {
             use crate::store::world_search::ResultsRead;
@@ -3147,6 +3149,7 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                 from,
                 pages: req_integer(a, "pages")? as usize,
                 limit: req_integer(a, "limit")? as usize,
+                walk_steps: req_integer(a, "walkSteps")? as usize,
             };
             Box::new(move |store| store.world_results(&read).map(JsTree))
         }

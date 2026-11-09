@@ -5,7 +5,7 @@ use super::books::ENTRY;
 use super::chat_read::Js;
 use super::relations;
 use super::relations_tests::{IN, OWES, book, create, history_user, index, json_of, rec, soft_delete, text};
-use super::world_search::{Chip, Depth, ResultsRead, TEST_BOUNDS};
+use super::world_search::{Chip, Depth, ResultsRead, TEST_CHIP_WALK_VISITS};
 use super::*;
 use crate::log::format::{FieldRef, Value};
 use crate::search::query::Clause;
@@ -156,6 +156,18 @@ fn any_depth(target: u64) -> Chip {
 }
 
 fn results(store: &Store, query: &str, chips: &[Chip], from: Option<String>, pages: usize, limit: usize) -> Js {
+    results_walking(store, query, chips, from, pages, limit, usize::MAX)
+}
+
+fn results_walking(
+    store: &Store,
+    query: &str,
+    chips: &[Chip],
+    from: Option<String>,
+    pages: usize,
+    limit: usize,
+    walk_steps: usize,
+) -> Js {
     store
         .world_results(&ResultsRead {
             book: 1,
@@ -166,27 +178,46 @@ fn results(store: &Store, query: &str, chips: &[Chip], from: Option<String>, pag
             from,
             pages,
             limit,
+            walk_steps,
         })
         .unwrap()
 }
 
-fn one_page(store: &Store, query: &str, chips: &[Chip], cursor: Option<String>, limit: usize) -> (Vec<String>, Option<String>) {
-    let read = results(store, query, chips, cursor, 1, limit);
-    let page = &list(field(&read, "pages"))[0];
-    let occurrences = list(field(page, "entries"))
+fn occurrences_of(page: &Js) -> Vec<String> {
+    list(field(page, "entries"))
         .iter()
         .map(|card| text_of(field(card, "occurrence")))
-        .collect();
-    (occurrences, next_of(page))
+        .collect()
+}
+
+fn one_page(store: &Store, query: &str, chips: &[Chip], cursor: Option<String>, limit: usize) -> (Vec<String>, Option<String>) {
+    one_page_walking(store, query, chips, cursor, limit, usize::MAX)
+}
+
+fn one_page_walking(
+    store: &Store,
+    query: &str,
+    chips: &[Chip],
+    cursor: Option<String>,
+    limit: usize,
+    walk_steps: usize,
+) -> (Vec<String>, Option<String>) {
+    let read = results_walking(store, query, chips, cursor, 1, limit, walk_steps);
+    let page = &list(field(&read, "pages"))[0];
+    (occurrences_of(page), next_of(page))
 }
 
 fn all_pages(store: &Store, query: &str, chips: &[Chip], limit: usize) -> Vec<Vec<String>> {
+    all_pages_walking(store, query, chips, limit, usize::MAX)
+}
+
+fn all_pages_walking(store: &Store, query: &str, chips: &[Chip], limit: usize, walk_steps: usize) -> Vec<Vec<String>> {
     let mut pages = Vec::new();
     let mut cursor = None;
     loop {
-        let (occurrences, next) = one_page(store, query, chips, cursor.clone(), limit);
+        let (occurrences, next) = one_page_walking(store, query, chips, cursor.clone(), limit, walk_steps);
         assert_eq!(
-            one_page(store, query, chips, cursor, limit),
+            one_page_walking(store, query, chips, cursor, limit, walk_steps),
             (occurrences.clone(), next.clone()),
             "reading a cursor again reads the same page"
         );
@@ -254,9 +285,9 @@ fn a_chip_narrows_a_search_to_a_region_directly_or_at_any_depth_through_weak_rel
     assert_eq!(found(&store, "loop", &[any_depth(106)]), set(&["107"]), "the target itself is never in its region");
     assert_eq!(found(&store, "loop", &[any_depth(101)]), set(&[]), "a loop nothing above holds ends the walk");
     assert_eq!(found(&store, "old", &[any_depth(101)]), set(&["104"]));
-    TEST_BOUNDS.with(|bounds| bounds.set(Some((1, usize::MAX))));
+    TEST_CHIP_WALK_VISITS.with(|bounds| bounds.set(Some(1)));
     assert_eq!(found(&store, "old", &[any_depth(101)]), set(&[]), "a walk past the bound answers no");
-    TEST_BOUNDS.with(|bounds| bounds.set(None));
+    TEST_CHIP_WALK_VISITS.with(|bounds| bounds.set(None));
     store.close();
 }
 
@@ -284,17 +315,38 @@ fn with_no_words_a_chip_reads_its_region_in_drawing_order_by_cursor() {
         ["102/104", "102/109"],
         "a directly chip leads, the others check"
     );
-    TEST_BOUNDS.with(|bounds| bounds.set(Some((usize::MAX, 2))));
-    let stepped = all_pages(&store, "", &[any_depth(101)], 100);
+    let stepped = all_pages_walking(&store, "", &[any_depth(101)], 100, 2);
     assert!(stepped.len() > 1, "a page stops at its steps' bound and its cursor goes on");
     assert_eq!(stepped.concat(), drawn);
-    TEST_BOUNDS.with(|bounds| bounds.set(None));
     assert_eq!(
         one_page(&store, "", &[any_depth(102)], Some("w0000000000000065".into()), 10),
         (Vec::<String>::new(), None),
         "a cursor that isn't this search's reads an empty last page"
     );
     assert_eq!(one_page(&store, "lamp", &[], Some("rnot a cursor".into()), 10), (Vec::<String>::new(), None));
+    store.close();
+}
+
+#[test]
+fn a_run_of_pages_shares_one_walk_bound_and_ends_at_the_page_that_reaches_it() {
+    let dir = temp_dir("run-bound");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    world(&store);
+    let drawn = all_pages(&store, "", &[any_depth(101)], 100).concat();
+    for steps in 1..=4 {
+        let run = results_walking(&store, "", &[any_depth(101)], None, 100, 1, steps);
+        let pages = list(field(&run, "pages"));
+        assert!(pages.len() <= steps, "each page reads a step at least, so {steps} steps read at most {steps} pages");
+        let mut read: Vec<String> = pages.iter().flat_map(occurrences_of).collect();
+        let mut cursor = next_of(pages.last().unwrap());
+        assert!(cursor.is_some(), "the run ends at the bound with a cursor that goes on");
+        while let Some(at) = cursor {
+            let (more, next) = one_page(&store, "", &[any_depth(101)], Some(at), 1);
+            read.extend(more);
+            cursor = next;
+        }
+        assert_eq!(read, drawn, "going on from where the run stopped reads the rest in order");
+    }
     store.close();
 }
 

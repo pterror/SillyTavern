@@ -6,7 +6,7 @@ import { References } from './references.js';
 import { matchDefaultsOf } from './key-matching.js';
 import { worldInfoGlobalsOf } from '../../public/scripts/world-info-globals.js';
 import { GENERATION_TYPE_TRIGGERS } from '../../public/scripts/constants.js';
-import { MENTION_CHECKS_PER_REQUEST, MENTIONS_PER_PAGE, TRIGGERS } from '@st/worldbuilding/protocol';
+import { MENTION_CHECKS_PER_READ, MENTIONS_PER_PAGE, TEXT_LINK_READS_PER_READ, TRIGGERS } from '@st/worldbuilding/protocol';
 
 const { emptyUser } = await import('../../tests/converted-user.fixture.js');
 const user = await emptyUser('st-worldbuilding-entries-test-');
@@ -56,7 +56,12 @@ test('a key is added, switched and removed on the entry as stored; a name is a k
 
 const IN = 1;
 
-const FIRST = { from: null, pages: 1 };
+/**
+ * @param {string | null} from
+ * @param {number} pages
+ */
+const asked = (from, pages) => ({ mentions: { from, pages }, mentionChecks: MENTION_CHECKS_PER_READ, textLinkReads: TEXT_LINK_READS_PER_READ });
+const FIRST = asked(null, 1);
 
 test('the entry view, its edits, a new entry after another, delete, restore and moving to another world, over the store', async () => {
     const entries = {
@@ -149,7 +154,7 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
     const moved = await ports.moveEntryToWorld(who, B, first, String(other));
     assert.ok(typeof moved === 'object' && 'entry' in moved);
     assert.equal(await ports.readEntry(uiUser, B, first, FIRST).then(r => r && 'deleted' in r && r.deleted), true);
-    const there = await ports.readEntry(uiUser, String(other), moved.entry, []);
+    const there = await ports.readEntry(uiUser, String(other), moved.entry, FIRST);
     assert.ok(there && !there.deleted);
     assert.equal(there.text, 'Varro keeps the lamp.');
     assert.deepEqual(await ports.moveEntryToWorld(who, B, first, String(other)), 'no entry');
@@ -157,32 +162,32 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
 });
 
 test('what mentions an entry is read as a run of pages, each from the cursor the one before ends at', async () => {
-    const many = 520;
+    const many = 260;
     const sources = Object.fromEntries(Array.from({ length: many }, (_, at) => [at + 2, { uid: at + 2, key: [`source ${at}`], comment: '', content: `Ilse ${at}.`, displayIndex: at + 1 }]));
     await lib.books.write('Mentioned', { entries: { 1: { uid: 1, key: ['Ilse'], comment: '', content: 'Ilse.', displayIndex: 0, extensions: { names: ['Ilse'] } }, ...sources } });
     const { id: book } = /** @type {{ id: bigint }} */ (await lib.books.find('Mentioned'));
     const ilse = String((await lib.books.storedEntries(book)).find(({ entity }) => entity.key.endsWith(':1'))?.entity.id);
-    const run = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: null, pages: 30 })).mentionedIn.pages;
+    const run = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, asked(null, 30))).mentionedIn.pages;
     assert.equal(run.length, Math.ceil(many / MENTIONS_PER_PAGE));
     assert.equal(run.reduce((/** @type {number} */ sum, /** @type {any} */ page) => sum + page.entries.length, 0), many);
     assert.equal(run[0].cursor, null);
     for (let at = 1; at < run.length; at++) assert.equal(run[at].cursor, run[at - 1].next, 'each page is read from where the one before ends');
     assert.equal(run.at(-1).next, null);
-    const later = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: run[0].next, pages: 1 })).mentionedIn.pages;
+    const later = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, asked(run[0].next, 1))).mentionedIn.pages;
     assert.deepEqual(later, [run[1]]);
 });
 
-test('a run of mention pages looks through at most MENTION_CHECKS_PER_REQUEST entries in all, ending at the page that reaches it', async () => {
-    const others = MENTION_CHECKS_PER_REQUEST + 10;
+test('a run of mention pages looks through at most MENTION_CHECKS_PER_READ entries in all, ending at the page that reaches it', async () => {
+    const others = MENTION_CHECKS_PER_READ + 10;
     const sources = Object.fromEntries(Array.from({ length: others }, (_, at) => [at + 2, { uid: at + 2, key: [], comment: '', content: at === others - 1 ? 'Ilse, at last.' : 'nobody', displayIndex: at + 1 }]));
     await lib.books.write('Far', { entries: { 1: { uid: 1, key: ['Ilse'], comment: '', content: 'Ilse.', displayIndex: 0, extensions: { names: ['Ilse'] } }, ...sources } });
     const { id: book } = /** @type {{ id: bigint }} */ (await lib.books.find('Far'));
     const ilse = String((await lib.books.storedEntries(book)).find(({ entity }) => entity.key.endsWith(':1'))?.entity.id);
-    const run = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: null, pages: 3 })).mentionedIn.pages;
+    const run = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, asked(null, 3))).mentionedIn.pages;
     assert.equal(run.length, 1, 'the run ends at the page that stopped for the bound');
-    assert.deepEqual([run[0].entries, run[0].lookedThrough, run[0].stoppedForBound], [[], MENTION_CHECKS_PER_REQUEST, true]);
+    assert.deepEqual([run[0].entries, run[0].lookedThrough, run[0].stoppedForBound], [[], MENTION_CHECKS_PER_READ, true]);
     assert.notEqual(run[0].next, null);
-    const further = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, { from: run[0].next, pages: 3 })).mentionedIn.pages;
+    const further = /** @type {any} */ (await ports.readEntry(uiUser, String(book), ilse, asked(run[0].next, 3))).mentionedIn.pages;
     assert.equal(further.length, 1);
     assert.equal(further[0].entries.length, 1);
     assert.deepEqual([further[0].lookedThrough, further[0].stoppedForBound, further[0].next], [others, false, null]);

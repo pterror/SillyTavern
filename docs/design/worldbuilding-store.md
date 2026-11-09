@@ -257,7 +257,8 @@ lists it and nothing reads it at a store's opening. It lasts as long as its targ
 | a bulk action | `BULK_JOBS` | the next up to 1,000 selected entries acted on, with the job's cursor, in one commit; a delete's chunk ends early where its entries' relations in use targeting them would pass 1,000 | its walk ends; then the job's fields go |
 
 `RELATION_CHANGES_PER_STEP` is 1,000: a relation's change reads its key and writes a few derived keys plus the tree's
-path, about 24 key operations, so a step is about the 24,000 reads one request may take (below, One request's budget).
+path, about 24 key operations, so a step is about the 24,000 reads one request may take (below, One request's budget,
+which doesn't hold this work).
 A step that finds nothing to do ends its job. A failed step stops the job until the store next opens; a restarted
 server reads the markers (`worldbuildingPendingJobs`, one scan of each marker index, which hold only running jobs) and
 carries on.
@@ -428,29 +429,54 @@ is `n` times that.
 The only bound is on one request's work, and it follows from the rules: an action has 200 ms (the rules' figure for
 sending a message, the one figure they give for an action), and the engine's work is reads of keys. At an assumed 8 µs
 per read (not measured; I don't know the real figure, and it should be measured on the slowest storage the app runs on),
-200 ms is about 24,000 reads (`READS_PER_REQUEST`). Then:
+200 ms is about 24,000 reads (`READS_PER_REQUEST`).
 
-- a card costs about 10 reads (title, text, the key list, the names, the relations, and per relation the kind's name
-  and the target's label: its title, key list, names and, with neither a title nor a name, its text; counted with one
-  relation), so a read draws at most 2,400 cards (`MAX_CARDS_PER_READ`): the range's top-level entries
-  times the cards each draws, checked by the schema on `openOverview` and by the handler on `showRange` and
-  `stepOverview` (a step crossing `n` top-level entries draws each);
-- a loop check visit costs about 2 reads, so one write's check visits at most 12,000 entries
-  (`LOOP_CHECK_VISITS_PER_WRITE`), the cap on `loopCheckLimit` and the limit of writes that carry none;
-- an entry checked for a mention costs about 4 reads (its place: a slot of the world's order, or a doc of the index's
-  list for the names; whether it is in the world; its text's head and record), so one read of what mentions an entry
-  looks through at most 6,000 entries (`MENTION_CHECKS_PER_REQUEST`), a run of pages sharing them, whether the index
-  names the candidates or the read walks the world;
-- looking for the names a text writes reads one key per seek of the names index, per entry listed under a name it
-  found and per name checked one by one, and two per entry it names (that entry's case and whole-word flags), so one
-  read does at most 24,000 of them (`TEXT_LINK_READS_PER_REQUEST`, The names a text writes).
+That budget is the whole answer's, not each read's. An answer is the action's own work and every view it answers, and
+one answer can hold every view of the area (a bulk action answers them all, and each step of a job pushes them all;
+a push to a tab is an answer too). So the views' reads can't each take the budget: it is split in **shares**, one per
+bounded read an answer can hold, equal since none has a claim to more, and each read is bounded by its share
+(`READS_PER_SHARE`, `packages/areas/worldbuilding/protocol.ts`). The reads bounded by a count of labels are taken off
+first (`READS_OF_COUNTED_LABELS`: the 20 targets found, the 20 sharers of a key, the loops named by the last change and
+by the jobs, 3 each with their entry, target and 3 entries, and the world header's example; 71 labels at 4 reads,
+284 reads). The rest, 23,716 reads, is 9 shares of 2,635:
 
-The entry view answers its text's links and its run of mention pages in the same request, and `openEntry` answers
-`worldbuilding.pointingAt` with it, each read held to its own bound, so the request does a few bounds' work. I don't know
-whether that fits the 200 ms; it isn't divided between them here.
+| Share | Bound | What it holds |
+|---|---|---|
+| a write's loop check | `LOOP_CHECK_VISITS_PER_WRITE` (1,317 visits at 2 reads) | the cap on `loopCheckLimit` and the limit of writes that carry none |
+| the action's step or walk | `MAX_CARDS_PER_READ` cards crossed; `WALK_STEPS_PER_READ` | a step crossing `n` top-level entries (each drawn), the entry an opening is around, a bulk chunk's walk of a chip's region |
+| the overview | `MAX_CARDS_PER_READ` (263 cards at 10 reads) | the range's top-level entries times the cards each draws: the schema on `openOverview`, the handler on `showRange` |
+| the results' cards | `MAX_CARDS_PER_READ` | a run's pages times its page size (`setFilter`, `showResults`) |
+| the results' walk | `WALK_STEPS_PER_READ` (2,635 keys) | the walk of a chip's region, shared by the run's pages (The filter) |
+| what points at the open entry | `MAX_CARDS_PER_READ` | the sections' ranges, cut in the order last asked for |
+| the names its text writes | `TEXT_LINK_READS_PER_READ` (2,635 reads) | The names a text writes |
+| what mentions it | `MENTION_CHECKS_PER_READ` (329 entries at 8 reads) | the run of mention pages; an entry checked costs 4 reads (its place: a slot of the world's order, or a doc of the index's list for the names; whether it is in the world; its text's head and record) and one that mentions it its label, 4 more |
+| the selection's count | `PICKED_AT_MOST` exceptions checked, `SELECTION_WALK_STEPS` (2,372 keys) | the count's walk (Selections and bulk actions) |
 
-Everything else is unbounded: levels, columns, rows, the card text's length (one read per card whatever its length; the
-answer's size follows the entries' own text), the range's width, a step's length, a key's or a name's length.
+A card costs about 10 reads (title, text, the key list, the names, the relations, and per relation the kind's name and
+the target's label: its title, key list, names and, with neither a title nor a name, its text; counted with one
+relation). A label costs 4. Each share is a bound the area passes to its read (the ports take the cards, checks, reads
+and steps they may spend), so whatever an answer holds, its reads stay within one request's budget:
+`server.test.ts` counts what every action's answer and a push, with every view at its most, ask the ports for.
+
+What these bounds cost the page: a read draws about a ninth of what it did, so a screen's three screens of top-level entries
+keep fewer nesting levels (`page/layout.ts` drops the deepest that doesn't fit), a text past about 2,600 characters
+says not every name was looked for, and a world walked for mentions offers "Look further" every 329 entries.
+
+Not bounded by the shares, and not counted:
+
+- each chip's walk up from a hit (`CHIP_WALK_VISITS`, 12,000 visits, per hit), in the results, the count and a bulk
+  chunk: a page of hits can walk that much per hit. The search with words checks chips on the candidates it ranks,
+  before it knows which make the page, so a walk can't stop the page at a rank boundary; I don't know of a bound for
+  it that keeps the results exact.
+- the search's own work (`query::Limits`, in its own units, not reads) for the results with words, the count, a bulk
+  chunk and finding a target; I don't know how its units compare with a read.
+- a job step's and a bulk action's first chunk's work besides its walk and loop check: up to `RELATION_CHANGES_PER_STEP`
+  (1,000) entries or relations, about a whole budget of key operations on its own (Every job).
+- what a world holds a count of: its worlds, kinds, running jobs, a filter's chips, an entry's keys and relations;
+  levels, columns, rows, the card text's length (one read per card whatever its length; the answer's size follows the
+  entries' own text), a key's or a name's length.
+- a request answers each other tab of the user showing a changed view before its own answer is sent
+  (`packages/server-ui`, `spread`), so a request does one answer's reads per such tab.
 
 ## The answer and the page
 
@@ -613,7 +639,7 @@ the names):
 
 A candidate is still checked by the matcher, so the index only narrows. With any name it can't look up (a regular
 expression with no such word, a name of one or two words, one with an unresolved macro), the read walks the world in
-its order. Either way a request looks through at most `MENTION_CHECKS_PER_REQUEST` entries (One request's budget):
+its order. Either way a read looks through at most `MENTION_CHECKS_PER_READ` entries (One request's budget):
 a page ends when it holds `MENTIONS_PER_PAGE`, at the world's end, or at the bound, which it says
 (`stoppedForBound`), with the cursor to go on from and how many entries were looked through from the first page
 (`lookedThrough`, carried in the cursor). A run of pages shares the bound and ends at the page that reaches it.
@@ -651,8 +677,8 @@ read), and the next seek is below it, `k` its length less one; else no fold betw
 further than it does, so the next seek is at `k` = what they share. Each seek is one read and `k` falls each time, so a
 start costs one seek when no name starts there and about one more per name that does. Then the names checked one by one
 are listed. Each entry named reads its `caseSensitive` and `matchWholeWords` (a world's own fields, a card book's
-extensions), and the matcher checks each of its names (`References.links`). At most `TEXT_LINK_READS_PER_REQUEST` reads: a text of up
-to about 24,000 characters in a world with few names sharing a start is looked through whole; a longer text, a name
+extensions), and the matcher checks each of its names (`References.links`). At most `TEXT_LINK_READS_PER_READ` reads: a text of up
+to about 2,600 characters in a world with few names sharing a start is looked through whole; a longer text, a name
 shared by very many entries, or very many names checked one by one stops at the bound.
 
 **At the bound** the read answers the links it found in what it reached (names starting earlier in the text, then the
@@ -678,15 +704,16 @@ must hold. The chip's target is never in its own results.
   per entry met), and what one walk learns (reached, or not reached after a full walk) is kept for the rest of the read,
   so a read's walks cost about the hits plus their distinct ancestors: the same order as the search's own work.
   Walking **down** from `t` would cost `t`'s whole subtree before the first hit, at any size of it; so the walk goes
-  up. A walk past `CHIP_WALK_VISITS` (12,000, one request's budget at two reads a visit) answers no; only a hit with
+  up. A walk past `CHIP_WALK_VISITS` (12,000 visits) answers no; only a hit with
   more ancestors of the kind than that reaches it.
 - **With no words**, there is no relevance, and walking the world to check each entry would cost the world, so the
   first directly chip (else the first chip) leads and the others check. Directly reads `RELATIONS_BY_TARGET (b, t,
   k)` in position order: the region's own order. At any depth reads the region in its drawing order, pre-order, each
   source followed by its own region, an entry already on the path from `t` not entered again (as the overview cuts
   repeats along the drawing path, never by walking the graph), so an entry in two places of the region is listed at
-  each, as the overview draws it. The cursor is the path from `t` with the position reached at each level. A page
-  reads at most `WALK_STEPS_PER_PAGE` (12,000) keys; one that reaches it ends there, with a cursor that goes on.
+  each, as the overview draws it. The cursor is the path from `t` with the position reached at each level. A run of
+  pages reads at most `WALK_STEPS_PER_READ` keys in all; the page that reaches it ends there, with a cursor that goes
+  on, and the run ends at it.
 - **Cards** are the overview's, with no region; a card's key is its entity with words, else its path from the
   leading chip's target. Every page held is read again in one snapshot when the view is read, so a cursor reads the
   same page while nothing changed. A cursor the store can't use for this search (not its form, or a word weights
@@ -700,13 +727,13 @@ the session holds `{book, base, filter, except}`, `base` being `none` (the entri
 for the whole world. `select` adds entries to `except` or takes them out, as the base calls for; `selectAllMatching`
 holds the session's filter (or the whole world) with no exceptions; `selectNone` drops it. Setting the filter drops a
 `matching` selection (it named another filter) and keeps one of picked entries; opening another world drops it. At
-most `PICKED_AT_MOST` (one read's cards, 2,400) entries are held in `except`, so a selection costs the same at any
+most `PICKED_AT_MOST` (one read's cards, 263) entries are held in `except`, so a selection costs the same at any
 size.
 
 **The count** (`worldbuildingSelectionCount`, the `worldbuilding.selection` view): for the whole world, the book's kept
 entry count less the exceptions that are live entries of it, exact; for a filter, the walk below up to
-`SELECTION_COUNTED_UP_TO` (1,000) selected entries, `capped` when more may follow (past the cap, or the walk spent one
-request's budget first). Under `none` there is no count: the view's `except` holds the picked entries still live.
+`SELECTION_COUNTED_UP_TO` (1,000) selected entries, `capped` when more may follow (past the cap, or the walk spent its
+`SELECTION_WALK_STEPS` first). Under `none` there is no count: the view's `except` holds the picked entries still live.
 
 **The walks** (`world_search::walk_selected`), each from a cursor, each reading only what it selects:
 

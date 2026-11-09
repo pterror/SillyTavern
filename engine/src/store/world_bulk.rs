@@ -79,6 +79,8 @@ pub struct BulkRead {
     pub except: HashSet<u64>,
     pub cursor: Option<String>,
     pub limit: usize,
+    /// The keys a chips-only selection's walk reads in this chunk.
+    pub walk_steps: usize,
     pub action: BulkAction,
 }
 
@@ -151,6 +153,7 @@ pub fn bulk_chunk(view: &View, cache: &StatsCache, read: &BulkRead) -> Result<Js
             &read.selected,
             read.cursor.as_deref(),
             limit,
+            read.walk_steps,
         )
     };
     let mut walked = walk(read.limit)?;
@@ -186,7 +189,7 @@ pub fn bulk_chunk(view: &View, cache: &StatsCache, read: &BulkRead) -> Result<Js
     ]))
 }
 
-// `capped`: at least `matching` are selected; a walk that spends its budget first stops below `cap`.
+// `capped`: at least `matching` are selected; a walk that spends its `walk_steps` first stops below `cap`.
 pub fn selection_count(
     view: &View,
     cache: &StatsCache,
@@ -194,6 +197,7 @@ pub fn selection_count(
     selected: &Selected,
     except: &HashSet<u64>,
     cap: usize,
+    walk_steps: usize,
 ) -> Result<Js, StoreError> {
     let (matching, capped) = match selected {
         Selected::World => {
@@ -208,7 +212,7 @@ pub fn selection_count(
         }
         _ => {
             let limit = cap + 1 + except.len();
-            let walked = world_search::walk_selected(view, cache, book, selected, None, limit)?;
+            let walked = world_search::walk_selected(view, cache, book, selected, None, limit, walk_steps)?;
             let found = chosen(&walked.entries, except).len();
             (found.min(cap) as u64, found > cap || walked.next.is_some())
         }

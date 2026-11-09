@@ -672,8 +672,9 @@ impl Store {
         selected: &world_search::Selected,
         except: &std::collections::HashSet<u64>,
         cap: usize,
+        walk_steps: usize,
     ) -> StoreResult<chat_read::Js> {
-        self.derived(|v| world_bulk::selection_count(v, &self.inner.search_stats, book, selected, except, cap))
+        self.derived(|v| world_bulk::selection_count(v, &self.inner.search_stats, book, selected, except, cap, walk_steps))
     }
 
     pub fn library_entities(&self, ids: &[u64]) -> StoreResult<Vec<Option<library_read::Entity>>> {

@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 
 import { filterClauses, findClauses, worldbuildingSearchPorts } from './worldbuilding-search.js';
 import { WORLD_FIELD } from '../search-clauses.js';
+import { WALK_STEPS_PER_READ } from '@st/worldbuilding/protocol';
 
 const { emptyUser } = await import('../../tests/converted-user.fixture.js');
 const user = await emptyUser('st-worldbuilding-search-test-');
@@ -40,7 +41,7 @@ test('results, chips and found entries over the store', async () => {
     const B = String(book);
 
     assert.deepEqual(await ports.labelEntries(uiUser, B, [id(1), '424242']), [{ thing: id(1), text: 'Saltmarrow', shownAs: 'name' }, null]);
-    const query = { book: B, groupBy: String(IN), layout: LAYOUT, pageSize: 10, from: null, pages: 1 };
+    const query = { book: B, groupBy: String(IN), layout: LAYOUT, pageSize: 10, from: null, pages: 1, walkSteps: WALK_STEPS_PER_READ };
     const read = await ports.readResults(uiUser, { ...query, query: 'lamp', chips: [{ kind: String(IN), target: id(1), depth: 'anyDepth' }] });
     assert.deepEqual(read.chips, [{ kindName: 'in', target: { thing: id(1), text: 'Saltmarrow', shownAs: 'name' } }]);
     assert.deepEqual(new Set(read.pages[0].entries.map(card => card.entry)), new Set([id(2), id(3), id(4)]));

@@ -1,4 +1,4 @@
-import { MENTION_CHECKS_PER_REQUEST, TEXT_LINK_READS_PER_REQUEST } from '@st/worldbuilding/protocol';
+import { MENTION_CHECKS_PER_READ, TEXT_LINK_READS_PER_READ } from '@st/worldbuilding/protocol';
 
 import { TYPE } from '../library-codes.js';
 import { entryObject } from '../world-info-engine.js';
@@ -132,7 +132,7 @@ export class References {
      * @param {{ readsAtMost?: number }} [bound]
      * @returns {Promise<{ links: { entry: bigint, from: number, to: number }[], complete: boolean } | null>}
      */
-    async links(book, entry, text, { readsAtMost = TEXT_LINK_READS_PER_REQUEST } = {}) {
+    async links(book, entry, text, { readsAtMost = TEXT_LINK_READS_PER_READ } = {}) {
         /** @type {{ candidates: { entry: bigint, names: string[], caseSensitive: boolean | null, matchWholeWords: boolean | null }[], complete: boolean } | null} */
         const found = await this.store.worldRead('textLinkCandidates', { book, entry, text, readsAtMost });
         if (found === null) return null;
@@ -164,7 +164,7 @@ export class References {
      * @param {{ cursor?: string, limit?: number, withText?: boolean, checksAtMost?: number }} [page] withText: each reference also carries its source's text.
      * @returns {Promise<{ references: (Reference & { text?: string })[], unlinked: { entry: bigint, name: string }[], scanned: boolean, unresolved: string[], next: string | null, checked: number, lookedThrough: number, stoppedForBound: boolean } | null>}
      */
-    async to(book, entry, { cursor, limit = 100, withText = false, checksAtMost = MENTION_CHECKS_PER_REQUEST } = {}) {
+    async to(book, entry, { cursor, limit = 100, withText = false, checksAtMost = MENTION_CHECKS_PER_READ } = {}) {
         const { id: after, position: from, looked } = parseCursor(cursor);
         const owned = await this.owned(book);
         if (owned === null) return null;

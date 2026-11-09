@@ -17,7 +17,7 @@ export function bulkSelection(selection) {
  */
 export function worldbuildingBulkPorts({ libOf }) {
     return {
-        async readSelection(user, selection) {
+        async readSelection(user, selection, walkSteps) {
             const lib = await libOf(user);
             const book = BigInt(selection.book);
             if (selection.base === 'none') {
@@ -26,7 +26,7 @@ export function worldbuildingBulkPorts({ libOf }) {
                 const kept = new Set(live.map(String));
                 return { except: selection.except.filter(entry => kept.has(entry)), matching: null, matchingCapped: false };
             }
-            const { matching, capped } = await lib.books.selectionCount(book, bulkSelection(selection), SELECTION_COUNTED_UP_TO);
+            const { matching, capped } = await lib.books.selectionCount(book, bulkSelection(selection), SELECTION_COUNTED_UP_TO, walkSteps);
             return { except: selection.except, matching, matchingCapped: capped };
         },
         async startBulk(who, selection, action, loopCheckLimit) {

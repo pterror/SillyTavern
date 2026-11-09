@@ -10,6 +10,7 @@ import {
     LAST_CHANGE_VIEW,
     LOOPS_LEFT_BY_JOBS_VIEW,
     MAX_CARDS_PER_READ,
+    MENTION_CHECKS_PER_READ,
     OVERVIEW_VIEW,
     POINTING_AT_VIEW,
     READ_REFUSAL,
@@ -18,6 +19,9 @@ import {
     RESULTS_VIEW,
     PICKED_AT_MOST,
     SELECTION_VIEW,
+    SELECTION_WALK_STEPS,
+    TEXT_LINK_READS_PER_READ,
+    WALK_STEPS_PER_READ,
     WORLD_VIEW,
     WORLDS_VIEW,
     ENTRIES_NAMED_PER_LOOP,
@@ -66,6 +70,10 @@ export type Grouping = { book: string; groupBy: string | null };
 
 // The page at `from` (null: the first) and the pages after it, `pages` in all.
 export type PagesRun = { from: string | null; pages: number };
+
+// The entry view's reads: the run of mention pages, looking through at most `mentionChecks` entries in all, and the
+// names its text writes, looked for in at most `textLinkReads` reads.
+export type EntryReadAsked = { mentions: PagesRun; mentionChecks: number; textLinkReads: number };
 
 export type ShownOverview = Grouping & {
     firstRank: number;
@@ -130,6 +138,8 @@ export type ResultsQuery = {
     pageSize: number;
     from: string | null;
     pages: number;
+    // The keys a chip's region walk reads in all the run's pages.
+    walkSteps: number;
 };
 
 export type ResultsRead = {
@@ -178,7 +188,8 @@ export type Ports = {
     readResults(user: User, query: ResultsQuery): Promise<ResultsRead>;
     findEntries(user: User, query: { book: string; query: string; limit: number }): Promise<Found>;
     readLoopsLeftByJobs(user: User, book: string): Promise<UnreachedLoop[]>;
-    readSelection(user: User, selection: HeldSelection): Promise<SelectionRead | null>;
+    // `walkSteps`: the keys a chips-only count's walk reads.
+    readSelection(user: User, selection: HeldSelection, walkSteps: number): Promise<SelectionRead | null>;
     startBulk(
         who: Who,
         selection: HeldSelection,
@@ -205,7 +216,7 @@ export type Ports = {
         change: RelationChange,
         loopCheckLimit: number,
     ): Promise<RelationChangeAnswer>;
-    readEntry(user: User, book: string, entry: string, mentions: PagesRun): Promise<EntryRead>;
+    readEntry(user: User, book: string, entry: string, asked: EntryReadAsked): Promise<EntryRead>;
     readKeySharers(
         user: User,
         query: { book: string; entry: string; key: string; limit: number },
@@ -509,8 +520,12 @@ export function worldbuildingArea(ports: Ports) {
         const open = entryOf(context.session);
         if (!open) return NO_ENTRY;
         const { book, shown } = open;
-        const { generation, ...run } = shown.mentions;
-        const read = await ports.readEntry(context.user, book, shown.entry, run);
+        const { generation, ...mentions } = shown.mentions;
+        const read = await ports.readEntry(context.user, book, shown.entry, {
+            mentions,
+            mentionChecks: MENTION_CHECKS_PER_READ,
+            textLinkReads: TEXT_LINK_READS_PER_READ,
+        });
         if (read === null) return NO_ENTRY;
         if (read.deleted) return { book, entry: shown.entry, deleted: true, label: shown.label };
         const shownCursor = tagged(generation);
@@ -560,6 +575,7 @@ export function worldbuildingArea(ports: Ports) {
             chips: shown.chips.map(({ kind, target, depth }) => ({ kind, target, depth })),
             pageSize: shown.pageSize,
             ...shown.run,
+            walkSteps: WALK_STEPS_PER_READ,
         });
         const chips = shown.chips.map((chip, at) => {
             const target = read.chips[at]?.target ?? null;
@@ -606,7 +622,7 @@ export function worldbuildingArea(ports: Ports) {
     const readSelectionView = async (context: ViewContext): Promise<SelectionView> => {
         const selection = shownSelection(context.session);
         if (!selection) return NOTHING_SELECTED;
-        const read = await ports.readSelection(context.user, selection);
+        const read = await ports.readSelection(context.user, selection, SELECTION_WALK_STEPS);
         return read ? { book: selection.book, base: selection.base, ...read } : NOTHING_SELECTED;
     };
 

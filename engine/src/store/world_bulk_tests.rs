@@ -37,7 +37,7 @@ fn walk(
 ) -> (Vec<u64>, Option<String>) {
     let cache = StatsCache::default();
     let walked = store
-        .chat_read(|view| walk_selected(view, &cache, 1, selected, cursor.as_deref(), limit))
+        .chat_read(|view| walk_selected(view, &cache, 1, selected, cursor.as_deref(), limit, usize::MAX))
         .unwrap();
     (walked.entries, walked.next)
 }
@@ -67,6 +67,7 @@ fn chunk(store: &Store, selected: Selected, action: BulkAction) -> Js {
         except: HashSet::new(),
         cursor: None,
         limit: 100,
+        walk_steps: usize::MAX,
         action,
     };
     store
@@ -75,8 +76,12 @@ fn chunk(store: &Store, selected: Selected, action: BulkAction) -> Js {
 }
 
 fn count(store: &Store, selected: &Selected, except: &[u64], cap: usize) -> (f64, bool) {
+    count_walking(store, selected, except, cap, usize::MAX)
+}
+
+fn count_walking(store: &Store, selected: &Selected, except: &[u64], cap: usize, walk_steps: usize) -> (f64, bool) {
     let counted = store
-        .world_selection_count(1, selected, &except.iter().copied().collect(), cap)
+        .world_selection_count(1, selected, &except.iter().copied().collect(), cap, walk_steps)
         .unwrap();
     let Js::Num(matching) = field(&counted, "matching") else {
         panic!("no count")
@@ -302,6 +307,11 @@ fn a_count_leaves_out_the_exceptions_and_stops_at_its_cap() {
         count(&store, &chip, &[], 100),
         (5.0, false),
         "an entry in two places of the region counts once"
+    );
+    assert_eq!(
+        count_walking(&store, &chip, &[], 100, 2),
+        (2.0, true),
+        "a walk that spends its steps first stops below the cap, capped"
     );
     store.close();
 }

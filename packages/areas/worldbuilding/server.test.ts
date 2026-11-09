@@ -22,6 +22,18 @@ import {
     SELECTION_VIEW,
     BULK_JOBS_VIEW,
     PICKED_AT_MOST,
+    READS_PER_CARD,
+    READS_PER_LABEL,
+    READS_PER_LOOP_CHECK_VISIT,
+    READS_PER_MENTION_CHECK,
+    READS_PER_REQUEST,
+    READS_PER_SHARE,
+    READ_SHARES,
+    READS_OF_COUNTED_LABELS,
+    MENTION_CHECKS_PER_READ,
+    SELECTION_WALK_STEPS,
+    TEXT_LINK_READS_PER_READ,
+    WALK_STEPS_PER_READ,
     WORLD_VIEW,
     WORLDS_VIEW,
 } from './protocol.ts';
@@ -163,6 +175,53 @@ const source = (kind: string, entry: string, rank: number) => ({
     ...card(String(SOURCES_FROM + rank), rank),
     occurrence: `${kind}@${entry}/${SOURCES_FROM + rank}`,
 });
+
+const cardsOf = (layout: OverviewLayout) => cardsPerTopLevelEntry(layout.regionsByNestingLevel);
+const crossedBy = (step: OverviewStep) => ('by' in step ? Math.abs(step.by) + 1 : 1);
+const loopCheck = (limit: number) => limit * READS_PER_LOOP_CHECK_VISIT;
+
+// Counts the reads each bounded port is asked for, at the most its bounds let it read: cards, steps, loop checks, mention
+// checks, the names a text writes, walks and labels. What a world holds a count of (worlds, kinds, jobs, chips) isn't
+// bounded and isn't counted.
+type Costs = { [K in keyof Ports]?: (...args: Parameters<Ports[K]>) => number };
+
+const READS_ASKED: Costs = {
+    readWorld: () => READS_PER_LABEL,
+    readOverview: (_u, q) => (q.endRank - q.firstRank) * cardsOf(q.layout) * READS_PER_CARD,
+    stepOverview: (_u, q) => crossedBy(q) * cardsOf(q.layout) * READS_PER_CARD,
+    readPointingAt: (_u, q) => q.maxCards * READS_PER_CARD,
+    stepPointingAt: (_u, q) => crossedBy(q) * cardsOf(q.layout) * READS_PER_CARD,
+    labelEntries: (_u, _b, entries) => entries.length * READS_PER_LABEL,
+    readResults: (_u, q) => q.pages * q.pageSize * READS_PER_CARD + q.walkSteps,
+    findEntries: (_u, q) => q.limit * READS_PER_LABEL,
+    readSelection: (_u, selection, walkSteps) => selection.except.length + walkSteps,
+    // The first chunk walks in the engine's own share (WALK_STEPS_PER_READ) before its loop check.
+    startBulk: (_w, _s, _a, limit) => WALK_STEPS_PER_READ + loopCheck(limit),
+    changeRelation: (_w, _b, _c, limit) => loopCheck(limit),
+    readEntry: (_u, _b, _e, asked) => asked.textLinkReads + asked.mentionChecks * READS_PER_MENTION_CHECK,
+    readKeySharers: (_u, q) => q.limit * READS_PER_LABEL,
+    createEntry: (_w, _b, _c, limit) => loopCheck(limit),
+    // These run the engine's loop check at its own limit.
+    deleteEntry: () => loopCheck(LOOP_CHECK_VISITS_PER_WRITE),
+    restoreEntry: () => loopCheck(LOOP_CHECK_VISITS_PER_WRITE),
+    moveEntryToWorld: () => loopCheck(LOOP_CHECK_VISITS_PER_WRITE),
+};
+
+// Counts the reads each bounded port is asked for, at the most its bounds let it read: cards, steps, loop checks, mention
+// checks, the names a text writes, walks and labels. What a world holds a count of (worlds, kinds, jobs, chips) isn't
+// bounded and isn't counted.
+function countingReads(ports: Ports, reads: { asked: number }): Ports {
+    type Port = (...args: unknown[]) => Promise<unknown>;
+    const counted = Object.entries(ports as Record<string, Port>).map(([key, port]) => {
+        const cost = READS_ASKED[key as keyof Ports] as ((...args: unknown[]) => number) | undefined;
+        const countedPort: Port = (...args) => {
+            reads.asked += cost?.(...args) ?? 0;
+            return port(...args);
+        };
+        return [key, countedPort];
+    });
+    return Object.fromEntries(counted) as Ports;
+}
 
 function world(
     count: number,
@@ -491,7 +550,7 @@ function world(
             merged.mergingInto = into;
             return 'ok';
         },
-        readEntry: async (_u, book, entry, mentions) => {
+        readEntry: async (_u, book, entry, { mentions }) => {
             asked.entryReads.push({ book, entry, mentions });
             return book === '1' ? entryRead(entry, mentions) : null;
         },
@@ -562,7 +621,8 @@ function world(
             };
         },
     };
-    const area = worldbuildingArea(ports);
+    const reads = { asked: 0 };
+    const area = worldbuildingArea(countingReads(ports, reads));
     const context: ActionContext = { user, session: 's', chat: null, upload: null };
     const view = <T>(key: string) => area.views[key]!(context) as Promise<T>;
     const parsed = (type: string, payload: unknown) =>
@@ -572,7 +632,7 @@ function world(
     const other = (type: string, payload: unknown): Promise<ActionResult> =>
         area.actions[type]!({ ...context, session: 't' }, parsed(type, payload));
     const otherView = <T>(key: string) => area.views[key]!({ ...context, session: 't' }) as Promise<T>;
-    return { view, act, other, otherView, asked };
+    return { view, act, other, otherView, asked, reads, views: Object.keys(area.views) };
 }
 
 const WORLD_VIEWS = [
@@ -661,12 +721,12 @@ test('a step lands where the store says, keeps the range when that is in it and 
     await w.act('worldbuilding.stepOverview', { from: '105', by: 1 });
     let shown = await w.view<OverviewView>(OVERVIEW_VIEW);
     expect([shown.firstRank, shown.stepLanding]).toEqual([0, { occurrence: '106', topLevelRank: 6 }]);
-    await w.act('worldbuilding.stepOverview', { from: '106', by: 100 });
+    await w.act('worldbuilding.stepOverview', { from: '106', by: 30 });
     shown = await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect([shown.firstRank, shown.stepLanding]).toEqual([96, { occurrence: '206', topLevelRank: 106 }]);
-    await w.act('worldbuilding.stepOverview', { from: '206/3', to: 'parent' });
-    expect(w.asked.step.at(-1)).toEqual({ book: '1', groupBy: '1', from: '206/3', to: 'parent' });
-    expect((await w.view<OverviewView>(OVERVIEW_VIEW)).stepLanding).toEqual({ occurrence: '206', topLevelRank: 106 });
+    expect([shown.firstRank, shown.stepLanding]).toEqual([26, { occurrence: '136', topLevelRank: 36 }]);
+    await w.act('worldbuilding.stepOverview', { from: '136/3', to: 'parent' });
+    expect(w.asked.step.at(-1)).toEqual({ book: '1', groupBy: '1', from: '136/3', to: 'parent' });
+    expect((await w.view<OverviewView>(OVERVIEW_VIEW)).stepLanding).toEqual({ occurrence: '136', topLevelRank: 36 });
     expect(await w.act('worldbuilding.stepOverview', { from: '5000', by: 1 })).toEqual({
         refused: 'That is no longer shown.',
         changed: [OVERVIEW_VIEW],
@@ -1040,7 +1100,7 @@ test('a relation change names its world, passes the session and the loop check l
 test('showing a range or stepping that would draw more than one read may is refused', async () => {
     const w = world(100_000);
     const wide = { regionsByNestingLevel: [{ columns: 10, rows: 10 }], cardTextCharacters: 100 };
-    await w.act('worldbuilding.openOverview', { ...open, layout: wide, endRank: 10 });
+    await w.act('worldbuilding.openOverview', { ...open, layout: wide, endRank: 1 });
     const fits = Math.floor(MAX_CARDS_PER_READ / 101);
     expect(await w.act('worldbuilding.showRange', { firstRank: 0, endRank: fits + 1 })).toEqual({
         refused: READ_REFUSAL,
@@ -1534,14 +1594,14 @@ test('a step in a section lands where the store says and its range follows; one 
     });
     let section = pointingAtOpen(await w.view<PointingAtView>(POINTING_AT_VIEW)).sections[0];
     expect([section?.firstRank, section?.stepLanding]).toEqual([0, { occurrence: '1@7/1006', topLevelRank: 6 }]);
-    await w.act('worldbuilding.stepPointingAt', { kind: '1', from: '1@7/1006', by: 200 });
+    await w.act('worldbuilding.stepPointingAt', { kind: '1', from: '1@7/1006', by: 30 });
     section = pointingAtOpen(await w.view<PointingAtView>(POINTING_AT_VIEW)).sections[0];
     expect([section?.firstRank, section?.entries.length, section?.stepLanding]).toEqual([
-        200,
+        30,
         12,
-        { occurrence: '1@7/1206', topLevelRank: 206 },
+        { occurrence: '1@7/1036', topLevelRank: 36 },
     ]);
-    expect(w.asked.pointingAtSteps.at(-1)).toEqual({ book: '1', entry: '7', kind: '1', from: '1@7/1006', by: 200 });
+    expect(w.asked.pointingAtSteps.at(-1)).toEqual({ book: '1', entry: '7', kind: '1', from: '1@7/1006', by: 30 });
     await w.act('worldbuilding.stepPointingAt', { kind: '2', from: null, by: -1 });
     expect(pointingAtOpen(await w.view<PointingAtView>(POINTING_AT_VIEW)).sections[1]?.stepLanding).toEqual({
         occurrence: '2@7/1002',
@@ -1633,6 +1693,7 @@ test("the filter is the shown world's: setting it opens the results at their fir
         pageSize: 2,
         from: null,
         pages: 1,
+        walkSteps: WALK_STEPS_PER_READ,
     });
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.setFilter', filter)).toEqual({
@@ -1684,7 +1745,7 @@ test('the session holds the run of pages the page asks for, read from its first 
 });
 
 test("a run past one read's budget is refused", async () => {
-    const half = MAX_CARDS_PER_READ / 2;
+    const half = Math.floor(MAX_CARDS_PER_READ / 2);
     const w = world(3, { results: 2 * MAX_CARDS_PER_READ });
     await w.act('worldbuilding.openOverview', open);
     await w.act('worldbuilding.setFilter', { ...filter, pageSize: half });
@@ -1983,4 +2044,100 @@ test('the selection schemas take entries by id, at most one read of them at once
     expect(bulk({ alsoPutIn: { kind: '1', target: '8' } })).toBe(true);
     expect(bulk({ moveTo: { kind: '0', target: '8' } })).toBe(false);
     expect(bulk({ delete: true, moveTo: { kind: '1', target: '8' } })).toBe(false);
+});
+
+// A tab at the most every view can read: the widest overview, a results run of one read's cards, a selection of every
+// match but one read's picked entries, an entry open with the widest sections and the most mention pages, a key's
+// sharers and a target search shown.
+async function atTheMost() {
+    const w = world(3, { results: 10 * MAX_CARDS_PER_READ });
+    const widest = Math.floor(MAX_CARDS_PER_READ / cardsPerTopLevelEntry(LAYOUT.regionsByNestingLevel));
+    const shownAtTheMost = { endRank: widest, layout: LAYOUT };
+    const picked = Array.from({ length: PICKED_AT_MOST }, (_, at) => String(1000 + at));
+    for (const [type, payload] of [
+        ['worldbuilding.openOverview', { ...open, ...shownAtTheMost, around: '7' }],
+        ['worldbuilding.setFilter', { ...filter, pageSize: MAX_CARDS_PER_READ }],
+        ['worldbuilding.selectAllMatching', { book: '1' }],
+        ['worldbuilding.select', { book: '1', entries: picked, selected: false }],
+        ['worldbuilding.openEntry', { entry: '7', pointingAt: shownAtTheMost }],
+        ['worldbuilding.showMentions', { from: null, pages: MENTION_PAGES_AT_MOST }],
+        ['worldbuilding.showKeySharers', { book: '1', entry: '7', key: 'Ilse' }],
+        ['worldbuilding.findEntries', { book: '1', query: 'lamp' }],
+    ] as const) {
+        expect(await w.act(type, payload)).not.toHaveProperty('refused');
+    }
+    return { w, widest, shownAtTheMost };
+}
+
+// An answer holds at most every view of the area, so an action's reads and every view's are what one request can read.
+async function readsAnswering(w: Awaited<ReturnType<typeof atTheMost>>['w'], action: () => Promise<unknown>) {
+    w.reads.asked = 0;
+    await action();
+    for (const key of w.views) await w.view(key);
+    return w.reads.asked;
+}
+
+test("every action's answer, with every view read at the most, reads within one request's budget", async () => {
+    const most = LOOP_CHECK_VISITS_PER_WRITE;
+    const relation = { book: '1', entry: '7', kind: '1', target: '8', loopCheckLimit: most };
+    const answers: [string, (shown: Awaited<ReturnType<typeof atTheMost>>) => unknown][] = [
+        ['worldbuilding.openEntry', ({ shownAtTheMost }) => ({ entry: '8', pointingAt: shownAtTheMost })],
+        ['worldbuilding.closeEntry', () => ({})],
+        ['worldbuilding.showMentions', () => ({ from: null, pages: MENTION_PAGES_AT_MOST })],
+        ['worldbuilding.showPointingAtRange', ({ widest }) => ({ kind: '1', firstRank: 0, endRank: widest })],
+        ['worldbuilding.stepPointingAt', ({ widest }) => ({ kind: '1', from: null, by: widest - 1 })],
+        ['worldbuilding.openOverview', ({ shownAtTheMost }) => ({ ...open, ...shownAtTheMost, around: '7' })],
+        ['worldbuilding.showRange', ({ widest }) => ({ firstRank: 0, endRank: widest })],
+        ['worldbuilding.stepOverview', ({ widest }) => ({ from: null, by: widest - 1 })],
+        ['worldbuilding.addRelation', () => ({ ...relation, after: null, before: null, weak: false })],
+        ['worldbuilding.moveRelation', () => ({ ...relation, newTarget: '7', after: null, before: null })],
+        ['worldbuilding.removeRelation', () => relation],
+        ['worldbuilding.setRelationWeak', () => ({ ...relation, weak: true })],
+        ['worldbuilding.setEntryText', () => ({ book: '1', entry: '7', text: 'Ilse keeps the lamp.' })],
+        ['worldbuilding.setPlacement', () => ({ book: '1', entry: '7', fields: { order: 5 } })],
+        [
+            'worldbuilding.createEntry',
+            ({ shownAtTheMost }) => ({
+                book: '1',
+                after: '7',
+                name: 'Varro',
+                relation: { kind: '1', target: '8' },
+                open: { pointingAt: shownAtTheMost },
+                loopCheckLimit: most,
+            }),
+        ],
+        ['worldbuilding.deleteEntry', () => ({ book: '1', entry: '8' })],
+        ['worldbuilding.restoreEntry', () => ({ book: '1', entry: '8' })],
+        ['worldbuilding.moveEntryToWorld', () => ({ book: '1', entry: '7', toBook: '2' })],
+        ['worldbuilding.renameRelationKind', () => ({ book: '1', kind: '1', name: 'within' })],
+        ['worldbuilding.mergeRelationKind', () => ({ book: '1', kind: '1', into: '1' })],
+        ['worldbuilding.setFilter', () => ({ ...filter, pageSize: MAX_CARDS_PER_READ })],
+        ['worldbuilding.showResults', () => ({ from: null, pages: 1 })],
+        ['worldbuilding.findEntries', () => ({ book: '1', query: 'lamp' })],
+        ['worldbuilding.selectAllMatching', () => ({ book: '1' })],
+        ['worldbuilding.bulk', () => ({ book: '1', action: { delete: true }, loopCheckLimit: most })],
+        ['worldbuilding.markTitleKeysAsNames', () => ({ book: '1' })],
+        ['worldbuilding.deleteWorld', () => ({ book: '1' })],
+    ];
+    for (const [type, payload] of answers) {
+        const shown = await atTheMost();
+        const reads = await readsAnswering(shown.w, () => shown.w.act(type, payload(shown)));
+        expect({ type, withinTheBudget: reads <= READS_PER_REQUEST }).toEqual({ type, withinTheBudget: true });
+    }
+});
+
+test("a push of every view at the most reads within one request's budget, with a job step's loop check and walk", async () => {
+    const { w } = await atTheMost();
+    const reads = await readsAnswering(w, async () => {});
+    const jobStep = WALK_STEPS_PER_READ + LOOP_CHECK_VISITS_PER_WRITE * READS_PER_LOOP_CHECK_VISIT;
+    expect(reads + jobStep).toBeLessThanOrEqual(READS_PER_REQUEST);
+});
+
+test('the shares of one request sum to at most its budget', () => {
+    expect(READ_SHARES * READS_PER_SHARE + READS_OF_COUNTED_LABELS).toBeLessThanOrEqual(READS_PER_REQUEST);
+    expect(MAX_CARDS_PER_READ * READS_PER_CARD).toBeLessThanOrEqual(READS_PER_SHARE);
+    expect(LOOP_CHECK_VISITS_PER_WRITE * READS_PER_LOOP_CHECK_VISIT).toBeLessThanOrEqual(READS_PER_SHARE);
+    expect(MENTION_CHECKS_PER_READ * READS_PER_MENTION_CHECK).toBeLessThanOrEqual(READS_PER_SHARE);
+    expect(PICKED_AT_MOST + SELECTION_WALK_STEPS).toBeLessThanOrEqual(READS_PER_SHARE);
+    expect(Math.max(TEXT_LINK_READS_PER_READ, WALK_STEPS_PER_READ)).toBeLessThanOrEqual(READS_PER_SHARE);
 });

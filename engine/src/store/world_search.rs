@@ -13,28 +13,19 @@ use crate::search::Scope;
 use crate::search::query::{self, After, CheckFn, Clause, DocCheck, Filter, Limits, Order, StatsCache, TagNames, Tighten};
 
 pub const CHIP_WALK_VISITS: usize = 12_000;
-pub const WALK_STEPS_PER_PAGE: usize = 12_000;
 const MEMO_HELD: usize = 1 << 20;
 
 #[cfg(test)]
 thread_local! {
-    pub(super) static TEST_BOUNDS: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
+    pub(super) static TEST_CHIP_WALK_VISITS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 fn chip_walk_visits() -> usize {
     #[cfg(test)]
-    if let Some((visits, _)) = TEST_BOUNDS.with(std::cell::Cell::get) {
+    if let Some(visits) = TEST_CHIP_WALK_VISITS.with(std::cell::Cell::get) {
         return visits;
     }
     CHIP_WALK_VISITS
-}
-
-fn walk_steps_per_page() -> usize {
-    #[cfg(test)]
-    if let Some((_, steps)) = TEST_BOUNDS.with(std::cell::Cell::get) {
-        return steps;
-    }
-    WALK_STEPS_PER_PAGE
 }
 const SCANNED_AT_ONCE: usize = 64;
 
@@ -62,6 +53,9 @@ pub struct ResultsRead {
     pub from: Option<String>,
     pub pages: usize,
     pub limit: usize,
+    /// The keys a region's walk reads (the results with no words) in all the run's pages: a page that reaches it ends
+    /// there with a cursor that goes on, and the run ends at it.
+    pub walk_steps: usize,
 }
 
 fn refused(why: &str) -> StoreError {
@@ -299,6 +293,7 @@ fn sources_page(
     others: &mut Chips,
     cursor: Option<&str>,
     limit: usize,
+    steps_left: &mut usize,
 ) -> Result<Page, StoreError> {
     let mut after = match cursor {
         None => None,
@@ -312,20 +307,19 @@ fn sources_page(
     let prefix = relations::relations_of_kind_targeting_prefix(book, lead.kind, lead.target);
     let end = key::prefix_end(&prefix);
     let mut entries = Vec::new();
-    let mut steps = 0;
     loop {
         let found = view.scan(&after_key(&prefix, after.as_deref()), &end, SCANNED_AT_ONCE)?;
         if found.is_empty() {
             return Ok(Page { entries, next: None });
         }
         for (stored_key, _) in found {
-            if entries.len() == limit || steps == walk_steps_per_page() {
+            if entries.len() == limit || *steps_left == 0 {
                 return Ok(Page {
                     entries,
                     next: after.map(|after| format!("d{}", hex(&after))),
                 });
             }
-            steps += 1;
+            *steps_left -= 1;
             let (_, source) = relations::position_and_source_of_relation_of_kind_targeting(&prefix, &stored_key)?;
             if source != lead.target && others.pass(view, source)? {
                 entries.push((source, format!("{}/{source}", lead.target)));
@@ -371,6 +365,7 @@ fn region_page(
     others: &mut Chips,
     cursor: Option<&str>,
     limit: usize,
+    steps_left: &mut usize,
 ) -> Result<Page, StoreError> {
     let mut frames = match cursor {
         None => vec![Frame {
@@ -382,18 +377,17 @@ fn region_page(
         }
     };
     let mut entries = Vec::new();
-    let mut steps = 0;
     loop {
         let Some(frame) = frames.last() else {
             return Ok(Page { entries, next: None });
         };
-        if steps == walk_steps_per_page() {
+        if *steps_left == 0 {
             return Ok(Page {
                 entries,
                 next: Some(walk_cursor(&frames)),
             });
         }
-        steps += 1;
+        *steps_left -= 1;
         let prefix = relations::relations_of_kind_targeting_prefix(book, lead.kind, frame.node);
         let Some((after, source)) = source_after(view, &prefix, frame.after.as_deref())? else {
             frames.pop();
@@ -426,6 +420,7 @@ fn page_of(
     read: &ResultsRead,
     cursor: Option<&str>,
     tighten: &mut Vec<Tighten>,
+    steps_left: &mut usize,
 ) -> Result<Page, StoreError> {
     let scope = Scope::book(read.book);
     if !read.clauses.is_empty() {
@@ -436,7 +431,7 @@ fn page_of(
         };
         return relevance_page(view, cache, scope, &read.clauses, filters, cursor, read.limit, tighten);
     }
-    chip_led_page(view, read.book, &read.chips, cursor, read.limit)
+    chip_led_page(view, read.book, &read.chips, cursor, read.limit, steps_left)
 }
 
 fn chip_led_page(
@@ -445,6 +440,7 @@ fn chip_led_page(
     chips: &[Chip],
     cursor: Option<&str>,
     limit: usize,
+    steps_left: &mut usize,
 ) -> Result<Page, StoreError> {
     let lead_at = chips
         .iter()
@@ -465,8 +461,8 @@ fn chip_led_page(
             .collect(),
     );
     match lead.depth {
-        Depth::Directly => sources_page(view, book, lead, &mut others, cursor, limit),
-        Depth::AnyDepth => region_page(view, book, lead, &mut others, cursor, limit),
+        Depth::Directly => sources_page(view, book, lead, &mut others, cursor, limit, steps_left),
+        Depth::AnyDepth => region_page(view, book, lead, &mut others, cursor, limit, steps_left),
     }
 }
 
@@ -592,7 +588,7 @@ fn matches_page(
 }
 
 // Only the chips-only walk is in an order writes can change: a reorder in the leading chip's region can move an entry
-// across its cursor.
+// across its cursor. That walk reads at most `walk_steps` keys of the region, then ends with a cursor that goes on.
 pub fn walk_selected(
     view: &View,
     cache: &StatsCache,
@@ -600,6 +596,7 @@ pub fn walk_selected(
     selected: &Selected,
     cursor: Option<&str>,
     limit: usize,
+    mut walk_steps: usize,
 ) -> Result<Walked, StoreError> {
     match selected {
         Selected::Entries(listed) => listed_page(view, book, listed, cursor, limit),
@@ -608,7 +605,7 @@ pub fn walk_selected(
             matches_page(view, cache, book, clauses, chips, cursor, limit)
         }
         Selected::Filter { chips, .. } => {
-            let page = chip_led_page(view, book, chips, cursor, limit)?;
+            let page = chip_led_page(view, book, chips, cursor, limit, &mut walk_steps)?;
             Ok(Walked {
                 entries: page.entries.into_iter().map(|(entity, _)| entity).collect(),
                 next: page.next,
@@ -642,8 +639,9 @@ pub fn read_results(
     }
     let mut pages = Vec::new();
     let mut cursor = read.from.clone();
+    let mut steps_left = read.walk_steps;
     while pages.len() < read.pages {
-        let page = match page_of(view, cache, read, cursor.as_deref(), &mut tighten) {
+        let page = match page_of(view, cache, read, cursor.as_deref(), &mut tighten, &mut steps_left) {
             Err(StoreError::Refused(_)) => Page {
                 entries: Vec::new(),
                 next: None,
@@ -668,8 +666,8 @@ pub fn read_results(
             ("next", page.next.clone().map_or(Js::Null, |next| Js::Text(next.into_bytes()))),
         ]));
         match page.next {
-            Some(next) => cursor = Some(next),
-            None => break,
+            Some(next) if steps_left > 0 => cursor = Some(next),
+            _ => break,
         }
     }
     Ok((

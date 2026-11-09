@@ -3,7 +3,7 @@ import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from '.
 import { LINKS, storedLinks } from './character-links.js';
 import { TYPE } from './library-codes.js';
 import { bookKey } from './world-info-keys.js';
-import { LOOP_CHECK_VISITS_PER_WRITE } from '@st/worldbuilding/protocol';
+import { LOOP_CHECK_VISITS_PER_WRITE, WALK_STEPS_PER_READ } from '@st/worldbuilding/protocol';
 import { WorldbuildingJobs } from './world-info/worldbuilding-jobs.js';
 import { filterClauses } from './world-info/worldbuilding-search.js';
 
@@ -2032,14 +2032,15 @@ export class WorldInfoEngine {
     }
 
     /**
-     * How many entries `selection` selects, counted up to `cap`.
+     * How many entries `selection` selects, counted up to `cap`; a chips-only walk reads at most `walkSteps` keys.
      * @param {bigint} book
      * @param {{ selected: BulkSelected, except: string[] }} selection
      * @param {number} cap
+     * @param {number} walkSteps
      * @returns {Promise<{ matching: number, capped: boolean }>}
      */
-    selectionCount(book, { selected, except }, cap) {
-        return this.store.worldRead('worldbuildingSelectionCount', { book, ...selectedArgs(selected, except), cap });
+    selectionCount(book, { selected, except }, cap, walkSteps) {
+        return this.store.worldRead('worldbuildingSelectionCount', { book, ...selectedArgs(selected, except), cap, walkSteps });
     }
 
     /**
@@ -2062,6 +2063,7 @@ export class WorldInfoEngine {
             ...selectedArgs(state.selected, state.except),
             cursor: at.cursor,
             limit: RELATION_CHANGES_PER_STEP,
+            walkSteps: WALK_STEPS_PER_READ,
             action: verb,
             ...(relation ? { kind: Number(relation.kind), target: BigInt(relation.target) } : {}),
         });

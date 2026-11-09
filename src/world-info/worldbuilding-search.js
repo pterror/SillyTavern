@@ -19,7 +19,7 @@ export function worldbuildingSearchPorts({ libOf }) {
             const lib = await libOf(user);
             return lib.store.worldRead('worldbuildingLabels', { book: BigInt(book), entities: entries.map(entry => BigInt(entry)) });
         },
-        async readResults(user, { book, groupBy, layout, query, chips, pageSize, from, pages }) {
+        async readResults(user, { book, groupBy, layout, query, chips, pageSize, from, pages, walkSteps }) {
             const lib = await libOf(user);
             return lib.store.worldRead('worldbuildingResults', {
                 book: BigInt(book),
@@ -30,6 +30,7 @@ export function worldbuildingSearchPorts({ libOf }) {
                 from,
                 pages,
                 limit: pageSize,
+                walkSteps,
             });
         },
         async findEntries(user, { book, query, limit }) {
