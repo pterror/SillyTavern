@@ -1,4 +1,5 @@
-import type { Accessor } from 'solid-js';
+import { createSignal, untrack } from 'solid-js';
+import type { Accessor, Signal } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type { ActionAnswer, ChatOwner, ViewFrame, ViewPush } from '@st/protocol';
 
@@ -50,15 +51,23 @@ async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<stri
 export function createClient({ headers }: ClientOptions): Client {
     const views = new Map<
         string,
-        { version: number; set: (value: unknown) => void; patch: (change: unknown) => void; get: Accessor<unknown> }
+        { set: (value: unknown) => void; patch: (change: unknown) => void; get: Accessor<unknown> }
     >();
+    const versions = new Map<string, Signal<number>>();
+    const versionOf = (key: string): Signal<number> => {
+        let found = versions.get(key);
+        if (!found) {
+            found = createSignal(0);
+            versions.set(key, found);
+        }
+        return found;
+    };
 
     const entry = (key: string) => {
         let found = views.get(key);
         if (!found) {
             const [store, setStore] = createStore<{ value: unknown }>({ value: undefined });
             found = {
-                version: 0,
                 get: () => store.value,
                 set: (value) => setStore('value', reconcile(value, { key: 'id', merge: true })),
                 patch: (change) =>
@@ -76,10 +85,11 @@ export function createClient({ headers }: ClientOptions): Client {
     const apply = (frames: ViewFrame[]) => {
         for (const frame of frames) {
             const target = entry(frame.key);
-            if (frame.version <= target.version) continue;
-            target.version = frame.version;
+            const [version, setVersion] = versionOf(frame.key);
+            if (frame.version <= untrack(version)) continue;
             if ('patch' in frame) target.patch(frame.patch);
             else target.set(frame.value);
+            setVersion(frame.version);
         }
     };
 
@@ -131,6 +141,9 @@ export function createClient({ headers }: ClientOptions): Client {
         }
         const lines = readLines(response.body);
         const first = await lines.next();
+        if (first.done === true) return refused;
+        const answer = JSON.parse(first.value) as unknown;
+        if (isRecord(answer) && Array.isArray(answer['views'])) later(answer['views'] as ViewFrame[]);
         void (async () => {
             for await (const line of { [Symbol.asyncIterator]: () => lines }) {
                 const part = JSON.parse(line) as { views?: ViewFrame[] };
@@ -139,7 +152,7 @@ export function createClient({ headers }: ClientOptions): Client {
         })().catch(() => {
             // The answer was cut off: the views keep what came; the stream's next push or a reread brings the rest.
         });
-        return first.done === true ? refused : (JSON.parse(first.value) as unknown);
+        return answer;
     };
 
     const open = async (key: string) => {
@@ -167,11 +180,11 @@ export function createClient({ headers }: ClientOptions): Client {
             apply(Array.isArray(push.views) ? push.views : []);
         },
         async reconnected(chat) {
-            for (const target of views.values()) target.version = 0;
+            for (const [, setVersion] of versions.values()) setVersion(0);
             apply((await post(chat ? 'chat.show' : 'chat.close', chat ?? {})).views);
             await Promise.all([...views.keys()].map((key) => open(key)));
         },
         reread: (key) => open(key),
-        version: (key) => views.get(key)?.version ?? 0,
+        version: (key) => versionOf(key)[0](),
     };
 }

@@ -14,6 +14,10 @@ let release = () => {};
 let slowRelease = () => {};
 let slowHeld = Promise.resolve();
 let held = Promise.resolve();
+let lateReads = 0;
+let lateRelease = () => {};
+let lateHeld = Promise.resolve();
+const settled = () => new Promise((resolve) => setTimeout(resolve, 20));
 function hold() {
     held = new Promise((resolve) => {
         release = () => resolve();
@@ -27,6 +31,8 @@ const area = defineArea({
         'parts.touch': v.object({}),
         'both.touch': v.object({}),
         'count.show': v.object({}),
+        'own.touch': v.object({}),
+        'own.unchanged': v.object({}),
     },
     views: {
         count: async ({ user, chat }) => ({ count: counts.get(user.handle) ?? 0, chat: chat?.tree ?? null }),
@@ -35,6 +41,11 @@ const area = defineArea({
             await held;
             yield { part: 2 };
             yield patch({ more: 3 });
+        },
+        late: async () => {
+            const read = ++lateReads;
+            if (read === 1) await lateHeld;
+            return { read };
         },
         slow: async function* () {
             yield { slow: 1 };
@@ -51,6 +62,8 @@ const area = defineArea({
         'parts.touch': async () => ({ changed: ['parts'] }),
         'both.touch': async () => ({ changed: ['slow', 'parts'] }),
         'count.show': async () => ({ changed: [], opensViews: ['count'] }),
+        'own.touch': async () => ({ changed: ['late', 'count'], own: ['count'] }),
+        'own.unchanged': async () => ({ changed: ['count'], own: ['late'] }),
         'count.fail': async ({ user }) => {
             counts.set(user.handle, (counts.get(user.handle) ?? 0) + 100);
             throw new Error('failed after writing');
@@ -100,6 +113,7 @@ test("opening a view answers it; an action answers the views it changed to its o
 
     const added = await send(sessions.a1, 'count.add', { by: 2 });
     expect(added.answer).toMatchObject({ ok: true, views: [{ key: 'count', value: { count: 2 } }] });
+    await settled();
     expect(pushes.a1).toEqual([]);
     expect(pushes.a2).toMatchObject([{ type: 'views', views: [{ key: 'count', value: { count: 2 } }] }]);
     expect(pushes.b1).toEqual([]);
@@ -113,6 +127,7 @@ test('an action that opens a view answers it in the same request, and the view i
     const shown = await send(fresh, 'count.show', {}, 'bob');
     expect(shown.answer).toMatchObject({ ok: true, views: [{ key: 'count', value: { count: 1 } }] });
     await send(sessions.b1, 'count.add', { by: 1 }, 'bob');
+    await settled();
     expect(heard).toMatchObject([{ type: 'views', views: [{ key: 'count', value: { count: 2 } }] }]);
     stop();
     pushes.b1.length = 0;
@@ -213,14 +228,70 @@ test('a malformed payload is refused, not a crash', async () => {
     expect(await response.json()).toMatchObject({ ok: false, views: [] });
 });
 
-test("an action that fails partway answers its area's views as they are now", async () => {
+test("an action that fails partway answers its failure, then its area's views as they are now, each a part of its own", async () => {
     await send(sessions.a1, 'view.open', { key: 'count' });
-    const failed = await send(sessions.a1, 'count.fail', {});
-    expect(failed.status).toBe(500);
-    expect(failed.answer).toMatchObject({
-        ok: false,
-        views: [{ key: 'count', value: { count: counts.get('alice') } }],
+    const response = await fetch(`${origin()}/api/ui/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-ST-Session': sessions.a1, 'X-User': 'alice' },
+        body: JSON.stringify({ type: 'count.fail', payload: {} }),
     });
+    expect(response.status).toBe(500);
+    const [first, ...later] = (await response.text())
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { views: { key: string; value: unknown }[] });
+    expect(first).toEqual({ ok: false, error: 'internal', views: [] });
+    expect(later.flatMap((line) => line.views)).toContainEqual(
+        expect.objectContaining({ key: 'count', value: expect.objectContaining({ count: counts.get('alice') }) }),
+    );
+});
+
+test("an action's own views are its answer; the rest follow on the same answer, each a later part, and only then are the user's other tabs pushed", async () => {
+    for (const session of [sessions.a1, sessions.a2]) {
+        await send(session, 'view.open', { key: 'count' });
+        await send(session, 'view.open', { key: 'late' });
+    }
+    lateReads = 0;
+    lateHeld = new Promise<void>((resolve) => {
+        lateRelease = resolve;
+    });
+    pushes.a2.length = 0;
+    const response = await fetch(`${origin()}/api/ui/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-ST-Session': sessions.a1, 'X-User': 'alice' },
+        body: JSON.stringify({ type: 'own.touch', payload: {} }),
+    });
+    expect(response.headers.get('Content-Type')).toContain('application/x-ndjson');
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    while (!text.includes('\n')) text += decoder.decode((await reader.read()).value, { stream: true });
+    const first = JSON.parse(text.slice(0, text.indexOf('\n'))) as ActionAnswer;
+    expect(first.views.map((view) => view.key)).toEqual(['count']);
+    await settled();
+    expect(pushes.a2).toEqual([]);
+
+    const newer = await send(sessions.a1, 'view.open', { key: 'late' });
+    expect(newer.answer.views[0]).toMatchObject({ key: 'late', value: { read: 2 } });
+    lateRelease();
+    for (let next = await reader.read(); !next.done; next = await reader.read())
+        text += decoder.decode(next.value, { stream: true });
+    const lines = text
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { views: { key: string; version: number; value: unknown }[] });
+    expect(lines).toHaveLength(2);
+    const late = lines[1]!.views[0]!;
+    expect(late).toMatchObject({ key: 'late', value: { read: 1 } });
+    expect(late.version).toBeGreaterThan(first.views[0]!.version);
+    expect(late.version).toBeLessThan(newer.answer.views[0]!.version);
+
+    await settled();
+    expect(pushes.a2.map((push) => push.views.map((view) => view.key))).toEqual([['count'], ['late']]);
+});
+
+test('an action calling its own a view it did not change fails', async () => {
+    expect((await send(sessions.a1, 'own.unchanged', {})).status).toBe(500);
 });
 
 test('a view read in parts: its first part is answered at once, the rest follow on the same answer (NDJSON), each newer; other tabs get each by push', async () => {

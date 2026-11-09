@@ -9,7 +9,9 @@ how new code is shaped.
 - **The server owns state; the page draws it.** The page keeps no copy of anything it could compute or that the
   server stores. It holds the latest view the server sent for each thing it shows, and nothing else.
 - **The page sends actions** (`{ type, payload }`): what the user did, never the state it leads to. The answer to
-  an action carries the new view of everything the action changed that this tab shows.
+  an action carries the new view of everything the action changed that this tab shows: first the views its result
+  names its own (`own`, what shows the action done), then each other one as a later part of the same answer, read
+  after the first is sent; the user's other tabs are pushed after that, a view at a time.
 - **Showing something is an action too** (`view.open`): its answer is the view. A view changed by something else
   (another tab, another action of this tab, a write made through old code) is pushed to the tabs showing it.
 - **Every view has a version.** The page keeps a view only when it's newer than the one it has, so an answer and a

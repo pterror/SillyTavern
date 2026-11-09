@@ -15,9 +15,11 @@ export type Upload = { path: string; name: string; type: string; size: number };
 
 export type ActionContext = ViewContext & { upload: Upload | null };
 
+// `own`: the views of `changed` and `opensViews` that show what the action did, answered first; the rest follow in the
+// same answer, each a later part of its own, in the order listed. Without it every view is the action's own.
 export type ActionResult =
-    | { changed: string[]; opensViews?: string[]; answer?: unknown }
-    | { refused: string; changed?: string[]; answer?: unknown };
+    | { changed: string[]; opensViews?: string[]; own?: string[]; answer?: unknown }
+    | { refused: string; changed?: string[]; own?: string[]; answer?: unknown };
 
 type Handlers<S extends ActionSchemas> = {
     [T in keyof S]: (context: ActionContext, payload: v.InferOutput<S[T]>) => Promise<ActionResult>;
@@ -171,45 +173,75 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
         }
     };
 
-    const spread = async (user: User, keys: string[], actor: Tab | null): Promise<Read> => {
-        let answer: Read = { frames: [], later: [] };
-        for (const tab of tabs.values()) {
-            if (tab.user.directories.root !== user.directories.root) continue;
-            const read = await framesOf(tab, keys);
-            if (tab === actor) answer = read;
-            else push(tab, read);
+    const pushEach = async (tab: Tab, keys: Iterable<string>) => {
+        for (const key of new Set(keys)) {
+            if (tab.streams.size === 0) return;
+            if (tab.open.has(key)) push(tab, await frame(tab, key));
         }
-        if (actor && !tabs.has(actor.session)) answer = await framesOf(actor, keys);
-        return answer;
+    };
+
+    const spread = async (user: User, keys: string[], actor: Tab | null) => {
+        for (const tab of [...tabs.values()]) {
+            if (tab === actor || tab.user.directories.root !== user.directories.root) continue;
+            await pushEach(tab, keys);
+        }
     };
 
     const pushTo = async (user: User, session: string, keys: Iterable<string>) => {
         const tab = tabs.get(session);
         if (!tab || tab.user.directories.root !== user.directories.root) return;
-        push(tab, await framesOf(tab, keys));
+        await pushEach(tab, keys);
     };
 
     const act = async (request: Request, response: Response) => {
-        const answer = async (result: ActionAnswer, status = 200, later: AsyncIterable<ViewFrame>[] = []) => {
-            if (later.length === 0) {
+        const answer = async (
+            result: ActionAnswer,
+            status = 200,
+            later: AsyncIterable<ViewFrame>[] = [],
+            rest: { tab: Tab; keys: string[]; pushed: string[] } | null = null,
+        ) => {
+            const after = rest ? rest.keys.filter((key) => rest.tab.open.has(key)) : [];
+            const others = async () => {
+                if (!rest) return;
+                try {
+                    await spread(rest.tab.user, rest.pushed, rest.tab);
+                } catch (error) {
+                    console.error("[ui] the user's other tabs not pushed:", error);
+                }
+            };
+            if (later.length === 0 && after.length === 0) {
                 response.status(status).send(result);
+                await others();
                 return;
             }
             response.status(status).type('application/x-ndjson');
             response.write(`${JSON.stringify(result)}\n`);
-            await Promise.all(
-                later.map(async (parts) => {
-                    try {
-                        for await (const part of parts) {
-                            if (response.destroyed) break;
-                            response.write(`${JSON.stringify({ views: [part] })}\n`);
-                        }
-                    } catch (error) {
-                        console.error("[ui] a view's later part not read:", error);
+            const drain = async (parts: AsyncIterable<ViewFrame>) => {
+                try {
+                    for await (const part of parts) {
+                        if (response.destroyed) break;
+                        response.write(`${JSON.stringify({ views: [part] })}\n`);
                     }
-                }),
-            );
+                } catch (error) {
+                    console.error("[ui] a view's later part not read:", error);
+                }
+            };
+            const draining = later.map(drain);
+            for (const key of after) {
+                if (response.destroyed) break;
+                if (rest === null || !rest.tab.open.has(key)) continue;
+                try {
+                    const read = await frame(rest.tab, key);
+                    response.write(`${JSON.stringify({ views: read.frames })}\n`);
+                    draining.push(...read.later.map(drain));
+                } catch (error) {
+                    console.error(`[ui] the view ${key} not read after the answer:`, error);
+                }
+            }
+            const pushing = others();
+            await Promise.all(draining);
             response.end();
+            await pushing;
         };
         const file = (request as Request & { file?: MulterFile }).file;
         const upload = file ? { path: file.path, name: file.originalname, type: file.mimetype, size: file.size } : null;
@@ -279,31 +311,34 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
                 if (!views.has(key)) throw new Error(`The action ${type} opens no view ${key}`);
                 tab.open.add(key);
             }
-            const changed = await spread(user, [...(result.changed ?? []), ...opensViews], tab);
+            const changed = [...new Set([...(result.changed ?? []), ...opensViews])];
+            const own = result.own ?? changed;
+            for (const key of own) {
+                if (!changed.includes(key))
+                    throw new Error(`The action ${type} calls ${key} its own but didn't change it`);
+            }
+            const first = await framesOf(tab, own);
+            const rest = changed.filter((key) => !own.includes(key));
             await answer(
                 'refused' in result
                     ? {
                           ok: false,
                           error: result.refused,
-                          views: changed.frames,
+                          views: first.frames,
                           ...(result.answer === undefined ? {} : { answer: result.answer }),
                       }
-                    : { ok: true, views: changed.frames, ...('answer' in result ? { answer: result.answer } : {}) },
+                    : { ok: true, views: first.frames, ...('answer' in result ? { answer: result.answer } : {}) },
                 200,
-                changed.later,
+                first.later,
+                { tab, keys: rest, pushed: [...own, ...rest] },
             );
             return;
         } catch (error) {
             console.error(`[ui] ${type} failed:`, error);
-            let views: ViewFrame[] = [];
-            if (tab && mayHaveChanged.length > 0) {
-                try {
-                    views = (await spread(tab.user, mayHaveChanged, tab)).frames;
-                } catch (again) {
-                    console.error(`[ui] after ${type} failed, its views couldn't be read:`, again);
-                }
-            }
-            if (!response.headersSent) await answer({ ok: false, error: 'internal', views }, 500);
+            if (response.headersSent) return;
+            const rest =
+                tab && mayHaveChanged.length > 0 ? { tab, keys: mayHaveChanged, pushed: mayHaveChanged } : null;
+            await answer({ ok: false, error: 'internal', views: [] }, 500, [], rest);
             return;
         } finally {
             if (upload) await fs.rm(upload.path, { force: true });

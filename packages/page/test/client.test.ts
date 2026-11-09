@@ -1,4 +1,4 @@
-import { createRoot } from 'solid-js';
+import { createMemo, createRoot } from 'solid-js';
 import { afterEach, expect, test } from 'vite-plus/test';
 import { createClient } from '../src/client.ts';
 
@@ -94,4 +94,49 @@ test('an answer in parts (NDJSON): the first part is the answer, each later one 
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(view()).toEqual({ counts: { a: 1, b: 2 }, done: true });
     expect(client.version('k')).toBe(12);
+});
+
+test('a later part that comes in the same chunk as the answer is applied after the answer, never before it', async () => {
+    globalThis.fetch = (async () => {
+        const lines = [
+            { ok: true, views: [frame(20, { counts: { a: 1 } })] },
+            { views: [{ key: 'k', version: 21, patch: { counts: { b: 2 } } }] },
+            { views: [{ key: 'other', version: 22, value: 'later' }] },
+        ];
+        const body = lines.map((line) => `${JSON.stringify(line)}\n`).join('');
+        return new Response(body, { headers: { 'Content-Type': 'application/x-ndjson' } });
+    }) as typeof fetch;
+    const client = createClient({ headers: () => ({}) });
+    const view = createRoot(() => client.view<{ counts: Record<string, number> }>('k'));
+    const other = createRoot(() => client.view<string>('other'));
+    expect(await client.send('x', {})).toEqual({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(view()).toEqual({ counts: { a: 1, b: 2 } });
+    expect(other()).toBe('later');
+});
+
+test("a view's version is reactive, so what waits for a view's first part sees one that comes after the answer", async () => {
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    globalThis.fetch = (async () => {
+        const encoder = new TextEncoder();
+        const body = new ReadableStream<Uint8Array>({
+            async start(controller) {
+                controller.enqueue(encoder.encode(`${JSON.stringify({ ok: true, views: [] })}\n`));
+                await held;
+                controller.enqueue(encoder.encode(`${JSON.stringify({ views: [frame(30, 'later')] })}\n`));
+                controller.close();
+            },
+        });
+        return new Response(body, { headers: { 'Content-Type': 'application/x-ndjson' } });
+    }) as typeof fetch;
+    const client = createClient({ headers: () => ({}) });
+    const shown = createRoot(() => createMemo(() => (client.version('k') > 0 ? client.view<string>('k')() : 'none')));
+    expect(await client.send('x', {})).toEqual({ ok: true });
+    expect(shown()).toBe('none');
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(shown()).toBe('later');
 });
