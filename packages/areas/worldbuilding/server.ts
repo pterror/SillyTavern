@@ -20,6 +20,8 @@ import {
     SELECTION_VIEW,
     WORLD_VIEW,
     WORLDS_VIEW,
+    ENTRIES_NAMED_PER_LOOP,
+    LOOPS_SHOWN,
 } from './protocol.ts';
 import type {
     BulkAction,
@@ -50,6 +52,8 @@ import type {
     RelationKind,
     RelationKindsView,
     SelectionView,
+    ShownLoop,
+    ShownLoops,
     StepLanding,
     UnreachedLoop,
 } from './protocol.ts';
@@ -238,14 +242,19 @@ const NO_OVERVIEW: OverviewView = {
     stepLanding: null,
 };
 
-const NOTHING_CHANGED: LastChangeView = {
+// `loops`: the loops the change left, in the world it changed.
+type LastChange = Omit<LastChangeView, keyof ShownLoops> & {
+    loops: { book: string; found: UnreachedLoop[] } | null;
+};
+
+const NOTHING_CHANGED: LastChange = {
     createdKind: null,
     changedRelation: null,
     createdEntry: null,
     deletedEntry: null,
     movedEntry: null,
     markedTitleKeys: null,
-    unreachedLoops: [],
+    loops: null,
 };
 
 const NO_ENTRY: EntryView = { book: null };
@@ -325,7 +334,7 @@ export type ShownWorldState = { overview: ShownOverview; entry: OpenEntry | null
 type SessionState = {
     world: ShownWorldState | null;
     kindsOfBook: string | null;
-    lastChange: LastChangeView;
+    lastChange: LastChange;
     filter: ShownFilter | null;
     finding: { book: string; query: string } | null;
     selection: HeldSelection | null;
@@ -398,6 +407,37 @@ export function worldbuildingArea(ports: Ports) {
         });
     };
 
+    const shownLoops = async (user: User, book: string | null, loops: UnreachedLoop[]): Promise<ShownLoops> => {
+        if (book === null || loops.length === 0) return { unreachedLoops: [], moreUnreachedLoops: 0 };
+        const shown = loops.slice(0, LOOPS_SHOWN);
+        const targetOf = (loop: UnreachedLoop) => loop.entries[1] ?? null;
+        const named = (loop: UnreachedLoop) => loop.entries.slice(0, ENTRIES_NAMED_PER_LOOP);
+        const asked = [...new Set(shown.flatMap((loop) => [loop.entry, targetOf(loop), ...named(loop)]))].filter(
+            (entry) => entry !== null,
+        );
+        const [labels, kinds] = await Promise.all([
+            ports.labelEntries(user, book, asked),
+            ports.readRelationKinds(user, book),
+        ]);
+        const labelOf = new Map(asked.map((entry, at) => [entry, labels[at] ?? null]));
+        const unreachedLoops = shown.flatMap((loop): ShownLoop[] => {
+            const entry = labelOf.get(loop.entry);
+            if (!entry) return [];
+            const target = targetOf(loop);
+            return [
+                {
+                    entry,
+                    kind: loop.kind,
+                    kindName: kinds?.find((kind) => kind.id === loop.kind)?.name ?? null,
+                    target: target === null ? null : (labelOf.get(target) ?? null),
+                    entries: named(loop).flatMap((each) => labelOf.get(each) ?? []),
+                    moreEntries: Math.max(0, loop.entries.length - ENTRIES_NAMED_PER_LOOP),
+                },
+            ];
+        });
+        return { unreachedLoops, moreUnreachedLoops: loops.length - shown.length };
+    };
+
     const withOverview =
         <P>(run: (context: ActionContext, overview: ShownOverview, payload: P) => Promise<ActionResult>) =>
         async (context: ActionContext, payload: P): Promise<ActionResult> => {
@@ -419,7 +459,7 @@ export function worldbuildingArea(ports: Ports) {
             lastChange: {
                 ...NOTHING_CHANGED,
                 changedRelation: { book, entry: change.entry, kind: change.kind, target },
-                unreachedLoops: answer.unreachedLoops,
+                loops: { book, found: answer.unreachedLoops },
             },
         });
         return { changed: [...VIEWS_OF_CARDS, LAST_CHANGE_VIEW] };
@@ -553,7 +593,7 @@ export function worldbuildingArea(ports: Ports) {
     const namesOfferChanged = async (
         context: ActionContext,
         change: Promise<NamesOfferChange>,
-        lastChange: LastChangeView | null,
+        lastChange: LastChange | null,
     ): Promise<ActionResult> => {
         const done = await change;
         if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
@@ -700,13 +740,14 @@ export function worldbuildingArea(ports: Ports) {
                 const jobs = book === undefined ? null : await ports.readBulkJobs(context.user, book);
                 return jobs && book !== undefined ? { book, jobs } : NO_BULK_JOBS;
             },
-            [LAST_CHANGE_VIEW]: async (context: ViewContext): Promise<LastChangeView> =>
-                stateOf(context.session).lastChange,
+            [LAST_CHANGE_VIEW]: async (context: ViewContext): Promise<LastChangeView> => {
+                const { loops, ...lastChange } = stateOf(context.session).lastChange;
+                return { ...lastChange, ...(await shownLoops(context.user, loops?.book ?? null, loops?.found ?? [])) };
+            },
             [LOOPS_LEFT_BY_JOBS_VIEW]: async (context: ViewContext): Promise<LoopsLeftByJobsView> => {
                 const book = stateOf(context.session).kindsOfBook;
-                return book === null
-                    ? { book: null, unreachedLoops: [] }
-                    : { book, unreachedLoops: await ports.readLoopsLeftByJobs(context.user, book) };
+                const loops = book === null ? [] : await ports.readLoopsLeftByJobs(context.user, book);
+                return { book, ...(await shownLoops(context.user, book, loops)) };
             },
         },
         gone: (session) => {
@@ -838,7 +879,7 @@ export function worldbuildingArea(ports: Ports) {
                 const lastChange = {
                     ...NOTHING_CHANGED,
                     createdEntry: { book, entry: made.entry },
-                    unreachedLoops: made.unreachedLoops,
+                    loops: { book, found: made.unreachedLoops },
                 };
                 if (open) rememberEntry(context.session, opened(made.entry, open.pointingAt), { lastChange });
                 else remember(context.session, { lastChange });
@@ -856,7 +897,7 @@ export function worldbuildingArea(ports: Ports) {
                 const lastChange = {
                     ...NOTHING_CHANGED,
                     deletedEntry: { book, entry, label: done.label },
-                    unreachedLoops: done.unreachedLoops,
+                    loops: { book, found: done.unreachedLoops },
                 };
                 if (open?.book === book && open.shown.entry === entry) {
                     rememberEntry(context.session, null, { lastChange });
@@ -868,7 +909,9 @@ export function worldbuildingArea(ports: Ports) {
             'worldbuilding.restoreEntry': async (context, { book, entry }) => {
                 const done = await ports.restoreEntry(who(context), book, entry);
                 if (typeof done === 'string' || 'refused' in done) return refusedWrite(done);
-                remember(context.session, { lastChange: { ...NOTHING_CHANGED, unreachedLoops: done.unreachedLoops } });
+                remember(context.session, {
+                    lastChange: { ...NOTHING_CHANGED, loops: { book, found: done.unreachedLoops } },
+                });
                 return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
             },
             'worldbuilding.moveEntryToWorld': async (context, { book, entry, toBook }) => {
@@ -878,7 +921,7 @@ export function worldbuildingArea(ports: Ports) {
                 const lastChange = {
                     ...NOTHING_CHANGED,
                     movedEntry: { book, entry, toBook, newEntry: moved.entry },
-                    unreachedLoops: moved.unreachedLoops,
+                    loops: { book, found: moved.unreachedLoops },
                 };
                 const changed = [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW];
                 const open = entryOf(context.session);
@@ -1057,7 +1100,7 @@ export function worldbuildingArea(ports: Ports) {
                 if ('refused' in done) return { refused: done.refused };
                 remember(context.session, {
                     selection: null,
-                    lastChange: { ...NOTHING_CHANGED, unreachedLoops: done.unreachedLoops },
+                    lastChange: { ...NOTHING_CHANGED, loops: { book, found: done.unreachedLoops } },
                 });
                 return {
                     changed: [

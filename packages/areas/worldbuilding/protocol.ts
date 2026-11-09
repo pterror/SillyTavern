@@ -26,6 +26,8 @@ export const FOUND_PER_QUERY = 20;
 export const KEY_SHARERS_SHOWN = 20;
 export const SELECTION_COUNTED_UP_TO = 1000;
 export const PICKED_AT_MOST = MAX_CARDS_PER_READ;
+export const LOOPS_SHOWN = 3;
+export const ENTRIES_NAMED_PER_LOOP = 3;
 
 export type Named = { thing: string; text: string; shownAs: 'name' | 'title' | 'opening' };
 
@@ -95,7 +97,20 @@ export type RelationKindsView = { book: string | null; kinds: RelationKind[] };
 
 export type UnreachedLoop = { entry: string; kind: string; entries: string[] };
 
-export type LoopsLeftByJobsView = { book: string | null; unreachedLoops: UnreachedLoop[] };
+// `entry`'s relation of `kind` to `target` is the one its loop check walked first; `entries` are the first
+// ENTRIES_NAMED_PER_LOOP the loop holds, `moreEntries` how many more it does.
+export type ShownLoop = {
+    entry: Named;
+    kind: string;
+    kindName: string | null;
+    target: Named | null;
+    entries: Named[];
+    moreEntries: number;
+};
+
+export type ShownLoops = { unreachedLoops: ShownLoop[]; moreUnreachedLoops: number };
+
+export type LoopsLeftByJobsView = { book: string | null } & ShownLoops;
 
 export type ChangedRelation = { book: string; entry: string; kind: string; target: string };
 
@@ -108,8 +123,7 @@ export type LastChangeView = {
     deletedEntry: (EntryAt & { label: Named }) | null;
     movedEntry: (EntryAt & { toBook: string; newEntry: string }) | null;
     markedTitleKeys: { book: string } | null;
-    unreachedLoops: UnreachedLoop[];
-};
+} & ShownLoops;
 
 export type KeyOfEntry = { text: string; isName: boolean; alsoBringsUp: number };
 

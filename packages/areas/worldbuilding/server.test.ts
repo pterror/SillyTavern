@@ -44,6 +44,7 @@ import type {
     PointingAtSection,
     PointingAtView,
     RelationKindsView,
+    ShownLoop,
     World,
     WorldsView,
     WorldView,
@@ -73,9 +74,19 @@ const NOTHING_CHANGED: LastChangeView = {
     movedEntry: null,
     markedTitleKeys: null,
     unreachedLoops: [],
+    moreUnreachedLoops: 0,
 };
 
 const named = (thing: string, text: string): Named => ({ thing, text, shownAs: 'name' });
+
+const LOOP_OF_7: ShownLoop = {
+    entry: named('7', 'name 7'),
+    kind: '1',
+    kindName: 'in',
+    target: named('8', 'name 8'),
+    entries: [named('7', 'name 7'), named('8', 'name 8')],
+    moreEntries: 0,
+};
 
 const PLACEMENT = v.parse(v.object(placementFields), {
     keysecondary: [],
@@ -523,6 +534,16 @@ function world(
         changeRelation: async ({ session }, book, change, loopCheckLimit) => {
             asked.changes.push({ book, change, loopCheckLimit, session });
             if (change.target === '999') return { refused: "The target isn't an entry of this world." };
+            if (change.entry === '8') {
+                return {
+                    unreachedLoops: [
+                        { entry: '8', kind: '2', entries: ['8', '7', '404', '405'] },
+                        { entry: '404', kind: '1', entries: ['404', '8'] },
+                        { entry: '7', kind: '1', entries: ['7'] },
+                        { entry: '7', kind: '1', entries: ['7', '8'] },
+                    ],
+                };
+            }
             return {
                 unreachedLoops: change.entry === '7' ? [{ entry: '7', kind: change.kind, entries: ['7', '8'] }] : [],
             };
@@ -583,7 +604,8 @@ test('opening a world opens its overview, its kinds and the last change in the s
     });
     expect(await w.view<LoopsLeftByJobsView>(LOOPS_LEFT_BY_JOBS_VIEW)).toEqual({
         book: '1',
-        unreachedLoops: [{ entry: '7', kind: '1', entries: ['7', '8'] }],
+        unreachedLoops: [LOOP_OF_7],
+        moreUnreachedLoops: 0,
     });
     const shown = await w.view<OverviewView>(OVERVIEW_VIEW);
     expect(shown).toMatchObject({ book: '1', groupBy: '1', topLevelCount: 1000, firstRank: 0, stepLanding: null });
@@ -905,6 +927,42 @@ test('kind actions name their world: making one says which it made, renaming ans
     });
 });
 
+test('the loops a change left are named in its world: the first few, each by its first few entries and the relation it was walked from', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.moveRelation', {
+        book: '1',
+        entry: '8',
+        kind: '1',
+        target: '7',
+        newTarget: '7',
+        after: null,
+        before: null,
+        loopCheckLimit: 10,
+    });
+    const shown = await w.view<LastChangeView>(LAST_CHANGE_VIEW);
+    expect(shown.unreachedLoops).toEqual([
+        {
+            entry: named('8', 'name 8'),
+            kind: '2',
+            kindName: null,
+            target: named('7', 'name 7'),
+            entries: [named('8', 'name 8'), named('7', 'name 7')],
+            moreEntries: 1,
+        },
+        {
+            entry: named('7', 'name 7'),
+            kind: '1',
+            kindName: 'in',
+            target: null,
+            entries: [named('7', 'name 7')],
+            moreEntries: 0,
+        },
+    ]);
+    expect(shown.moreUnreachedLoops).toBe(1);
+    await w.act('worldbuilding.createRelationKind', { book: '1', name: 'owes' });
+    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toMatchObject({ unreachedLoops: [], moreUnreachedLoops: 0 });
+});
+
 test('a relation change names its world, passes the session and the loop check limit, and its answer names unreached loops', async () => {
     const w = world(3);
     const add = {
@@ -929,7 +987,7 @@ test('a relation change names its world, passes the session and the loop check l
     expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
         ...NOTHING_CHANGED,
         changedRelation: { book: '1', entry: '7', kind: '1', target: '8' },
-        unreachedLoops: [{ entry: '7', kind: '1', entries: ['7', '8'] }],
+        unreachedLoops: [LOOP_OF_7],
     });
     await w.act('worldbuilding.setRelationWeak', {
         book: '1',
@@ -1156,7 +1214,14 @@ test('making an entry places it, opens it when asked and says what it made and w
     });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ entry: '50' });
     expect((await w.view<LastChangeView>(LAST_CHANGE_VIEW)).unreachedLoops).toEqual([
-        { entry: '51', kind: '1', entries: ['51'] },
+        {
+            entry: named('51', 'name 51'),
+            kind: '1',
+            kindName: 'in',
+            target: null,
+            entries: [named('51', 'name 51')],
+            moreEntries: 0,
+        },
     ]);
     expect(await w.act('worldbuilding.createEntry', { ...related, relation: { kind: '1', target: '999' } })).toEqual({
         refused: "The target isn't an entry of this world.",
@@ -1198,7 +1263,7 @@ test('deleting the open entry closes it and offers it back under its label; rest
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
     expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
         ...NOTHING_CHANGED,
-        unreachedLoops: [{ entry: '7', kind: '1', entries: ['7', '8'] }],
+        unreachedLoops: [LOOP_OF_7],
     });
     expect(await w.act('worldbuilding.restoreEntry', { book: '1', entry: '7' })).toMatchObject({
         refused: "That entry isn't in this world.",
@@ -1866,7 +1931,7 @@ test('a bulk action runs over the selection and clears it, answering the cards, 
     expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
     expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
         ...NOTHING_CHANGED,
-        unreachedLoops: [{ entry: '7', kind: '1', entries: ['7', '8'] }],
+        unreachedLoops: [LOOP_OF_7],
     });
     expect(await w.view<BulkJobsView>(BULK_JOBS_VIEW)).toEqual({
         book: '1',

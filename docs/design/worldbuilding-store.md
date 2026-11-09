@@ -444,7 +444,11 @@ One area, `@st/worldbuilding`. Views:
 - `worldbuilding.relationKinds`: the world's kinds, `{id, name, mergingInto}` in id order.
 - `worldbuilding.lastChange`: what the session's last change left to say: the kind it created, the relation whose
   change left its entry unreached with the entries the check found, the entry it made, the entry it deleted (with its
-  label, for Restore), the entry it moved to another world (and the entry it became there).
+  label, for Restore), the entry it moved to another world (and the entry it became there). Its loops, and those of
+  `worldbuilding.loopsLeftByJobs`, are named in the world the change was made in: the first `LOOPS_SHOWN` (and how many
+  more), each with its entry's and kind's names, the target of the relation the check walked first from that entry
+  (the one making weak would put it at the top level when it has no other), and the first `ENTRIES_NAMED_PER_LOOP`
+  entries it holds (and how many more): at most a dozen labels per answer, whatever the loops' size.
 - `worldbuilding.entry`: the session's open entry: its label, title, keys (each a name or a trigger, with how many other
   live entries of the world have it), text, relations line (each target a label), placement (every upstream field but
   `key`, `comment` and `content`, as stored, missing ones at upstream's defaults, `public/scripts/world-info-entry-defaults.js`,
