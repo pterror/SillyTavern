@@ -8,6 +8,7 @@ pub mod chat_search;
 pub mod choices;
 pub mod commit_checks;
 pub mod derive;
+pub mod entry_label;
 pub mod history;
 pub mod kinds;
 pub mod library;

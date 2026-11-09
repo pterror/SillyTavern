@@ -56,6 +56,20 @@ kind A to B in the restore's own commit (`worldbuildingRelationsKept`). When the
 (`KIND_MERGE_RECORDS_DUE (b, A)`) and the job deletes it. Its cost: one book field and one count per merged kind,
 nothing per relation and no read at a store's opening; it lasts as long as a deleted entry holding such a relation
 can still be restored.
+## Names and the label
+
+An entry's names are one extension field, `extensions.names`, stored as the entry's JSON field `\u0001names` like
+`relations`: a list of strings. Every write of an entry passes it through one function (`withNamesOfItsKeys`,
+`src/world-info-engine.js`), which keeps only strings that are keys of the entry (`key`, or a card book's `keys`), in
+the keys' order, once each. A value that isn't a list is kept as written and holds no names. The engine reads the names
+as the keys the field marks (`entry_label::names_among`), so a name is always a key whatever wrote the field.
+
+Every place that draws an entry gets its **label** from the engine (`entry_label::label`), one rule: a title (upstream
+`comment`) with anything but white space in it is the label, shown as a name when it equals one of the entry's names
+and as a title otherwise; with no title, the first name; with neither, the opening of the text (from its first
+character that isn't white space to the end of that line, at most 120 characters). A label is
+`{ thing, text, shownAs }`, `thing` being the entry's entity id.
+
 ## The stored relation
 
 One extension field of the entry, `extensions.relations`, stored as the entry's JSON field `\u0001relations`
@@ -294,7 +308,7 @@ end-of-commit checks read one key or one bounded scan each and write nothing.
 | top-level range of `n` from rank `r` | a descent skipping by counts: 4 gets per node on the way, `O(depth)` per entry found, `O(n · depth)` worst case |
 | an entry's rank in the top level | 4 gets per node on its path |
 | a region's first `m` entries and how many there are | one page of `m` of `RELATIONS_BY_TARGET (b, t, k)` + 1 get |
-| a card | the entry's title, text (cut), keys and `RELATIONS_OF_ENTRY`; per relation one lookup of the target's title and one of the kind's name |
+| a card | the entry's title, text (cut), keys, names and `RELATIONS_OF_ENTRY`; per relation the target's label (its title, keys, names, and its text when it has neither a title nor a name) and the kind's name |
 | a step in reading order | the top-level entry's drawn tree (bounded by the layout), and the next top-level entry's per one crossed |
 | the kinds list | the book's fields |
 
@@ -319,8 +333,9 @@ sending a message, the one figure they give for an action), and the engine's wor
 per read (not measured; I don't know the real figure, and it should be measured on the slowest storage the app runs on),
 200 ms is about 24,000 reads (`READS_PER_REQUEST`). Then:
 
-- a card costs about 6 reads (title, text, the key list, the relations, and per relation the target's title and the
-  kind's name, counted as 2), so a read draws at most 4,000 cards (`MAX_CARDS_PER_READ`): the range's top-level entries
+- a card costs about 10 reads (title, text, the key list, the names, the relations, and per relation the kind's name
+  and the target's label: its title, key list, names and, with neither a title nor a name, its text; counted with one
+  relation), so a read draws at most 2,400 cards (`MAX_CARDS_PER_READ`): the range's top-level entries
   times the cards each draws, checked by the schema on `openOverview` and by the handler on `showRange` and
   `stepOverview` (a step crossing `n` top-level entries draws each);
 - a loop check visit costs about 2 reads, so one write's check visits at most 12,000 entries

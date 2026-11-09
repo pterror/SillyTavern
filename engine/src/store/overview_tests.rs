@@ -3,6 +3,7 @@ use std::fs;
 use super::books::ENTRY;
 use super::chat_read::Js;
 use super::overview::{self, Grouping, OverviewLayout, OverviewStep, RegionLayout};
+use super::entry_label;
 use super::relations;
 use super::relations_tests::{history_user, soft_delete, 
     IN as IN_KIND, OWES, book, create, index, rec, set_json, strong, text,
@@ -79,6 +80,14 @@ fn list_of(value: &Js) -> &[Js] {
         Js::Arr(lantern_house) => lantern_house,
         other => panic!("not a list: {other:?}"),
     }
+}
+
+fn named(thing: &str, shown: &str, shown_as: &str) -> Js {
+    Js::Obj(vec![
+        ("thing", Js::Text(thing.as_bytes().to_vec())),
+        ("text", Js::Text(shown.as_bytes().to_vec())),
+        ("shownAs", Js::Text(shown_as.as_bytes().to_vec())),
+    ])
 }
 
 fn outline(item: &Js, out: &mut Vec<String>) {
@@ -241,10 +250,14 @@ fn the_overview_is_the_top_with_each_region_cut_short_a_count_per_cut_and_repeat
     let relations_line = list_of(field_of(first_related, "relations"));
     assert_eq!(text_of(field_of(&relations_line[0], "kind")), "1");
     assert_eq!(text_of(field_of(&relations_line[0], "kindName")), "in");
-    assert_eq!(text_of(field_of(&relations_line[0], "target")), "101");
+    assert_eq!(text_of(field_of(&relations_line[0], "targetEntry")), "101");
     assert_eq!(
-        text_of(field_of(&relations_line[0], "targetTitle")),
-        "The Lantern House"
+        field_of(&relations_line[0], "target"),
+        &named("101", "The Lantern House", "title")
+    );
+    assert_eq!(
+        field_of(lantern_house, "label"),
+        &named("101", "The Lantern House", "title")
     );
     assert_eq!(
         text_of(field_of(
@@ -409,6 +422,75 @@ fn a_move_steps_through_reading_order_across_top_level_entries_and_hops_to_paren
         .map(|entry_cell| text_of(field_of(entry_cell, "occurrence")))
         .collect();
     assert_eq!(keys, ["111", "102", "103", "104", "105", "108", "110"]);
+    store.close();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn key_item(entity: u64, item: u64, key_text: &str) -> [Record; 2] {
+    [
+        set_code_text(entity, library::ITEM_BASE + item * library::LISTS, key_text),
+        rec(
+            "itemPlace",
+            vec![
+                Value::Id(entity),
+                Value::UInt(0),
+                Value::UInt(item),
+                Value::UInt(item + 1),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn every_card_is_labelled_by_its_title_else_its_first_name_else_its_opening() {
+    let dir = temp_dir("label");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, 1, "one");
+    let mut records = Vec::new();
+    for (entity, landing) in [(201, 0.0), (202, 1.0), (203, 2.0), (204, 3.0), (205, 4.0)] {
+        records.push(create(entity, ENTRY, &format!("1:{}", entity - 200)));
+        records.push(index(entity, 1, Some(landing)));
+    }
+    records.extend(key_item(201, 0, "Ilse"));
+    records.extend(key_item(201, 1, "Varro"));
+    records.push(set_json(201, entry_label::names_field(), r#"["Varro","Ilse","Varro","not a key"]"#));
+    records.push(set_code_text(201, 103, "Varro"));
+    records.extend(key_item(202, 0, "lamp"));
+    records.extend(key_item(202, 1, "The Pale Choir"));
+    records.push(set_json(202, entry_label::names_field(), r#"["The Pale Choir"]"#));
+    records.push(set_code_text(202, 103, "A choir"));
+    records.push(set_json(203, entry_label::names_field(), r#"["Saltmarrow"]"#));
+    records.extend(key_item(203, 0, "Saltmarrow"));
+    records.push(set_json(203, relations::relations_field(), &strong(&[(IN_KIND, 201, "a")])));
+    records.extend(key_item(204, 0, "Saltmarrow"));
+    records.push(set_json(204, entry_label::names_field(), r#"{"third":"party"}"#));
+    records.push(set_code_text(204, 104, &format!("\n  {}  \nsecond line", "é".repeat(130))));
+    records.push(set_code_text(205, 103, "   "));
+    store.commit_wait(records).unwrap();
+    let overview_read = read(&store, |view| {
+        overview::read_overview(
+            view,
+            Grouping {
+                book: 1,
+                kind: None,
+            },
+            &LAYOUT,
+            0,
+            10,
+            None,
+        )
+    });
+    let cards = list_of(field_of(&overview_read, "entries"));
+    let names = |card: &Js| -> Vec<String> { list_of(field_of(card, "names")).iter().map(text_of).collect() };
+    assert_eq!(names(&cards[0]), ["Ilse", "Varro"]);
+    assert_eq!(field_of(&cards[0], "label"), &named("201", "Varro", "name"));
+    assert_eq!(field_of(&cards[1], "label"), &named("202", "A choir", "title"));
+    assert_eq!(field_of(&cards[2], "label"), &named("203", "Saltmarrow", "name"));
+    let relation = &list_of(field_of(&cards[2], "relations"))[0];
+    assert_eq!(field_of(relation, "target"), &named("201", "Varro", "name"));
+    assert!(names(&cards[3]).is_empty());
+    assert_eq!(field_of(&cards[3], "label"), &named("204", &"é".repeat(120), "opening"));
+    assert_eq!(field_of(&cards[4], "label"), &named("205", "", "opening"));
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }

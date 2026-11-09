@@ -32,10 +32,12 @@ const card = (occurrence: string, topLevelRank: number): EntryCell & { topLevelR
     occurrence,
     entry: occurrence,
     entryKey: occurrence,
+    label: { thing: occurrence, text: '', shownAs: 'opening' },
     title: null,
     text: '',
     textCut: false,
     keys: [],
+    names: [],
     relations: [],
     groupingKindRelationsTargetingThis: 0,
     alreadyOpenAbove: false,
@@ -312,9 +314,14 @@ test('showing a range or stepping that would draw more than one read may is refu
     const w = world(100_000);
     const wide = { regionsByNestingLevel: [{ columns: 10, rows: 10 }], cardTextCharacters: 100 };
     await w.act('worldbuilding.openOverview', { ...open, layout: wide, endRank: 10 });
-    expect(await w.act('worldbuilding.showRange', { firstRank: 0, endRank: 40 })).toEqual({ refused: READ_REFUSAL });
-    expect(await w.act('worldbuilding.showRange', { firstRank: 0, endRank: 39 })).toEqual({ changed: [OVERVIEW_VIEW] });
-    expect(await w.act('worldbuilding.stepOverview', { from: '100', by: 39 })).toEqual({ refused: READ_REFUSAL });
+    const fits = Math.floor(MAX_CARDS_PER_READ / 101);
+    expect(await w.act('worldbuilding.showRange', { firstRank: 0, endRank: fits + 1 })).toEqual({
+        refused: READ_REFUSAL,
+    });
+    expect(await w.act('worldbuilding.showRange', { firstRank: 0, endRank: fits })).toEqual({
+        changed: [OVERVIEW_VIEW],
+    });
+    expect(await w.act('worldbuilding.stepOverview', { from: '100', by: fits })).toEqual({ refused: READ_REFUSAL });
 });
 
 test('the schemas bound a read by the cards it draws, and take worlds and kinds by id', () => {
@@ -333,8 +340,12 @@ test('the schemas bound a read by the cards it draws, and take worlds and kinds 
         cardTextCharacters: 100_000,
     };
     expect(cardsPerTopLevelEntry(deep.regionsByNestingLevel)).toBe(1 + 8 + 64);
-    expect(ok('worldbuilding.openOverview', { ...open, layout: deep, endRank: 54 })).toBe(true);
-    expect(ok('worldbuilding.openOverview', { ...open, layout: deep, endRank: 55 })).toBe(false);
+    expect(
+        ok('worldbuilding.openOverview', { ...open, layout: deep, endRank: Math.floor(MAX_CARDS_PER_READ / 73) }),
+    ).toBe(true);
+    expect(
+        ok('worldbuilding.openOverview', { ...open, layout: deep, endRank: Math.floor(MAX_CARDS_PER_READ / 73) + 1 }),
+    ).toBe(false);
     const huge = { regionsByNestingLevel: Array(30).fill({ columns: 1000, rows: 1000 }), cardTextCharacters: 0 };
     expect(ok('worldbuilding.openOverview', { ...open, layout: huge, endRank: 0 })).toBe(true);
     expect(ok('worldbuilding.openOverview', { ...open, layout: huge, endRank: 1 })).toBe(false);

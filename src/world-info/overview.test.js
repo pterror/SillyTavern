@@ -55,9 +55,9 @@ test('a world\'s relation kinds and its entries\' relations group the overview a
     for (const item of view.entries) outline(item, keys);
     const [a, b, c, d] = [1, 2, 3, 4].map(uid => String(ids.get(uid)));
     assert.deepEqual(keys, [a, `${a}/${c}`, `${a}/${b}`, d]);
-    assert.deepEqual(view.entries[0].region[0].relations.map(r => [r.kind, r.kindName, r.targetKey, r.target, r.targetTitle, r.weak]), [
-        ['1', 'in', '1', a, 'entry 1', false],
-        ['2', 'owes', '2', b, 'entry 2', true],
+    assert.deepEqual(view.entries[0].region[0].relations.map(r => [r.kind, r.kindName, r.targetKey, r.targetEntry, r.target, r.weak]), [
+        ['1', 'in', '1', a, { thing: a, text: 'entry 1', shownAs: 'title' }, false],
+        ['2', 'owes', '2', b, { thing: b, text: 'entry 2', shownAs: 'title' }, true],
     ]);
     assert.deepEqual(view.entries[0].keys, ['name 1']);
 
@@ -69,6 +69,30 @@ test('a world\'s relation kinds and its entries\' relations group the overview a
     assert.deepEqual(back.entries[3].extensions.relations, entries[2].extensions.relations);
     assert.deepEqual(back.entries[4].extensions.relations, [], 'the relation to a missing entry and the one of a missing kind are left out');
     assert.deepEqual(await lib.books.relationKinds(found.id), KINDS);
+});
+
+test('an entry\'s names are the keys it marks, in the keys\' order, through every write and round trip; a value that is no list holds none', async () => {
+    const named = { uid: 1, key: ['Varro', 'Ilse', 'lamp'], comment: '', content: 'Ilse Varro keeps the lamp.', displayIndex: 0, extensions: { names: ['Ilse', 'nobody', 'Varro', 'Ilse'] } };
+    const odd = { uid: 2, key: ['x'], comment: '', content: 'Second line\nfirst', displayIndex: 1, extensions: { names: { by: 'another tool' } } };
+    await lib.books.write('Names', { entries: { 1: named, 2: odd } });
+    let read = await lib.books.read('Names');
+    assert.deepEqual(read.entries[1].extensions.names, ['Varro', 'Ilse']);
+    assert.deepEqual(read.entries[2].extensions.names, { by: 'another tool' });
+    const { id: book } = await lib.books.find('Names');
+    let view = await overview(book, null);
+    assert.deepEqual(view.entries.map(e => [e.names, e.label]), [
+        [['Varro', 'Ilse'], { thing: view.entries[0].entry, text: 'Varro', shownAs: 'name' }],
+        [[], { thing: view.entries[1].entry, text: 'Second line', shownAs: 'opening' }],
+    ]);
+    await lib.books.editEntry('Names', 1, { ...read.entries[1], key: ['Ilse', 'lamp'], comment: 'Ilse' });
+    read = await lib.books.read('Names');
+    assert.deepEqual(read.entries[1].extensions.names, ['Ilse'], 'a name that is no longer a key is no longer a name');
+    view = await overview(book, null);
+    assert.deepEqual(view.entries[0].label, { thing: view.entries[0].entry, text: 'Ilse', shownAs: 'name' });
+    const { convertCharacterBook } = await import('./candidate-resolution.js');
+    const card = { entries: [{ id: 0, keys: ['Ilse', 'lamp'], content: 'x', extensions: { names: ['lamp', 'Ilse', 'gone'] }, enabled: true, insertion_order: 1 }] };
+    await lib.books.write('From card', convertCharacterBook(card));
+    assert.deepEqual((await lib.books.read('From card')).entries[0].extensions.names, ['Ilse', 'lamp']);
 });
 
 test('relation actions pick a kind by id, place the entry, find a loop nothing at the top holds, and a weak relation opens it', async () => {

@@ -7,17 +7,21 @@ export const LAST_CHANGE_VIEW = 'worldbuilding.lastChange';
 export const LOOPS_LEFT_BY_JOBS_VIEW = 'worldbuilding.loopsLeftByJobs';
 
 export const READS_PER_REQUEST = 24_000;
-export const READS_PER_CARD = 6;
+// A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
+// label (its title, keys, names and, with neither a title nor a name, its text): 10 with one relation.
+export const READS_PER_CARD = 10;
 export const READS_PER_LOOP_CHECK_VISIT = 2;
 export const MAX_CARDS_PER_READ = READS_PER_REQUEST / READS_PER_CARD;
 export const LOOP_CHECK_VISITS_PER_WRITE = READS_PER_REQUEST / READS_PER_LOOP_CHECK_VISIT;
+
+export type Named = { thing: string; text: string; shownAs: 'name' | 'title' | 'opening' };
 
 export type RelationOnCard = {
     kind: string;
     kindName: string | null;
     targetKey: string | null;
-    target: string;
-    targetTitle: string | null;
+    targetEntry: string;
+    target: Named | null;
     targetDeleted: boolean;
     inUse: boolean;
     weak: boolean;
@@ -28,10 +32,12 @@ export type EntryCell = {
     occurrence: string;
     entry: string;
     entryKey: string;
+    label: Named;
     title: string | null;
     text: string;
     textCut: boolean;
     keys: string[];
+    names: string[];
     relations: RelationOnCard[];
     groupingKindRelationsTargetingThis: number;
     alreadyOpenAbove: boolean;

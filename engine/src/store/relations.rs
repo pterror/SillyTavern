@@ -1154,6 +1154,29 @@ fn item_of(value: Json, span: Range<usize>, raw: &[u8]) -> Option<Item> {
     })
 }
 
+pub fn json_strings_of_list(json: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let mut parser = Parser {
+        bytes: json,
+        offset: 0,
+    };
+    let Json::Arr(items) = parser.value(1)? else {
+        return None;
+    };
+    parser.space();
+    if parser.offset != json.len() {
+        return None;
+    }
+    Some(
+        items
+            .into_iter()
+            .filter_map(|item| match item {
+                Json::Str(text) => Some(text),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
 pub fn parse_relations_field(json: &[u8]) -> RelationSet {
     let mut set = RelationSet::new();
     for item in items_of(json).unwrap_or_default() {

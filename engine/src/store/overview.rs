@@ -2,14 +2,12 @@ use super::StoreError;
 use super::books::{ENTRY, EntryKey, parse_entry_key};
 use super::chat_read::Js;
 use super::derive::View;
+use super::entry_label::{self, COMMENT, CONTENT};
 use super::kinds::{key, text_value};
-use super::library::{self, entity_info, item_field};
+use super::library::entity_info;
 use super::relations;
 use super::world_order_tree as tree;
 use crate::log::format::FieldRef;
-
-const COMMENT: u64 = 103;
-const CONTENT: u64 = 104;
 
 #[derive(Clone, Copy)]
 pub struct Grouping {
@@ -55,7 +53,7 @@ fn refused(why: String) -> StoreError {
     StoreError::Refused(format!("overview: {why}"))
 }
 
-fn uid_in(view: &View, book: u64, entity: u64) -> Result<Option<EntryKey>, StoreError> {
+pub fn uid_in(view: &View, book: u64, entity: u64) -> Result<Option<EntryKey>, StoreError> {
     Ok(match entity_info(view, entity)? {
         Some((ENTRY, stored_key, _)) => match parse_entry_key(&stored_key)? {
             (entry_book, own_key) if entry_book == book => Some(own_key),
@@ -387,8 +385,42 @@ fn cut_text(text: &[u8], characters: usize) -> (Vec<u8>, bool) {
     (text.to_vec(), false)
 }
 
-fn text_or_null(view: &View, entity: u64, code: u64) -> Result<Js, StoreError> {
-    Ok(text_value(view, entity, &FieldRef::Code(code))?.map_or(Js::Null, Js::Text))
+pub fn relations_line(
+    view: &View,
+    book: u64,
+    keys_list: Option<u64>,
+    entity: u64,
+) -> Result<Vec<Js>, StoreError> {
+    let mut line = Vec::new();
+    for ((kind, target), stored) in relations::stored_relations_of_entry(view, entity)? {
+        let target_key = uid_in(view, book, target)?;
+        line.push(Js::Obj(vec![
+            ("kind", Js::Text(kind.to_string().into_bytes())),
+            (
+                "kindName",
+                relations::relation_kind_name(view, book, kind)?.map_or(Js::Null, Js::Text),
+            ),
+            ("targetDeleted", Js::Bool(target_key.is_none())),
+            (
+                "inUse",
+                Js::Bool(stored.state == relations::RelationState::InUse),
+            ),
+            (
+                "targetKey",
+                target_key.as_ref().map_or(Js::Null, |own_key| Js::Text(own_key.text())),
+            ),
+            ("targetEntry", Js::Text(target.to_string().into_bytes())),
+            (
+                "target",
+                match target_key {
+                    Some(_) => entry_label::named(view, keys_list, target)?.js(),
+                    None => Js::Null,
+                },
+            ),
+            ("weak", Js::Bool(stored.relation.weak)),
+        ]));
+    }
+    Ok(line)
 }
 
 fn card(
@@ -412,47 +444,10 @@ fn card(
     }
     let content = text_value(view, drawn.entity, &FieldRef::Code(CONTENT))?.unwrap_or_default();
     let (text, text_cut) = cut_text(&content, layout.card_text_characters);
-    let mut keys = Vec::new();
-    if let Some(list) = keys_list {
-        let prefix = key::ids(key::ITEM, drawn.entity, list);
-        for (_, value) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
-            let item = library::parse_uvarint(&value)?;
-            if let Some(key_text) = text_value(view, drawn.entity, &item_field(list, item))? {
-                keys.push(Js::Text(key_text));
-            }
-        }
-    }
-    let mut relations_line = Vec::new();
-    for ((kind, target), stored) in relations::stored_relations_of_entry(view, drawn.entity)? {
-        let relation = stored.relation;
-        let target_key = uid_in(view, grouping.book, target)?;
-        relations_line.push(Js::Obj(vec![
-            ("kind", Js::Text(kind.to_string().into_bytes())),
-            (
-                "kindName",
-                relations::relation_kind_name(view, grouping.book, kind)?
-                    .map_or(Js::Null, Js::Text),
-            ),
-            ("targetDeleted", Js::Bool(target_key.is_none())),
-            (
-                "inUse",
-                Js::Bool(stored.state == relations::RelationState::InUse),
-            ),
-            (
-                "targetKey",
-                target_key.as_ref().map_or(Js::Null, |own_key| Js::Text(own_key.text())),
-            ),
-            ("target", Js::Text(target.to_string().into_bytes())),
-            (
-                "targetTitle",
-                match target_key {
-                    Some(_) => text_or_null(view, target, COMMENT)?,
-                    None => Js::Null,
-                },
-            ),
-            ("weak", Js::Bool(relation.weak)),
-        ]));
-    }
+    let keys = entry_label::keys_of(view, keys_list, drawn.entity)?;
+    let names = entry_label::names_among(view, drawn.entity, &keys)?;
+    let title = text_value(view, drawn.entity, &FieldRef::Code(COMMENT))?;
+    let label = entry_label::label(drawn.entity, title.as_deref(), &names, || Ok(content.clone()))?;
     Ok(vec![
         ("cell", Js::Text(b"entry".to_vec())),
         (
@@ -461,11 +456,13 @@ fn card(
         ),
         ("entry", Js::Text(drawn.entity.to_string().into_bytes())),
         ("entryKey", drawn.own_key.as_ref().map_or(Js::Null, |own_key| Js::Text(own_key.text()))),
-        ("title", text_or_null(view, drawn.entity, COMMENT)?),
+        ("label", label.js()),
+        ("title", title.map_or(Js::Null, Js::Text)),
         ("text", Js::Text(text)),
         ("textCut", Js::Bool(text_cut)),
-        ("keys", Js::Arr(keys)),
-        ("relations", Js::Arr(relations_line)),
+        ("keys", Js::Arr(keys.into_iter().map(Js::Text).collect())),
+        ("names", Js::Arr(names.into_iter().map(Js::Text).collect())),
+        ("relations", Js::Arr(relations_line(view, grouping.book, keys_list, drawn.entity)?)),
         ("groupingKindRelationsTargetingThis", Js::Num(drawn.grouping_kind_relations_targeting_this as f64)),
         ("alreadyOpenAbove", Js::Bool(drawn.already_open_above)),
     ])

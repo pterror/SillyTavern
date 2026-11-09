@@ -372,6 +372,32 @@ function bookCanonical(/** @type {string[]} */ keys) {
     return [...keys.filter(k => k !== 'entries').sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ...(keys.includes('entries') ? ['entries'] : [])];
 }
 
+/**
+ * @param {unknown} entry
+ * @returns {string[]}
+ */
+export function keysOfEntry(entry) {
+    if (!isPlainObject(entry)) return [];
+    const fields = /** @type {Record<string, unknown>} */ (entry);
+    const keys = Array.isArray(fields.key) ? fields.key : Array.isArray(fields.keys) ? fields.keys : [];
+    return keys.filter(k => typeof k === 'string');
+}
+
+/**
+ * @param {unknown} entry
+ * @returns {unknown}
+ */
+function withNamesOfItsKeys(entry) {
+    if (!isPlainObject(entry)) return entry;
+    const fields = /** @type {Record<string, any>} */ (entry);
+    if (!isPlainObject(fields.extensions) || !Array.isArray(fields.extensions.names)) return entry;
+    const marked = new Set(fields.extensions.names);
+    const names = [...new Set(keysOfEntry(entry).filter(k => marked.has(k)))];
+    const stored = fields.extensions.names;
+    if (names.length === stored.length && names.every((name, i) => name === stored[i])) return entry;
+    return { ...fields, extensions: { ...fields.extensions, names } };
+}
+
 const put = (/** @type {unknown} */ v) => (typeof v === 'string' ? { text: v } : { json: JSON.stringify(v) });
 
 /**
@@ -382,6 +408,7 @@ const put = (/** @type {unknown} */ v) => (typeof v === 'string' ? { text: v } :
  */
 export function entryValues(entry, key, owned, relationsFrom) {
     if (relationsFrom) entry = relationsForStore(entry, relationsFrom.targets, storedRelationsOf(relationsFrom.stored));
+    entry = withNamesOfItsKeys(entry);
     /** @type {Map<number | string, { text?: string, json?: string }>} */
     const values = new Map();
     /** @type {Map<number, string[]>} */
