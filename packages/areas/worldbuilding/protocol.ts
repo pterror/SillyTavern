@@ -374,7 +374,7 @@ export const actions = {
     }),
     'worldbuilding.removeRelation': v.object({ ...relationNamed, loopCheckLimit }),
     'worldbuilding.setRelationWeak': v.object({ ...relationNamed, weak: v.boolean(), loopCheckLimit }),
-    'worldbuilding.openEntry': v.object({ ...entryNamed, pointingAt: pointingAtShown }),
+    'worldbuilding.openEntry': v.object({ entry: entityId, pointingAt: pointingAtShown }),
     'worldbuilding.showPointingAtRange': v.pipe(
         v.object({ kind: kindId, ...rangeFields }),
         v.check(rangeRunsForward, RANGE_REFUSAL),

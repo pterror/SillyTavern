@@ -662,7 +662,7 @@ test('opening no world in particular opens the last one opened, else the first; 
     expect(w.asked.overview.at(-1)).toMatchObject({ book: '2', groupBy: null });
 
     const none = world(3, { worlds: [] });
-    await none.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    await none.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await none.act('worldbuilding.openOverview', unopened)).toEqual({
         changed: [
             OVERVIEW_VIEW,
@@ -768,7 +768,7 @@ test('duplicating a world opens the copy; importing a file opens what it made, a
 test('deleting the shown world opens the one the list orders after it, else before it, at the range it showed', async () => {
     const w = world(3, { worlds: ['1', '2', '3'] });
     await w.act('worldbuilding.openOverview', { ...open, book: '2', firstRank: 5, endRank: 15 });
-    await w.act('worldbuilding.openEntry', { book: '2', entry: '7', pointingAt });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     await w.other('worldbuilding.openOverview', { ...open, book: '2' });
     expect(await w.act('worldbuilding.deleteWorld', { book: '2' })).toEqual({
         changed: [RESULTS_VIEW, FOUND_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, WORLDS_VIEW],
@@ -1048,8 +1048,9 @@ const entryOpen = (view: EntryView): OpenEntryView => {
 
 test('opening an entry opens its view: the entry, its keys, placement, tokens and the first page of what mentions it; more pages append; closing it shows none', async () => {
     const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
-    expect(await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt })).toEqual({
+    expect(await w.act('worldbuilding.openEntry', { entry: '7', pointingAt })).toEqual({
         changed: [],
         opensViews: [ENTRY_VIEW, POINTING_AT_VIEW],
     });
@@ -1064,19 +1065,20 @@ test('opening an entry opens its view: the entry, its keys, placement, tokens an
     expect(more.mentionedIn.entries.map((m) => m.from.thing)).toEqual(['8', 'p1', 'p2']);
     expect(more.mentionedIn.next).toBeNull();
     expect(w.asked.entryReads.at(-1)).toEqual({ book: '1', entry: '7', mentionPages: ['p1', 'p2'] });
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '8', pointingAt });
+    await w.act('worldbuilding.openEntry', { entry: '8', pointingAt });
     expect(w.asked.entryReads.length).toBe(2);
     expect(entryOpen(await w.view<EntryView>(ENTRY_VIEW)).mentionedIn.entries).toHaveLength(1);
     expect(await w.act('worldbuilding.closeEntry', {})).toEqual({ changed: [ENTRY_VIEW, POINTING_AT_VIEW] });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
     expect(await w.act('worldbuilding.showMoreMentions', { cursor: 'p1' })).toEqual({ refused: 'No entry is open.' });
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '404', pointingAt });
+    await w.act('worldbuilding.openEntry', { entry: '404', pointingAt });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
 });
 
 test('an edit names its world and entry, passes the session, answers the entry and the overview, and says why it is refused', async () => {
     const w = world(3);
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    await w.act('worldbuilding.openOverview', open);
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     const both = { changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, FOUND_VIEW] };
     expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '7', text: 'Ilse left.' })).toEqual(both);
     expect(entryOpen(await w.view<EntryView>(ENTRY_VIEW)).text).toBe('Ilse left.');
@@ -1115,6 +1117,7 @@ test('an edit names its world and entry, passes the session, answers the entry a
 
 test('making an entry places it, opens it when asked and says what it made and which loops it left; a refused one changes nothing', async () => {
     const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
     const make = {
         book: '1',
         after: '7',
@@ -1158,14 +1161,15 @@ test('making an entry places it, opens it when asked and says what it made and w
     expect(await w.act('worldbuilding.createEntry', { ...related, relation: { kind: '1', target: '999' } })).toEqual({
         refused: "The target isn't an entry of this world.",
     });
-    expect(await w.act('worldbuilding.createEntry', { ...make, book: '2' })).toEqual({
+    expect(await w.act('worldbuilding.createEntry', { ...make, book: '2', open: null })).toEqual({
         refused: 'That world no longer exists.',
     });
 });
 
 test('deleting the open entry closes it and offers it back under its label; restoring answers the loops it left', async () => {
     const w = world(3);
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    await w.act('worldbuilding.openOverview', open);
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     const all = {
         changed: [
             OVERVIEW_VIEW,
@@ -1203,10 +1207,11 @@ test('deleting the open entry closes it and offers it back under its label; rest
 
 test("a key's other entries open with the key, for the open entry only, and reopen with the next key", async () => {
     const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
     const ask = { book: '1', entry: '7', key: 'Ilse' };
     expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toEqual({ book: null });
     expect(await w.act('worldbuilding.showKeySharers', ask)).toEqual({ refused: 'No entry is open.' });
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.showKeySharers', { ...ask, entry: '8' })).toEqual({
         refused: 'No entry is open.',
     });
@@ -1219,13 +1224,14 @@ test("a key's other entries open with the key, for the open entry only, and reop
     expect(w.asked.sharers).toEqual([{ ...ask, limit: KEY_SHARERS_SHOWN }]);
     await w.act('worldbuilding.showKeySharers', { ...ask, key: 'lamp' });
     expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toMatchObject({ key: 'lamp', entries: [] });
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '8', pointingAt });
+    await w.act('worldbuilding.openEntry', { entry: '8', pointingAt });
     expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toEqual({ book: null });
 });
 
 test('an entry deleted elsewhere shows deleted under the label it was last shown with', async () => {
     const w = world(3);
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '8', pointingAt });
+    await w.act('worldbuilding.openOverview', open);
+    await w.act('worldbuilding.openEntry', { entry: '8', pointingAt });
     await w.view<EntryView>(ENTRY_VIEW);
     await w.other('worldbuilding.deleteEntry', { book: '1', entry: '8' });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({
@@ -1236,15 +1242,37 @@ test('an entry deleted elsewhere shows deleted under the label it was last shown
     });
 });
 
-test('moving the open entry to another world follows it there; the same world or a missing one is refused', async () => {
+test('moving the open entry to another world opens that world with the entry open over it; the same world or a missing one is refused', async () => {
     const w = world(3);
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    await w.act('worldbuilding.openOverview', { ...open, firstRank: 5, endRank: 15 });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.moveEntryToWorld', { book: '1', entry: '7', toBook: '1' })).toEqual({
         refused: 'The entry is in that world already.',
     });
     expect(await w.act('worldbuilding.moveEntryToWorld', { book: '1', entry: '7', toBook: '3' })).toEqual({
         refused: 'The world to move it to no longer exists.',
     });
+    expect(await w.act('worldbuilding.moveEntryToWorld', { book: '1', entry: '7', toBook: '2' })).toEqual({
+        changed: [RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW],
+        opensViews: WORLD_VIEWS,
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '2' });
+    await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect(w.asked.overview.at(-1)).toMatchObject({ book: '2', groupBy: null, firstRank: 0, endRank: 10 });
+    expect(w.asked.step.at(-1)).toEqual({ book: '2', groupBy: null, from: '90', by: 0 });
+    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
+        ...NOTHING_CHANGED,
+        movedEntry: { book: '1', entry: '7', toBook: '2', newEntry: '90' },
+    });
+    expect(w.asked.entryReads).toEqual([]);
+    await w.view<EntryView>(ENTRY_VIEW);
+    expect(w.asked.entryReads).toEqual([{ book: '2', entry: '90', mentionPages: [] }]);
+});
+
+test('moving an entry that is not the open one leaves the tab on its world, with the open entry still open', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    await w.act('worldbuilding.openEntry', { entry: '8', pointingAt });
     expect(await w.act('worldbuilding.moveEntryToWorld', { book: '1', entry: '7', toBook: '2' })).toEqual({
         changed: [
             OVERVIEW_VIEW,
@@ -1258,21 +1286,47 @@ test('moving the open entry to another world follows it there; the same world or
             LAST_CHANGE_VIEW,
         ],
     });
-    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
-        ...NOTHING_CHANGED,
-        movedEntry: { book: '1', entry: '7', toBook: '2', newEntry: '90' },
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '1' });
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ book: '1', entry: '8' });
+});
+
+test("an open entry is always the shown world's: another world closes it, the same one keeps it, and none opens none", async () => {
+    const w = world(3);
+    expect(await w.act('worldbuilding.openEntry', { entry: '7', pointingAt })).toEqual({
+        refused: 'No world is shown.',
     });
-    expect(w.asked.entryReads).toEqual([]);
-    await w.view<EntryView>(ENTRY_VIEW);
-    expect(w.asked.entryReads).toEqual([{ book: '2', entry: '90', mentionPages: [] }]);
+    expect(
+        await w.act('worldbuilding.createEntry', {
+            book: '1',
+            after: null,
+            name: null,
+            relation: null,
+            open: { pointingAt },
+            loopCheckLimit: 10,
+        }),
+    ).toEqual({ refused: "That world isn't shown." });
+    expect(w.asked.created).toEqual([]);
+    await w.act('worldbuilding.openOverview', open);
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
+    expect(await w.act('worldbuilding.openOverview', { ...open, firstRank: 3, endRank: 9 })).toEqual({
+        changed: [],
+        opensViews: WORLD_VIEWS,
+    });
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ book: '1', entry: '7' });
+    expect(await w.act('worldbuilding.openOverview', { ...open, book: '2', groupBy: null })).toEqual({
+        changed: [ENTRY_VIEW, POINTING_AT_VIEW],
+        opensViews: WORLD_VIEWS,
+    });
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
+    expect(await w.view<PointingAtView>(POINTING_AT_VIEW)).toEqual({ book: null });
 });
 
 test('the entry schemas take worlds and entries by id, keys trimmed and not empty, and placement fields each by its own type and range', () => {
     const ok = (type: keyof typeof actions, payload: unknown) => v.safeParse(actions[type], payload).success;
     const at = { book: '1', entry: '7' };
-    expect(ok('worldbuilding.openEntry', { ...at, pointingAt })).toBe(true);
-    expect(ok('worldbuilding.openEntry', at)).toBe(false);
-    expect(ok('worldbuilding.openEntry', { book: '1', entry: 'seven', pointingAt })).toBe(false);
+    expect(ok('worldbuilding.openEntry', { entry: '7', pointingAt })).toBe(true);
+    expect(ok('worldbuilding.openEntry', { entry: '7' })).toBe(false);
+    expect(ok('worldbuilding.openEntry', { entry: 'seven', pointingAt })).toBe(false);
     expect(ok('worldbuilding.addKey', { ...at, key: '  ', as: 'name' })).toBe(false);
     expect(ok('worldbuilding.addKey', { ...at, key: 'Ilse', as: 'title' })).toBe(false);
     expect(ok('worldbuilding.setKeyAs', { ...at, key: 'Ilse', as: 'trigger' })).toBe(true);
@@ -1315,8 +1369,9 @@ const ranksOf = (view: PointingAtView) =>
 
 test('opening an entry opens what points at it in the same answer: a section per kind, each from its first rank', async () => {
     const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
     expect(await w.view<PointingAtView>(POINTING_AT_VIEW)).toEqual({ book: null });
-    expect(await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt })).toEqual({
+    expect(await w.act('worldbuilding.openEntry', { entry: '7', pointingAt })).toEqual({
         changed: [],
         opensViews: [ENTRY_VIEW, POINTING_AT_VIEW],
     });
@@ -1340,7 +1395,7 @@ test('opening an entry opens what points at it in the same answer: a section per
         held: [],
         maxCards: MAX_CARDS_PER_READ,
     });
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '8', pointingAt });
+    await w.act('worldbuilding.openEntry', { entry: '8', pointingAt });
     expect(await w.view<PointingAtView>(POINTING_AT_VIEW)).toEqual({ book: '1', entry: '8', sections: [] });
     await w.other('worldbuilding.deleteEntry', { book: '1', entry: '8' });
     expect(await w.view<PointingAtView>(POINTING_AT_VIEW)).toEqual({ book: '1', entry: '8', sections: [] });
@@ -1350,10 +1405,11 @@ test('opening an entry opens what points at it in the same answer: a section per
 
 test("a section's range is held per session, the one asked last first, and reset when another entry opens", async () => {
     const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
     expect(await w.act('worldbuilding.showPointingAtRange', { kind: '1', firstRank: 0, endRank: 5 })).toEqual({
         refused: 'No entry is open.',
     });
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.showPointingAtRange', { kind: '1', firstRank: 300, endRank: 320 })).toEqual({
         changed: [POINTING_AT_VIEW],
     });
@@ -1371,17 +1427,18 @@ test("a section's range is held per session, the one asked last first, and reset
     expect(await w.act('worldbuilding.showPointingAtRange', { kind: '1', firstRank: 0, endRank: fits + 1 })).toEqual({
         refused: READ_REFUSAL,
     });
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt: { ...pointingAt, endRank: 4 } });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt: { ...pointingAt, endRank: 4 } });
     await w.view<PointingAtView>(POINTING_AT_VIEW);
     expect(w.asked.pointingAt.at(-1)).toMatchObject({ endRank: 4, held: [] });
 });
 
 test('a step in a section lands where the store says and its range follows; one past the read budget or no longer shown is refused', async () => {
     const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
     expect(await w.act('worldbuilding.stepPointingAt', { kind: '1', from: '1@7/1000', by: 1 })).toEqual({
         refused: 'No entry is open.',
     });
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.stepPointingAt', { kind: '1', from: '1@7/1005', by: 1 })).toEqual({
         changed: [POINTING_AT_VIEW],
     });
@@ -1415,8 +1472,9 @@ test('a step in a section lands where the store says and its range follows; one 
 
 test('moving the open entry to another world keeps how its page draws what points at it', async () => {
     const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
     const wide = { endRank: 7, layout: { regionsByNestingLevel: [{ columns: 4, rows: 1 }], cardTextCharacters: 80 } };
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt: wide });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt: wide });
     await w.act('worldbuilding.showPointingAtRange', { kind: '1', firstRank: 40, endRank: 47 });
     await w.act('worldbuilding.moveEntryToWorld', { book: '1', entry: '7', toBook: '2' });
     await w.view<PointingAtView>(POINTING_AT_VIEW);
@@ -1484,7 +1542,7 @@ test("the filter is the shown world's: setting it opens the results at their fir
         pageSize: 2,
         pages: [null],
     });
-    await w.act('worldbuilding.openEntry', { book: '1', entry: '7', pointingAt });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.setFilter', filter)).toEqual({
         changed: [ENTRY_VIEW, POINTING_AT_VIEW],
         opensViews: [RESULTS_VIEW],

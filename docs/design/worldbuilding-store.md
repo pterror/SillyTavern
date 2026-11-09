@@ -495,9 +495,11 @@ Actions:
   relation rewrites only its `target`, `position` and `weak` fields, keeping every other field of its object and every
   other relation as written.
 
-- `worldbuilding.openEntry` (book, entry, and how the page draws what points at it: the layout and the `endRank` each
-  section starts with, within one read's budget; opens the entry view and `worldbuilding.pointingAt`), `closeEntry`,
-  `showMoreMentions` (cursor);
+- `worldbuilding.openEntry` (an entry of the shown world, and how the page draws what points at it: the layout and the
+  `endRank` each section starts with, within one read's budget; opens the entry view and `worldbuilding.pointingAt`),
+  `closeEntry`, `showMoreMentions` (cursor). The open entry is held inside the session's shown world and has no world
+  of its own, so it is always one of the shown world's entries: opening another world closes it, reopening the same
+  world (another range, layout or grouping) keeps it, and with no world shown none opens;
 - `worldbuilding.showPointingAtRange` (kind, range) and `worldbuilding.stepPointingAt` (kind, from an occurrence or
   none, `n` on in reading order or to its parent or first child; the section's range follows where it lands), refused
   past one read's budget as the overview's are; every relation, entry and kind action that answers the entry view or
@@ -506,7 +508,7 @@ Actions:
   the world), `setKeyAs`, `removeKey`, `setPlacement` (a partial set of placement fields, each checked by its own
   schema), each naming its book and entry, each a write of the entry as it is stored at that moment (last write wins);
 - `worldbuilding.createEntry` (after an entry or last, optionally named, optionally with a relation, optionally opened,
-  with the same layout as `openEntry` takes):
+  with the same layout as `openEntry` takes; opening it is refused unless its world is the shown one):
   one commit. It goes right after `after` in the world's order: between its order value and the next entry's, a whole
   number when one fits, else the middle (`entry_page::place_after`). When the next entry has the same order value, the
   entries with that value after `after` (at most 1,000) move to a value between it and the entry after them, and the
@@ -515,7 +517,8 @@ Actions:
   defaults; with a name, the name is its one key and its one name; its relation goes last among its kind's to its
   target (`relations::relations_of_new_entry`);
 - `worldbuilding.deleteEntry` (the chunked delete, through `apply`), `restoreEntry`, `moveEntryToWorld` (a transplant
-  that deletes the original; its relations drop; an open entry follows it).
+  that deletes the original; its relations drop; when it is the open entry, the answer opens the world it went to, at
+  the range the page showed, around it and grouped by nothing, with it open over that world).
 - `worldbuilding.openOverview` takes `book: null` for the world last opened: a book choice of the user in its own slot
   (`CHOICE.lastOpened`), so it follows a rename and goes with a delete; upstream's `power_user.wi_last_editor_book`
   becomes it when upstream's settings are converted. Else the first world; with none, it opens `worldbuilding.world`

@@ -300,7 +300,6 @@ export function rangeAround(rank: number, firstRank: number, endRank: number): {
 export type ShownPointingAt = PointingAtShown & { ranges: PointingAtRange[] };
 
 export type OpenEntry = {
-    book: string;
     entry: string;
     label: Named | null;
     mentionPages: string[];
@@ -321,10 +320,11 @@ export type ShownFilter = {
     pages: (string | null)[];
 };
 
+export type ShownWorldState = { overview: ShownOverview; entry: OpenEntry | null };
+
 type SessionState = {
-    overview: ShownOverview | null;
+    world: ShownWorldState | null;
     kindsOfBook: string | null;
-    entry: OpenEntry | null;
     lastChange: LastChangeView;
     filter: ShownFilter | null;
     finding: { book: string; query: string } | null;
@@ -332,17 +332,17 @@ type SessionState = {
 };
 
 const NO_SESSION_STATE: SessionState = {
-    overview: null,
+    world: null,
     kindsOfBook: null,
-    entry: null,
     lastChange: NOTHING_CHANGED,
     filter: null,
     finding: null,
     selection: null,
 };
 
-const opened = (book: string, entry: string, { endRank, layout }: PointingAtShown): OpenEntry => ({
-    book,
+type EntryShown = { book: string; shown: OpenEntry };
+
+const opened = (entry: string, { endRank, layout }: PointingAtShown): OpenEntry => ({
     entry,
     label: null,
     mentionPages: [],
@@ -379,10 +379,29 @@ export function worldbuildingArea(ports: Ports) {
         }
     };
 
+    const overviewOf = (session: string): ShownOverview | null => stateOf(session).world?.overview ?? null;
+
+    const entryOf = (session: string): EntryShown | null => {
+        const world = stateOf(session).world;
+        return world?.entry ? { book: world.overview.book, shown: world.entry } : null;
+    };
+
+    const rememberEntry = (session: string, entry: OpenEntry | null, change: Partial<SessionState> = {}) => {
+        const world = stateOf(session).world;
+        remember(session, { ...change, ...(world ? { world: { ...world, entry } } : {}) });
+    };
+
+    const rememberOverview = (session: string, overview: ShownOverview) => {
+        const world = stateOf(session).world;
+        remember(session, {
+            world: { overview, entry: world?.overview.book === overview.book ? world.entry : null },
+        });
+    };
+
     const withOverview =
         <P>(run: (context: ActionContext, overview: ShownOverview, payload: P) => Promise<ActionResult>) =>
         async (context: ActionContext, payload: P): Promise<ActionResult> => {
-            const overview = stateOf(context.session).overview;
+            const overview = overviewOf(context.session);
             return overview ? run(context, overview, payload) : { refused: NO_WORLD_SHOWN };
         };
 
@@ -425,22 +444,28 @@ export function worldbuildingArea(ports: Ports) {
     };
 
     const readEntryView = async (context: ViewContext): Promise<EntryView> => {
-        const shown = stateOf(context.session).entry;
-        if (!shown) return NO_ENTRY;
-        const read = await ports.readEntry(context.user, shown.book, shown.entry, shown.mentionPages);
+        const open = entryOf(context.session);
+        if (!open) return NO_ENTRY;
+        const { book, shown } = open;
+        const read = await ports.readEntry(context.user, book, shown.entry, shown.mentionPages);
         if (read === null) return NO_ENTRY;
-        if (read.deleted) return { book: shown.book, entry: shown.entry, deleted: true, label: shown.label };
-        const current = stateOf(context.session).entry;
-        if (current?.book === shown.book && current.entry === shown.entry) {
-            bySession.set(context.session, { ...stateOf(context.session), entry: { ...current, label: read.label } });
+        if (read.deleted) return { book, entry: shown.entry, deleted: true, label: shown.label };
+        const state = stateOf(context.session);
+        const world = state.world;
+        if (world?.overview.book === book && world.entry?.entry === shown.entry) {
+            bySession.set(context.session, {
+                ...state,
+                world: { ...world, entry: { ...world.entry, label: read.label } },
+            });
         }
-        return { book: shown.book, entry: shown.entry, ...read };
+        return { book, entry: shown.entry, ...read };
     };
 
     const readPointingAtView = async (context: ViewContext): Promise<PointingAtView> => {
-        const shown = stateOf(context.session).entry;
-        if (!shown) return NOTHING_POINTED_AT;
-        const { book, entry, pointingAt } = shown;
+        const open = entryOf(context.session);
+        if (!open) return NOTHING_POINTED_AT;
+        const { book } = open;
+        const { entry, pointingAt } = open.shown;
         const sections = await ports.readPointingAt(context.user, {
             book,
             entry,
@@ -453,7 +478,8 @@ export function worldbuildingArea(ports: Ports) {
     };
 
     const readResultsView = async (context: ViewContext): Promise<ResultsView> => {
-        const { filter: shown, overview } = stateOf(context.session);
+        const shown = stateOf(context.session).filter;
+        const overview = overviewOf(context.session);
         if (!shown || overview?.book !== shown.book) return NO_RESULTS;
         const read = await ports.readResults(context.user, {
             book: shown.book,
@@ -501,8 +527,8 @@ export function worldbuildingArea(ports: Ports) {
     };
 
     const shownSelection = (session: string): HeldSelection | null => {
-        const { selection, overview } = stateOf(session);
-        return selection && selection.book === overview?.book ? selection : null;
+        const selection = stateOf(session).selection;
+        return selection && selection.book === overviewOf(session)?.book ? selection : null;
     };
 
     const readSelectionView = async (context: ViewContext): Promise<SelectionView> => {
@@ -538,10 +564,10 @@ export function worldbuildingArea(ports: Ports) {
     };
 
     const withOpenEntry =
-        <P>(run: (context: ActionContext, shown: OpenEntry, payload: P) => Promise<ActionResult>) =>
+        <P>(run: (context: ActionContext, open: EntryShown, payload: P) => Promise<ActionResult>) =>
         async (context: ActionContext, payload: P): Promise<ActionResult> => {
-            const shown = stateOf(context.session).entry;
-            return shown ? run(context, shown, payload) : { refused: NO_ENTRY_OPEN };
+            const open = entryOf(context.session);
+            return open ? run(context, open, payload) : { refused: NO_ENTRY_OPEN };
         };
 
     const showWorld = async (
@@ -552,9 +578,8 @@ export function worldbuildingArea(ports: Ports) {
         const opened = await ports.openWorld(who(context), book);
         if (opened === null) {
             remember(context.session, {
-                overview: null,
+                world: null,
                 kindsOfBook: null,
-                entry: null,
                 lastChange: NOTHING_CHANGED,
                 filter: null,
                 selection: null,
@@ -591,16 +616,23 @@ export function worldbuildingArea(ports: Ports) {
                 };
             }
         }
-        const { filter, selection } = stateOf(context.session);
+        const { filter, selection, world } = stateOf(context.session);
         const filterStays = filter?.book === opened;
+        const entry = world?.overview.book === opened ? world.entry : null;
         remember(context.session, {
-            overview,
+            world: { overview, entry },
             kindsOfBook: opened,
             lastChange: NOTHING_CHANGED,
             ...(filterStays ? {} : { filter: null }),
             ...(selection?.book === opened ? {} : { selection: null }),
         });
-        return { changed: filter && !filterStays ? [RESULTS_VIEW] : [], opensViews: VIEWS_OF_A_WORLD };
+        return {
+            changed: [
+                ...(filter && !filterStays ? [RESULTS_VIEW] : []),
+                ...(world?.entry && !entry ? [ENTRY_VIEW, POINTING_AT_VIEW] : []),
+            ],
+            opensViews: VIEWS_OF_A_WORLD,
+        };
     };
 
     const newWorldShown = async (
@@ -616,14 +648,13 @@ export function worldbuildingArea(ports: Ports) {
 
     const forgetWorld = (book: string) => {
         for (const [session, state] of bySession) {
-            const shows = [state.overview?.book, state.kindsOfBook, state.entry?.book, state.finding?.book];
-            if (!shows.includes(book)) continue;
+            const shown = state.world?.overview.book;
+            if (![shown, state.kindsOfBook, state.finding?.book].includes(book)) continue;
             bySession.set(session, {
                 ...state,
-                overview: state.overview?.book === book ? null : state.overview,
+                world: shown === book ? null : state.world,
                 kindsOfBook: state.kindsOfBook === book ? null : state.kindsOfBook,
-                entry: state.entry?.book === book ? null : state.entry,
-                filter: state.overview?.book === book ? null : state.filter,
+                filter: shown === book ? null : state.filter,
                 finding: state.finding?.book === book ? null : state.finding,
                 selection: state.selection?.book === book ? null : state.selection,
             });
@@ -637,11 +668,11 @@ export function worldbuildingArea(ports: Ports) {
                 worlds: await ports.readWorlds(context.user),
             }),
             [WORLD_VIEW]: async (context: ViewContext): Promise<WorldView> => {
-                const book = stateOf(context.session).overview?.book;
+                const book = overviewOf(context.session)?.book;
                 return (book === undefined ? null : await ports.readWorld(context.user, book)) ?? NO_WORLD;
             },
             [OVERVIEW_VIEW]: async (context: ViewContext): Promise<OverviewView> => {
-                const overview = stateOf(context.session).overview;
+                const overview = overviewOf(context.session);
                 if (!overview) return NO_OVERVIEW;
                 const read = await ports.readOverview(context.user, overview);
                 return read ? { book: overview.book, groupBy: overview.groupBy, ...read } : NO_OVERVIEW;
@@ -653,9 +684,10 @@ export function worldbuildingArea(ports: Ports) {
             },
             [ENTRY_VIEW]: readEntryView,
             [KEY_SHARERS_VIEW]: async (context: ViewContext): Promise<KeySharersView> => {
-                const shown = stateOf(context.session).entry;
-                if (!shown || shown.sharersOf === null) return NO_KEY_SHARERS;
-                const { book, entry, sharersOf: key } = shown;
+                const open = entryOf(context.session);
+                if (!open || open.shown.sharersOf === null) return NO_KEY_SHARERS;
+                const { book } = open;
+                const { entry, sharersOf: key } = open.shown;
                 const read = await ports.readKeySharers(context.user, { book, entry, key, limit: KEY_SHARERS_SHOWN });
                 return read ? { book, entry, key, ...read } : NO_KEY_SHARERS;
             },
@@ -664,7 +696,7 @@ export function worldbuildingArea(ports: Ports) {
             [FOUND_VIEW]: readFoundView,
             [SELECTION_VIEW]: readSelectionView,
             [BULK_JOBS_VIEW]: async (context: ViewContext): Promise<BulkJobsView> => {
-                const book = stateOf(context.session).overview?.book;
+                const book = overviewOf(context.session)?.book;
                 const jobs = book === undefined ? null : await ports.readBulkJobs(context.user, book);
                 return jobs && book !== undefined ? { book, jobs } : NO_BULK_JOBS;
             },
@@ -684,7 +716,7 @@ export function worldbuildingArea(ports: Ports) {
             'worldbuilding.openOverview': (context, { book, ...shown }) => showWorld(context, book, shown),
             'worldbuilding.showRange': withOverview(async (context, overview, { firstRank, endRank }) => {
                 if (!readFitsTheBudget(endRank - firstRank, overview.layout)) return { refused: READ_REFUSAL };
-                remember(context.session, { overview: { ...overview, firstRank, endRank } });
+                rememberOverview(context.session, { ...overview, firstRank, endRank });
                 return { changed: [OVERVIEW_VIEW] };
             }),
             'worldbuilding.stepOverview': withOverview(async (context, overview, step) => {
@@ -695,12 +727,10 @@ export function worldbuildingArea(ports: Ports) {
                 const { book, groupBy, layout, firstRank, endRank } = overview;
                 const landed = await ports.stepOverview(context.user, { book, groupBy, layout, ...step });
                 if (!landed) return { refused: 'That is no longer shown.', changed: [OVERVIEW_VIEW] };
-                remember(context.session, {
-                    overview: {
-                        ...overview,
-                        ...rangeAround(landed.topLevelRank, firstRank, endRank),
-                        stepLandedOn: landed.occurrence,
-                    },
+                rememberOverview(context.session, {
+                    ...overview,
+                    ...rangeAround(landed.topLevelRank, firstRank, endRank),
+                    stepLandedOn: landed.occurrence,
                 });
                 return { changed: [OVERVIEW_VIEW] };
             }),
@@ -744,27 +774,28 @@ export function worldbuildingArea(ports: Ports) {
                 relationChanged(context, { change: 'remove', ...relation }),
             'worldbuilding.setRelationWeak': (context, relation) =>
                 relationChanged(context, { change: 'setWeak', ...relation }),
-            'worldbuilding.openEntry': async (context, { book, entry, pointingAt }) => {
-                remember(context.session, { entry: opened(book, entry, pointingAt) });
+            'worldbuilding.openEntry': withOverview(async (context, _overview, { entry, pointingAt }) => {
+                rememberEntry(context.session, opened(entry, pointingAt));
                 return { changed: [], opensViews: [ENTRY_VIEW, POINTING_AT_VIEW] };
-            },
+            }),
             'worldbuilding.closeEntry': async (context) => {
-                remember(context.session, { entry: null });
+                rememberEntry(context.session, null);
                 return { changed: [ENTRY_VIEW, POINTING_AT_VIEW] };
             },
-            'worldbuilding.showPointingAtRange': withOpenEntry(async (context, shown, { kind, firstRank, endRank }) => {
+            'worldbuilding.showPointingAtRange': withOpenEntry(async (context, { shown }, { kind, ...range }) => {
+                const { firstRank, endRank } = range;
                 if (!readFitsTheBudget(endRank - firstRank, shown.pointingAt.layout)) return { refused: READ_REFUSAL };
-                const range = { ...heldRange(shown.pointingAt, kind), firstRank, endRank };
-                remember(context.session, { entry: { ...shown, pointingAt: withRange(shown.pointingAt, range) } });
+                const held = { ...heldRange(shown.pointingAt, kind), firstRank, endRank };
+                rememberEntry(context.session, { ...shown, pointingAt: withRange(shown.pointingAt, held) });
                 return { changed: [POINTING_AT_VIEW] };
             }),
-            'worldbuilding.stepPointingAt': withOpenEntry(async (context, shown, { kind, ...step }) => {
+            'worldbuilding.stepPointingAt': withOpenEntry(async (context, { book, shown }, { kind, ...step }) => {
                 const { layout } = shown.pointingAt;
                 const crossed = 'by' in step ? Math.abs(step.by) + 1 : 1;
                 if (crossed * cardsPerTopLevelEntry(layout.regionsByNestingLevel) > MAX_CARDS_PER_READ) {
                     return { refused: READ_REFUSAL };
                 }
-                const { book, entry } = shown;
+                const { entry } = shown;
                 const landed = await ports.stepPointingAt(context.user, { book, entry, kind, layout, ...step });
                 if (!landed) return { refused: 'That is no longer shown.', changed: [POINTING_AT_VIEW] };
                 const held = heldRange(shown.pointingAt, kind);
@@ -773,17 +804,15 @@ export function worldbuildingArea(ports: Ports) {
                     ...rangeAround(landed.topLevelRank, held.firstRank, held.endRank),
                     stepLandedOn: landed.occurrence,
                 };
-                remember(context.session, { entry: { ...shown, pointingAt: withRange(shown.pointingAt, range) } });
+                rememberEntry(context.session, { ...shown, pointingAt: withRange(shown.pointingAt, range) });
                 return { changed: [POINTING_AT_VIEW] };
             }),
-            'worldbuilding.showMoreMentions': async (context, { cursor }) => {
-                const shown = stateOf(context.session).entry;
-                if (!shown) return { refused: NO_ENTRY_OPEN };
+            'worldbuilding.showMoreMentions': withOpenEntry(async (context, { shown }, { cursor }) => {
                 if (!shown.mentionPages.includes(cursor)) {
-                    remember(context.session, { entry: { ...shown, mentionPages: [...shown.mentionPages, cursor] } });
+                    rememberEntry(context.session, { ...shown, mentionPages: [...shown.mentionPages, cursor] });
                 }
                 return { changed: [ENTRY_VIEW] };
-            },
+            }),
             'worldbuilding.setEntryText': (context, { book, entry, text }) =>
                 entryEdited(context, book, entry, { change: 'text', text }),
             'worldbuilding.setEntryTitle': (context, { book, entry, title }) =>
@@ -794,25 +823,25 @@ export function worldbuildingArea(ports: Ports) {
                 entryEdited(context, book, entry, { change: 'setKeyAs', key, as }),
             'worldbuilding.removeKey': (context, { book, entry, key }) =>
                 entryEdited(context, book, entry, { change: 'removeKey', key }),
-            'worldbuilding.showKeySharers': withOpenEntry(async (context, shown, { book, entry, key }) => {
-                if (shown.book !== book || shown.entry !== entry) return { refused: NO_ENTRY_OPEN };
-                remember(context.session, { entry: { ...shown, sharersOf: key } });
+            'worldbuilding.showKeySharers': withOpenEntry(async (context, open, { book, entry, key }) => {
+                if (open.book !== book || open.shown.entry !== entry) return { refused: NO_ENTRY_OPEN };
+                rememberEntry(context.session, { ...open.shown, sharersOf: key });
                 return { changed: [], opensViews: [KEY_SHARERS_VIEW] };
             }),
             'worldbuilding.setPlacement': (context, { book, entry, fields }) =>
                 entryEdited(context, book, entry, { change: 'placement', fields }),
             'worldbuilding.createEntry': async (context, { book, after, name, relation, open, loopCheckLimit }) => {
+                if (open && overviewOf(context.session)?.book !== book) return { refused: NOT_SHOWN };
                 const made = await ports.createEntry(who(context), book, { after, name, relation }, loopCheckLimit);
                 if (made === 'missing') return { refused: WORLD_GONE };
                 if ('refused' in made) return { refused: made.refused };
-                remember(context.session, {
-                    ...(open ? { entry: opened(book, made.entry, open.pointingAt) } : {}),
-                    lastChange: {
-                        ...NOTHING_CHANGED,
-                        createdEntry: { book, entry: made.entry },
-                        unreachedLoops: made.unreachedLoops,
-                    },
-                });
+                const lastChange = {
+                    ...NOTHING_CHANGED,
+                    createdEntry: { book, entry: made.entry },
+                    unreachedLoops: made.unreachedLoops,
+                };
+                if (open) rememberEntry(context.session, opened(made.entry, open.pointingAt), { lastChange });
+                else remember(context.session, { lastChange });
                 return open
                     ? {
                           changed: [...VIEWS_COUNTING_ENTRIES, LAST_CHANGE_VIEW],
@@ -823,15 +852,17 @@ export function worldbuildingArea(ports: Ports) {
             'worldbuilding.deleteEntry': async (context, { book, entry }) => {
                 const done = await ports.deleteEntry(who(context), book, entry);
                 if (typeof done === 'string' || 'refused' in done) return refusedWrite(done);
-                const shown = stateOf(context.session).entry;
-                remember(context.session, {
-                    ...(shown?.book === book && shown.entry === entry ? { entry: null } : {}),
-                    lastChange: {
-                        ...NOTHING_CHANGED,
-                        deletedEntry: { book, entry, label: done.label },
-                        unreachedLoops: done.unreachedLoops,
-                    },
-                });
+                const open = entryOf(context.session);
+                const lastChange = {
+                    ...NOTHING_CHANGED,
+                    deletedEntry: { book, entry, label: done.label },
+                    unreachedLoops: done.unreachedLoops,
+                };
+                if (open?.book === book && open.shown.entry === entry) {
+                    rememberEntry(context.session, null, { lastChange });
+                } else {
+                    remember(context.session, { lastChange });
+                }
                 return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
             },
             'worldbuilding.restoreEntry': async (context, { book, entry }) => {
@@ -844,18 +875,32 @@ export function worldbuildingArea(ports: Ports) {
                 if (toBook === book) return { refused: 'The entry is in that world already.' };
                 const moved = await ports.moveEntryToWorld(who(context), book, entry, toBook);
                 if (typeof moved === 'string' || 'refused' in moved) return refusedWrite(moved);
-                const shown = stateOf(context.session).entry;
-                remember(context.session, {
-                    ...(shown?.book === book && shown.entry === entry
-                        ? { entry: opened(toBook, moved.entry, shown.pointingAt) }
-                        : {}),
-                    lastChange: {
-                        ...NOTHING_CHANGED,
-                        movedEntry: { book, entry, toBook, newEntry: moved.entry },
-                        unreachedLoops: moved.unreachedLoops,
-                    },
+                const lastChange = {
+                    ...NOTHING_CHANGED,
+                    movedEntry: { book, entry, toBook, newEntry: moved.entry },
+                    unreachedLoops: moved.unreachedLoops,
+                };
+                const changed = [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW];
+                const open = entryOf(context.session);
+                const overview = overviewOf(context.session);
+                if (!overview || open?.book !== book || open.shown.entry !== entry) {
+                    remember(context.session, { lastChange });
+                    return { changed };
+                }
+                const shown = await showWorld(context, toBook, {
+                    groupBy: null,
+                    firstRank: 0,
+                    endRank: overview.endRank - overview.firstRank,
+                    layout: overview.layout,
+                    around: moved.entry,
                 });
-                return { changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW] };
+                rememberEntry(context.session, opened(moved.entry, open.shown.pointingAt), { lastChange });
+                return {
+                    changed: [...new Set([...changed, ...shown.changed])].filter(
+                        (view) => !shown.opensViews.includes(view),
+                    ),
+                    opensViews: shown.opensViews,
+                };
             },
             'worldbuilding.openWorlds': async () => ({ changed: [], opensViews: [WORLDS_VIEW] }),
             'worldbuilding.createWorld': async (context, { name, overview }) =>
@@ -869,7 +914,7 @@ export function worldbuildingArea(ports: Ports) {
             'worldbuilding.duplicateWorld': async (context, { book, overview }) =>
                 newWorldShown(context, await ports.duplicateWorld(who(context), book), overview),
             'worldbuilding.deleteWorld': async (context, { book }) => {
-                const shown = stateOf(context.session).overview;
+                const shown = overviewOf(context.session);
                 const done = await ports.deleteWorld(who(context), book);
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 forgetWorld(book);
@@ -950,10 +995,9 @@ export function worldbuildingArea(ports: Ports) {
                     if (!label) return { refused: NO_SUCH_ENTRY };
                     held.push({ ...chip, label });
                 }
-                const closes = stateOf(context.session).entry !== null;
-                remember(context.session, {
+                const closes = entryOf(context.session) !== null;
+                rememberEntry(context.session, null, {
                     filter: { book, query, chips: held, pageSize, generation: ++filtersSet, pages: [null] },
-                    entry: null,
                     ...selectionChange,
                 });
                 return {
