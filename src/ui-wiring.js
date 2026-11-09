@@ -11,6 +11,7 @@ import { referencesArea } from '@st/references/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
 import { References } from './world-info/references.js';
 import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
+import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
 import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
 import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
@@ -230,6 +231,8 @@ const backgroundPorts = {
 };
 
 export const SETTINGS_VIEWS = ['settings'];
+
+export const WORLD_LIST_VIEWS = ['worldbuilding.worlds', 'worldbuilding.world'];
 
 /**
  * @param {import('@st/protocol').ChatOwner | null} owner
@@ -548,6 +551,13 @@ onUserStoreOpened(({ events, root, handle }) => {
 
 /** @type {import('@st/worldbuilding/server').Ports} */
 const worldbuildingPorts = {
+    ...worldbuildingWorldPorts({
+        libOf,
+        async booksChanged(user, change) {
+            const document = settingsDocumentOf(user.directories);
+            return document ? document.booksChanged(change) : change();
+        },
+    }),
     ...worldbuildingEntryPorts({
         libOf,
         referencesOf,

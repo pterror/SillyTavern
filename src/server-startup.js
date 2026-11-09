@@ -30,7 +30,7 @@ import { router as contentManagerRouter } from './endpoints/content-manager.js';
 import { router as settingsRouter } from './endpoints/settings.js';
 import { router as tagsRouter } from './endpoints/tags.js';
 import { router as viewsRouter } from './endpoints/views.js';
-import { ui, uiUser, rememberModelLists, SETTINGS_VIEWS } from './ui-wiring.js';
+import { ui, uiUser, rememberModelLists, SETTINGS_VIEWS, WORLD_LIST_VIEWS } from './ui-wiring.js';
 import { router as hordeRouter } from './endpoints/horde.js';
 import { router as openRouterRouter } from './endpoints/openrouter.js';
 import { router as nanogptRouter } from './endpoints/nanogpt.js';
@@ -78,8 +78,10 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/groups', groupsRouter);
     app.use('/api/worldinfo', worldInfoRouter);
     app.use('/api/stats', statsRouter);
+    /** @type {[RegExp, string[]][]} */
     const OLD_WRITES = [
-        [/^\/api\/settings\/(save|save-partial)$/, SETTINGS_VIEWS],
+        [/^\/api\/settings\/(save|save-partial)$/, [...SETTINGS_VIEWS, ...WORLD_LIST_VIEWS]],
+        [/^\/api\/worldinfo\/(create|import|duplicate|rename|delete|entries\/apply|entry\/(create|transplant))$/, WORLD_LIST_VIEWS],
     ];
     app.use((request, response, next) => {
         const views = request.method === 'POST' && request.user ? OLD_WRITES.find(([route]) => route.test(request.path))?.[1] : undefined;

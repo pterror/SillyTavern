@@ -13,7 +13,7 @@ import { writeBundle } from './bundle-store.js';
 import { bundleDraftOf, bundleDraftsFromFiles, bundleEntityOf, bundleFileFromStore, statedBundleFiles } from './settings-model/bundle-import.js';
 import { readDraft, writeDrafts } from './settings-model/model-store.js';
 import { readUserModel, withChosen, writeUserModel } from './settings-model/user-store.js';
-import { CHOICE, readChoices } from './settings-model/book-choices.js';
+import { CHOICE, readChoices, takeUpstreamLastOpened } from './settings-model/book-choices.js';
 import { importUpstreamWorlds, upstreamImportPending } from './upstream-import.js';
 import { userConnections } from './settings-model/settings-compat.js';
 import { keyOf } from './settings-model/keys.js';
@@ -137,6 +137,7 @@ async function open(directories, handle) {
         }
         const written = await writeUserModel(lib, handle, made, { bundles: imported.bundles });
         for (const warning of [...made.warnings, ...imported.warnings, ...written.warnings]) console.warn(`[settings] ${handle}: ${warning}`);
+        await takeUpstreamLastOpened(lib, handle, upstream);
         model = await readUserModel(lib, handle);
         if (!model) throw new Error(`the settings of ${handle} weren't there after their conversion`);
     }

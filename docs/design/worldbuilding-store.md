@@ -371,6 +371,10 @@ One area, `@st/worldbuilding`. Views:
   the first page of the references to it (`src/world-info/references.js`), each source's label with the sentence
   around its first mention, and the pages `showMoreMentions` added. A deleted entry shows as deleted, under the label
   it was last shown with.
+- `worldbuilding.worlds`: every world, `{id, name, entries, usedInEveryChat}`, in the order of the files their names
+  would have had (`compareBookKeys`: `<name>.json` by the server's locale); `entries` is the book's kept count
+  (`book_stats`), so no world's entries are read.
+- `worldbuilding.world`: the shown world's header, the same fields, or `{id: null}` when no world is shown.
 
 Actions:
 
@@ -403,6 +407,18 @@ Actions:
   target (`relations::relations_of_new_entry`);
 - `worldbuilding.deleteEntry` (the chunked delete, through `apply`), `restoreEntry`, `moveEntryToWorld` (a transplant
   that deletes the original; its relations drop; an open entry follows it).
+- `worldbuilding.openOverview` takes `book: null` for the world last opened: a book choice of the user in its own slot
+  (`CHOICE.lastOpened`), so it follows a rename and goes with a delete; upstream's `power_user.wi_last_editor_book`
+  becomes it when upstream's settings are converted. Else the first world; with none, it opens `worldbuilding.world`
+  as no world and `worldbuilding.worlds`. Opening a world writes the choice when it changes.
+- `worldbuilding.openWorlds` opens the list; `createWorld` (a name; refused when taken, reserved for embedded books, or
+  no name a book key can be), `duplicateWorld` (the next free `name (n)`), `importWorld` (the file sent with it:
+  upstream's world file, upstream's PNG with a world in its `naidata` text, or a NovelAI, Agnai or Risu book,
+  `src/world-info/world-files.js`; named after the file, made free the same way) each write a new book in one commit
+  (`books.create`, refused in the write's lane when the name is taken) and open it at the range they carry;
+  `renameWorld` and `deleteWorld` are the books' rename (relinking) and delete, run through the settings document so the
+  choices it shows follow; `exportWorld` answers `{fileName, json}` in the action's answer; `setUsedInEveryChat` writes
+  the user's global selection choice. A delete clears every session showing the world.
 
 The engine answers each read in one snapshot (`overview.rs`: `read_overview`, `step_in_reading_order`;
 `relations.rs`: `relation_edit`, `unreached_among`; `entry_page.rs`: `read_entry`, `labels`, `place_after`). A relation

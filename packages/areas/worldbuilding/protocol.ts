@@ -6,6 +6,8 @@ export const RELATION_KINDS_VIEW = 'worldbuilding.relationKinds';
 export const LAST_CHANGE_VIEW = 'worldbuilding.lastChange';
 export const LOOPS_LEFT_BY_JOBS_VIEW = 'worldbuilding.loopsLeftByJobs';
 export const ENTRY_VIEW = 'worldbuilding.entry';
+export const WORLDS_VIEW = 'worldbuilding.worlds';
+export const WORLD_VIEW = 'worldbuilding.world';
 
 export const READS_PER_REQUEST = 24_000;
 // A card reads its title, text, keys, names and relations, and per relation the kind's name and the target's
@@ -170,6 +172,14 @@ export type DeletedEntryView = EntryAt & { deleted: true; label: Named | null };
 
 export type EntryView = OpenEntryView | DeletedEntryView | { book: null };
 
+export type World = { id: string; name: string; entries: number; usedInEveryChat: boolean };
+
+export type WorldsView = { worlds: World[] };
+
+export type WorldView = World | { id: null };
+
+export type ExportedWorld = { fileName: string; json: string };
+
 export function cardsPerTopLevelEntry(levels: RegionLayout[]): number {
     let cards = 1;
     let atLevel = 1;
@@ -209,13 +219,24 @@ const betweenMembers = { after: v.nullable(entityId), before: v.nullable(entityI
 const relationNamed = { book: entityId, entry: entityId, kind: kindId, target: entityId };
 
 const entryNamed = { book: entityId, entry: entityId };
+const worldName = v.pipe(v.string(), v.trim(), v.minLength(1, 'A world needs a name.'));
+const shownOverview = v.pipe(
+    v.object({ ...rangeFields, layout }),
+    v.check(rangeRunsForward, RANGE_REFUSAL),
+    v.check(
+        <T extends Range & { layout: OverviewLayout }>(read: T) =>
+            readFitsTheBudget(read.endRank - read.firstRank, read.layout),
+        READ_REFUSAL,
+    ),
+);
+const opensWorld = { overview: shownOverview };
 const keyText = v.pipe(v.string(), v.trim(), v.minLength(1));
 const keyAs = v.picklist(['name', 'trigger']);
 
 export const actions = {
     'worldbuilding.openOverview': v.pipe(
         v.object({
-            book: entityId,
+            book: v.nullable(entityId),
             groupBy: v.nullable(kindId),
             ...rangeFields,
             layout,
@@ -226,6 +247,11 @@ export const actions = {
             <T extends Range & { layout: OverviewLayout }>(read: T) =>
                 readFitsTheBudget(read.endRank - read.firstRank, read.layout),
             READ_REFUSAL,
+        ),
+        v.check(
+            <T extends { book: string | null; groupBy: string | null; around: string | null }>(open: T) =>
+                open.book !== null || (open.groupBy === null && open.around === null),
+            "A world's kinds and occurrences are named only with the world.",
         ),
     ),
     'worldbuilding.showRange': v.pipe(v.object(rangeFields), v.check(rangeRunsForward, RANGE_REFUSAL)),
@@ -273,4 +299,12 @@ export const actions = {
     'worldbuilding.deleteEntry': v.object(entryNamed),
     'worldbuilding.restoreEntry': v.object(entryNamed),
     'worldbuilding.moveEntryToWorld': v.object({ ...entryNamed, toBook: entityId }),
+    'worldbuilding.openWorlds': v.object({}),
+    'worldbuilding.createWorld': v.object({ name: worldName, ...opensWorld }),
+    'worldbuilding.renameWorld': v.object({ book: entityId, name: worldName }),
+    'worldbuilding.duplicateWorld': v.object({ book: entityId, ...opensWorld }),
+    'worldbuilding.deleteWorld': v.object({ book: entityId }),
+    'worldbuilding.importWorld': v.object(opensWorld),
+    'worldbuilding.exportWorld': v.object({ book: entityId }),
+    'worldbuilding.setUsedInEveryChat': v.object({ book: entityId, used: v.boolean() }),
 } satisfies ActionSchemas;

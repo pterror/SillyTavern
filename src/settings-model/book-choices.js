@@ -1,6 +1,10 @@
 import { bookKey } from '../world-info-keys.js';
+import { TYPE } from '../library-codes.js';
+import { getAtPath } from '../../public/scripts/hash-utils.js';
 
-export const CHOICE = Object.freeze({ selected: 0, lorebook: 1 });
+export const CHOICE = Object.freeze({ selected: 0, lorebook: 1, lastOpened: 2 });
+
+export const UPSTREAM_LAST_OPENED_PATH = 'power_user.wi_last_editor_book';
 
 export const SELECTION_FIELD = 'world_info_settings.world_info';
 
@@ -17,6 +21,20 @@ const PAGE = 1000;
  */
 export function chooseRecord(holder, slot, names) {
     return { kind: 'bookChoose', holder, slot, keys: names.map(bookKey).filter(k => k !== '').join('\n') };
+}
+
+/**
+ * The world upstream's editor last showed, as the user's last opened world, read once when upstream's settings are
+ * converted.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {string} handle
+ * @param {Record<string, any>} upstream
+ */
+export async function takeUpstreamLastOpened(lib, handle, upstream) {
+    const name = getAtPath(upstream, UPSTREAM_LAST_OPENED_PATH);
+    if (typeof name !== 'string' || name === '') return;
+    const [user] = await lib.ids(TYPE.user, [handle]);
+    if (user !== null) await lib.store.commit([chooseRecord(user, CHOICE.lastOpened, [name])]);
 }
 
 /**

@@ -84,6 +84,13 @@ export function isCardBookCopy(book) {
 }
 
 /**
+ * Books in the order of the files their names would have had.
+ * @param {string} a
+ * @param {string} b
+ */
+export const compareBookKeys = (a, b) => `${a}.json`.localeCompare(`${b}.json`);
+
+/**
  * @param {Record<string, unknown>} o
  * @param {string} key
  * @param {unknown} value
@@ -692,7 +699,7 @@ export class WorldInfoEngine {
                 extensions: typeof extensions === 'object' && extensions !== null ? extensions : {},
             };
         });
-        return rows.sort((a, b) => `${a.file_id}.json`.localeCompare(`${b.file_id}.json`));
+        return rows.sort((a, b) => compareBookKeys(a.file_id, b.file_id));
     }
 
     /**
@@ -805,12 +812,34 @@ export class WorldInfoEngine {
      * @param {string} name
      * @param {Record<string, unknown>} data
      * @param {Actor | null} [actor]
-     * @returns {Promise<{ records: number, unreachedLoops: UnreachedLoop[] } | 'card copy'>}
+     * @returns {Promise<{ book: bigint, records: number, unreachedLoops: UnreachedLoop[] } | 'card copy'>}
      */
     write(name, data, actor = null) {
+        return /** @type {Promise<{ book: bigint, records: number, unreachedLoops: UnreachedLoop[] } | 'card copy'>} */ (this.writeBook(name, data, actor, false));
+    }
+
+    /**
+     * Refused when a book of that name exists, checked in the write's own lane.
+     * @param {string} name
+     * @param {Record<string, unknown>} data
+     * @param {Actor | null} [actor]
+     */
+    create(name, data, actor = null) {
+        return this.writeBook(name, data, actor, true);
+    }
+
+    /**
+     * @param {string} name
+     * @param {Record<string, unknown>} data
+     * @param {Actor | null} actor
+     * @param {boolean} onlyNew
+     * @returns {Promise<{ book: bigint, records: number, unreachedLoops: UnreachedLoop[] } | 'card copy' | 'taken'>}
+     */
+    writeBook(name, data, actor, onlyNew) {
         if (isCardBookCopy(data)) return Promise.resolve('card copy');
         const key = bookKey(name);
         return this.lane([key], async () => {
+            if (onlyNew && (await this.exists(name))) return 'taken';
             const [found] = await this.lib.ids(TYPE.book, [key]);
             const id = found ?? this.lib.nextId++;
             const s = found === null ? null : await this.stored(found, true);
@@ -819,7 +848,7 @@ export class WorldInfoEngine {
             const records = await this.bookRecords(id, s, data, { world: true }, await this.stamper(actor, keyed));
             if (found === null) records.unshift({ kind: 'entityCreate', entity: id, type: TYPE.book, key, added: Date.now() });
             if (records.length > 0) await this.store.commit([...keyed, ...records]);
-            return { records: records.length, unreachedLoops: await this.unreachedLoops(id, records) };
+            return { book: id, records: records.length, unreachedLoops: await this.unreachedLoops(id, records) };
         });
     }
 

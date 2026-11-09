@@ -12,6 +12,8 @@ import {
     placementFields,
     READ_REFUSAL,
     RELATION_KINDS_VIEW,
+    WORLD_VIEW,
+    WORLDS_VIEW,
 } from './protocol.ts';
 import type {
     EntryCell,
@@ -23,10 +25,13 @@ import type {
     OverviewLayout,
     OverviewView,
     RelationKindsView,
+    World,
+    WorldsView,
+    WorldView,
 } from './protocol.ts';
 import { rangeAround, worldbuildingArea } from './server.ts';
 import type { EntryCreation, EntryEdit, EntryRead, Grouping, OverviewStep, Ports, RelationChange } from './server.ts';
-import type { ActionContext, ActionResult, User } from '@st/server-ui';
+import type { ActionContext, ActionResult, Upload, User } from '@st/server-ui';
 
 const user: User = { handle: 'u', directories: { root: '/u' } };
 
@@ -101,7 +106,7 @@ const card = (occurrence: string, topLevelRank: number): EntryCell & { topLevelR
     topLevelRank,
 });
 
-function world(count: number) {
+function world(count: number, { worlds: listed = ['1', '2'] }: { worlds?: string[] } = {}) {
     const asked: {
         overview: unknown[];
         step: (Grouping & OverviewStep)[];
@@ -112,6 +117,8 @@ function world(count: number) {
         deleted: string[];
         restored: string[];
         moved: { entry: string; toBook: string }[];
+        opened: (string | null)[];
+        imported: Upload[];
     } = {
         overview: [],
         step: [],
@@ -122,6 +129,20 @@ function world(count: number) {
         deleted: [],
         restored: [],
         moved: [],
+        opened: [],
+        imported: [],
+    };
+    const worlds = new Map<string, World>(
+        listed.map((id) => [id, { id, name: `World ${id}`, entries: id === '1' ? 2 : 0, usedInEveryChat: false }]),
+    );
+    let lastOpened: string | null = null;
+    let nextWorld = 10;
+    const made = (name: string) => {
+        if ([...worlds.values()].some((w) => w.name === name))
+            return { refused: `A world named "${name}" already exists.` };
+        const id = String(nextWorld++);
+        worlds.set(id, { id, name, entries: 0, usedInEveryChat: false });
+        return { book: id };
     };
     const entries = new Map<string, { text: string; deleted: boolean }>([
         ['7', { text: 'Ilse keeps the lamp.', deleted: false }],
@@ -159,6 +180,47 @@ function world(count: number) {
         { id: '1', name: 'in', mergingInto: null },
     ];
     const ports: Ports = {
+        readWorlds: async () => [...worlds.values()].sort((a, b) => a.name.localeCompare(b.name)),
+        readWorld: async (_u, book) => worlds.get(book) ?? null,
+        openWorld: async (_w, book) => {
+            asked.opened.push(book);
+            const opened =
+                book ??
+                (lastOpened !== null && worlds.has(lastOpened) ? lastOpened : null) ??
+                [...worlds.keys()][0] ??
+                null;
+            if (opened === null || !worlds.has(opened)) return null;
+            lastOpened = opened;
+            return opened;
+        },
+        createWorld: async (_w, name) => made(name),
+        renameWorld: async (_w, book, name) => {
+            const found = worlds.get(book);
+            if (!found) return 'missing';
+            if ([...worlds.values()].some((w) => w.name === name && w.id !== book))
+                return { refused: `A world named "${name}" already exists.` };
+            found.name = name;
+            return 'ok';
+        },
+        duplicateWorld: async (_w, book) => {
+            const found = worlds.get(book);
+            return found ? made(`${found.name} (1)`) : 'missing';
+        },
+        deleteWorld: async (_w, book) => (worlds.delete(book) ? 'ok' : 'missing'),
+        importWorld: async (_w, file) => {
+            asked.imported.push(file);
+            return file.name.endsWith('.txt') ? { refused: "This file isn't a world." } : made(file.name.slice(0, -5));
+        },
+        exportWorld: async (_u, book) => {
+            const found = worlds.get(book);
+            return found ? { fileName: `${found.name}.json`, json: '{"entries":{}}' } : null;
+        },
+        setUsedInEveryChat: async (_w, book, used) => {
+            const found = worlds.get(book);
+            if (!found) return 'missing';
+            found.usedInEveryChat = used;
+            return 'ok';
+        },
         readOverview: async (_u, q) => {
             asked.overview.push(q);
             if (q.book !== '1') return null;
@@ -276,11 +338,12 @@ function world(count: number) {
     const view = <T>(key: string) => area.views[key]!(context) as Promise<T>;
     const parsed = (type: string, payload: unknown) =>
         v.parse(actions[type as keyof typeof actions] as v.GenericSchema, payload);
-    const act = (type: string, payload: unknown): Promise<ActionResult> =>
-        area.actions[type]!(context, parsed(type, payload));
+    const act = (type: string, payload: unknown, upload: Upload | null = null): Promise<ActionResult> =>
+        area.actions[type]!({ ...context, upload }, parsed(type, payload));
     const other = (type: string, payload: unknown): Promise<ActionResult> =>
         area.actions[type]!({ ...context, session: 't' }, parsed(type, payload));
-    return { view, act, other, asked };
+    const otherView = <T>(key: string) => area.views[key]!({ ...context, session: 't' }) as Promise<T>;
+    return { view, act, other, otherView, asked };
 }
 
 const open = { book: '1', groupBy: '1', firstRank: 0, endRank: 20, layout: LAYOUT, around: null };
@@ -297,7 +360,13 @@ test('opening a world opens its overview, its kinds and the last change in the s
     });
     expect(await w.act('worldbuilding.openOverview', open)).toEqual({
         changed: [],
-        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW],
+        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toEqual({
+        id: '1',
+        name: 'World 1',
+        entries: 2,
+        usedInEveryChat: false,
     });
     expect(await w.view<LoopsLeftByJobsView>(LOOPS_LEFT_BY_JOBS_VIEW)).toEqual({
         book: '1',
@@ -360,6 +429,166 @@ test("a world the store can't read shows nothing", async () => {
     await w.act('worldbuilding.openOverview', { ...open, book: '2' });
     expect(await w.view<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null, entries: [] });
     expect(await w.view<RelationKindsView>(RELATION_KINDS_VIEW)).toEqual({ book: null, kinds: [] });
+});
+
+const unopened = { book: null, groupBy: null, firstRank: 0, endRank: 20, layout: LAYOUT, around: null };
+const drawn = { firstRank: 0, endRank: 20, layout: LAYOUT };
+const listedNames = async (w: ReturnType<typeof world>) =>
+    (await w.view<WorldsView>(WORLDS_VIEW)).worlds.map((listed) => listed.name);
+
+test('opening no world in particular opens the last one opened, else the first; with none it opens the worlds list', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', { ...open, book: '2', groupBy: null });
+    expect(await w.act('worldbuilding.openOverview', unopened)).toEqual({
+        changed: [],
+        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+    });
+    expect(w.asked.opened).toEqual(['2', null]);
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '2' });
+    await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect(w.asked.overview.at(-1)).toMatchObject({ book: '2', groupBy: null });
+
+    const none = world(3, { worlds: [] });
+    await none.act('worldbuilding.openEntry', { book: '1', entry: '7' });
+    expect(await none.act('worldbuilding.openOverview', unopened)).toEqual({
+        changed: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, ENTRY_VIEW],
+        opensViews: [WORLD_VIEW, WORLDS_VIEW],
+    });
+    expect(await none.view<WorldView>(WORLD_VIEW)).toEqual({ id: null });
+    expect(await none.view<WorldsView>(WORLDS_VIEW)).toEqual({ worlds: [] });
+    expect(await none.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
+});
+
+test('the worlds list opens by its own action and lists every world in name order with its entries and whether it is used in every chat', async () => {
+    const w = world(3);
+    expect(await w.act('worldbuilding.openWorlds', {})).toEqual({ changed: [], opensViews: [WORLDS_VIEW] });
+    expect(await w.view<WorldsView>(WORLDS_VIEW)).toEqual({
+        worlds: [
+            { id: '1', name: 'World 1', entries: 2, usedInEveryChat: false },
+            { id: '2', name: 'World 2', entries: 0, usedInEveryChat: false },
+        ],
+    });
+    expect(await w.act('worldbuilding.setUsedInEveryChat', { book: '2', used: true })).toEqual({
+        changed: [WORLDS_VIEW, WORLD_VIEW],
+    });
+    expect((await w.view<WorldsView>(WORLDS_VIEW)).worlds[1]?.usedInEveryChat).toBe(true);
+    expect(await w.act('worldbuilding.setUsedInEveryChat', { book: '9', used: true })).toEqual({
+        refused: 'That world no longer exists.',
+        changed: [WORLDS_VIEW],
+    });
+});
+
+test('making a world names it, opens it at the range asked for and answers the worlds list; a taken name is refused', async () => {
+    const w = world(3);
+    expect(await w.act('worldbuilding.createWorld', { name: ' Saltmarrow ', overview: drawn })).toEqual({
+        changed: [WORLDS_VIEW],
+        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toEqual({
+        id: '10',
+        name: 'Saltmarrow',
+        entries: 0,
+        usedInEveryChat: false,
+    });
+    expect(await w.view<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null });
+    expect(w.asked.overview.at(-1)).toMatchObject({ book: '10', groupBy: null, firstRank: 0, endRank: 20 });
+    expect(await w.act('worldbuilding.createWorld', { name: 'Saltmarrow', overview: drawn })).toEqual({
+        refused: 'A world named "Saltmarrow" already exists.',
+    });
+    expect(await listedNames(w)).toEqual(['Saltmarrow', 'World 1', 'World 2']);
+});
+
+test('renaming a world answers the list and the header; a taken name or a gone world is refused', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.act('worldbuilding.renameWorld', { book: '1', name: 'Lantern' })).toEqual({
+        changed: [WORLDS_VIEW, WORLD_VIEW],
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '1', name: 'Lantern' });
+    expect(await w.act('worldbuilding.renameWorld', { book: '2', name: 'Lantern' })).toEqual({
+        refused: 'A world named "Lantern" already exists.',
+    });
+    expect(await w.act('worldbuilding.renameWorld', { book: '9', name: 'x' })).toEqual({
+        refused: 'That world no longer exists.',
+        changed: [WORLDS_VIEW],
+    });
+});
+
+test('duplicating a world opens the copy; importing a file opens what it made, and needs a file', async () => {
+    const w = world(3);
+    expect(await w.act('worldbuilding.duplicateWorld', { book: '1', overview: drawn })).toMatchObject({
+        changed: [WORLDS_VIEW],
+        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '10', name: 'World 1 (1)' });
+    expect(await w.act('worldbuilding.duplicateWorld', { book: '9', overview: drawn })).toEqual({
+        refused: 'That world no longer exists.',
+        changed: [WORLDS_VIEW],
+    });
+    expect(await w.act('worldbuilding.importWorld', { overview: drawn })).toEqual({
+        refused: 'Choose a file to import.',
+    });
+    const file: Upload = { path: '/tmp/upload', name: 'Ashfall.json', type: 'application/json', size: 20 };
+    expect(await w.act('worldbuilding.importWorld', { overview: drawn }, file)).toMatchObject({
+        changed: [WORLDS_VIEW],
+        opensViews: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LAST_CHANGE_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, WORLD_VIEW],
+    });
+    expect(w.asked.imported).toEqual([file]);
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '11', name: 'Ashfall' });
+    expect(await w.act('worldbuilding.importWorld', { overview: drawn }, { ...file, name: 'notes.txt' })).toEqual({
+        refused: "This file isn't a world.",
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '11' });
+});
+
+test('deleting a world opens the worlds list and every tab that showed it shows no world', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    await w.act('worldbuilding.openEntry', { book: '1', entry: '7' });
+    await w.other('worldbuilding.openOverview', open);
+    expect(await w.act('worldbuilding.deleteWorld', { book: '1' })).toEqual({
+        changed: [OVERVIEW_VIEW, RELATION_KINDS_VIEW, LOOPS_LEFT_BY_JOBS_VIEW, ENTRY_VIEW, WORLD_VIEW],
+        opensViews: [WORLDS_VIEW],
+    });
+    for (const view of [w.view, w.otherView]) {
+        expect(await view<WorldView>(WORLD_VIEW)).toEqual({ id: null });
+        expect(await view<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null });
+        expect(await view<RelationKindsView>(RELATION_KINDS_VIEW)).toEqual({ book: null, kinds: [] });
+    }
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
+    expect(await listedNames(w)).toEqual(['World 2']);
+    expect(await w.act('worldbuilding.deleteWorld', { book: '1' })).toEqual({
+        refused: 'That world no longer exists.',
+        changed: [WORLDS_VIEW],
+    });
+});
+
+test("exporting a world answers its file in the action's own answer", async () => {
+    const w = world(3);
+    expect(await w.act('worldbuilding.exportWorld', { book: '1' })).toEqual({
+        changed: [],
+        answer: { fileName: 'World 1.json', json: '{"entries":{}}' },
+    });
+    expect(await w.act('worldbuilding.exportWorld', { book: '9' })).toEqual({
+        refused: 'That world no longer exists.',
+        changed: [WORLDS_VIEW],
+    });
+});
+
+test('the world schemas take names trimmed and not empty, worlds by id, and the overview to open within one read', () => {
+    const ok = (type: keyof typeof actions, payload: unknown) => v.safeParse(actions[type], payload).success;
+    expect(ok('worldbuilding.openOverview', unopened)).toBe(true);
+    expect(ok('worldbuilding.openOverview', { ...unopened, groupBy: '1' })).toBe(false);
+    expect(ok('worldbuilding.openOverview', { ...unopened, around: '12' })).toBe(false);
+    expect(ok('worldbuilding.createWorld', { name: '  ', overview: drawn })).toBe(false);
+    expect(ok('worldbuilding.createWorld', { name: 'x' })).toBe(false);
+    expect(ok('worldbuilding.createWorld', { name: 'x', overview: { ...drawn, endRank: MAX_CARDS_PER_READ } })).toBe(
+        false,
+    );
+    expect(ok('worldbuilding.renameWorld', { book: 'Lore', name: 'x' })).toBe(false);
+    expect(ok('worldbuilding.duplicateWorld', { book: '1', overview: drawn })).toBe(true);
+    expect(ok('worldbuilding.importWorld', { overview: drawn })).toBe(true);
+    expect(ok('worldbuilding.setUsedInEveryChat', { book: '1', used: 'yes' })).toBe(false);
 });
 
 test('kind actions name their world: making one says which it made, renaming answers the kinds and the overview, an unused one is deleted', async () => {
@@ -619,7 +848,7 @@ test('making an entry places it, opens it when asked and says what it made and w
     const w = world(3);
     const make = { book: '1', after: '7', name: 'Saltmarrow', relation: null, open: true, loopCheckLimit: 300 };
     expect(await w.act('worldbuilding.createEntry', make)).toEqual({
-        changed: [OVERVIEW_VIEW, LAST_CHANGE_VIEW],
+        changed: [OVERVIEW_VIEW, WORLDS_VIEW, WORLD_VIEW, LAST_CHANGE_VIEW],
         opensViews: [ENTRY_VIEW],
     });
     expect(w.asked.created[0]).toEqual({
@@ -634,7 +863,7 @@ test('making an entry places it, opens it when asked and says what it made and w
     });
     const related = { ...make, after: null, name: null, relation: { kind: '1', target: '8' }, open: false };
     expect(await w.act('worldbuilding.createEntry', related)).toEqual({
-        changed: [OVERVIEW_VIEW, ENTRY_VIEW, LAST_CHANGE_VIEW],
+        changed: [OVERVIEW_VIEW, WORLDS_VIEW, WORLD_VIEW, ENTRY_VIEW, LAST_CHANGE_VIEW],
     });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ entry: '50' });
     expect((await w.view<LastChangeView>(LAST_CHANGE_VIEW)).unreachedLoops).toEqual([
@@ -651,7 +880,7 @@ test('making an entry places it, opens it when asked and says what it made and w
 test('deleting the open entry shows it deleted under its label and offers it back; restoring shows it again with the loops it left', async () => {
     const w = world(3);
     await w.act('worldbuilding.openEntry', { book: '1', entry: '7' });
-    const all = { changed: [OVERVIEW_VIEW, ENTRY_VIEW, LAST_CHANGE_VIEW] };
+    const all = { changed: [OVERVIEW_VIEW, WORLDS_VIEW, WORLD_VIEW, ENTRY_VIEW, LAST_CHANGE_VIEW] };
     expect(await w.act('worldbuilding.deleteEntry', { book: '1', entry: '7' })).toEqual(all);
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({
         book: '1',
@@ -702,7 +931,7 @@ test('moving the open entry to another world follows it there; the same world or
         refused: 'The world to move it to no longer exists.',
     });
     expect(await w.act('worldbuilding.moveEntryToWorld', { book: '1', entry: '7', toBook: '2' })).toEqual({
-        changed: [OVERVIEW_VIEW, ENTRY_VIEW, LAST_CHANGE_VIEW],
+        changed: [OVERVIEW_VIEW, WORLDS_VIEW, WORLD_VIEW, ENTRY_VIEW, LAST_CHANGE_VIEW],
     });
     expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
         ...NOTHING_CHANGED,
