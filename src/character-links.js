@@ -4,25 +4,55 @@ import { POSITION_GAP, itemField, storedValues } from './entity-values.js';
 export const LINKS = 4;
 
 /** @typedef {import('./entity-values.js').StoredEntity} StoredEntity */
+/** @typedef {{ item: number, position: number, book: bigint | null }} LinkItem */
 
 /**
  * @param {StoredEntity | null} stored
  * @returns {{ item: number, position: number, book: bigint }[]}
  */
 export function storedLinks(stored) {
+    return /** @type {{ item: number, position: number, book: bigint }[]} */ (linkItems(stored).filter(l => l.book !== null));
+}
+
+/**
+ * @param {StoredEntity | null} stored
+ * @returns {LinkItem[]}
+ */
+function linkItems(stored) {
     if (!stored) return [];
     const { lists, places } = storedValues(stored);
     const texts = lists.get(LINKS) ?? [];
-    return (places.get(LINKS) ?? [])
-        .map((p, i) => ({ ...p, book: texts[i] === '' ? null : BigInt(texts[i]) }))
-        .filter(l => l.book !== null)
-        .map(l => ({ item: l.item, position: l.position, book: /** @type {bigint} */ (l.book) }));
+    return (places.get(LINKS) ?? []).map((p, i) => ({ ...p, book: texts[i] === '' ? null : BigInt(texts[i]) }));
+}
+
+/**
+ * A character's main world is its first link; a first item with no text is the empty main slot of a character with
+ * extra books and no main world.
+ * @param {StoredEntity | null} stored
+ * @returns {{ items: LinkItem[], main: bigint | null, extras: bigint[] }}
+ */
+export function characterLinks(stored) {
+    const all = linkItems(stored);
+    const items = all.filter((l, i) => i === 0 || l.book !== null);
+    const extras = /** @type {bigint[]} */ (items.slice(1).map(l => l.book));
+    return { items, main: items[0]?.book ?? null, extras };
+}
+
+/**
+ * @param {bigint | null} main
+ * @param {bigint[]} extras
+ * @returns {(bigint | null)[]}
+ */
+export function linkList(main, extras) {
+    const rest = [...new Set(extras)].filter(b => b !== main);
+    if (main !== null) return [main, ...rest];
+    return rest.length > 0 ? [null, ...rest] : [];
 }
 
 /**
  * @param {bigint} entity
- * @param {{ item: number, position: number, book: bigint }[]} before
- * @param {bigint[]} after
+ * @param {LinkItem[]} before
+ * @param {(bigint | null)[]} after
  * @param {number} [nextItem]
  * @returns {object[]}
  */
@@ -81,7 +111,7 @@ export function linkListRecords(entity, before, after, nextItem = 1 + Math.max(0
         }
         const added = item++;
         records.push({ kind: 'itemPlace', entity, list, item: added, position });
-        records.push({ kind: 'textValue', entity, field: itemField(list, added), text: String(book) });
+        if (book !== null) records.push({ kind: 'textValue', entity, field: itemField(list, added), text: String(book) });
     });
     return records;
 }

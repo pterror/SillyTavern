@@ -10,17 +10,17 @@ import { setConfigFilePath } from './util.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
-const { importUpstreamData, resumeUpstreamImport, UPSTREAM_META, MAP_FILE } = await import('./upstream-import.js');
+const { holdUpstreamCharLore, importUpstreamData, resumeUpstreamImport, UPSTREAM_CHAR_LORE_META, UPSTREAM_META, MAP_FILE } = await import('./upstream-import.js');
 const { emptyUser, writeLibraryCard, treeOf } = await import('../tests/converted-user.fixture.js');
 
 const user = await emptyUser('st-upstream-import-test-');
 const { directories, store } = user;
 
 const baseImage = fs.readFileSync(path.join(__dirname, '..', 'public', 'img', 'ai4.png'));
-async function writeCharacter(avatar, name) {
+async function writeCharacter(avatar, name, extensions = {}) {
     const card = {
         spec: 'chara_card_v2', spec_version: '2.0', name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', avatar,
-        data: { name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '', alternate_greetings: [], extensions: {} },
+        data: { name, description: '', personality: '', scenario: '', first_mes: 'Hi.', mes_example: '', system_prompt: '', post_history_instructions: '', character_version: '', creator_notes: '', alternate_greetings: [], extensions },
     };
     const cardJson = JSON.stringify(card);
     await writeLibraryCard(user, avatar, cardJson, writeCard(baseImage, cardJson));
@@ -143,6 +143,41 @@ test('a 10k-message chat goes in as one import', async () => {
     const chat = await chatNamed({ avatar: 'nia.png' }, 'Nia - long');
     assert.equal(chat.length, 10_000);
     assert.deepEqual(chat[9_998].swipes, ['reply 9998', 'alt 9998']);
+});
+
+test('upstream\'s extra books go in once the characters are in, a character with no main world keeping none', async () => {
+    await store.lib.books.write('Extra', { entries: {} });
+    await store.lib.books.write('Main', { entries: {} });
+    await writeCharacter('loose.png', 'Loose', { world: '' });
+    await writeCharacter('anchored.png', 'Anchored', { world: 'Main' });
+    await holdUpstreamCharLore(store.lib, {
+        world_info_settings: {
+            world_info: {
+                globalSelect: [],
+                charLore: [
+                    { name: 'loose', extraBooks: ['Extra', 'Missing'] },
+                    { name: 'anchored', extraBooks: ['Extra', 'Main'] },
+                    { name: 'ghost', extraBooks: ['Extra'] },
+                    'junk',
+                ],
+            },
+        },
+    });
+    const run = await importUpstreamData(store, directories);
+    const lore = run.notImported.filter(n => n.file === 'settings: world_info.charLore').map(n => n.why);
+    assert.equal(lore.length, 3);
+    assert.ok(lore.some(why => /loose: no book named "Missing"/.test(why)));
+    assert.ok(lore.some(why => /no character with the avatar ghost\.png/.test(why)));
+    assert.ok(lore.some(why => /not a character's extra books/.test(why)));
+    const [loose, anchored] = /** @type {any[]} */ (await store.lib.cards(['loose.png', 'anchored.png']));
+    assert.equal(loose.data.extensions.world, '');
+    assert.deepEqual(await store.lib.extraBookNames('loose.png'), ['Extra']);
+    assert.equal(anchored.data.extensions.world, 'Main');
+    assert.deepEqual(await store.lib.extraBookNames('anchored.png'), ['Extra']);
+    const charLore = (await store.lib.charLore()).sort((a, b) => a.name.localeCompare(b.name));
+    assert.deepEqual(charLore, [{ name: 'anchored', extraBooks: ['Extra'] }, { name: 'loose', extraBooks: ['Extra'] }]);
+    assert.equal((await store.lib.store.meta([UPSTREAM_CHAR_LORE_META]))[0] ?? null, null);
+    assert.deepEqual((await importUpstreamData(store, directories)).notImported.filter(n => n.file === 'settings: world_info.charLore'), []);
 });
 
 after(async () => {

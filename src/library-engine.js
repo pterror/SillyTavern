@@ -9,7 +9,7 @@ import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords, withoutStatements } from './entity-values.js';
 import { GREETING_LIST, greetingModelOf, greetingRecords, greetingTextsOf, hasSameGreetings, matchedGreetings, withUniqueGreetings } from './greeting-items.js';
 import { SPACE, actorIds } from './actor-ids.js';
-import { LINKS, linkListRecords, storedLinks } from './character-links.js';
+import { LINKS, characterLinks, linkList, linkListRecords } from './character-links.js';
 import { FIELD, HASH, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
 import { assignThumbnails, cropOf, thumbnailsOf } from './thumbnail-urls.js';
 import { imageThumbnails, userImageKey } from './image-entities.js';
@@ -17,7 +17,7 @@ import { avatarRefString } from './avatar-refs.js';
 import { bookKey } from './world-info-keys.js';
 import { LIBRARY_LABELS, cursorWeights, cursorWeightsOf, searchClauses } from './search-clauses.js';
 import { SLOT, WorldInfoEngine, isEntryList } from './world-info-engine.js';
-import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds, setAtPath, tagNameKey } from '../public/scripts/hash-utils.js';
+import { groupDigestContentHash, groupDigestFavHash, groupDigestTagIdsHash, normalizeFav, normalizeTagIds, tagNameKey } from '../public/scripts/hash-utils.js';
 
 export { FIELD, HASH, TAG_KEY_PREFIX, TYPE, textEdit, wtf8Length, itemField, valueRecords };
 
@@ -518,16 +518,6 @@ export class LibraryEngine {
             const world = next.values.get(FIELD.world)?.text;
             const linkKey = world ? bookKey(world) : '';
             if (linkKey && world === linkKey) next.values.delete(FIELD.world);
-            let identityCard = card;
-            const links = storedLinks(stored);
-            if (!linkKey && links.length > 1) {
-                if (world === '') next.values.delete(FIELD.world);
-                const name = (await this.bookNames([links[1].book])).get(links[1].book);
-                if (typeof name === 'string') {
-                    identityCard = structuredClone(card);
-                    setAtPath(identityCard, 'data.extensions.world', name);
-                }
-            }
             const written = greetingTextsOf(parts);
             const model = greetings ?? matchedGreetings(greetingModelOf(stored), written);
             if (model.greetings.length !== written.texts.length || model.greetings.some((g, i) => g.text !== written.texts[i]) || (model.defaultId === null) !== (written.defaultIndex === null)) {
@@ -545,7 +535,7 @@ export class LibraryEngine {
             if (stored?.dataSize !== size) records.push({ kind: 'dataSize', entity: id, size });
             const ms = parseCreateDateToEpochMs(normalized.create_date);
             if (!stored || (stored.createMs ?? null) !== ms) records.push({ kind: 'createDate', entity: id, ...(ms === null ? {} : { ms }) });
-            const hashes = [[HASH.identity, computeContentIdentityHash(identityCard)], [HASH.content, contentHash], [HASH.avatarIdentity, avatarIdentityHash]];
+            const hashes = [[HASH.identity, computeContentIdentityHash(card)], [HASH.content, contentHash], [HASH.avatarIdentity, avatarIdentityHash]];
             for (const [which, hex] of hashes) {
                 if (hex === null) continue;
                 const had = stored?.hashes.find(h => h.which === which);
@@ -584,8 +574,8 @@ export class LibraryEngine {
      * @returns {Promise<object[]>}
      */
     async linkRecords(id, stored, key) {
-        const before = storedLinks(stored);
-        if (!key) return before.length > 0 ? linkListRecords(id, before, before.slice(1).map(l => l.book)) : [];
+        const { items, extras } = characterLinks(stored);
+        if (!key) return linkListRecords(id, items, linkList(null, extras));
         if (stored?.link?.key === key) return [];
         const records = [];
         let [book] = await this.ids(TYPE.book, [key]);
@@ -593,8 +583,7 @@ export class LibraryEngine {
             book = this.nextId++;
             records.push({ kind: 'entityCreate', entity: book, type: TYPE.book, key, added: Date.now() });
         }
-        const rest = before.slice(1).map(l => l.book).filter(b => b !== book);
-        pushAll(records, linkListRecords(id, before, [book, ...rest]));
+        pushAll(records, linkListRecords(id, items, linkList(book, extras)));
         return records;
     }
 
@@ -609,13 +598,32 @@ export class LibraryEngine {
     }
 
     /**
+     * The names of a character's extra books, each once and none that its main world also reads as.
+     * @param {bigint | null} main
+     * @param {bigint[]} extras
+     * @returns {Promise<string[]>}
+     */
+    async extraNames(main, extras) {
+        const names = await this.bookNames(main === null ? extras : [main, ...extras]);
+        const seen = new Set(main === null ? [] : [names.get(main)]);
+        /** @type {string[]} */
+        const out = [];
+        for (const b of extras) {
+            const name = names.get(b);
+            if (typeof name !== 'string' || seen.has(name)) continue;
+            seen.add(name);
+            out.push(name);
+        }
+        return out;
+    }
+
+    /**
      * @param {StoredEntity} e
      * @returns {Promise<string[]>}
      */
-    async linkNames(e) {
-        const books = storedLinks(e).map(l => l.book);
-        const names = await this.bookNames(books);
-        return [...new Set(books.map(b => names.get(b)).filter(n => typeof n === 'string'))];
+    extraBooksOf(e) {
+        const { main, extras } = characterLinks(e);
+        return this.extraNames(main, extras);
     }
 
     /**
@@ -625,7 +633,7 @@ export class LibraryEngine {
     async extraBookNames(avatar) {
         const [id] = await this.ids(TYPE.character, [avatar]);
         const [e] = await this.entities([id], { fields: [], lists: [LIST.links] });
-        return e ? (await this.linkNames(e)).slice(1) : [];
+        return e ? this.extraBooksOf(e) : [];
     }
 
     /**
@@ -639,8 +647,8 @@ export class LibraryEngine {
             const entities = await this.entities(page.ids, { fields: [], lists: [LIST.links] });
             for (const e of entities) {
                 if (!e) continue;
-                const names = await this.linkNames(e);
-                if (names.length > 1) out.push({ name: e.key.replace(/\.[^/.]+$/, ''), extraBooks: names.slice(1) });
+                const extraBooks = await this.extraBooksOf(e);
+                if (extraBooks.length > 0) out.push({ name: e.key.replace(/\.[^/.]+$/, ''), extraBooks });
             }
             if (!page.more || page.ids.length === 0) break;
             after = page.ids[page.ids.length - 1];
@@ -662,7 +670,7 @@ export class LibraryEngine {
             const entities = await this.entities(ids, { fields: [], lists: [LIST.links] });
             for (const [n, e] of entities.entries()) {
                 if (!e) return true;
-                const extra = (await this.linkNames(e)).slice(1);
+                const extra = await this.extraBooksOf(e);
                 if (JSON.stringify(extra) !== JSON.stringify(batch[n].extraBooks)) return true;
             }
         }
@@ -679,40 +687,29 @@ export class LibraryEngine {
         return this.serialized(TYPE.character, avatar, async () => {
             const stored = await this.entity(TYPE.character, avatar);
             if (!stored) return null;
-            const before = storedLinks(stored);
-            const read = await this.bookNames(before.map(l => l.book));
+            const { items, main, extras } = characterLinks(stored);
+            const read = await this.bookNames(main === null ? extras : [main, ...extras]);
             const keys = [...new Set(names.map(n => bookKey(n)))];
             const ids = await this.ids(TYPE.book, keys);
             const byKey = new Map(keys.map((k, i) => [k, ids[i]]));
             const nameOf = (/** @type {bigint} */ b) => read.get(b) ?? null;
-            const first = before[0];
-            const rest = before.slice(1);
-            /** @type {bigint[]} */
-            let after;
+            const mainName = main === null ? null : nameOf(main);
+            /** @type {(bigint | null | undefined)[]} */
+            let rest;
             if (op === 'remove') {
-                after = [...(first ? [first.book] : []), ...rest.filter(l => !keys.includes(/** @type {string} */ (nameOf(l.book)))).map(l => l.book)];
+                rest = extras.filter(b => !keys.includes(/** @type {string} */ (nameOf(b))));
+            } else if (op === 'set') {
+                const keptByName = new Map(extras.filter(b => keys.includes(/** @type {string} */ (nameOf(b)))).map(b => [nameOf(b), b]));
+                rest = keys.filter(k => k !== mainName).map(k => keptByName.get(k) ?? byKey.get(k));
             } else {
-                const kept = op === 'add' ? rest.map(l => l.book) : rest.filter(l => keys.includes(/** @type {string} */ (nameOf(l.book)))).map(l => l.book);
-                const there = new Set([...(first ? [first.book] : []), ...kept].map(nameOf));
-                const added = keys.filter(k => !there.has(k)).map(k => /** @type {bigint} */ (byKey.get(k)));
-                if (op === 'set') {
-                    const keptByName = new Map(kept.map(b => [nameOf(b), b]));
-                    after = [...(first ? [first.book] : []), ...keys.filter(k => !(first && nameOf(first.book) === k)).map(k => keptByName.get(k) ?? /** @type {bigint} */ (byKey.get(k)))];
-                } else {
-                    after = [...(first ? [first.book] : []), ...kept, ...added];
-                }
+                const there = new Set([mainName, ...extras.map(nameOf)]);
+                rest = [...extras, ...keys.filter(k => !there.has(k)).map(k => byKey.get(k))];
             }
-            after = [...new Set(after)];
-            const records = linkListRecords(stored.id, before, after);
-            if (!first && after.length > 0) {
-                if (stored.values.some(v => v.field === FIELD.world)) records.unshift({ kind: 'valueDelete', entity: stored.id, field: FIELD.world });
-                const key = (await this.bookNames([after[0]])).get(after[0]);
-                const r = await this.identityRecord(stored, /** @type {string} */ (key));
-                if (r) records.push(r);
-            }
+            const kept = /** @type {bigint[]} */ (rest.filter(b => b !== null && b !== undefined));
+            const after = linkList(main, kept);
+            const records = linkListRecords(stored.id, items, after);
             if (records.length > 0) await this.store.commit(records);
-            const now = await this.bookNames(after);
-            return [...new Set(after.map(b => now.get(b)))].filter(n => typeof n === 'string' && n !== now.get(after[0])).map(String);
+            return this.extraNames(main, kept);
         });
     }
 
@@ -1207,18 +1204,16 @@ export class LibraryEngine {
         for (let i = 0; i < ids.length; i += 256) {
             for (const e of await this.entities(ids.slice(i, i + 256))) {
                 if (!e || e.type !== TYPE.character) continue;
-                const links = storedLinks(e);
-                const kept = links.filter(l => !gone.has(l.book));
-                if (kept.length === links.length) continue;
+                const { items, main, extras } = characterLinks(e);
+                const mainGone = main !== null && gone.has(main);
+                const kept = extras.filter(b => !gone.has(b));
+                if (!mainGone && kept.length === extras.length) continue;
                 changed.push(e.id);
-                for (const l of links) if (gone.has(l.book)) records.push({ kind: 'itemDelete', entity: e.id, list: LIST.links, item: l.item });
-                if (!gone.has(links[0].book)) continue;
+                pushAll(records, linkListRecords(e.id, items, linkList(mainGone ? null : main, kept)));
+                if (!mainGone) continue;
                 const values = e.values.filter(v => v.field !== FIELD.world);
                 if (values.length !== e.values.length) records.push({ kind: 'valueDelete', entity: e.id, field: FIELD.world });
-                const next = kept[0];
-                const key = next ? (await this.bookNames([next.book])).get(next.book) ?? null : null;
-                const link = next && key !== null ? { book: next.book, version: e.link?.version ?? 0n, key } : undefined;
-                const r = await this.identityHashRecord({ ...e, values, link });
+                const r = await this.identityHashRecord({ ...e, values, link: undefined });
                 if (r) records.push(r);
             }
         }

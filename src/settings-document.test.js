@@ -257,12 +257,13 @@ test('a write that selects another preset takes its values of the fields the ser
     assert.equal(document.settings.oai_settings.temp_openai, 0.7);
 });
 
-test('upstream books go in before upstream settings are converted, so the books they choose are kept; a name that is no book is left out, warned', async () => {
+test('upstream books go in before upstream settings are converted, so the books they choose are kept; a name that is no book is left out, warned; the characters\' extra books are held for the import', async () => {
     const { userStore } = await import('./user-stores.js');
-    const { upstreamImportPending } = await import('./upstream-import.js');
+    const { UPSTREAM_CHAR_LORE_META, upstreamImportPending } = await import('./upstream-import.js');
     const directories = seedUser('upstream-books');
     const upstream = structuredClone(SHIPPED);
-    upstream.world_info_settings.world_info = { globalSelect: ['Lore', 'Missing'] };
+    const charLore = [{ name: 'nia', extraBooks: ['Lore'] }];
+    upstream.world_info_settings.world_info = { globalSelect: ['Lore', 'Missing'], charLore };
     upstream.power_user.persona_data = { 'me.png': { name: 'Me', description: '', lorebook: 'Lore', connections: [] }, 'you.png': { name: 'You', description: '', lorebook: 'Missing', connections: [] } };
     fs.writeFileSync(path.join(directories.root, 'settings.json'), JSON.stringify(upstream));
     fs.writeFileSync(path.join(directories.worlds, 'Lore.json'), JSON.stringify({ entries: { 0: { uid: 0, key: ['x'], content: 'x' } } }));
@@ -279,6 +280,7 @@ test('upstream books go in before upstream settings are converted, so the books 
     }
     const settings = settingsStore.readAllSettings(directories);
     assert.deepEqual(settings.world_info_settings.world_info, { globalSelect: ['Lore'] });
+    assert.deepEqual(JSON.parse(/** @type {string} */ ((await lib.store.meta([UPSTREAM_CHAR_LORE_META]))[0])), charLore);
     assert.equal(settings.power_user.persona_data['me.png'].lorebook, 'Lore');
     assert.equal(settings.power_user.persona_data['you.png'].lorebook, '');
     assert.deepEqual(warned.filter(w => w.includes('Missing')), [

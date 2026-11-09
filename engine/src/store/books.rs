@@ -517,19 +517,16 @@ pub fn links_of(view: &View, e: u64) -> Result<Vec<(u64, u64)>, StoreError> {
     Ok(out)
 }
 
+/// A first item with no text is an empty main-world slot.
 pub fn first_link(view: &View, e: u64) -> Result<Option<u64>, StoreError> {
     let prefix = key::ids(key::ITEM, e, LINKS);
-    let end = key::prefix_end(&prefix);
-    let mut from = prefix;
-    loop {
-        let Some((k, v)) = view.scan(&from, &end, 1)?.into_iter().next() else {
-            return Ok(None);
-        };
-        if let Some(b) = link_text(view, e, library::parse_uvarint(&v)?)? {
-            return Ok(Some(b));
-        }
-        from = k;
-        from.push(0);
+    match view
+        .scan(&prefix, &key::prefix_end(&prefix), 1)?
+        .into_iter()
+        .next()
+    {
+        Some((_, v)) => link_text(view, e, library::parse_uvarint(&v)?),
+        None => Ok(None),
     }
 }
 

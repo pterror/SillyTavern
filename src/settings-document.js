@@ -14,7 +14,7 @@ import { bundleDraftOf, bundleDraftsFromFiles, bundleEntityOf, bundleFileFromSto
 import { readDraft, writeDrafts } from './settings-model/model-store.js';
 import { readUserModel, withChosen, writeUserModel } from './settings-model/user-store.js';
 import { CHOICE, readChoices, takeUpstreamLastOpened } from './settings-model/book-choices.js';
-import { importUpstreamWorlds, upstreamImportPending } from './upstream-import.js';
+import { holdUpstreamCharLore, importUpstreamWorlds, upstreamImportPending } from './upstream-import.js';
 import { userConnections } from './settings-model/settings-compat.js';
 import { keyOf } from './settings-model/keys.js';
 import { serverDirectory } from './server-directory.js';
@@ -126,7 +126,10 @@ async function open(directories, handle) {
         const upstream = fs.existsSync(settingsDirPath(directories)) || fs.existsSync(legacySettingsPath(directories))
             ? readAllSettings(directories)
             : JSON.parse(fs.readFileSync(path.join(serverDirectory, 'default/content/settings.json'), 'utf8'));
-        if (await upstreamImportPending(lib)) await importUpstreamWorlds(store, directories);
+        if (await upstreamImportPending(lib)) {
+            await importUpstreamWorlds(store, directories);
+            await holdUpstreamCharLore(lib, upstream);
+        }
         await lib.tags.importSettingsTags(directories);
         const made = importUpstream(upstream, { bundles: bundleFilesOf(directories), newKey });
         const imported = bundleDraftsFromFiles(directories, made.entities.filter(e => e.type === TYPE.connection), newKey);

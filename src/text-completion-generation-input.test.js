@@ -429,6 +429,16 @@ async function run() {
         });
         const worlds = linked.worldInfoCandidates.map(c => c.world).sort();
         assert.deepEqual(worlds, ['ExtraLore', 'PrimaryLore', 'TestLore'], 'the first link, the extra link and the global selection');
+
+        const extrasOnly = await writeCharacter('ExtrasOnly.png', {
+            name: 'ExtrasOnly',
+            data: { name: 'ExtrasOnly', extensions: { world: '' } },
+        });
+        assert.deepEqual(await user.store.lib.extraLinks(extrasOnly, 'add', ['ExtraLore']), ['ExtraLore']);
+        const unlinked = await resolveTextCompletionGenerationInput(directories, {
+            avatar: extrasOnly, chatContext: await chatContextOf(user.store, { avatar: extrasOnly }, newSessionKey()), countTokens, encodeTokens,
+        });
+        assert.deepEqual(unlinked.worldInfoCandidates.map(c => c.world).sort(), ['ExtraLore', 'TestLore'], 'an extra book with no main world');
     }
 
     console.log('text-completion-generation-input.test.js: all assertions passed');

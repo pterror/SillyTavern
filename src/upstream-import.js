@@ -8,8 +8,12 @@ import { newSessionKey } from './chat-engine.js';
 import { normalizeGroupRecord, storedGroup } from './group-id.js';
 import { TYPE } from './library-engine.js';
 import { importImageFiles } from './image-entities.js';
+import { getAtPath } from '../public/scripts/hash-utils.js';
 
 export const UPSTREAM_META = 'upstream_import_pending';
+export const UPSTREAM_CHAR_LORE_META = 'upstream_char_lore';
+const CHAR_LORE_PATHS = Object.freeze(['world_info_settings.world_info.charLore', 'world_info_settings.charLore']);
+const CHAR_LORE_SOURCE = 'settings: world_info.charLore';
 export const MAP_FILE = 'upstream-import.json';
 const BATCH = 20;
 const PAUSE_MS = 10;
@@ -37,6 +41,44 @@ export async function markUpstreamImportPending(lib) {
 export async function upstreamImportPending(lib) {
     const [pending] = await lib.store.meta([UPSTREAM_META]);
     return pending !== null && pending !== undefined;
+}
+
+/**
+ * Keeps upstream's characters' extra books for the import, which runs once the characters are in the store.
+ * @param {import('./library-engine.js').LibraryEngine} lib
+ * @param {Record<string, any>} settings Upstream's settings, as its files hold them.
+ */
+export async function holdUpstreamCharLore(lib, settings) {
+    const charLore = CHAR_LORE_PATHS.map(p => getAtPath(settings, p)).find(Array.isArray);
+    if (!charLore || charLore.length === 0) return;
+    await lib.store.commit([{ kind: 'metaValue', key: UPSTREAM_CHAR_LORE_META, json: JSON.stringify(charLore) }]);
+}
+
+/**
+ * @param {import('./user-stores.js').UserStore} store
+ * @param {UpstreamImportReport} report
+ */
+async function importCharLore(store, report) {
+    const [held] = await store.lib.store.meta([UPSTREAM_CHAR_LORE_META]);
+    if (held === null || held === undefined) return;
+    const charLore = JSON.parse(held);
+    for (const entry of Array.isArray(charLore) ? charLore : []) {
+        if (!entry || typeof entry.name !== 'string' || !Array.isArray(entry.extraBooks)) {
+            report.notImported.push({ file: CHAR_LORE_SOURCE, why: `not a character's extra books: ${JSON.stringify(entry)}` });
+            continue;
+        }
+        /** @type {string[]} */
+        const known = [];
+        for (const book of entry.extraBooks) {
+            if (typeof book === 'string' && book && await store.lib.books.exists(book)) known.push(book);
+            else report.notImported.push({ file: CHAR_LORE_SOURCE, why: `${entry.name}: no book named ${JSON.stringify(book)}` });
+        }
+        if (known.length === 0) continue;
+        if (await store.lib.extraLinks(`${entry.name}.png`, 'add', known) === null) {
+            report.notImported.push({ file: CHAR_LORE_SOURCE, why: `no character with the avatar ${entry.name}.png` });
+        }
+    }
+    await store.lib.store.commit([{ kind: 'metaValue', key: UPSTREAM_CHAR_LORE_META }]);
 }
 
 /**
@@ -114,6 +156,7 @@ async function runImport(store, directories) {
     }
 
     await importWorlds(store, directories, report, actor, paced);
+    await importCharLore(store, report);
 
     /**
      * @param {string} file

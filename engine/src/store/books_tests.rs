@@ -641,6 +641,13 @@ fn a_characters_links_are_one_list_each_in_its_books_scope() {
     s.commit_wait(vec![unlink(10, 3)]).unwrap();
     assert_eq!(multi(&s), Vec::<u64>::new());
     assert_eq!(first(10), Some(1));
+    s.commit_wait(vec![link_place(10, 9, 10)]).unwrap();
+    assert_eq!(first(10), None, "an empty first slot is no main world");
+    assert_eq!(multi(&s), vec![10]);
+    assert_eq!(world_page(&s, "a"), vec![10]);
+    s.commit_wait(vec![unlink(10, 9)]).unwrap();
+    assert_eq!(first(10), Some(1));
+    assert_eq!(multi(&s), Vec::<u64>::new());
     assert_eq!(world_page(&s, "b"), vec![11]);
     let mut r = link(12, 1, 100, 3);
     r.extend(link(12, 2, 200, 1));
