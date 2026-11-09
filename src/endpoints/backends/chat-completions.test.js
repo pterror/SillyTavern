@@ -1596,15 +1596,14 @@ async function run() {
         {
             const { assistant_node_id, assistant_message, ...rest } = data;
             assert.deepEqual(rest, { choices: [{ message: { content: claudeContent[0].text ?? '' } }], content: claudeContent }, 'the client-facing reply shape is exactly this function\'s own pre-existing (unmodified) content[0]-only wrapping');
-            const { message_counts: messageCounts, ...storedReply } = assistant_message;
-            const { token_count: tokenCount, text_token_count: textTokenCount, ...storedExtra } = storedReply.extra;
+            const storedReply = assistant_message;
+            const { token_count: tokenCount, token_count_hash: countHash, text_token_count: textTokenCount, ...storedExtra } = storedReply.extra;
+            assert.equal(typeof countHash, 'number', 'the count names the text it counts');
             assert.deepEqual({ ...storedReply, extra: storedExtra }, {
                 mes: 'Rex says hello back, Claude-style.',
                 extra: { api: 'claude', model: 'claude-test-model', reasoning: 'The user wants a greeting back.', reasoning_duration: null, reasoning_signature: null, has_itemized_prompt: true },
             }, 'the reply as stored is sent too: its thinking block is its reasoning, as upstream\'s page stored it');
             assert.ok(tokenCount > textTokenCount && textTokenCount > 0, 'with its counts: the message\'s, reasoning included, and its text\'s');
-            assert.equal(Object.keys(messageCounts).length, 1, 'with the count of the message it was sent');
-            assert.ok(Object.values(messageCounts)[0] > 0);
             assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
             const stored = /** @type {any} */ ((await user.store.chats.readItemization({ node_id: assistant_node_id }))?.entry);
             assert.equal(stored?.api, 'openai', 'the server stores the itemization of the prompt it built');

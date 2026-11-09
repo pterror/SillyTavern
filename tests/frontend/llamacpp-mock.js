@@ -3,12 +3,22 @@ import { expect } from './fixtures.js';
 import { openCharacterManagementDrawer } from './frontent-test-utils.js';
 
 /**
+ * @typedef {object} LlamaCppMockState
+ * @property {string} loaded the model file /props names
+ * @property {number} tokensPerWord
+ * @property {number} tokenizeDelayMs
+ * @property {boolean} failCompletion
+ */
+
+/**
  * @param {{ model?: string, reply?: (n: number) => string, delayMs?: number, pieceDelayMs?: number }} [options]
- * @returns {Promise<{ url: string, log: { url: string, body: any }[], close: () => Promise<void> }>}
+ * @returns {Promise<{ url: string, log: { url: string, body: any }[], state: LlamaCppMockState, close: () => Promise<void> }>}
  */
 export function startLlamaCpp({ model = 'mock-llamacpp-model', reply = n => `Mock reply ${n}.`, delayMs = 0, pieceDelayMs = 0 } = {}) {
     /** @type {{ url: string, body: any }[]} */
     const log = [];
+    /** @type {LlamaCppMockState} */
+    const state = { loaded: model, tokensPerWord: 1, tokenizeDelayMs: 0, failCompletion: false };
     let n = 0;
     const server = http.createServer((req, res) => {
         let raw = '';
@@ -22,11 +32,19 @@ export function startLlamaCpp({ model = 'mock-llamacpp-model', reply = n => `Moc
                 res.end(JSON.stringify(value));
             };
             const path = (req.url ?? '').split('?')[0];
-            if (path === '/props') return json({ model_alias: model, model_path: `/models/${model}.gguf`, build_info: 'b-mock', default_generation_settings: { n_ctx: 8192 } });
+            if (path === '/props') return json({ model_alias: model, model_path: `/models/${state.loaded}.gguf`, build_info: 'b-mock', default_generation_settings: { n_ctx: 8192 } });
             if (path === '/v1/models') return json({ object: 'list', data: [{ id: model, object: 'model' }] });
             if (path === '/tokenize') {
                 const content = String(/** @type {any} */ (body).content ?? '');
-                return json({ tokens: content.split(/(?=\s)/).filter(Boolean).map((_, i) => 100 + i) });
+                const words = content.split(/(?=\s)/).filter(Boolean);
+                const tokens = words.flatMap(() => Array.from({ length: state.tokensPerWord }, () => 0)).map((_, i) => 100 + i);
+                setTimeout(() => json({ tokens }), state.tokenizeDelayMs);
+                return;
+            }
+            if (path === '/completion' && state.failCompletion) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'mock failure' }));
+                return;
             }
             if (path === '/completion') {
                 const text = reply(++n);
@@ -58,7 +76,7 @@ export function startLlamaCpp({ model = 'mock-llamacpp-model', reply = n => `Moc
     return new Promise((resolve) => {
         server.listen(0, '127.0.0.1', () => {
             const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
-            resolve({ url: `http://127.0.0.1:${port}`, log, close: () => new Promise(done => server.close(() => done(undefined))) });
+            resolve({ url: `http://127.0.0.1:${port}`, log, state, close: () => new Promise(done => server.close(() => done(undefined))) });
         });
     });
 }

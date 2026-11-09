@@ -480,7 +480,7 @@ async function refreshCurrentTokenizer({ recount = false } = {}) {
     const data = shown
         ? await postCurrent('tokenizer', { state, shown_chat: shown, counted_key: countedKey }, true, getRequestHeaders())
         : await postCurrent('tokenizer', { state }, true);
-    if (typeof data?.tokenizer?.key === 'string') refreshedKey = data.tokenizer.key;
+    if (typeof data?.counted_key === 'string') refreshedKey = data.counted_key;
     rememberTokenizer(stateKey, data?.tokenizer);
     takeMessageCounts(data?.message_counts);
 }

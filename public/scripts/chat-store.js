@@ -11,6 +11,7 @@ import { uuidv4 } from './utils.js';
 import { setStoredAdopter } from './stored-report.js';
 import { askToDrop, confirmOf, hasDrops, warnDropped } from './edit-drops.js';
 import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
+import { countedTextHash } from './counted-text.js';
 
 /**
  * @param {number} i
@@ -143,10 +144,11 @@ export function adoptStored(stored) {
             if (_storeRefs.get(chat[i]) !== entry.ref) continue;
             if (isProvisionalNodeId(chat[i].node_id)) {
                 _adoptOpeningRow(i, entry.node_id);
-                break;
+            } else {
+                if (chat[i].node_id !== entry.node_id) updateMessage(i, { node_id: entry.node_id });
+                _markMessageSaved(i, entry.node_id);
             }
-            if (chat[i].node_id !== entry.node_id) updateMessage(i, { node_id: entry.node_id });
-            _markMessageSaved(i, entry.node_id);
+            _waitForCounts([i]);
             break;
         }
     }
@@ -189,28 +191,24 @@ export function updateMessage(mesId, updates) {
     return result;
 }
 
+/** @typedef {(nodeId: unknown, extra: Record<string, any>, text: string) => Record<string, any> | null} CountChange */
+
 /**
- * @param {unknown} counts the counts of messages and alternatives, by node
+ * @param {CountChange} change the message's or alternative's new extra; null leaves it
+ * @param {number[]} [mesIds] all when not given
  */
-export function takeMessageCounts(counts) {
-    if (!counts || typeof counts !== 'object') return;
-    const byNode = /** @type {Record<string, unknown>} */ (counts);
-    const countOf = (/** @type {unknown} */ nodeId) => {
-        const count = typeof nodeId === 'string' && Object.hasOwn(byNode, nodeId) ? byNode[nodeId] : undefined;
-        return typeof count === 'number' ? count : undefined;
-    };
-    for (let mesId = 0; mesId < chat.length; mesId++) {
-        const old = chat[mesId];
+function _changeCounts(change, mesIds) {
+    for (const mesId of mesIds ?? chat.keys()) {
+        const old = _chatAt(mesId);
+        if (!old) continue;
         /** @type {Partial<ChatMessage>} */
         const updates = {};
-        const own = countOf(old.node_id);
-        if (own !== undefined && old.extra?.token_count !== own) updates.extra = { ...(old.extra ?? {}), token_count: own };
+        const own = change(old.node_id, old.extra ?? {}, old.mes);
+        if (own) updates.extra = own;
         const infos = /** @type {any[] | undefined} */ (old.swipe_info);
-        if (Array.isArray(infos) && infos.some(info => countOf(info?.node_id) !== undefined && info.extra?.token_count !== countOf(info.node_id))) {
-            updates.swipe_info = infos.map((info) => {
-                const count = countOf(info?.node_id);
-                return count === undefined ? info : { ...info, extra: { ...(info.extra ?? {}), token_count: count } };
-            });
+        if (Array.isArray(infos)) {
+            const changed = infos.map((info, k) => (info && typeof old.swipes?.[k] === 'string' ? change(info.node_id, info.extra ?? {}, old.swipes[k]) : null));
+            if (changed.some(Boolean)) updates.swipe_info = infos.map((info, k) => (changed[k] ? { ...info, extra: changed[k] } : info));
         }
         if (!Object.keys(updates).length) continue;
         const wasClean = isAsStored(old);
@@ -218,6 +216,108 @@ export function takeMessageCounts(counts) {
         if (wasClean && updated && typeof old.node_id === 'string') markStoredAs(old.node_id, updated);
         if (updated) showMessageCount(mesId, updated);
     }
+}
+
+/**
+ * @param {Record<string, any>|undefined} extra
+ * @param {unknown} text
+ * @returns {boolean} whether the count it holds is the count of this text
+ */
+export function hasCountOf(extra, text) {
+    return typeof extra?.token_count === 'number' && extra.token_count_hash === countedTextHash(extra, text);
+}
+
+/**
+ * @param {Record<string, any>} extra
+ * @param {{ count: number, hash: number, key?: string }} counted
+ */
+function _counted(extra, { count, hash, key }) {
+    const next = { ...extra, token_count: count, token_count_hash: hash, ...(typeof key === 'string' ? { token_count_key: key } : {}) };
+    if (typeof key !== 'string') delete next.token_count_key;
+    delete next.token_count_waiting;
+    return next;
+}
+
+/**
+ * @param {Record<string, any>} extra
+ * @param {string} key
+ */
+function _waiting(extra, key) {
+    const next = { ...extra, token_count_waiting: key };
+    delete next.token_count;
+    delete next.token_count_hash;
+    delete next.token_count_key;
+    return next;
+}
+
+/**
+ * @param {unknown} records counts or waits for counts, by node, as an answer carries them
+ */
+export function takeMessageCounts(records) {
+    if (!records || typeof records !== 'object') return;
+    const byNode = /** @type {Record<string, any>} */ (records);
+    _changeCounts((nodeId, extra, text) => {
+        const record = typeof nodeId === 'string' && Object.hasOwn(byNode, nodeId) ? byNode[nodeId] : null;
+        if (!record || typeof record !== 'object') return null;
+        if (typeof record.count === 'number') return record.hash === countedTextHash(extra, text) ? _counted(extra, record) : null;
+        if (typeof record.waiting !== 'string') return null;
+        const arrived = hasCountOf(extra, text) && extra.token_count_key === record.waiting;
+        return arrived || extra.token_count_waiting === record.waiting ? null : _waiting(extra, record.waiting);
+    });
+    claimPushedCounts();
+}
+
+const UNCLAIMED_COUNTS_MAX = 1000;
+/** @type {Map<string, { node_id: string, hash: number, key: string, count: number }>} */
+const _unclaimedCounts = new Map();
+
+/**
+ * A push can come before the answer that tells the page which node it is for: it waits here until a message
+ * waits for it.
+ * @param {unknown} pushed counts the server pushes, each for a node's text as one tokenizer counted it
+ */
+export function takePushedMessageCounts(pushed) {
+    if (!Array.isArray(pushed)) return;
+    for (const push of pushed) {
+        if (typeof push?.node_id !== 'string' || typeof push.count !== 'number') continue;
+        _unclaimedCounts.delete(push.node_id);
+        _unclaimedCounts.set(push.node_id, push);
+    }
+    while (_unclaimedCounts.size > UNCLAIMED_COUNTS_MAX) _unclaimedCounts.delete(/** @type {string} */ (_unclaimedCounts.keys().next().value));
+    claimPushedCounts();
+}
+
+export function claimPushedCounts() {
+    if (!_unclaimedCounts.size) return;
+    _changeCounts((nodeId, extra, text) => {
+        const push = typeof nodeId === 'string' ? _unclaimedCounts.get(nodeId) : undefined;
+        const waiting = extra.token_count_waiting;
+        if (!push || (waiting !== true && waiting !== push.key) || push.hash !== countedTextHash(extra, text)) return null;
+        _unclaimedCounts.delete(push.node_id);
+        return _counted(extra, push);
+    });
+}
+
+/**
+ * @param {number[]} mesIds
+ */
+function _waitForCounts(mesIds) {
+    const nodes = new Set(mesIds.map(mesId => _chatAt(mesId)?.node_id));
+    _changeCounts((nodeId, extra, text) => (nodes.has(nodeId) && extra.token_count_waiting !== true && !hasCountOf(extra, text) ? { ...extra, token_count_waiting: true } : null), mesIds);
+    claimPushedCounts();
+}
+
+/**
+ * @param {number[]} mesIds
+ * @param {{ failed?: boolean }} [options] failed: the text shown is not stored, so no count is coming for it
+ */
+function _stopWaitingHere(mesIds, { failed = false } = {}) {
+    _changeCounts((_nodeId, extra) => {
+        if (extra.token_count_waiting !== true && !(failed && extra.token_count_waiting)) return null;
+        const next = { ...extra };
+        delete next.token_count_waiting;
+        return next;
+    }, mesIds);
 }
 
 /**
@@ -438,6 +538,7 @@ export async function takeOpenings(avatar, answer, { render = true } = {}) {
     if (view.kind === 'show') {
         chat.push(/** @type {ChatMessage} */ (view.message));
         markStoredAs(view.message.node_id, chat[0]);
+        claimPushedCounts();
         if (!render) return;
         await redisplayChat();
         await eventSource.emit(event_types.MESSAGE_RECEIVED, 0, 'first_message');
@@ -450,6 +551,7 @@ export async function takeOpenings(avatar, answer, { render = true } = {}) {
     const updated = /** @type {ChatMessage} */ (_chatAt(0));
     if (updated.node_id !== current.node_id) forgetStored([current.node_id]);
     if ((wasClean || view.shownChanged) && typeof updated.node_id === 'string' && updated.node_id !== '') markStoredAs(updated.node_id, updated);
+    claimPushedCounts();
     if (!render) return;
     if (view.shownChanged) updateMessageBlock(0, updated);
     refreshSwipeButtons(true);
@@ -608,7 +710,7 @@ function _messageContent(msg, text = msg.mes) {
     return content;
 }
 
-const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count', 'text_token_count'];
+const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count', 'token_count_hash', 'token_count_key', 'token_count_waiting', 'text_token_count'];
 
 /**
  * @param {unknown} extra
@@ -694,7 +796,16 @@ export async function chatOpEdit(mesId) {
     if (typeof msg.mes === 'string' && msg.mes.length === 0) return false;
 
     const edit = _editOf(msg);
-    if (edit !== null) await _chatOpPost('/api/chats/message/edit', edit);
+    if (edit !== null) {
+        _waitForCounts([mesId]);
+        try {
+            await _chatOpPost('/api/chats/message/edit', edit);
+        } catch (error) {
+            _stopWaitingHere([mesId], { failed: true });
+            throw error;
+        }
+        _stopWaitingHere([mesId]);
+    }
     _markMessageSaved(mesId, msg.node_id);
     return true;
 }
@@ -765,9 +876,18 @@ export async function chatOpEditMany(mesIds, silent = false) {
     }
     if (!edits.length) return 0;
 
-    const result = await _chatOpPost('/api/chats/message/edit-batch', {
-        edits: edits.map(({ _mesId, ...edit }) => edit),
-    }, silent);
+    const edited = edits.map(edit => edit._mesId);
+    _waitForCounts(edited);
+    let result;
+    try {
+        result = await _chatOpPost('/api/chats/message/edit-batch', {
+            edits: edits.map(({ _mesId, ...edit }) => edit),
+        }, silent);
+    } catch (error) {
+        _stopWaitingHere(edited, { failed: true });
+        throw error;
+    }
+    _stopWaitingHere(edited);
 
     const refused = new Set((result.refused ?? []).map((/** @type {any} */ r) => r.node_id));
     for (const edit of edits) {

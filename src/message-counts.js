@@ -1,4 +1,5 @@
 import { provisionalNodeId } from '../public/scripts/node-identity.js';
+import { countedText } from '../public/scripts/counted-text.js';
 
 /**
  * @typedef {object} CountSources
@@ -6,32 +7,22 @@ import { provisionalNodeId } from '../public/scripts/node-identity.js';
  * @property {Record<string, any>[]} [alternatives]
  */
 
-/** @typedef {(texts: string[]) => Promise<number[] | null>} CountTexts */
-
 /**
  * @param {unknown} extra
  * @returns {Record<string, any>}
  */
-function extraOf(extra) {
+export function extraOf(extra) {
     return extra && typeof extra === 'object' && !Array.isArray(extra) ? /** @type {Record<string, any>} */ (extra) : {};
 }
 
 /**
- * @param {unknown} extra
- * @param {unknown} mes
- */
-export function countedText(extra, mes) {
-    const reasoning = extraOf(extra).reasoning;
-    return (typeof reasoning === 'string' ? reasoning : '') + (typeof mes === 'string' ? mes : '');
-}
-
-/**
+ * Newest message first, each before its alternatives; then the alternatives and openings given apart.
  * @param {CountSources} sources
  * @returns {{ holder: Record<string, any>, text: string, key: string | null }[]}
  */
-function targetsOf({ messages = [], alternatives = [] }) {
+export function targetsOf({ messages = [], alternatives = [] }) {
     const targets = [];
-    for (const message of messages) {
+    for (const message of [...messages].reverse()) {
         if (!message || typeof message !== 'object') continue;
         targets.push({ holder: message, text: countedText(message.extra, message.mes), key: typeof message.node_id === 'string' ? message.node_id : null });
         if (!Array.isArray(message.swipes) || !Array.isArray(message.swipe_info)) continue;
@@ -57,31 +48,4 @@ function targetsOf({ messages = [], alternatives = [] }) {
  */
 export function openingAlternatives(state) {
     return [...(state?.openings?.alternatives ?? []), ...(state?.card_openings?.alternatives ?? [])];
-}
-
-/**
- * @param {CountSources} sources
- * @param {CountTexts} count
- * @returns {Promise<Record<string, number>>}
- */
-export async function countInto(sources, count) {
-    const targets = targetsOf(sources);
-    if (!targets.length) return {};
-    let counts;
-    try {
-        counts = await count(targets.map(target => target.text));
-    } catch (error) {
-        console.error('Could not count the messages:', error);
-        return {};
-    }
-    if (!counts) return {};
-    /** @type {Record<string, number>} */
-    const byNode = {};
-    targets.forEach((target, i) => {
-        const counted = counts[i];
-        if (typeof counted !== 'number') return;
-        target.holder.extra = { ...extraOf(target.holder.extra), token_count: counted };
-        if (target.key !== null) byNode[target.key] = counted;
-    });
-    return byNode;
 }

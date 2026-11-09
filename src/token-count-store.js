@@ -110,6 +110,8 @@ async function readOrMiss(read) {
  * @property {(messages: object[]) => Promise<number>} countChatMessage
  * @property {(text: string) => Promise<ArrayLike<number> | null>} encodeText
  * @property {(text: string) => Promise<{ ids: ArrayLike<number> | null, chunks?: string[] | null }>} encodeTextWithChunks
+ * @property {(text: string) => Promise<number | null>} storedText the stored count of a text, never counting it
+ * @property {(messages: object[]) => Promise<number | null>} storedChatMessage the stored count of chat messages, never counting them
  * @property {PendingTokenRows} pending
  */
 
@@ -156,6 +158,8 @@ export function createStoredCounter({
                 ? countMessages(messages, {})
                 : countChatCompletionMessages(resolved, messages, encodeOptions.outcome, directories)),
             encodeTextWithChunks: text => encodeWithTokenizerAndChunks(resolved, text, encodeOptions),
+            storedText: async () => null,
+            storedChatMessage: async () => null,
             pending,
         };
     }
@@ -229,6 +233,21 @@ export function createStoredCounter({
     };
 
     /**
+     * @param {string} kind
+     * @param {any} input
+     * @returns {Promise<number | null>}
+     */
+    const readStored = async (kind, input) => {
+        const readHash = tokenKeyHash(kind, keyText(kind, resolved, input));
+        const readKey = `${identity}\n${readHash}`;
+        if (seen.has(readKey)) return /** @type {number} */ (seen.get(readKey));
+        if (recount) return null;
+        const read = await readOrMiss(() => readCount(directories, identity, readHash));
+        if (read !== null && !seen.has(readKey)) push(kind, identity, readHash, read);
+        return read;
+    };
+
+    /**
      * @param {string} text
      */
     const storedWithChunks = async (text) => {
@@ -274,6 +293,8 @@ export function createStoredCounter({
         encodeText: text => stored(TOKEN_KEY_KINDS.IDS, text),
         encodeTextWithChunks: storedWithChunks,
         countChatMessage: messages => stored(TOKEN_KEY_KINDS.CC_MESSAGE, messages),
+        storedText: text => readStored(TOKEN_KEY_KINDS.TEXT, text),
+        storedChatMessage: messages => readStored(TOKEN_KEY_KINDS.CC_MESSAGE, messages),
         pending,
     };
 }

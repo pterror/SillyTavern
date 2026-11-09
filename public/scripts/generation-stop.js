@@ -13,7 +13,6 @@ let streamId = null;
  * @property {string|null} [mes]
  * @property {string|null} [node_id]
  * @property {Record<string, any>|null} [extra]
- * @property {Record<string, number>|null} [message_counts]
  */
 
 function newId() {

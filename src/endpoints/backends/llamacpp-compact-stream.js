@@ -106,7 +106,7 @@ export function encodeStoredReplyFrame(persisted, persist) {
         const itemizationWarning = takeItemizationNotSaved(persist);
         const frames = [];
         if (typeof persisted.mes === 'string') {
-            frames.push(encodeControlFrame({ stored_reply: { node_id: persisted.node_id, mes: persisted.mes, extra: persisted.extra ?? {}, ...(persisted.message_counts ? { message_counts: persisted.message_counts } : {}) } }));
+            frames.push(encodeControlFrame({ stored_reply: { node_id: persisted.node_id, mes: persisted.mes, extra: persisted.extra ?? {} } }));
         }
         frames.push(encodeAssistantNodeIdFrame(persisted.node_id));
         if (itemizationWarning) frames.push(encodeControlFrame({ warnings: [itemizationWarning] }));

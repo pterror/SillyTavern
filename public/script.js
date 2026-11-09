@@ -282,6 +282,9 @@ import {
     appendTarget,
     setSendStoredListener,
     openingForRequest,
+    claimPushedCounts,
+    hasCountOf,
+    takePushedMessageCounts,
 } from './scripts/chat-store.js';
 export {
     updateMessage,
@@ -919,6 +922,10 @@ function setupCharacterChangeStream() {
             }
             if (message?.type === 'openings') {
                 void takeOpenings(message.avatar, message);
+                return;
+            }
+            if (message?.type === 'message-counts') {
+                takePushedMessageCounts(message.counts);
                 return;
             }
             if (message !== null && typeof message === 'object' && message.type === undefined) onCharacterChangeMessage();
@@ -2643,10 +2650,24 @@ export function addOneMessage(mes, { type = undefined, insertAfter = null, scrol
 /**
  * @param {JQuery<HTMLElement>} messageElement
  * @param {ChatMessage} mes
+ * @returns {number|undefined} the count shown: only ever the count of the text shown
+ */
+function renderCounter(messageElement, mes) {
+    const counted = hasCountOf(mes.extra, mes.mes);
+    const waiting = !counted && !!mes.extra?.token_count_waiting;
+    messageElement.find('.tokenCounterDisplay')
+        .text(counted ? `${mes.extra?.token_count}t` : waiting ? '…' : '')
+        .toggleClass('waiting', waiting)
+        .attr('title', waiting ? t`Counting tokens…` : '');
+    return counted ? mes.extra?.token_count : undefined;
+}
+
+/**
+ * @param {JQuery<HTMLElement>} messageElement
+ * @param {ChatMessage} mes
  */
 function renderMessageCount(messageElement, mes) {
-    const tokenCount = mes.extra?.token_count;
-    messageElement.find('.tokenCounterDisplay').text(tokenCount ? `${tokenCount}t` : '');
+    const tokenCount = renderCounter(messageElement, mes);
     const { timerValue, timerTitle } = formatGenerationTimer(mes.gen_started, mes.gen_finished, tokenCount, mes.extra?.reasoning_duration, mes.extra?.time_to_first_token);
     messageElement.find('.mes_timer').attr('title', timerTitle ?? '').text(timerValue ?? '');
 }
@@ -3448,6 +3469,7 @@ export class StreamingProcessor {
                 this.messageTimerDom.textContent = timePassed.timerValue;
                 this.messageTimerDom.title = timePassed.timerTitle;
             }
+            renderCounter(chatElement.find(`.mes[mesid="${messageId}"]`), chat[messageId]);
 
             this.setFirstSwipe(messageId);
         }
@@ -5064,6 +5086,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     if (wasClean && chat[mesId]?.node_id) {
         markStoredAs(chat[mesId].node_id, chat[mesId]);
     }
+    claimPushedCounts();
 
     return all ? true : typeof chat[mesId].swipes[index] === 'string';
 }
@@ -6697,6 +6720,7 @@ async function messageEditDone(div) {
     );
     mesBlock.find('.mes_bias').empty();
     mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
+    renderMessageCount(div.closest('.mes'), chat[this_edit_mes_id] ?? mes);
     appendMediaToMessage(mes, div.closest('.mes'));
     addCopyToCodeBlocks(div.closest('.mes'));
 

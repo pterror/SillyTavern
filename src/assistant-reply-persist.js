@@ -4,7 +4,8 @@ import { recordGenerationPersisted } from './generation-stop.js';
 import { finishReply } from './reply-reasoning.js';
 import { storeReplyImages } from './reply-images.js';
 import { mergeRecords, withSentMessage } from './world-info/activation-record.js';
-import { countedText } from './message-counts.js';
+import { countedText } from '../public/scripts/counted-text.js';
+import { getStringHash } from '../public/scripts/hash-utils.js';
 
 /**
  * @param {any} data
@@ -80,7 +81,7 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
     return result;
 }
 
-/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra'] & { token_count?: number, text_token_count?: number }, message_counts?: Record<string, number>}} StoredReply */
+/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra'] & { token_count?: number, text_token_count?: number }}} StoredReply */
 
 /**
  * @param {object} body
@@ -89,7 +90,7 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
 export function attachStoredReply(body, persisted) {
     if (!persisted || !body || typeof body !== 'object') return;
     body.assistant_node_id = persisted.node_id;
-    body.assistant_message = { mes: persisted.mes, extra: persisted.extra, ...(persisted.message_counts ? { message_counts: persisted.message_counts } : {}) };
+    body.assistant_message = { mes: persisted.mes, extra: persisted.extra };
 }
 
 /**
@@ -189,32 +190,6 @@ async function persistReply(pending, generatedText) {
     return withReplyCounts(pending, shown ? { node_id: result.node_id, mes: shown.mes, extra: shown.extra ?? {} } : result);
 }
 
-const NOT_MESSAGE_KEYS = ['integrity', 'variables', 'global_variables', 'openings', 'metadata_not_saved'];
-
-/**
- * @param {any} pending
- * @param {string} replyNodeId
- * @returns {string[]}
- */
-function sentNodeIdsOf(pending, replyNodeId) {
-    const stored = pending.generationStop?.stored?.() ?? [];
-    const written = stored.filter((/** @type {any} */ entry) => !NOT_MESSAGE_KEYS.some(key => key in entry)).map((/** @type {any} */ entry) => entry.node_id);
-    return [...new Set([pending.sentNodeId, ...written])].filter(id => typeof id === 'string' && id !== '' && id !== replyNodeId);
-}
-
-/**
- * @param {any} pending
- * @param {string[]} nodeIds
- * @returns {Promise<Record<string, number> | undefined>}
- */
-async function sentCounts(pending, nodeIds) {
-    if (!nodeIds.length) return undefined;
-    const shown = await Promise.all(nodeIds.map(id => pending.chat.store.chats.shownMessage(pending.chat.tree, id)));
-    const counted = await Promise.all(shown.map(message => (message ? pending.countText(countedText(message.extra, message.mes)) : null)));
-    const counts = Object.fromEntries(nodeIds.flatMap((id, i) => (typeof counted[i] === 'number' ? [[id, counted[i]]] : [])));
-    return Object.keys(counts).length ? counts : undefined;
-}
-
 /**
  * @param {{ countText?: (text: string) => Promise<number> }} pending
  * @param {StoredReply} reply
@@ -223,12 +198,9 @@ async function sentCounts(pending, nodeIds) {
 async function withReplyCounts(pending, reply) {
     if (typeof pending.countText !== 'function') return reply;
     try {
-        const [tokenCount, textTokenCount, messageCounts] = await Promise.all([
-            pending.countText(countedText(reply.extra, reply.mes)),
-            pending.countText(reply.mes),
-            sentCounts(pending, sentNodeIdsOf(pending, reply.node_id)),
-        ]);
-        return { ...reply, extra: { ...reply.extra, token_count: tokenCount, text_token_count: textTokenCount }, ...(messageCounts ? { message_counts: messageCounts } : {}) };
+        const counted = countedText(reply.extra, reply.mes);
+        const [tokenCount, textTokenCount] = await Promise.all([pending.countText(counted), pending.countText(reply.mes)]);
+        return { ...reply, extra: { ...reply.extra, token_count: tokenCount, token_count_hash: getStringHash(counted), text_token_count: textTokenCount } };
     } catch (error) {
         console.warn('Could not count the stored reply:', error);
         return reply;

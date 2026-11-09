@@ -659,6 +659,10 @@ input[type='checkbox']:focus-visible {
     text-align: center;
 }
 
+.mes .tokenCounterDisplay {
+    min-height: 1lh;
+}
+
 .mes_ghost {
     display: none;
 }

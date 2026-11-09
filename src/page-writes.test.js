@@ -22,6 +22,7 @@ const { SESSION_HEADER } = await import('./request-session.js');
 const { router: generationRouter } = await import('./endpoints/generation.js');
 const { writeAllSettings } = await import('./settings-store.js');
 const { convertedUser, writeLibraryCard, treeOf, seedMessages } = await import('../tests/converted-user.fixture.js');
+const { countedTextHash } = await import('../public/scripts/counted-text.js');
 
 /** @type {Awaited<ReturnType<typeof convertedUser>>} */
 let user;
@@ -215,7 +216,7 @@ async function generateServer(t, reply) {
     t.after(() => new Promise(resolve => backend.close(() => resolve(undefined))));
     writeAllSettings(user.directories, {
         main_api: 'textgenerationwebui', username: 'Tester', amount_gen: 100, max_context: 4096,
-        power_user: { instruct: { enabled: false }, context: {}, reasoning: {}, sysprompt: {} },
+        power_user: { instruct: { enabled: false }, context: {}, reasoning: {}, sysprompt: {}, message_token_count_enabled: true },
         world_info: { globalSelect: [], charLore: [] }, world_info_settings: {},
         textgenerationwebui_settings: { type: 'generic', generic_model: 'm', server_urls: { generic: `http://127.0.0.1:${backend.address().port}` } },
         extension_settings: { note: {}, cfg: {} },
@@ -248,10 +249,15 @@ async function generateServer(t, reply) {
     };
 }
 
-test('a stored reply comes with its counts and the counts of the messages its request stored', async (t) => {
+test('a stored reply comes with its counts, and the counts of the messages its request stored are pushed once it is answered', async (t) => {
     const avatar = `pw-counts-${randomUUID()}.png`;
     await writeCharacter(avatar, 'Rex');
     const generate = await generateServer(t, 'At dawn we ride.');
+    /** @type {any[]} */
+    const pushed = [];
+    const onCounts = (/** @type {any[]} */ counts) => pushed.push(...counts);
+    user.store.events.on('message-counts', onCounts);
+    t.after(() => user.store.events.off('message-counts', onCounts));
     const answer = await generate.post({
         owner_id: avatar, character_avatar: avatar, type: 'normal', stream: false, node_id: null,
         opening: { refs: ['o'], messages: [{ name: 'Rex', is_user: false, mes: 'Hi.', extra: {} }] },
@@ -260,12 +266,16 @@ test('a stored reply comes with its counts and the counts of the messages its re
     const reply = await answer.json();
 
     assert.equal(answer.status, 200, JSON.stringify(reply));
-    const { extra, message_counts: messageCounts } = reply.assistant_message;
+    const { extra } = reply.assistant_message;
     assert.ok(Number.isInteger(extra.token_count) && extra.token_count > 0, JSON.stringify(extra));
+    assert.equal(extra.token_count_hash, countedTextHash(extra, reply.assistant_message.mes), 'the count names the text it counts');
     assert.ok(Number.isInteger(extra.text_token_count) && extra.text_token_count > 0, JSON.stringify(extra));
     const storedIds = Object.fromEntries(reply.stored.map((/** @type {any} */ s) => [s.ref, s.node_id]));
-    assert.deepEqual(Object.keys(messageCounts).sort(), [storedIds.o, storedIds.u].sort(), JSON.stringify(reply.stored));
-    for (const count of Object.values(messageCounts)) assert.ok(Number.isInteger(count) && count > 0, JSON.stringify(messageCounts));
+    const pushedNodes = () => [...new Set(pushed.map(p => p.node_id))].sort();
+    for (let i = 0; i < 100 && pushedNodes().length < 2; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(pushedNodes(), [storedIds.o, storedIds.u].sort(), JSON.stringify(pushed));
+    assert.deepEqual(pushed.find(p => p.node_id === storedIds.u).hash, countedTextHash({}, 'When?'));
+    for (const p of pushed) assert.ok(Number.isInteger(p.count) && p.count > 0 && typeof p.key === 'string', JSON.stringify(p));
     const stored = (await pathTo({ avatar }, reply.assistant_node_id)).messages.at(-1);
     assert.equal(stored.extra.token_count, undefined, 'the counts aren\'t stored with the message');
 });

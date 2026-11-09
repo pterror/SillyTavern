@@ -12,7 +12,7 @@ import { createStoredCounter, writeBack } from '../token-count-store.js';
 import { countWithConnection } from '../connection-counts.js';
 import { chatContext } from '../chat-request.js';
 import { openingState } from '../opening-state.js';
-import { countInto, openingAlternatives } from '../message-counts.js';
+import { openingAlternatives } from '../message-counts.js';
 
 export const router = express.Router();
 
@@ -107,7 +107,7 @@ export async function openTokenizer(state, directories, { recount = false } = {}
 /**
  * @template T
  * @param {(body: any, state: import('../tokenizer-resolve.js').TokenizerState) => T|null} parse
- * @param {(input: T, resolved: import('../tokenizer-resolve.js').ResolvedTokenizer, options: import('../tokenizer-resolve.js').EncodeWithTokenizerTypeOptions, storedCounter: () => Promise<import('../token-count-store.js').StoredCounter>, asked: { request: import('express').Request, state: import('../tokenizer-resolve.js').TokenizerState, answer: () => object }) => Promise<object>} handle
+ * @param {(input: T, resolved: import('../tokenizer-resolve.js').ResolvedTokenizer, options: import('../tokenizer-resolve.js').EncodeWithTokenizerTypeOptions, storedCounter: () => Promise<import('../token-count-store.js').StoredCounter>, asked: { request: import('express').Request, state: import('../tokenizer-resolve.js').TokenizerState, opened: Awaited<ReturnType<typeof openTokenizer>> }) => Promise<object>} handle
  * @returns {(request: import('express').Request, response: import('express').Response) => Promise<any>}
  */
 function currentTokenizerRoute(parse, handle) {
@@ -119,9 +119,9 @@ function currentTokenizerRoute(parse, handle) {
             return response.sendStatus(400);
         }
         try {
-            const { resolved, options, outcome, storedCounter, writeCounted } = await openTokenizer(
-                { ...state, explicitTokenizer }, request.user?.directories, { recount: request.body?.recount === true });
-            const result = await handle(input, resolved, options, storedCounter, { request, state, answer: () => tokenizerAnswer(state, resolved, outcome) });
+            const opened = await openTokenizer({ ...state, explicitTokenizer }, request.user?.directories, { recount: request.body?.recount === true });
+            const { resolved, options, outcome, storedCounter, writeCounted } = opened;
+            const result = await handle(input, resolved, options, storedCounter, { request, state, opened });
             const warnings = tokenizerResponseWarnings(state, resolved, outcome);
             response.send({
                 ...result,
@@ -248,26 +248,28 @@ router.post('/current/trim', currentTokenizerRoute(
 /**
  * @param {import('express').Request} request
  * @param {{ avatar_url?: unknown, group_id?: unknown }} shown
- * @param {import('../token-count-store.js').StoredCounter} counter
- * @param {string} api
- * @returns {Promise<Record<string, number>|null>}
+ * @param {import('../message-count-service.js').Counting} counting
+ * @returns {Promise<Record<string, import('../message-count-service.js').CountRecord>|null>}
  */
-async function shownChatCounts(request, shown, counter, api) {
+async function shownChatCounts(request, shown, counting) {
     const chat = await chatContext(request, { avatar: shown.avatar_url, group: shown.group_id });
     if (!chat) return null;
     const reader = chat.session.reader();
     const at = await chat.store.chats.landingOf(chat.tree, reader);
     const loaded = at === null ? null : await chat.store.chats.load({ tree: chat.tree, at, session: reader.session });
     const openings = chat.avatar === null ? null : await openingState({ store: chat.store, tree: chat.tree, actor: reader, avatar: chat.avatar });
-    const count = (/** @type {string} */ text) => (text.length === 0 ? 0 : api === 'openai' ? counter.countChatMessage([{ content: text }]) : counter.countText(text));
-    return countInto({ messages: loaded?.messages ?? [], alternatives: openingAlternatives(openings) }, texts => Promise.all(texts.map(count)));
+    const { countForPage } = await import('../message-count-service.js');
+    return countForPage(chat.store, counting, { messages: loaded?.messages ?? [], alternatives: openingAlternatives(openings) });
 }
 
 router.post('/current/tokenizer', currentTokenizerRoute(
-    body => ({ shown: body.shown_chat && typeof body.shown_chat === 'object' ? body.shown_chat : null, countedKey: body.counted_key ?? null }),
-    async ({ shown, countedKey }, _resolved, _options, storedCounter, { request, state, answer }) => {
-        if (!shown || /** @type {any} */ (answer()).key === countedKey) return {};
-        const counts = await shownChatCounts(request, shown, await storedCounter(), state.api);
-        return counts ? { message_counts: counts } : {};
+    body => ({ shown: body.shown_chat && typeof body.shown_chat === 'object' ? body.shown_chat : null }),
+    async ({ shown }, _resolved, _options, storedCounter, { request, state, opened }) => {
+        if (!shown) return {};
+        const { countingKey, countingWith } = await import('../message-count-service.js');
+        const key = await countingKey(state, opened);
+        if (key === request.body.counted_key) return { counted_key: key };
+        const counts = await shownChatCounts(request, shown, countingWith(await storedCounter(), state.api, key, opened.writeCounted));
+        return counts ? { counted_key: key, message_counts: counts } : { counted_key: key };
     },
 ));

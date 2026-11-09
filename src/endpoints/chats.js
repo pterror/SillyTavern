@@ -25,7 +25,7 @@ import { chatContext, chatNamePosition, compatChatIdOf, isOwnChat, openChatNamed
 import { groupObjects } from './groups.js';
 import { wholeCharacter } from './characters.js';
 import { chatOpenParts } from '../chat-open-parts.js';
-import { countedOpeningState, countSent, storedMessageCounts } from '../sent-message-counts.js';
+import { countedOpeningState, countSent, storedMessageCounts } from '../message-count-service.js';
 import { shownTextCounts } from '../shown-text-counts.js';
 import { metadata_keys } from '../authors-note.js';
 import { SESSION_GONE_HEADER, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
