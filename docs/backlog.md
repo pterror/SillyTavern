@@ -127,6 +127,9 @@ State and other
   (`public/script.js:1267`, `menu_type === 'create' ? {}`), so `{{char}}` has no character. The macro preview button
   (`public/scripts/chats.js:1578`) uses the open chat's scope for any card, so it shows the open chat's character, not
   the card being edited. The scope is the card being edited; an unsaved card's request carries its name.
+- The alternatives viewer (swipes and greetings, `packages/areas/alternatives`) edits in its own field, not the app's
+  editor that the card fields use; `docs/design/alternatives.md` says only "an editor for the greeting being edited".
+  It uses the same editor.
 - Greetings:
   - An in-chat greeting equal to a card greeting links back to it (the other direction of "go"), so editing the card's updates the chat, and an edit in the chat can be applied to the card.
   - Editing a greeting in the chat twice with no message after it doesn't keep the first edit as a separate alternative.
