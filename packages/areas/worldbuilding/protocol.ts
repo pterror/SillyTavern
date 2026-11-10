@@ -65,6 +65,14 @@ export const MAX_CARDS_PER_READ = Math.floor(READS_PER_VIEW / READS_PER_DRAWN_CA
 // and whole-word flags) per entry it names, whose look is one more.
 export const TEXT_LINK_READS_PER_READ = Math.floor(READS_PER_VIEW / 2 / (1 + READS_PER_LOOK / 2));
 export const READS_OF_TEXT_LINKS = TEXT_LINK_READS_PER_READ + Math.ceil(TEXT_LINK_READS_PER_READ / 2) * READS_PER_LOOK;
+// An old answer that carries a chat's messages (its open, a reply, an edit, a swipe, messages shown later) looks through
+// them for the names of the entries of the chat's worlds, newest first, in one part's budget, besides the looks of the
+// chat's speakers and of the entries named: a read as the entry's text does, and for every two (an entry named) its
+// look and where it opens.
+export const READS_PER_CHAT_LINKED_ENTRY = READS_PER_LOOK + 1;
+export const CHAT_TEXT_LINK_READS_PER_ANSWER = Math.floor(
+    (READS_PER_REQUEST - 2 * READS_OF_LOOKS_BESIDES_THINGS) / (1 + READS_PER_CHAT_LINKED_ENTRY / 2),
+);
 export const MENTION_CHECKS_PER_READ = Math.floor((READS_PER_VIEW - READS_OF_TEXT_LINKS) / READS_PER_MENTION_CHECK);
 export const MENTION_PAGES_AT_MOST = Math.floor(MAX_CARDS_PER_READ / MENTIONS_PER_PAGE);
 export const PICKED_AT_MOST = MAX_CARDS_PER_READ;

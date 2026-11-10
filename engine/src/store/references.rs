@@ -389,6 +389,13 @@ impl LinkLookup<'_, '_> {
         Ok(true)
     }
 
+    /// Whether any name of the book is in the index: a world with none (an imported book, before its offer) costs a
+    /// text one read instead of one per character.
+    fn has_names_by_fold(&self) -> Result<bool, StoreError> {
+        let book_prefix = key::id(NAMES_BY_FOLD, self.book);
+        Ok(!self.view.scan(&book_prefix, &key::prefix_end(&book_prefix), 1)?.is_empty())
+    }
+
     /// The greatest name ≤ `q` with any entry after it, as its fold.
     fn name_at_most(&self, q: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         let book_prefix = key::id(NAMES_BY_FOLD, self.book);
@@ -508,11 +515,13 @@ pub fn link_candidates(
     };
     let folded = names_fold(text);
     let mut listed = BTreeSet::new();
-    let mut complete = true;
-    for (at, c) in folded.char_indices() {
-        if !js_space(c) && !lookup.names_starting(&folded.as_bytes()[at..], &mut listed)? {
-            complete = false;
-            break;
+    let mut complete = lookup.spend(1);
+    if complete && lookup.has_names_by_fold()? {
+        for (at, c) in folded.char_indices() {
+            if !js_space(c) && !lookup.names_starting(&folded.as_bytes()[at..], &mut listed)? {
+                complete = false;
+                break;
+            }
         }
     }
     complete = complete && lookup.checked_one_by_one()?;

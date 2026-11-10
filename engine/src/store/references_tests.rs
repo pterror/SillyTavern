@@ -736,6 +736,27 @@ fn a_text_finds_names_by_their_fold_and_stops_at_its_bound_saying_so() {
 }
 
 #[test]
+fn a_world_with_no_names_costs_a_text_one_read_not_one_per_character() {
+    let dir = temp_dir("no-names");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut m = Model::default();
+    setup(&s, &mut m);
+    s.commit_wait(vec![create(10, ENTRY, "1:10"), set_text(10, key_field(0, 0), "Ilse")]).unwrap();
+    let text = "Ilse walks to the harbour and back again. ".repeat(20);
+    let page = read(&s, |v| references::link_candidates(v, 1, 0, &text, usize::MAX));
+    assert_eq!(field(&page, "complete"), &Js::Bool(true));
+    assert_eq!(field(&page, "reads"), &Js::Num(1.0), "a trigger is no name, so nothing is in the index");
+    assert!(candidates_found(&page).is_empty());
+    assert_eq!(field(&read(&s, |v| references::link_candidates(v, 1, 0, &text, 0)), "complete"), &Js::Bool(false));
+
+    s.commit_wait(vec![set_names(10, &["Ilse"])]).unwrap();
+    let named = read(&s, |v| references::link_candidates(v, 1, 0, &text, usize::MAX));
+    let Js::Num(reads) = field(&named, "reads") else { panic!() };
+    assert!(*reads > 20.0, "with a name, every start of the text is looked up");
+    assert_eq!(linked(&s, 1, &text), vec![10]);
+}
+
+#[test]
 fn the_entries_with_a_key_are_listed_by_id_without_the_entry_asking() {
     let dir = temp_dir("sharers");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();

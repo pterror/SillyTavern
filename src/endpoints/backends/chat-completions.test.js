@@ -1594,7 +1594,8 @@ async function run() {
 
         assert.equal(status, 200);
         {
-            const { assistant_node_id, assistant_message, ...rest } = data;
+            const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+            assert.deepEqual(assistant_links.messages[assistant_node_id]?.links, [], 'the reply\'s links come with it');
             assert.deepEqual(rest, { choices: [{ message: { content: claudeContent[0].text ?? '' } }], content: claudeContent }, 'the client-facing reply shape is exactly this function\'s own pre-existing (unmodified) content[0]-only wrapping');
             const storedReply = assistant_message;
             const { token_count: tokenCount, token_count_hash: countHash, text_token_count: textTokenCount, ...storedExtra } = storedReply.extra;
@@ -1778,7 +1779,8 @@ async function run() {
 
         assert.equal(status, 200);
         {
-            const { assistant_node_id, assistant_message, ...rest } = data;
+            const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+            assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
             assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
             assert.deepEqual(rest, mistralBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
             assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
@@ -1849,7 +1851,8 @@ async function run() {
 
         assert.equal(status, 200);
         {
-            const { assistant_node_id, assistant_message, ...rest } = data;
+            const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+            assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
             assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
             assert.deepEqual(rest, deepseekBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
             assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
@@ -1930,7 +1933,8 @@ async function run() {
 
         assert.equal(status, 200);
         {
-            const { assistant_node_id, assistant_message, ...rest } = data;
+            const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+            assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
             assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
             assert.deepEqual(rest, xaiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
             assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
@@ -2003,7 +2007,8 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                const { assistant_node_id, assistant_message, ...rest } = data;
+                const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+                assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, ai21Body, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
                 assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
@@ -2109,7 +2114,8 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                const { assistant_node_id, assistant_message, ...rest } = data;
+                const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+                assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, cohereBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
                 assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
@@ -2195,7 +2201,8 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                const { assistant_node_id, assistant_message, ...rest } = data;
+                const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+                assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, aimlapiBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
                 assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
@@ -2268,7 +2275,8 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                const { assistant_node_id, assistant_message, ...rest } = data;
+                const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+                assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, chutesBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
                 assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
@@ -2341,7 +2349,8 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                const { assistant_node_id, assistant_message, ...rest } = data;
+                const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+                assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, minimaxBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
                 assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
@@ -2414,7 +2423,8 @@ async function run() {
 
             assert.equal(status, 200);
             {
-                const { assistant_node_id, assistant_message, ...rest } = data;
+                const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+                assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
                 assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
                 assert.deepEqual(rest, electronhubBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
                 assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');
@@ -2487,7 +2497,8 @@ async function run() {
 
         assert.equal(status, 200);
         {
-            const { assistant_node_id, assistant_message, ...rest } = data;
+            const { assistant_node_id, assistant_message, assistant_links, ...rest } = data;
+            assert.ok(assistant_links?.messages[assistant_node_id], 'the reply\'s links come with it');
             assert.equal(typeof assistant_message?.mes, 'string', 'the stored reply is sent with the answer');
             assert.deepEqual(rest, azureBody, 'the client-facing response body is byte-for-byte/structurally identical to what the fake backend sent - unchanged from before this task');
             assert.equal(typeof assistant_node_id, 'string', 'the node persistAssistantReply() wrote is echoed back so the client can mark it clean instead of re-persisting it itself');

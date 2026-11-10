@@ -10,6 +10,7 @@ import { activationsArea } from '@st/activations/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
 import { looksArea } from '@st/looks/server';
 import { looksPorts } from './looks-store.js';
+import { resolveChatLinkLooks } from './chat-links.js';
 import { sessionHeaderOf } from './request-session.js';
 import { References } from './world-info/references.js';
 import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
@@ -531,6 +532,7 @@ onUserStoreOpened(({ events, root, handle }) => {
 });
 
 export const looks = looksArea(looksPorts({ libOf }));
+resolveChatLinkLooks((context, holder, things, o) => looks.looksOf(context, holder, things, o));
 
 /** @type {import('@st/worldbuilding/server').Ports} */
 const worldbuildingPorts = {

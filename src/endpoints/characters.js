@@ -36,6 +36,7 @@ import { getAtPath, getStringHash, normalizeFav, setAtPath } from '../../public/
 import { applyGreetingsModelToCard } from '../greeting-list.js';
 import { defaultPositionOf, greetingOperation, hashGreetingText } from '../greeting-ops.js';
 import { countedOpeningState, MESSAGE_COUNTS_EVENT } from '../message-count-service.js';
+import { CHAT_LINKS_EVENT } from '../chat-links.js';
 import { showGreeting } from '../tab-views.js';
 import { withSearchTiming } from '../search-timing.js';
 import { requestStore, userStore } from '../user-stores.js';
@@ -2215,6 +2216,9 @@ router.get('/changes/stream', async function (request, response) {
     };
     const onTagChanges = () => writeTagsChanged();
     const onMessageCounts = (/** @type {object[]} */ counts) => send({ type: 'message-counts', counts });
+    const onChatLinks = (/** @type {{ session: string, links: object }} */ pushed) => {
+        if (tab && pushed.session === tab.session) send({ type: 'chat-links', links: pushed.links });
+    };
     const onTagOrderSettled = () => send({ type: 'tag-order-settled' });
     const onTagMoveFailed = (/** @type {object} */ payload, /** @type {{ delivered?: boolean }} */ ack) => {
         send({ type: 'tag-move-failed', ...payload });
@@ -2227,6 +2231,7 @@ router.get('/changes/stream', async function (request, response) {
 
     store.events.on('commit', onCommit);
     store.events.on(MESSAGE_COUNTS_EVENT, onMessageCounts);
+    store.events.on(CHAT_LINKS_EVENT, onChatLinks);
     lib.tags.on('tag-changes', onTagChanges);
     lib.tags.on('tag-order-settled', onTagOrderSettled);
     lib.tags.on('tag-move-failed', onTagMoveFailed);
@@ -2235,6 +2240,7 @@ router.get('/changes/stream', async function (request, response) {
     request.on('close', () => {
         store.events.off('commit', onCommit);
         store.events.off(MESSAGE_COUNTS_EVENT, onMessageCounts);
+        store.events.off(CHAT_LINKS_EVENT, onChatLinks);
         lib.tags.off('tag-changes', onTagChanges);
         lib.tags.off('tag-order-settled', onTagOrderSettled);
         lib.tags.off('tag-move-failed', onTagMoveFailed);

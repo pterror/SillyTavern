@@ -247,10 +247,67 @@ places as what the tab draws (`pageLooks` in `src/ui-wiring.js`):
 | `page.personas` | `/api/avatars/get` (also as a chat open's part) | every persona, with `things` by avatar |
 | `page.chats` | `/api/chats/search` (the chat picker; a later page adds) | its bookmarks |
 | `page.recent` | `/api/chats/recent` (an older page adds) | the recent chats' characters and bookmarks |
+| `page.chatLinks` | every answer that carries a chat's messages (Names in the chat, below) | the entries the messages' names link |
 
 A character's thing comes with it (`thing` on every character object and list row); a persona's from the persona
 answer's `things`; a bookmark's with the chat row that names it (`thing`, `label_thing`). A list page asked with `draws`
 is answered whole even when its token is unchanged, since its looks are part of the answer.
+
+### Names in the chat
+
+A message's stored text links the names of the entries of the chat's worlds where it writes them: the worlds a reply in
+the chat reads, as generation chooses them (`chatWorlds`, `src/chat-links.js`: the ones used in every chat, the
+character's own world unless its card's book stands in for it, its extra books, the chat's, the persona's; a group's
+members' alike). A card's own book is not linked, since none of its entries opens on the worldbuilding page. Each
+message is looked through as an entry's text is (The names a text writes, `worldbuilding-store.md`), every world's
+names matched as that world matches them, and of the spans of all the worlds the first and longest are kept
+(`linksAmong`). The links are never stored: every answer that carries messages carries theirs (`links`):
+
+```ts
+type ChatLinks = {
+    messages: Record<string, { of: number; links: [from: number, to: number, thing: string][]; complete: boolean }>;
+    entries: Record<string, { book: string; uid: number }>; // where each linked entry opens
+    looks: Looks;
+};
+```
+
+| Answer | Its messages |
+|---|---|
+| `/api/chats/open` (and a new chat's, a greeting's) | the chat's, newest first, holding `page.chatLinks` anew |
+| a reply (its JSON's `assistant_links`, the stream's `stored_reply`) | the reply and the message sent with it |
+| `/api/chats/message/edit`, `edit-batch`, `append`, `alternative`, `graft` | the messages written |
+| `/api/chats/message/select` (a swipe, a switch of path) | the one chosen and the ones after it; with its ancestry, all |
+| `/api/chats/links` | the messages the page shows that no answer looked through (at most 64) |
+
+The messages of one answer share one part's reads, newest first (`CHAT_TEXT_LINK_READS_PER_ANSWER`, below). A message
+the reads left can't look through whole is answered only when it is the answer's first, which had them all
+(`complete: false`: the links found are right, and a later word may be a name it didn't reach, so the page claims
+nothing about unlinked words); the rest are not answered. The page asks for a message no answer looked through when it
+comes into view (`linkWhenSeen`), one request for those that come into view together. `of` is the hash of the text
+looked through: the page draws the links only while the message's stored text is still that text.
+
+The server keeps, per tab, the messages its last answers linked (at most 256, the newest answered first). A commit that
+can change a name or the chat's worlds (an entry's or a world's fields, keys, creation, deletion or history; the names
+offer; the worlds chosen; the chat's world) looks those messages through again and pushes them to the tab over its
+change stream (`chat-links`), which the page takes as everything it holds.
+
+The page draws a link through the one name renderer inside the message's rendered text, where the trigger marks are
+drawn too (`renderDrawn`, `public/scripts/lore-mark-render.js`): only where the rendered text still holds the words, a
+name only when its words are one run of text (one element), a mark around every piece of its words. A mark over the
+whole of a name is drawn around the name's element, so no name's look can cover it; one over part of a name, inside it.
+The name's element (`chat-link`) can be focused, which counts as pointing at it.
+
+Pointing at a name or a marked word shows the card (`activations.point`, one request, answered by `activations.card`;
+drawn by `cardNodes`, `@st/activations/page`): for a name, its entry's; for a marked word, each entry it brought up
+(at most `CARD_ENTRIES_AT_MOST`, 8, and how many more). A card is the entry's look's image (when it draws one), its
+name, its world, its relations in use, the opening of its text, and what brought it into the reply of the message it
+is in when it came up. A click on a name opens its entry on the worldbuilding page with no request but the page's own;
+a click on a marked word opens its entry, or the reply's list when the word brought up several. On a device that can't
+point (`hover: none`), a tap shows the card from the bottom with Open.
+
+The words that brought an entry into a reply are marked on every message, each message from its own reply's record:
+the first reply after it on the chat's path, whose record says where its keys were found, by message and the hash of
+the text it read. The page holds every message of the path with its record, so it draws the marks with no request.
 
 ### The motions
 
@@ -310,9 +367,12 @@ comes every 1,047 entries (was 1,232), and a selection holds 1,571 picked entrie
 ## Open
 
 - The marks of what the next reply will bring up, and marks in the unsent message.
-- The trigger mark is drawn from the latest reply's record (or the reply whose list is open), not each reply's own.
 - A picture of their own for entries, worlds and bookmarks: they draw another image, or none.
 - Removing a font from a world, and removing a font file no world lists.
 - Names drawn in a `<select>`'s options or a `title` (the world link popups, the world button's title) can't be drawn
   by the renderer; they stay plain until those controls are drawn as lists.
-- Names linked in chat messages: not yet.
+- A name in the unsent message.
+- The entries of a card's own book are not linked in the chat: they don't open on the worldbuilding page.
+- A message is looked through at about one read per character that isn't white space, in each world with names (a
+  world with none costs one read): an answer links about 11,800 such characters per world with names, so a chat of long
+  messages is linked newest first and the rest as they come into view. I don't know what real chats need.

@@ -81,7 +81,7 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
     return result;
 }
 
-/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra'] & { token_count?: number, text_token_count?: number }}} StoredReply */
+/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra'] & { token_count?: number, text_token_count?: number }, links?: import('./chat-links.js').ChatLinks}} StoredReply */
 
 /**
  * @param {object} body
@@ -91,6 +91,7 @@ export function attachStoredReply(body, persisted) {
     if (!persisted || !body || typeof body !== 'object') return;
     body.assistant_node_id = persisted.node_id;
     body.assistant_message = { mes: persisted.mes, extra: persisted.extra };
+    if (persisted.links) body.assistant_links = persisted.links;
 }
 
 /**
@@ -187,7 +188,25 @@ async function persistReply(pending, generatedText) {
     }
     if (!result || 'error' in result) return result;
     const shown = await pending.chat.store.chats.shownMessage(pending.chat.tree, result.node_id);
-    return withReplyCounts(pending, shown ? { node_id: result.node_id, mes: shown.mes, extra: shown.extra ?? {} } : result);
+    return withReplyLinks(pending, await withReplyCounts(pending, shown ? { node_id: result.node_id, mes: shown.mes, extra: shown.extra ?? {} } : result));
+}
+
+/**
+ * The reply's links and the sent message's, in the reply's answer.
+ * @param {{ chat: import('./chat-request.js').ChatContext, directories?: import('./users.js').UserDirectoryList, sentNodeId?: string | null }} pending
+ * @param {StoredReply} reply
+ * @returns {Promise<StoredReply>}
+ */
+async function withReplyLinks(pending, reply) {
+    if (!pending.directories) return reply;
+    try {
+        const { storedChatLinks } = await import('./chat-links.js');
+        const links = await storedChatLinks(pending.directories, pending.chat, [...(typeof pending.sentNodeId === 'string' ? [pending.sentNodeId] : []), reply.node_id]);
+        return links ? { ...reply, links } : reply;
+    } catch (error) {
+        console.warn('Could not link the stored reply:', error);
+        return reply;
+    }
 }
 
 /**

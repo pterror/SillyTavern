@@ -484,6 +484,14 @@ counted labels or nothing:
 | a write refused because its entry is gone | the refusal | the cards and the targets found |
 | every other action | every view it changes: one view of cards at most, with its step where it steps | none |
 
+An old answer that carries a chat's messages (its open, a reply, an edit, a swipe, the messages that come into view) is
+one part too. Besides its own work (a chat's open reads its path, not counted here) it looks its messages through for
+the names of the entries of the chat's worlds, newest first (`looks.md`, Names in the chat): the looks besides things
+of the chat's speakers and of the entries named (2 × 131), and per read of the names index half an entry named, whose
+look and opener are 2 more (`READS_PER_CHAT_LINKED_ENTRY`): `CHAT_TEXT_LINK_READS_PER_ANSWER`, (24,000 − 262) / 2 =
+11,869 reads, about that many characters of messages per world with names. A world with no names costs a text one read
+(`references::link_candidates` looks the index up once first).
+
 `server.test.ts` counts what each action's first part, and each view read alone at its most (a later part, or a part of
 a push), ask the ports for; the worst first part is a restore of the open entry, 23,124 reads.
 

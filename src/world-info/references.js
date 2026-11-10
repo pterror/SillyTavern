@@ -14,6 +14,7 @@ const LOOSE = { caseSensitive: false, matchWholeWords: false };
  * @typedef {{ name1?: string, name2?: string }} MacroContext
  * @typedef {{ id: bigint, key: string[], names: string[], content: string, constant: boolean, caseSensitive: boolean | null, matchWholeWords: boolean | null, broken: string | null }} Facts
  * @typedef {{ entry: bigint, name: string, spans: [number, number][] }} Reference
+ * @typedef {{ entry: bigint, from: number, to: number }} Link
  */
 
 /**
@@ -88,6 +89,21 @@ export function mention(text, name, target, defaults) {
     return { linked: false, spans: [], unlinked };
 }
 
+/**
+ * Of overlapping spans the one that starts first is kept, and of those starting together the longest.
+ * @param {Link[]} spans
+ * @returns {Link[]}
+ */
+export function linksAmong(spans) {
+    const sorted = [...spans].sort((a, b) => a.from - b.from || b.to - a.to);
+    /** @type {Link[]} */
+    const links = [];
+    for (const span of sorted) {
+        if (span.from >= (links[links.length - 1]?.to ?? 0)) links.push(span);
+    }
+    return links;
+}
+
 export class References {
     /**
      * @param {import('../library-engine.js').LibraryEngine} lib
@@ -122,21 +138,21 @@ export class References {
     }
 
     /**
-     * Where `text`, the text of `entry`, writes a name of another entry: every span of every name, in order; of
-     * overlapping spans the one that starts first is kept, and of those starting together the longest. The store names
-     * the entries whose names the text may write (`textLinkCandidates`) in at most `readsAtMost` reads, and the matcher
-     * checks each; `complete` is false when the store stopped at that bound, so a name it hadn't reached may be unlinked.
+     * Where `text` writes a name of an entry of `book` other than `entry`: every span of every name, overlapping or not.
+     * The store names the entries whose names the text may write (`textLinkCandidates`) in at most `readsAtMost` reads,
+     * and the matcher checks each; `complete` is false when the store stopped at that bound, so a name it hadn't
+     * reached may be missing. `reads` is what the store read.
      * @param {bigint} book
-     * @param {bigint} entry
+     * @param {bigint} entry `0n` for a text no entry holds (entity ids start at 1)
      * @param {string} text
      * @param {{ readsAtMost?: number }} [bound]
-     * @returns {Promise<{ links: { entry: bigint, from: number, to: number }[], complete: boolean } | null>}
+     * @returns {Promise<{ spans: Link[], complete: boolean, reads: number } | null>}
      */
-    async links(book, entry, text, { readsAtMost = TEXT_LINK_READS_PER_READ } = {}) {
-        /** @type {{ candidates: { entry: bigint, names: string[], caseSensitive: boolean | null, matchWholeWords: boolean | null }[], complete: boolean } | null} */
+    async spans(book, entry, text, { readsAtMost = TEXT_LINK_READS_PER_READ } = {}) {
+        /** @type {{ candidates: { entry: bigint, names: string[], caseSensitive: boolean | null, matchWholeWords: boolean | null }[], complete: boolean, reads: number } | null} */
         const found = await this.store.worldRead('textLinkCandidates', { book, entry, text, readsAtMost });
         if (found === null) return null;
-        /** @type {{ entry: bigint, from: number, to: number }[]} */
+        /** @type {Link[]} */
         const spans = [];
         for (const candidate of found.candidates) {
             const target = /** @type {Facts} */ ({ caseSensitive: candidate.caseSensitive, matchWholeWords: candidate.matchWholeWords });
@@ -146,13 +162,21 @@ export class References {
                 for (const [from, to] of mention(text, name, target, this.defaults).spans) spans.push({ entry: candidate.entry, from, to });
             }
         }
-        spans.sort((a, b) => a.from - b.from || b.to - a.to);
-        /** @type {{ entry: bigint, from: number, to: number }[]} */
-        const links = [];
-        for (const span of spans) {
-            if (span.from >= (links[links.length - 1]?.to ?? 0)) links.push(span);
-        }
-        return { links, complete: found.complete };
+        return { spans, complete: found.complete, reads: found.reads };
+    }
+
+    /**
+     * Where `text`, the text of `entry`, writes a name of another entry: the spans of `spans`, of overlapping ones the
+     * one that starts first and of those starting together the longest (`linksAmong`).
+     * @param {bigint} book
+     * @param {bigint} entry
+     * @param {string} text
+     * @param {{ readsAtMost?: number }} [bound]
+     * @returns {Promise<{ links: Link[], complete: boolean } | null>}
+     */
+    async links(book, entry, text, bound) {
+        const found = await this.spans(book, entry, text, bound);
+        return found === null ? null : { links: linksAmong(found.spans), complete: found.complete };
     }
 
     /**
