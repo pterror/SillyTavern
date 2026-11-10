@@ -123,6 +123,10 @@ State and other
   They are not fixed one by one; they go when the construction changes. First a model of every
   endpoint and page path across chats that creates rows or makes identities; then the page sends only actions naming
   what the server gave it (a greeting id or a stored node), with no endpoint that creates a row on its own.
+- Macros in character info resolve against the wrong character. In the create form the editors' scope is empty
+  (`public/script.js:1267`, `menu_type === 'create' ? {}`), so `{{char}}` has no character. The macro preview button
+  (`public/scripts/chats.js:1578`) uses the open chat's scope for any card, so it shows the open chat's character, not
+  the card being edited. The scope is the card being edited; an unsaved card's request carries its name.
 - Greetings:
   - An in-chat greeting equal to a card greeting links back to it (the other direction of "go"), so editing the card's updates the chat, and an edit in the chat can be applied to the card.
   - Editing a greeting in the chat twice with no message after it doesn't keep the first edit as a separate alternative.
