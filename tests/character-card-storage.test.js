@@ -227,7 +227,7 @@ describe('character card storage', () => {
             const before = canonicalJson(card);
             expectLossless(card);
             const parts = splitCard(card);
-            const normalizedName = getCharaCardV2(structuredClone(card), {}, false).name;
+            const normalizedName = getCharaCardV2(structuredClone(card), false).name;
             expect(parts.columns.name).toBe(normalizedName === undefined ? undefined : nameText(normalizedName));
             expect(canonicalJson(card)).toBe(before);
         }

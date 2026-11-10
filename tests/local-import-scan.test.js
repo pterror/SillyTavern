@@ -371,7 +371,7 @@ describe('scanDirectory (unit: direct directories fixture, no boot wiring)', () 
          */
         async function seedPoisonedRow(data) {
             const { getCharaCardV2 } = await import('../src/character-card-normalize.js');
-            await user.store.lib.writeCard(directories, 'Poisoned.png', JSON.stringify(getCharaCardV2(structuredClone(data), directories, false)));
+            await user.store.lib.writeCard(directories, 'Poisoned.png', JSON.stringify(getCharaCardV2(structuredClone(data), false)));
             expect(await characters()).toEqual(['Poisoned.png']);
         }
 

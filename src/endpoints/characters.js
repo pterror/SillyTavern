@@ -450,7 +450,7 @@ export async function characterObjects(request, avatars, { shallow }) {
         if (!e) return null;
         const card = await lib.assembled(e);
         const json = JSON.stringify(card);
-        const character = getCharaCardV2(JSON.parse(json), request.user.directories, false);
+        const character = getCharaCardV2(JSON.parse(json), false);
         character.avatar = e.key;
         character.thing = String(e.id);
         assignThumbnails(character, thumbnailsOf(e, 'avatar'));
@@ -496,7 +496,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'talkativeness': 0.5,
         'creator': '',
         'tags': '',
-    }, context.request.user.directories);
+    });
     omitInstallLocalFields(char);
     await writeCharacter(context.request, `${fileName}.png`, JSON.stringify(char), { image: DEFAULT_AVATAR_PATH, contentHash: context.contentHash ?? null });
     return fileName;
@@ -683,7 +683,7 @@ export function buildJsonImportData(rawText, directories, avatarFileName = null)
             'creator': jsonData.creator ?? '',
             'tags': jsonData.tags ?? '',
         };
-        char = convertToV2(char, directories);
+        char = convertToV2(char);
         omitInstallLocalFields(char);
         return JSON.stringify(char);
     } else if (jsonData.char_name !== undefined) {
@@ -706,7 +706,7 @@ export function buildJsonImportData(rawText, directories, avatarFileName = null)
             'creator': jsonData.creator ?? '',
             'tags': jsonData.tags ?? '',
         };
-        char = convertToV2(char, directories);
+        char = convertToV2(char);
         omitInstallLocalFields(char);
         return JSON.stringify(char);
     }
@@ -777,7 +777,7 @@ export function buildPngImportData(rawText, directories, avatarFileName = null) 
             'creator': jsonData.creator ?? '',
             'tags': jsonData.tags ?? '',
         };
-        char = convertToV2(char, directories);
+        char = convertToV2(char);
         omitInstallLocalFields(char);
         return JSON.stringify(char);
     }
@@ -794,7 +794,7 @@ router.post('/create', getFileNameValidationFunction('file_name'), async functio
         request.body.ch_name = sanitize(request.body.ch_name);
 
         const initialFav = normalizeFav(request.body.fav);
-        const charaData = charaFormatData(request.body, request.user.directories);
+        const charaData = charaFormatData(request.body);
         charaData.create_date = new Date().toISOString();
         omitFavField(charaData);
         const char = JSON.stringify(charaData);
@@ -844,7 +844,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         const rawData = await readCardContent(request.user.directories, avatarName);
         if (rawData === undefined) throw new Error('Failed to read character file');
 
-        const data = getCharaCardV2(JSON.parse(rawData), request.user.directories);
+        const data = getCharaCardV2(JSON.parse(rawData));
         const oldName = data.data?.name ?? data.name;
         setAtPath(data, 'data.name', newName);
         data.name = newName;
@@ -3122,7 +3122,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
                 const json = await readCardContent(request.user.directories, avatar);
                 if (json === undefined) return response.sendStatus(404);
                 try {
-                    const jsonObject = getCharaCardV2(JSON.parse(json), request.user.directories);
+                    const jsonObject = getCharaCardV2(JSON.parse(json));
                     unsetPrivateFields(jsonObject);
                     return response.type('json').send(JSON.stringify(jsonObject, null, 4));
                 } catch {

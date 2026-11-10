@@ -41,24 +41,24 @@ export function classifyJsonCandidate(sourceBuffer) {
 /**
  * @returns {string}
  */
-export function computeContentIdentityHashFromRawText(rawText, directories) {
-    const character = getCharaCardV2(JSON.parse(rawText), directories, false);
+export function computeContentIdentityHashFromRawText(rawText) {
+    const character = getCharaCardV2(JSON.parse(rawText), false);
     return computeContentIdentityHash(character);
 }
 
 /**
  * @returns {Promise<string | null>}
  */
-export async function computeCandidateContentIdentityHash(sourceBuffer, format, directories) {
+export async function computeCandidateContentIdentityHash(sourceBuffer, format) {
     switch (format) {
         case 'png': {
             const imgData = readCharacterCard(sourceBuffer);
             if (imgData === undefined) return null;
-            return computeContentIdentityHashFromRawText(imgData, directories);
+            return computeContentIdentityHashFromRawText(imgData);
         }
         case 'json': {
             const raw = sourceBuffer.toString('utf8');
-            return computeContentIdentityHashFromRawText(raw, directories);
+            return computeContentIdentityHashFromRawText(raw);
         }
         case 'yaml':
         case 'yml': {
@@ -78,7 +78,7 @@ export async function computeCandidateContentIdentityHash(sourceBuffer, format, 
                 talkativeness: 0.5,
                 creator: '',
                 tags: '',
-            }, directories);
+            });
             return computeContentIdentityHash(shaped);
         }
         default:

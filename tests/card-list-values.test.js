@@ -67,7 +67,7 @@ const cards = [
  * @param {unknown} card
  */
 function check(card) {
-    const character = getCharaCardV2(structuredClone(card), {}, false);
+    const character = getCharaCardV2(structuredClone(card), false);
     const expected = JSON.parse(JSON.stringify({ name: character.name, tags: character.tags, create_date: character.create_date, data: shallowCharacterData(character) }));
     const { world, ...data } = cardListValues(card).data;
     const got = JSON.parse(JSON.stringify({ ...cardListValues(card), data: { ...data, extensions: { fav: expected.data.extensions.fav, world } } }));

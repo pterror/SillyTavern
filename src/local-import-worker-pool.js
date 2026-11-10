@@ -28,7 +28,7 @@ export class LocalImportWorkerPool {
         this.slots = [];
         /** @type {WorkerPoolTask[]} */
         this.pending = [];
-        /** @type {Map<number, { id: number, sourcePath: string, format: string, directories: object, allowIdentityFallback: boolean }>} */
+        /** @type {Map<number, { id: number, sourcePath: string, format: string, allowIdentityFallback: boolean }>} */
         this.taskArgsById = new Map();
         this.nextId = 0;
         this.disposed = false;
@@ -92,13 +92,12 @@ export class LocalImportWorkerPool {
     /**
      * @param {string} sourcePath
      * @param {string} format
-     * @param {import('./users.js').UserDirectoryList} directories
      * @param {boolean} allowIdentityFallback
      * @returns {Promise< { contentHash: string, jsonClassification: string | null, identityHash: string | null, avatarIdentityHash: string | null, animatedHash?: string | null, needsWrite: false } | { contentHash: string, jsonClassification: null, identityHash: string | null, avatarIdentityHash: string | null, animatedHash?: string | null, needsWrite: true, rawText: string, finish: (outcome: { type: 'no-write' } | { type: 'write' }) => Promise<{ outcome: string, image?: { image: Buffer, avatarHash: string, avatarIdentityHash: string } }> } >}
      */
-    runPipeline(sourcePath, format, directories, allowIdentityFallback) {
+    runPipeline(sourcePath, format, allowIdentityFallback) {
         const id = this.nextId++;
-        this.taskArgsById.set(id, { id, sourcePath, format, directories, allowIdentityFallback });
+        this.taskArgsById.set(id, { id, sourcePath, format, allowIdentityFallback });
         return new Promise((resolve, reject) => {
             /** @type {WorkerPoolTask} */
             const task = {

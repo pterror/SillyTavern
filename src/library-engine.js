@@ -530,7 +530,7 @@ export class LibraryEngine {
             records.push(...valueRecords(id, withoutGreetingItems(withoutLook(withoutStatements(stored))), next));
             records.push(...byId.records);
             const { getCharaCardV2 } = await import('./character-card-normalize.js');
-            const normalized = getCharaCardV2(structuredClone(card), directories, false);
+            const normalized = getCharaCardV2(structuredClone(card), false);
             const size = calculateDataSize(normalized.data ?? {});
             if (stored?.dataSize !== size) records.push({ kind: 'dataSize', entity: id, size });
             const ms = parseCreateDateToEpochMs(normalized.create_date);

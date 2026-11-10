@@ -170,7 +170,7 @@ describe('generation (resolveWorldInfoCandidates) with a link to the embedded bo
     });
 });
 
-describe('card save (charaFormatData) with a link to the embedded book', () => {
+describe('card save (charaFormatData)', () => {
     function saveBody(world, cardJson) {
         return { ch_name: 'Keeper', world, json_data: JSON.stringify(cardJson) };
     }
@@ -181,37 +181,20 @@ describe('card save (charaFormatData) with a link to the embedded book', () => {
         return () => spy.mock.calls.length;
     }
 
-    test('keeps the card\'s embedded book as sent, reads no book and prints nothing', async () => {
+    test('keeps the card\'s own book as sent, whatever world it links, reads no book and prints nothing', async () => {
+        await writeWorld('Keeper File', { 0: { uid: 0, key: ['pier'], content: 'From the file', order: 5 } });
         const book = embeddedBook('Keeper Lore', 'Kept as sent');
         const errors = captureErrors();
         const reads = await countBookReads();
 
-        for (let i = 0; i < 2; i++) {
-            const saved = normalize.charaFormatData(saveBody('Keeper Lore', card('Keeper Lore', book)), directories);
-            expect(saved.data.extensions.world).toBe('Keeper Lore');
+        for (const world of ['Keeper Lore', 'Keeper File', 'Nowhere Saved']) {
+            const saved = normalize.charaFormatData(saveBody(world, card(world, book)));
+            expect(saved.data.extensions.world).toBe(world);
             expect(saved.data.character_book).toEqual(book);
         }
+        expect(normalize.charaFormatData(saveBody('Keeper File', card('Keeper File'))).data.character_book).toBeUndefined();
 
-        expect(printsFor(errors, 'Keeper Lore')).toBe(0);
+        expect(errors).not.toHaveBeenCalled();
         expect(reads()).toBe(0);
-    });
-
-    test('a World file under the linked name still replaces the card\'s book, as upstream', async () => {
-        await writeWorld('Keeper File', { 0: { uid: 0, key: ['pier'], content: 'From the file', order: 5 } });
-
-        const saved = normalize.charaFormatData(saveBody('Keeper File', card('Keeper File', embeddedBook('Keeper File', 'From the card'))), directories);
-
-        expect(saved.data.character_book.name).toBe('Keeper File');
-        expect(saved.data.character_book.entries.map(e => e.content)).toEqual(['From the file']);
-    });
-
-    test('a link with no file and no embedded book still reads the name, printing once, as before', () => {
-        const errors = captureErrors();
-
-        const saved = normalize.charaFormatData(saveBody('Nowhere Saved', card('Nowhere Saved')), directories);
-        normalize.charaFormatData(saveBody('Nowhere Saved', card('Nowhere Saved')), directories);
-
-        expect(saved.data.character_book).toBeUndefined();
-        expect(printsFor(errors, 'Nowhere Saved')).toBe(1);
     });
 });

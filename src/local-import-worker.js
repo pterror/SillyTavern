@@ -51,8 +51,8 @@ parentPort.on('message', async (msg) => {
         let identityHash = null;
         if (!jsonClassification && allowIdentityFallback) {
             identityHash = decoded
-                ? computeContentIdentityHashFromRawText(decoded.rawText, msg.directories)
-                : await computeCandidateContentIdentityHash(sourceBuffer, format, msg.directories);
+                ? computeContentIdentityHashFromRawText(decoded.rawText)
+                : await computeCandidateContentIdentityHash(sourceBuffer, format);
         }
 
         const avatarIdentityHash = decoded?.chunks

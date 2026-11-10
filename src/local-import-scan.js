@@ -262,7 +262,7 @@ async function processFileImpl(state, filename, directories, tagImportSetting = 
     const allowIdentityFallback = getConfigValue('performance.allowExpensiveDuplicateFallback', true, 'boolean');
 
     try {
-        const pipelineResult = await ensureWorkerPool().runPipeline(sourcePath, format, directories, allowIdentityFallback);
+        const pipelineResult = await ensureWorkerPool().runPipeline(sourcePath, format, allowIdentityFallback);
 
         try {
             const freshStat = await fsPromises.stat(sourcePath);
