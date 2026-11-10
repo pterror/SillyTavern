@@ -264,7 +264,7 @@ test('a chat opened by a tab answers the looks of its character, which a look ed
     assert.equal(opened.status, 200);
     const [thing] = await user.store.lib.ids(TYPE.character, ['Looked.png']);
     assert.deepEqual(Object.keys(opened.body.looks.things), [String(thing)]);
-    assert.deepEqual(opened.body.looks.styles[opened.body.looks.things[String(thing)]], { layers: {}, picture: { before: false, after: false }, note: null, fonts: [] });
+    assert.deepEqual(opened.body.looks.styles[opened.body.looks.things[String(thing)]], { layers: {}, picture: { before: false, after: false, crop: null, image: null }, note: null, fonts: [] });
 
     const { looks } = await import('../ui-wiring.js');
     const uiUser = { handle: 'u', directories };

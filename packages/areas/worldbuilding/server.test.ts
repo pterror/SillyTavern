@@ -88,7 +88,7 @@ import type { ActionContext, ActionResult, Upload, User } from '@st/server-ui';
 
 const LOOK: ResolvedLook = {
     layers: { rest: [{ property: 'color', value: 'teal' }] },
-    picture: { before: false, after: false },
+    picture: { before: false, after: false, crop: null, image: null },
     note: null,
     fonts: [],
 };

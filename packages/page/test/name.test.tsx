@@ -37,7 +37,7 @@ test('a place with a picture puts it on both sides, outside the name span, and s
         'named named-name look-42',
         'name-picture name-picture-after',
     ]);
-    expect(box.querySelector('img')?.getAttribute('src')).toBe('/thumb/ilse.png');
+    expect(box.querySelector('.name-picture')?.getAttribute('style')).toBe('--name-picture: url("/thumb/ilse.png");');
     expect(box.querySelector('.named')?.hasAttribute('data-selected')).toBe(false);
     setSelected(true);
     expect(box.querySelector('.named')?.hasAttribute('data-selected')).toBe(true);

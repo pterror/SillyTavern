@@ -7,12 +7,17 @@ import { NAME_BASE_CSS, createLookSheet } from '../src/looks.ts';
 
 const look = (color: string, more: Partial<ResolvedLook> = {}): ResolvedLook => ({
     layers: { rest: [{ property: 'color', value: color }] },
-    picture: { before: false, after: false },
+    picture: { before: false, after: false, crop: null, image: null },
     note: null,
     fonts: [],
     ...more,
 });
-const none: ResolvedLook = { layers: {}, picture: { before: false, after: false }, note: null, fonts: [] };
+const none: ResolvedLook = {
+    layers: {},
+    picture: { before: false, after: false, crop: null, image: null },
+    note: null,
+    fonts: [],
+};
 const looksOf = (things: Record<string, ResolvedLook>): Looks => {
     const out: Looks = { styles: {}, things: {} };
     for (const [thing, style] of Object.entries(things)) {
@@ -80,7 +85,11 @@ test('the picture sides and the note are rules on the name box, and fonts come o
     looks.hold(
         'a',
         looksOf({
-            1: look('red', { picture: { before: true, after: false }, note: 'the "heir"', fonts: [face] }),
+            1: look('red', {
+                picture: { before: true, after: false, crop: null, image: null },
+                note: 'the "heir"',
+                fonts: [face],
+            }),
             2: look('red', { fonts: [face] }),
         }),
     );

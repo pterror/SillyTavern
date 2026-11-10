@@ -3,6 +3,7 @@ import {
     LOOK_SELECTED_ATTRIBUTE,
     NAME_BOX_CLASS,
     NAME_PICTURE_CLASS,
+    NAME_PICTURE_PROPERTY,
     lookBoxClass,
     nameClass,
     namePictureClass,
@@ -17,11 +18,13 @@ export type NameOptions = { picture?: string | null; selected?: boolean };
 
 const boxClass = (thing: string) => `${NAME_BOX_CLASS} ${lookBoxClass(thing)}`;
 const pictureClass = (side: 'before' | 'after') => `${NAME_PICTURE_CLASS} ${namePictureClass(side)}`;
+// The thing's own picture, which its look may crop or draw another image in place of.
+const pictureStyle = (src: string) => `${NAME_PICTURE_PROPERTY}: url(${JSON.stringify(src)})`;
 
 export function Name(props: { named: Named } & NameOptions) {
     const Picture = (p: { side: 'before' | 'after' }) => (
         <Show when={props.picture}>
-            {(src) => <img class={pictureClass(p.side)} src={src()} alt="" loading="lazy" />}
+            {(src) => <span class={pictureClass(p.side)} style={pictureStyle(src())} aria-hidden="true" />}
         </Show>
     );
     return (
@@ -43,12 +46,11 @@ export function nameElement(named: Named, options: NameOptions = {}, document = 
     const box = document.createElement('span');
     box.className = boxClass(named.thing);
     const picture = (side: 'before' | 'after') => {
-        const img = document.createElement('img');
-        img.className = pictureClass(side);
-        img.src = options.picture ?? '';
-        img.alt = '';
-        img.loading = 'lazy';
-        return img;
+        const shown = document.createElement('span');
+        shown.className = pictureClass(side);
+        shown.style.cssText = pictureStyle(options.picture ?? '');
+        shown.setAttribute('aria-hidden', 'true');
+        return shown;
     };
     const name = document.createElement('span');
     name.className = nameClass(named);

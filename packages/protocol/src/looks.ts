@@ -7,10 +7,14 @@ export type Declaration = { property: string; value: string };
 
 export type FontFace = { family: string; url: string; format: string };
 
-// The declarations are sanitized and written as they are.
+// The part of a picture the small picture shows, as fractions of the picture's width and height.
+export type PictureCrop = { x: number; y: number; width: number; height: number };
+
+// The declarations are sanitized and written as they are. `image`: the URL of an image drawn instead of the thing's
+// own picture; `crop`: the part of it shown.
 export type ResolvedLook = {
     layers: Partial<Record<LookState, Declaration[]>>;
-    picture: { before: boolean; after: boolean };
+    picture: { before: boolean; after: boolean; crop: PictureCrop | null; image: string | null };
     note: string | null;
     fonts: FontFace[];
 };
@@ -33,6 +37,10 @@ export const DRAWN_VIEW = 'looks.drawn';
 export const LOOK_SCOPE_CLASS = 'look-scope';
 // Set on a name's own element while its thing is selected.
 export const LOOK_SELECTED_ATTRIBUTE = 'data-selected';
+// On an element around names, shows them as if their message, or they themselves, were pointed at (the Look screen's
+// scenes and its preview of a state).
+export const LOOK_SHOWS_MESSAGE_POINTED_CLASS = 'look-shows-message-pointed';
+export const LOOK_SHOWS_WORD_POINTED_CLASS = 'look-shows-word-pointed';
 
 export const lookClass = (thing: string): string => `look-${thing}`;
 
@@ -40,6 +48,8 @@ export const lookClass = (thing: string): string => `look-${thing}`;
 export const NAME_BOX_CLASS = 'name-box';
 export const lookBoxClass = (thing: string): string => `look-box-${thing}`;
 export const NAME_PICTURE_CLASS = 'name-picture';
+// The custom property a place sets on a small picture's box to the thing's own picture.
+export const NAME_PICTURE_PROPERTY = '--name-picture';
 export const namePictureClass = (side: 'before' | 'after'): string => `${NAME_PICTURE_CLASS}-${side}`;
 
 export const nameClass = (named: Pick<Named, 'thing' | 'shownAs'>): string =>
@@ -52,9 +62,9 @@ export function lookSelector(thing: string, state: LookState): string {
         case 'rest':
             return own;
         case 'messagePointed':
-            return `:where(.${LOOK_SCOPE_CLASS}:hover, .${LOOK_SCOPE_CLASS}:focus-within) ${own}`;
+            return `:where(.${LOOK_SCOPE_CLASS}:hover, .${LOOK_SCOPE_CLASS}:focus-within, .${LOOK_SHOWS_MESSAGE_POINTED_CLASS}) ${own}`;
         case 'wordPointed':
-            return `${own}:where(:hover, :focus-visible)`;
+            return `${own}:where(:hover, :focus-visible, .${LOOK_SHOWS_WORD_POINTED_CLASS} *)`;
         case 'selected':
             return `${own}:where([${LOOK_SELECTED_ATTRIBUTE}])`;
     }
@@ -74,13 +84,26 @@ export function lookCss(thing: string, look: ResolvedLook): string {
 const cssString = (text: string): string =>
     `"${text.replace(/[^\w ,.:!?'()-]/gu, (c) => `\\${c.codePointAt(0)?.toString(16) ?? ''} `)}"`;
 
-// The picture's sides and the note, which sit around the name's span and never inside it.
+const percent = (n: number): string => `${Math.round(n * 10_000) / 100}%`;
+
+// The background a small picture's box draws to show the crop: the picture scaled so the crop fills the box.
+export function cropCss(crop: PictureCrop): string {
+    const at = (start: number, size: number) => (size >= 1 ? '0%' : percent(start / (1 - size)));
+    return `background-size: ${percent(1 / crop.width)} ${percent(1 / crop.height)}; background-position: ${at(crop.x, crop.width)} ${at(crop.y, crop.height)};`;
+}
+
+// The picture's sides, what it shows, and the note, which sit around the name's span and never inside it.
 export function lookPlacementCss(thing: string, look: ResolvedLook): string {
     const box = `.${lookBoxClass(thing)}`;
     const rules: string[] = [];
     for (const side of ['before', 'after'] as const) {
         if (look.picture[side]) rules.push(`${box} > .${namePictureClass(side)} { display: inline-block; }`);
     }
+    const shows = [
+        ...(look.picture.image === null ? [] : [`background-image: url("${look.picture.image}");`]),
+        ...(look.picture.crop === null ? [] : [cropCss(look.picture.crop)]),
+    ];
+    if (shows.length > 0) rules.push(`${box} > .${NAME_PICTURE_CLASS} { ${shows.join(' ')} }`);
     if (look.note !== null) rules.push(`${box}::after { content: ${cssString(look.note)}; }`);
     return rules.join('\n');
 }

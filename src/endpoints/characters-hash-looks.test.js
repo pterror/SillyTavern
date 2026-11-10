@@ -12,7 +12,7 @@ const { serializeQueryHashesBinary } = await import('./characters.js');
 const { deserializeQueryHashesBinary } = await import('../../public/scripts/query-hashes-binary.js');
 
 const row = { id: 'Ilse.png', isGroup: false, version: 3, tagIdsHash: 7, date_added: 1, create_date: null, date_last_chat: 0, chat_size: 0, data_size: 0, chat: 'Ilse - 1' };
-const looks = { styles: { a1: { layers: { rest: [{ property: 'color', value: 'teal' }] }, picture: { before: false, after: false }, note: 'the "heir" ✦', fonts: [] } }, things: { 41: 'a1' } };
+const looks = { styles: { a1: { layers: { rest: [{ property: 'color', value: 'teal' }] }, picture: { before: false, after: false, crop: null, image: null }, note: 'the "heir" ✦', fonts: [] } }, things: { 41: 'a1' } };
 
 /** @param {Buffer} buffer */
 const read = buffer => deserializeQueryHashesBinary(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));

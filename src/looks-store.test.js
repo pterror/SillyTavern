@@ -7,7 +7,7 @@ import { after, test } from 'node:test';
 import { looksArea } from '@st/looks/server';
 import { NO_LOOK_STYLE, lookCss } from '@st/protocol/looks';
 import { LOOK_FIELD, TYPE } from './library-codes.js';
-import { fontsDirectory, looksPorts } from './looks-store.js';
+import { fontsDirectory, lookImagesDirectory, looksPorts } from './looks-store.js';
 import { writeDrafts } from './settings-model/model-store.js';
 import { draft } from './settings-model/entity-draft.js';
 import { bookmarkLookDeletes } from './bookmark-looks.js';
@@ -15,7 +15,7 @@ import { write as writeCard } from './character-card-parser.js';
 import { cardParts } from './library-engine.js';
 import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
 
-const { emptyUser, writeLibraryCard } = await import('../tests/converted-user.fixture.js');
+const { emptyUser, writeCardWithImage, writeLibraryCard } = await import('../tests/converted-user.fixture.js');
 const image = fs.readFileSync(path.join(import.meta.dirname, '..', 'public', 'img', 'ai4.png'));
 const user = await emptyUser('st-looks-store-test-');
 after(() => user.close());
@@ -244,6 +244,118 @@ test('a font is served by its id with a cache that never asks again, and nothing
         assert.deepEqual(Buffer.from(await served.arrayBuffer()), bytes);
         assert.equal((await fetch(at + `${'0'.repeat(64)}.woff2`)).status, 404);
         assert.equal((await fetch(at + '..%2Fsecret')).status, 404);
+    } finally {
+        server.closeAllConnections?.();
+        await new Promise(resolve => server.close(resolve));
+    }
+});
+
+test('the Look screen shows each state through every level, with the name, the levels and who sets what', async () => {
+    const book = await importWorld({ entries: { 0: { uid: 0, key: ['Ilse'], comment: 'Ilse Varro', content: 'x' } } }, 'Shown');
+    const ilse = await entryOf(book, 0);
+    await set({ theme: true }, 'rest', [{ property: 'color', value: 'gray' }]);
+    await set({ thing: book }, 'wordPointed', [{ property: 'text-shadow', value: '0 0 2px gold' }]);
+    const regulars = (await act('looks.makeShared', { name: 'Regulars', world: book, usedBy: ilse })).answer.id;
+    await set({ shared: { id: regulars, world: book } }, 'rest', [{ property: 'color', value: 'gold' }]);
+    await set({ thing: ilse }, 'selected', red);
+    await act('looks.setNote', { level: { thing: ilse }, note: 'the innkeeper' });
+    assert.deepEqual((await act('looks.open', { thing: ilse })).opensViews, ['looks.look', 'looks.drawn']);
+    const view = await looks.area.views['looks.look'](context);
+    assert.deepEqual(view.named, { thing: ilse, text: 'Ilse Varro', shownAs: 'title' });
+    assert.deepEqual(view.levels, [
+        { kind: 'theme', level: { theme: true } },
+        { kind: 'world', level: { thing: book }, name: 'Shown' },
+        { kind: 'shared', level: { shared: { id: regulars, world: book } }, name: 'Regulars', by: 'thing' },
+        { kind: 'thing', level: { thing: ilse } },
+    ]);
+    assert.deepEqual(view.shown.rest, [{ property: 'color', value: 'gold', state: 'rest', level: 2 }]);
+    assert.deepEqual(view.shown.wordPointed, [
+        { property: 'color', value: 'gold', state: 'rest', level: 2 },
+        { property: 'text-shadow', value: '0 0 2px gold', state: 'wordPointed', level: 1 },
+    ]);
+    assert.deepEqual(view.shown.selected.at(-1), { property: 'color', value: 'red', state: 'selected', level: 3 });
+    assert.deepEqual(view.placement, { before: null, after: null, note: { value: 'the innkeeper', level: 3 } });
+    assert.deepEqual(view.picture, { own: null, image: null, crop: null });
+    assert.deepEqual(view.fonts.map(f => f.family), ['Noto Sans', 'Noto Sans Mono']);
+    assert.deepEqual(view.looks.styles[view.looks.things[ilse]].layers.selected, red);
+    await set({ theme: true }, 'rest', []);
+    await act('looks.setDeclarations', { level: { theme: true }, state: 'rest', set: [], reset: ['color'] });
+});
+
+test('an effect moves between the levels that draw a name: down onto the thing keeps it above, up takes it off', async () => {
+    const book = await importWorld({ entries: { 0: { uid: 0, key: ['A'], content: 'a' }, 1: { uid: 1, key: ['B'], content: 'b' } } }, 'Applied');
+    const [a, b] = [await entryOf(book, 0), await entryOf(book, 1)];
+    const teal = [{ property: 'color', value: 'teal' }];
+    await set({ thing: a }, 'rest', [...teal, { property: 'font-style', value: 'italic' }]);
+    const moved = await act('looks.applyTo', {
+        thing: a, what: { state: 'rest', properties: ['color'] }, from: { thing: a }, to: { newShared: { name: 'Teal', world: book } },
+    });
+    assert.deepEqual(moved.changed, ['looks.look', 'looks.drawn']);
+    await act('looks.open', { thing: a });
+    const view = await looks.area.views['looks.look'](context);
+    const shared = view.levels[2];
+    assert.equal(shared.kind, 'shared');
+    assert.equal(shared.name, 'Teal');
+    assert.deepEqual(view.own.rest, [{ property: 'font-style', value: 'italic' }]);
+    assert.deepEqual(view.shown.rest, [{ property: 'font-style', value: 'italic', state: 'rest', level: 3 }, { property: 'color', value: 'teal', state: 'rest', level: 2 }].reverse());
+    await act('looks.applyTo', { thing: a, what: { state: 'rest', properties: ['color'] }, from: shared.level, to: { thing: book } });
+    assert.deepEqual((await drawn([b]))[b].layers.rest, teal);
+    assert.deepEqual((await looks.area.views['looks.look'](context)).uses[0].look, {});
+    await act('looks.applyTo', { thing: a, what: { state: 'wordPointed', properties: ['color'] }, from: { thing: book }, to: { thing: a } });
+    assert.deepEqual((await drawn([a]))[a].layers.wordPointed, teal);
+    assert.deepEqual((await drawn([b]))[b].layers.rest, teal);
+    await act('looks.applyTo', { thing: a, what: { note: true }, from: { thing: a }, to: { thing: book } });
+    assert.equal((await act('looks.applyTo', { thing: a, what: { note: true }, from: { thing: b }, to: { theme: true } })).refused, 'That isn\'t one of the looks this name is drawn through.');
+    await act('looks.setPicture', { level: { thing: a }, before: true, after: null });
+    await act('looks.applyTo', { thing: a, what: { picture: true }, from: { thing: a }, to: { thing: book } });
+    assert.deepEqual((await drawn([b]))[b].picture, { before: true, after: false, crop: null, image: null });
+    assert.equal((await drawn([a]))[a].picture.before, true);
+    assert.equal((await looks.area.views['looks.look'](context)).own.picture, undefined);
+});
+
+test('a small picture is a crop of the thing\'s own picture or another image, stored by its bytes and served by them', async () => {
+    const book = await importWorld({ entries: { 0: { uid: 0, key: ['A'], content: 'a' } } }, 'Pictured');
+    const a = await entryOf(book, 0);
+    const crop = { x: 0.25, y: 0, width: 0.5, height: 0.75 };
+    await act('looks.setPicture', { level: { thing: a }, before: true, after: null });
+    await act('looks.cropPicture', { thing: a, crop });
+    assert.deepEqual((await drawn([a]))[a].picture, { before: true, after: false, crop, image: null });
+    assert.equal((await act('looks.cropPicture', { thing: a, crop: { x: 0.9, y: 0, width: 0.5, height: 0.5 } })).refused, 'A crop is a part of the picture, at least a twentieth of each side.');
+    assert.equal((await act('looks.uploadPicture', { thing: a }, upload('n.txt', 'hello'))).refused, 'That file is no image: send a PNG, JPEG, WebP or GIF.');
+    const sent = await act('looks.uploadPicture', { thing: a }, upload('i.png', image));
+    assert.deepEqual(sent.changed, ['looks.look', 'looks.drawn']);
+    const id = `${crypto.createHash('sha256').update(image).digest('hex')}.png`;
+    assert.deepEqual((await drawn([a]))[a].picture, { before: true, after: false, crop: null, image: `/look-images/${id}` });
+    assert.ok(fs.existsSync(path.join(lookImagesDirectory(user.directories.root), id)));
+    await act('looks.useOwnPicture', { thing: a });
+    assert.deepEqual((await drawn([a]))[a].picture, { before: true, after: false, crop: null, image: null });
+
+    const wrenCard = JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name: 'Wren', data: { name: 'Wren', first_mes: 'Hi.', alternate_greetings: [], extensions: {} } });
+    await writeCardWithImage(user, 'pictured.png', wrenCard, writeCard(image, wrenCard));
+    const wren = String((await lib.ids(TYPE.character, ['pictured.png']))[0]);
+    await act('looks.open', { thing: wren });
+    const view = await looks.area.views['looks.look'](context);
+    assert.deepEqual(view.named, { thing: wren, text: 'Wren', shownAs: 'name' });
+    assert.match(view.picture.own, /^\/thumbnail\/s[0-9a-f]{64}\./);
+    assert.deepEqual(view.levels.map(l => l.kind), ['theme', 'thing']);
+
+    const express = (await import('express')).default;
+    const { lookImagesRouter } = await import('./endpoints/fonts.js');
+    const app = express();
+    app.use((request, _response, next) => {
+        /** @type {any} */ (request).user = { directories: user.directories };
+        next();
+    });
+    app.use('/look-images', lookImagesRouter);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    try {
+        const at = `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (server.address()).port}/look-images/`;
+        const served = await fetch(at + id);
+        assert.equal(served.status, 200);
+        assert.equal(served.headers.get('content-type'), 'image/png');
+        assert.equal(served.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+        assert.equal((await fetch(at + `${'0'.repeat(64)}.png`)).status, 404);
     } finally {
         server.closeAllConnections?.();
         await new Promise(resolve => server.close(resolve));

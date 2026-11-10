@@ -2,14 +2,16 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { FONT_BYTES_AT_MOST } from '@st/looks/protocol';
+import { FONT_BYTES_AT_MOST, IMAGE_BYTES_AT_MOST } from '@st/looks/protocol';
 import { isEmptyLook, storedLook } from '@st/looks/look';
-import { LOOK_FIELD, TYPE } from './library-codes.js';
+import { FIELD, LOOK_FIELD, TYPE } from './library-codes.js';
+import { thumbnailsOf } from './thumbnail-urls.js';
 import { historyWrites } from './entity-values.js';
 import { BOOKMARK_LOOK } from './bookmark-looks.js';
 import { FONT_FIELD, SHARED_LOOK_FIELD } from './world-info-engine.js';
 
 export const FONTS_DIRECTORY = 'fonts';
+export const LOOK_IMAGES_DIRECTORY = 'look-images';
 export const USER_LOOKS = 'user';
 const THEME_FIELD = 'theme';
 const USER_SHARED_FIELD = 'shared:';
@@ -51,20 +53,46 @@ export function fontFormatOf(bytes) {
 }
 
 /**
+ * @param {Buffer} bytes
+ * @returns {'png' | 'jpg' | 'webp' | 'gif' | null}
+ */
+export function imageFormatOf(bytes) {
+    if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpg';
+    if (bytes.subarray(0, 4).toString('latin1') === 'RIFF' && bytes.subarray(8, 12).toString('latin1') === 'WEBP') return 'webp';
+    if (/^GIF8[79]a$/.test(bytes.subarray(0, 6).toString('latin1'))) return 'gif';
+    return null;
+}
+
+/**
  * @param {string} root the user's data directory
  */
 export const fontsDirectory = root => path.join(root, FONTS_DIRECTORY);
+
+/**
+ * @param {string} root the user's data directory
+ */
+export const lookImagesDirectory = root => path.join(root, LOOK_IMAGES_DIRECTORY);
 
 /**
  * @param {string} root
  * @param {Buffer} bytes
  * @returns {Promise<string | null>} the font's id, null when it isn't a font
  */
-export async function putFont(root, bytes) {
+export function putFont(root, bytes) {
     const format = fontFormatOf(bytes);
-    if (format === null) return null;
+    return format === null ? Promise.resolve(null) : putByHash(fontsDirectory(root), bytes, format);
+}
+
+/**
+ * Stored once by its bytes, under their hash, so an id never names other bytes.
+ * @param {string} dir
+ * @param {Buffer} bytes
+ * @param {string} format
+ * @returns {Promise<string>} its id
+ */
+async function putByHash(dir, bytes, format) {
     const id = `${crypto.createHash('sha256').update(bytes).digest('hex')}.${format}`;
-    const dir = fontsDirectory(root);
     const file = path.join(dir, id);
     if (fs.existsSync(file)) return id;
     await fs.promises.mkdir(dir, { recursive: true });
@@ -322,6 +350,49 @@ export function looksPorts({ libOf }) {
                 const world = e.type === TYPE.entry ? e.key.slice(0, e.key.indexOf(':')) : e.type === TYPE.book ? thing : null;
                 return { kind: /** @type {import('@st/looks/protocol').ThingKind} */ (kind), world, look: jsonOf(e, LOOK_FIELD) };
             });
+        },
+        async describe(user, thing, kind) {
+            const lib = await libOf(user);
+            /** @param {string} text */
+            const named = text => ({ thing, text, shownAs: /** @type {const} */ ('name') });
+            if (kind === 'bookmark') {
+                const [row] = await lib.store.chatRead('bookmarks', { ids: [BigInt(thing.slice(BOOKMARK_THING.length))] });
+                return isBookmark(row) ? { named: named(String(row.name ?? '')), picture: null } : null;
+            }
+            const [entity] = await lib.entities([BigInt(thing)]);
+            if (!entity) return null;
+            if (entity.type === TYPE.entry) {
+                const book = BigInt(entity.key.slice(0, entity.key.indexOf(':')));
+                const [label] = await lib.store.worldRead('worldbuildingLabels', { book, entities: [entity.id] });
+                return label ? { named: label, picture: null } : null;
+            }
+            if (entity.type === TYPE.book) {
+                const name = entity.values.find(v => v.field === 'name')?.text;
+                return { named: named(typeof name === 'string' && name ? name : entity.key), picture: null };
+            }
+            /** @param {StoredEntity | null | undefined} holder */
+            const pictureOf = holder => {
+                if (!holder) return null;
+                const shown = thumbnailsOf(holder, 'avatar');
+                return shown.thumbnail_still ?? shown.thumbnail;
+            };
+            if (entity.type === TYPE.character) {
+                const name = jsonOf(entity, FIELD.name);
+                return { named: named(typeof name === 'string' ? name : ''), picture: pictureOf(entity) };
+            }
+            if (entity.type === TYPE.persona) {
+                const name = jsonOf(entity, 'name');
+                const [image] = await lib.entities(await lib.ids(TYPE.personaImage, [entity.key]));
+                return { named: named(typeof name === 'string' ? name : ''), picture: pictureOf(image) };
+            }
+            return null;
+        },
+        async storeImage(who, file) {
+            if (file.size > IMAGE_BYTES_AT_MOST) return { refused: `An image is at most ${IMAGE_BYTES_AT_MOST / 1024 / 1024} MB.` };
+            const bytes = await fs.promises.readFile(file.path);
+            const format = imageFormatOf(bytes);
+            if (format === null) return { refused: 'That file is no image: send a PNG, JPEG, WebP or GIF.' };
+            return { id: await putByHash(lookImagesDirectory(who.user.directories.root), bytes, format) };
         },
         async readTheme(user) {
             const { entity } = await lookEntity(await libOf(user), USER_LOOKS, [THEME_FIELD]);

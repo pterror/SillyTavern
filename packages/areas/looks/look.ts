@@ -1,6 +1,6 @@
 import { parse } from '@adobe/css-tools';
 import { LOOK_STATES } from '@st/protocol/looks';
-import type { Declaration, FontFace, LookState, ResolvedLook } from '@st/protocol/looks';
+import type { Declaration, FontFace, LookState, PictureCrop, ResolvedLook } from '@st/protocol/looks';
 
 // A thing's resolution reads its own look and at most two fields per shared look it uses: 1 + 2 × 3 = 7 reads, under
 // the 10 a card's own reads take.
@@ -39,8 +39,26 @@ export const APP_ANIMATIONS: readonly string[] = Object.freeze(['shimmer', 'brea
 export const animationName = (name: string): string => `look-${name}`;
 export const fontFamily = (id: string): string => APP_FONTS[id] ?? `look-font-${id.slice(0, 16)}`;
 export const fontUrl = (id: string): string => `/fonts/${id}`;
+// An image drawn as a thing's small picture: the SHA-256 of its bytes, then its format's extension.
+export const IMAGE_ID = /^[0-9a-f]{64}\.(png|jpg|webp|gif)$/;
+export const IMAGE_BYTES_AT_MOST = 4 * 1024 * 1024;
+export const lookImageUrl = (id: string): string => `/look-images/${id}`;
+// The smallest part of a picture a crop shows, so the small picture is never a smear of a few pixels.
+export const CROP_SIDE_AT_LEAST = 0.05;
 
-export type Picture = { before?: boolean; after?: boolean };
+// `crop` and `image` say what the small picture shows: a part of the thing's own picture, or another image.
+export type Picture = { before?: boolean; after?: boolean; crop?: PictureCrop; image?: string };
+
+export function pictureCrop(raw: unknown): PictureCrop | null {
+    if (typeof raw !== 'object' || raw === null) return null;
+    const { x: left, y: top, width: w, height: h } = raw as Record<string, unknown>;
+    const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
+    if (!finite(left) || !finite(top) || !finite(w) || !finite(h)) return null;
+    if (w < CROP_SIDE_AT_LEAST || h < CROP_SIDE_AT_LEAST || left < 0 || top < 0) return null;
+    if (left + w > 1 + 1e-9 || top + h > 1 + 1e-9) return null;
+    const round = (n: number) => Math.round(n * 10_000) / 10_000;
+    return { x: round(left), y: round(top), width: round(w), height: round(h) };
+}
 
 export type StoredLook = Partial<Record<LookState, Declaration[]>> & {
     picture?: Picture;
@@ -450,6 +468,9 @@ export function storedLook(raw: unknown, fonts: FontsAllowed): { look: StoredLoo
         const kept: Picture = {};
         if (typeof picture['before'] === 'boolean') kept.before = picture['before'];
         if (typeof picture['after'] === 'boolean') kept.after = picture['after'];
+        const crop = pictureCrop(picture['crop']);
+        if (crop) kept.crop = crop;
+        if (typeof picture['image'] === 'string' && IMAGE_ID.test(picture['image'])) kept.image = picture['image'];
         if (Object.keys(kept).length > 0) look.picture = kept;
     }
     if (typeof raw['note'] === 'string') look.note = raw['note'].slice(0, NOTE_LENGTH_AT_MOST);
@@ -496,11 +517,13 @@ export function resolveLevels(levels: StoredLook[]): ResolvedLook {
         }
         if (merged.size > 0) layers[state] = [...merged.values()].map((d) => drawn(d, fonts));
     }
-    const picture = { before: false, after: false };
+    const picture: ResolvedLook['picture'] = { before: false, after: false, crop: null, image: null };
     let note: string | null = null;
     for (const level of levels) {
         if (level.picture?.before !== undefined) picture.before = level.picture.before;
         if (level.picture?.after !== undefined) picture.after = level.picture.after;
+        if (level.picture?.crop !== undefined) picture.crop = level.picture.crop;
+        if (level.picture?.image !== undefined) picture.image = lookImageUrl(level.picture.image);
         if (level.note !== undefined) note = level.note === '' ? null : level.note;
     }
     return { layers, picture, note, fonts: [...fonts.values()] };

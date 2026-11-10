@@ -1,11 +1,30 @@
-import { NAME_BOX_CLASS, NAME_PICTURE_CLASS, fontFaceCss, thingCss } from '@st/protocol/looks';
+import { NAME_BOX_CLASS, NAME_PICTURE_CLASS, NAME_PICTURE_PROPERTY, fontFaceCss, thingCss } from '@st/protocol/looks';
 import type { Looks, ResolvedLook } from '@st/protocol/looks';
 
-// The note takes no room in the line; a picture side shows only when its thing's look turns it on.
+// Inside it, every name is drawn still: the frame a motion shows readers whose device asks for less motion.
+export const LOOK_STILL_CLASS = 'look-still';
+
+// The app's motions (a look names them, `look-<name>`): each moves only what no effect sets and nothing that takes
+// room, so a motion goes with every effect and moves nothing around the name. A glint passing (shimmer) and a slow
+// light (drift) are a mask over the letters; breathe and flicker fade; float lifts the name without moving the line.
+const MOTIONS_CSS = [
+    `@keyframes look-shimmer { from { -webkit-mask-image: linear-gradient(100deg, #000 40%, rgb(0 0 0 / 45%) 50%, #000 60%); mask-image: linear-gradient(100deg, #000 40%, rgb(0 0 0 / 45%) 50%, #000 60%); -webkit-mask-size: 250% 100%; mask-size: 250% 100%; -webkit-mask-position: 100% 0; mask-position: 100% 0; } to { -webkit-mask-image: linear-gradient(100deg, #000 40%, rgb(0 0 0 / 45%) 50%, #000 60%); mask-image: linear-gradient(100deg, #000 40%, rgb(0 0 0 / 45%) 50%, #000 60%); -webkit-mask-size: 250% 100%; mask-size: 250% 100%; -webkit-mask-position: 0% 0; mask-position: 0% 0; } }`,
+    `@keyframes look-drift { from { -webkit-mask-image: linear-gradient(90deg, #000, rgb(0 0 0 / 55%), #000); mask-image: linear-gradient(90deg, #000, rgb(0 0 0 / 55%), #000); -webkit-mask-size: 200% 100%; mask-size: 200% 100%; -webkit-mask-position: 0% 0; mask-position: 0% 0; } to { -webkit-mask-image: linear-gradient(90deg, #000, rgb(0 0 0 / 55%), #000); mask-image: linear-gradient(90deg, #000, rgb(0 0 0 / 55%), #000); -webkit-mask-size: 200% 100%; mask-size: 200% 100%; -webkit-mask-position: 200% 0; mask-position: 200% 0; } }`,
+    '@keyframes look-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }',
+    '@keyframes look-flicker { 0%, 100% { opacity: 1; } 8% { opacity: 0.8; } 12% { opacity: 1; } 40% { opacity: 0.92; } 44% { opacity: 0.7; } 48% { opacity: 1; } 72% { opacity: 0.85; } }',
+    '@keyframes look-float { 0%, 100% { top: 0; } 50% { top: -0.08em; } }',
+    `.${LOOK_STILL_CLASS} .named { animation: none; }`,
+    '@media (prefers-reduced-motion: reduce) { .name-box .named { animation: none; } }',
+];
+
+// The note takes no room in the line; a picture side shows only when its thing's look turns it on, and shows the
+// thing's own picture unless its look crops it or draws another image.
 export const NAME_BASE_CSS = [
     `.${NAME_BOX_CLASS} { position: relative; }`,
+    '.named { position: relative; }',
     `.${NAME_BOX_CLASS}::after { position: absolute; left: 50%; bottom: calc(100% - 0.3em); transform: translateX(-50%); font-size: 0.6em; line-height: 1; white-space: nowrap; font-weight: 400; font-style: normal; letter-spacing: normal; opacity: 0.75; pointer-events: none; }`,
-    `.${NAME_PICTURE_CLASS} { display: none; width: 1.05em; height: 1.05em; border-radius: 50%; object-fit: cover; vertical-align: -0.16em; margin: 0 0.2em; }`,
+    `.${NAME_PICTURE_CLASS} { display: none; width: 1.05em; height: 1.05em; border-radius: 50%; vertical-align: -0.16em; margin: 0 0.2em; background: var(${NAME_PICTURE_PROPERTY}) center / cover no-repeat; }`,
+    ...MOTIONS_CSS,
 ].join('\n');
 
 export type LookSheet = {

@@ -1,21 +1,38 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { defineArea } from '@st/server-ui';
 import type { ActionContext, ActionResult, Upload, User, ViewContext } from '@st/server-ui';
-import { NO_LOOK_STYLE } from '@st/protocol/looks';
-import type { Looks, LookState, ResolvedLook } from '@st/protocol/looks';
+import { LOOK_STATES, NO_LOOK_STYLE } from '@st/protocol/looks';
+import type { Looks, LookState, Named, ResolvedLook } from '@st/protocol/looks';
 import {
     APP_FONTS,
+    FONT_FORMATS,
     MAX_USES,
     declarationsOfCss,
+    fontFamily,
+    fontUrl,
     isNoLook,
     isRefusal,
+    lookImageUrl,
+    pictureCrop,
     resolveLevels,
     sanitizeDeclaration,
     storedLook,
 } from './look.ts';
-import type { FontsAllowed, Refusal, StoredLook } from './look.ts';
+import type { FontsAllowed, Picture, Refusal, StoredLook } from './look.ts';
 import { DRAWN_VIEW, LOOK_VIEW, SHARED_LOOKS_PER_READ, actions } from './protocol.ts';
-import type { FontItem, Level, LookView, SharedLookItem, SharedLookRef, ThingKind, UsedLook } from './protocol.ts';
+import type {
+    FontItem,
+    Level,
+    LevelItem,
+    LookView,
+    Placed,
+    Placement,
+    SharedLookItem,
+    SharedLookRef,
+    Shown,
+    ThingKind,
+    UsedLook,
+} from './protocol.ts';
 
 export type Who = { user: User; session: string };
 
@@ -26,8 +43,14 @@ export type SharedRecord = SharedLookRef & { name: string; look: unknown };
 
 export type Written = 'ok' | 'missing' | { refused: string };
 
+export type Described = { named: Named; picture: string | null };
+
 export type Ports = {
     readThings(user: User, things: string[]): Promise<(ThingRecord | null)[]>;
+    // The thing's name as it is drawn, and the URL of its own picture when it has one.
+    describe(user: User, thing: string, kind: ThingKind): Promise<Described | null>;
+    // Stores an image by its bytes, answering its id.
+    storeImage(who: Who, file: Upload): Promise<{ id: string } | { refused: string }>;
     readTheme(user: User): Promise<unknown>;
     // Each id is looked for among `world`'s shared looks, when given, then the user's.
     readShared(user: User, world: string | null, ids: string[]): Promise<(SharedRecord | null)[]>;
@@ -50,15 +73,77 @@ export type Ports = {
 const NOT_FOUND = 'That is gone.';
 const NOT_AVAILABLE = "That shared look isn't one of this world's or yours.";
 const NO_UPLOAD = 'Send the font with it.';
+const NO_PICTURE = 'Send the image with it.';
+const NOT_IN_CHAIN = "That isn't one of the looks this name is drawn through.";
+const TOO_MANY_USES = `A thing uses at most ${MAX_USES} shared looks.`;
+const BAD_CROP = 'A crop is a part of the picture, at least a twentieth of each side.';
+
+// A layer of a look, changed as a map from property to value, in the order they were last set.
+function withLayer(look: StoredLook, state: LookState, change: (layer: Map<string, string>) => void): StoredLook {
+    const layer = new Map((look[state] ?? []).map((d) => [d.property, d.value]));
+    change(layer);
+    const next: StoredLook = { ...look };
+    delete next[state];
+    if (layer.size > 0) next[state] = [...layer].map(([property, value]) => ({ property, value }));
+    return next;
+}
 
 type Session = { open: string | null };
+
+type Leveled = { item: LevelItem; look: StoredLook };
 
 const styleId = (look: ResolvedLook): string =>
     createHash('sha256').update(JSON.stringify(look)).digest('hex').slice(0, 16);
 
 const lookOf = (raw: unknown): StoredLook => storedLook(raw, 'any').look ?? {};
 
-const appFonts = (): FontItem[] => Object.entries(APP_FONTS).map(([id, name]) => ({ id, name, uploaded: false }));
+const appFonts = (): FontItem[] =>
+    Object.entries(APP_FONTS).map(([id, name]) => ({ id, name, uploaded: false, family: name, face: null }));
+
+const uploadedFont = ({ id, name }: { id: string; name: string }): FontItem => ({
+    id,
+    name,
+    uploaded: true,
+    family: fontFamily(id),
+    face: {
+        family: fontFamily(id),
+        url: fontUrl(id),
+        format: FONT_FORMATS[id.slice(id.lastIndexOf('.') + 1)] ?? 'woff2',
+    },
+});
+
+const levelKey = (level: Level): string =>
+    'theme' in level ? 'theme' : 'thing' in level ? `thing:${level.thing}` : `shared:${level.shared.id}`;
+
+// Each state is its layer over the ones below it; in a layer the most specific level wins.
+export function shownOf(looks: StoredLook[]): Record<LookState, Shown[]> {
+    const out = {} as Record<LookState, Shown[]>;
+    LOOK_STATES.forEach((state, at) => {
+        const merged = new Map<string, Shown>();
+        for (const layer of LOOK_STATES.slice(0, at + 1)) {
+            looks.forEach((look, level) => {
+                for (const d of look[layer] ?? []) {
+                    merged.delete(d.property);
+                    merged.set(d.property, { ...d, state: layer, level });
+                }
+            });
+        }
+        out[state] = [...merged.values()];
+    });
+    return out;
+}
+
+export function placementOf(looks: StoredLook[]): Placement {
+    let before: Placed<boolean> | null = null;
+    let after: Placed<boolean> | null = null;
+    let note: Placed<string> | null = null;
+    looks.forEach((look, level) => {
+        if (look.picture?.before !== undefined) before = { value: look.picture.before, level };
+        if (look.picture?.after !== undefined) after = { value: look.picture.after, level };
+        if (look.note !== undefined) note = { value: look.note, level };
+    });
+    return { before, after, note };
+}
 
 export function looksArea(ports: Ports) {
     const sessions = new Map<string, Session>();
@@ -164,30 +249,68 @@ export function looksArea(ports: Ports) {
         });
     }
 
+    // The levels a thing's look resolves through, each with its look as stored.
+    async function chainOf(user: User, thing: string) {
+        const [record] = await ports.readThings(user, [thing]);
+        if (!record) return null;
+        const own = lookOf(record.look);
+        const world = record.world !== null && record.world !== thing ? record.world : null;
+        const [worldRecord] = world !== null ? await ports.readThings(user, [world]) : [null];
+        const worldLook = worldRecord ? lookOf(worldRecord.look) : null;
+        const worldName = world !== null ? ((await ports.describe(user, world, 'world'))?.named.text ?? '') : '';
+        const worldUses = await usedLooks(user, record.world, worldLook?.uses ?? []);
+        const uses = await usedLooks(user, record.world, own.uses ?? []);
+        const shared = (used: UsedLook, by: 'world' | 'thing'): Leveled => ({
+            item: { kind: 'shared', level: { shared: { id: used.id, world: used.world } }, name: used.name, by },
+            look: used.look ?? {},
+        });
+        const theme: Leveled = {
+            item: { kind: 'theme', level: { theme: true } },
+            look: lookOf(await ports.readTheme(user)),
+        };
+        const ofWorld: Leveled[] =
+            world !== null && worldLook !== null
+                ? [
+                      ...worldUses.map((u) => shared(u, 'world')),
+                      { item: { kind: 'world', level: { thing: world }, name: worldName }, look: worldLook },
+                  ]
+                : [];
+        const levels: Leveled[] = [
+            theme,
+            ...ofWorld,
+            ...uses.map((u) => shared(u, 'thing')),
+            { item: { kind: 'thing', level: { thing } }, look: own },
+        ];
+        return { record, own, uses, levels };
+    }
+
     async function readLookView(context: ViewContext): Promise<LookView> {
         const thing = sessionOf(context.session).open;
         if (thing === null) return { thing: null };
-        const [record] = await ports.readThings(context.user, [thing]);
-        if (!record) return { thing: null };
-        const own = lookOf(record.look);
-        const world = record.world;
-        const [worldRecord] =
-            world !== null && world !== thing ? await ports.readThings(context.user, [world]) : [null];
-        const worldLook = worldRecord ? lookOf(worldRecord.look) : null;
-        const uploaded = world !== null ? await ports.worldFonts(context.user, world) : [];
-        const resolved = (await resolve(context.user, [thing])).get(thing) as ResolvedLook;
+        const chain = await chainOf(context.user, thing);
+        if (!chain) return { thing: null };
+        const { record, own, uses, levels } = chain;
+        const described = await ports.describe(context.user, thing, record.kind);
+        const uploaded = record.world !== null ? await ports.worldFonts(context.user, record.world) : [];
+        const looks = levels.map((l) => l.look);
         return {
             thing,
             kind: record.kind,
-            world,
+            world: record.world,
+            named: described?.named ?? { thing, text: '', shownAs: 'name' },
+            picture: {
+                own: described?.picture ?? null,
+                image: own.picture?.image === undefined ? null : lookImageUrl(own.picture.image),
+                crop: own.picture?.crop ?? null,
+            },
+            levels: levels.map((l) => l.item),
+            shown: shownOf(looks),
+            placement: placementOf(looks),
             own,
-            worldLook,
-            worldUses: await usedLooks(context.user, world, worldLook?.uses ?? []),
-            theme: lookOf(await ports.readTheme(context.user)),
-            uses: await usedLooks(context.user, world, own.uses ?? []),
-            available: await ports.listShared(context.user, world),
-            fonts: [...appFonts(), ...uploaded.map((f) => ({ ...f, uploaded: true }))],
-            resolved,
+            uses,
+            available: await ports.listShared(context.user, record.world),
+            fonts: [...appFonts(), ...uploaded.map(uploadedFont)],
+            looks: await looksOf(context, LOOK_VIEW, [thing]),
         };
     }
 
@@ -219,17 +342,29 @@ export function looksArea(ports: Ports) {
         const fonts = await fontsAt(context.user, at);
         if (fonts === 'missing') return answered('missing');
         const refused: Refusal[] = [];
-        const written = await ports.editLook(who(context), at, (current) => {
-            const look = lookOf(current);
-            const layer = new Map((look[state] ?? []).map((d) => [d.property, d.value]));
-            change(layer, fonts, refused);
-            const next: StoredLook = { ...look };
-            delete next[state];
-            if (layer.size > 0) next[state] = [...layer].map(([property, value]) => ({ property, value }));
-            return next;
-        });
+        const written = await ports.editLook(who(context), at, (current) =>
+            withLayer(lookOf(current), state, (layer) => change(layer, fonts, refused)),
+        );
         return answered(written, refused);
     }
+
+    // The small picture's own parts: what it shows, on the thing's own look.
+    const editPicture = (
+        context: ActionContext,
+        thing: string,
+        change: (picture: Picture) => { [K in keyof Picture]?: Picture[K] | null },
+    ) =>
+        ports.editLook(who(context), { thing }, (current) => {
+            const look = lookOf(current);
+            const changed = change({ ...look.picture });
+            const picture: Picture = {};
+            for (const [key, value] of Object.entries(changed) as [keyof Picture, unknown][])
+                if (value !== null && value !== undefined) Object.assign(picture, { [key]: value });
+            const next: StoredLook = { ...look };
+            delete next.picture;
+            if (Object.keys(picture).length > 0) next.picture = picture;
+            return next;
+        });
 
     const setChecked =
         (layer: Map<string, string>, fonts: FontsAllowed, refused: Refusal[]) => (property: string, value: string) => {
@@ -330,9 +465,7 @@ export function looksArea(ports: Ports) {
                 const made = await ports.makeShared(who(context), { id, world }, name);
                 if (made !== 'ok' || usedBy === null) return { ...answered(made), answer: { id, refused: [] } };
                 const used = await editThingUses(context, usedBy, (uses) =>
-                    uses.length >= MAX_USES
-                        ? { refused: `A thing uses at most ${MAX_USES} shared looks.` }
-                        : [...uses, id],
+                    uses.length >= MAX_USES ? { refused: TOO_MANY_USES } : [...uses, id],
                 );
                 return { ...answered(used), answer: { id, refused: [] } };
             },
@@ -350,8 +483,7 @@ export function looksArea(ports: Ports) {
                 return answered(
                     await editThingUses(context, thing, (uses) => {
                         const rest = uses.filter((id) => id !== shared);
-                        if (rest.length >= MAX_USES)
-                            return { refused: `A thing uses at most ${MAX_USES} shared looks.` };
+                        if (rest.length >= MAX_USES) return { refused: TOO_MANY_USES };
                         const at = before === null ? -1 : rest.indexOf(before);
                         return at === -1 ? [...rest, shared] : [...rest.slice(0, at), shared, ...rest.slice(at)];
                     }),
@@ -359,6 +491,116 @@ export function looksArea(ports: Ports) {
             },
             'looks.stopUsing': async (context, { thing, shared }) =>
                 answered(await editThingUses(context, thing, (uses) => uses.filter((id) => id !== shared))),
+            'looks.applyTo': async (context, { thing, what, from, to }) => {
+                const chain = await chainOf(context.user, thing);
+                if (!chain) return answered('missing');
+                const keys = chain.levels.map((l) => levelKey(l.item.level));
+                const fromAt = keys.indexOf(levelKey(from));
+                if (fromAt === -1) return { refused: NOT_IN_CHAIN, changed: [LOOK_VIEW] };
+                let target: Level;
+                let targetAt: number;
+                if ('newShared' in to) {
+                    const { name, world } = to.newShared;
+                    if (world !== null && world !== chain.record.world) return { refused: NOT_AVAILABLE, changed: [] };
+                    if ((chain.own.uses ?? []).length >= MAX_USES) return { refused: TOO_MANY_USES, changed: [] };
+                    const id = randomUUID();
+                    const made = await ports.makeShared(who(context), { id, world }, name);
+                    if (made !== 'ok') return answered(made);
+                    const used = await editThingUses(context, thing, (uses) =>
+                        uses.length >= MAX_USES ? { refused: TOO_MANY_USES } : [...uses, id],
+                    );
+                    if (used !== 'ok') return answered(used);
+                    target = { shared: { id, world } };
+                    targetAt = keys.length - 1;
+                } else {
+                    target = to;
+                    targetAt = keys.indexOf(levelKey(to));
+                    if (targetAt === -1) return { refused: NOT_IN_CHAIN, changed: [LOOK_VIEW] };
+                    if (targetAt === fromAt) return answered('ok');
+                }
+                const fromLook = chain.levels[fromAt]?.look ?? {};
+                const looks = chain.levels.map((l) => l.look);
+                const takeOff = targetAt < fromAt || 'newShared' in to;
+                if ('state' in what) {
+                    const shown = new Map(shownOf(looks)[what.state].map((d) => [d.property, d.value]));
+                    const own = new Map((fromLook[what.state] ?? []).map((d) => [d.property, d.value]));
+                    const fonts = await fontsAt(context.user, target);
+                    if (fonts === 'missing') return answered('missing');
+                    const refused: Refusal[] = [];
+                    const written: string[] = [];
+                    const put = await ports.editLook(who(context), target, (current) =>
+                        withLayer(lookOf(current), what.state, (layer) => {
+                            for (const property of what.properties) {
+                                const value = own.get(property) ?? shown.get(property);
+                                if (value === undefined) continue;
+                                const checked = sanitizeDeclaration(property, value, fonts);
+                                if (isRefusal(checked)) refused.push(checked);
+                                else {
+                                    layer.delete(checked.property);
+                                    layer.set(checked.property, checked.value);
+                                    written.push(checked.property);
+                                }
+                            }
+                        }),
+                    );
+                    if (put !== 'ok' || !takeOff || written.length === 0) return answered(put, refused);
+                    const taken = await ports.editLook(who(context), from, (current) =>
+                        withLayer(lookOf(current), what.state, (layer) => {
+                            for (const property of written) layer.delete(property);
+                        }),
+                    );
+                    return answered(taken, refused);
+                }
+                const placement = placementOf(looks);
+                const put = await ports.editLook(who(context), target, (current) => {
+                    const next: StoredLook = { ...lookOf(current) };
+                    if ('note' in what) {
+                        const note = fromLook.note ?? placement.note?.value;
+                        if (note !== undefined) next.note = note;
+                    } else {
+                        const before = fromLook.picture?.before ?? placement.before?.value;
+                        const after = fromLook.picture?.after ?? placement.after?.value;
+                        next.picture = {
+                            ...next.picture,
+                            ...(before === undefined ? {} : { before }),
+                            ...(after === undefined ? {} : { after }),
+                        };
+                    }
+                    return next;
+                });
+                if (put !== 'ok' || !takeOff) return answered(put);
+                return answered(
+                    await ports.editLook(who(context), from, (current) => {
+                        const next: StoredLook = { ...lookOf(current) };
+                        if ('note' in what) delete next.note;
+                        else if (next.picture) {
+                            const rest = { ...next.picture };
+                            delete rest.before;
+                            delete rest.after;
+                            delete next.picture;
+                            if (Object.keys(rest).length > 0) next.picture = rest;
+                        }
+                        return next;
+                    }),
+                );
+            },
+            'looks.cropPicture': async (context, { thing, crop }) => {
+                const kept = crop === null ? null : pictureCrop(crop);
+                if (crop !== null && kept === null) return { refused: BAD_CROP, changed: [] };
+                return answered(await editPicture(context, thing, (picture) => ({ ...picture, crop: kept })));
+            },
+            'looks.useOwnPicture': async (context, { thing }) =>
+                answered(await editPicture(context, thing, (picture) => ({ ...picture, crop: null, image: null }))),
+            'looks.uploadPicture': async (context, { thing }) => {
+                if (!context.upload) return { refused: NO_PICTURE, changed: [] };
+                const [record] = await ports.readThings(context.user, [thing]);
+                if (!record) return answered('missing');
+                const stored = await ports.storeImage(who(context), context.upload);
+                if ('refused' in stored) return { refused: stored.refused, changed: [] };
+                return answered(
+                    await editPicture(context, thing, (picture) => ({ ...picture, crop: null, image: stored.id })),
+                );
+            },
             'looks.uploadFont': async (context, { world, name }) => {
                 if (!context.upload) return { refused: NO_UPLOAD, changed: [] };
                 const made = await ports.uploadFont(who(context), world, context.upload, name);

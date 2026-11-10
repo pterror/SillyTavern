@@ -34,7 +34,7 @@ look is part of what their whole writes write, so it passes the sanitizer there 
 {
   "rest": [{ "property": "color", "value": "teal" }],
   "messagePointed": [], "wordPointed": [], "selected": [],
-  "picture": { "before": true, "after": false },
+  "picture": { "before": true, "after": false, "crop": { "x": 0.25, "y": 0.1, "width": 0.5, "height": 0.33 } },
   "note": "the heir",
   "uses": ["8a4e7c1e-0f63-4d2b-9a8e-2b7c3d1f5e60"]
 }
@@ -48,6 +48,20 @@ shape is no look: it is kept as written (a third party's `look` extension isn't 
 
 The picture and the note are one per look, not per state layer: they are content placed beside and above the name,
 and the layers are declarations on the name's own span.
+
+### The small picture
+
+A thing's small picture is its own picture (a character's avatar, a persona's image; an entry, a world and a bookmark
+have none yet) unless its look says otherwise: `picture.crop` is the part shown, as fractions of the picture's width
+and height (each side at least `CROP_SIDE_AT_LEAST`, 0.05), and `picture.image` another image drawn instead, by id.
+The Look screen writes both on the thing's own look (`looks.cropPicture`, `looks.uploadPicture`,
+`looks.useOwnPicture`), so they are stored with the thing like the rest of its look. An image is stored once by its
+bytes like a font: `<user>/look-images/<sha256>.<ext>` (PNG, JPEG, WebP or GIF by its first bytes, at most 4 MB),
+served at `/look-images/<id>` with a cache that never asks again (`src/endpoints/fonts.js`). No action removes one.
+
+A place that draws pictures beside names gives the name its thing's own picture (`picture`), which the renderer sets
+as the box's `--name-picture`; the thing's rules draw the crop (the picture scaled so the crop fills the box,
+`cropCss`) and another image over it, so the delivered stylesheet stays the only page-side copy of a look.
 
 ### Shared looks
 
@@ -135,9 +149,12 @@ order, so a property comes from the highest active state that sets it, else from
 | Layer | Selector | Why |
 |---|---|---|
 | rest | `.look-T` | |
-| message pointed at | `:where(.look-scope:hover, .look-scope:focus-within) .look-T` | the element that counts as the name's message (a chat message, a card, a row) carries `look-scope`, so one rule serves every place a name is drawn; keyboard focus inside it counts as pointing |
-| word pointed at or focused | `.look-T:where(:hover, :focus-visible)` | the name's own element; focus by keyboard only, as pointing is |
+| message pointed at | `:where(.look-scope:hover, .look-scope:focus-within, .look-shows-message-pointed) .look-T` | the element that counts as the name's message (a chat message, a card, a row) carries `look-scope`, so one rule serves every place a name is drawn; keyboard focus inside it counts as pointing |
+| word pointed at or focused | `.look-T:where(:hover, :focus-visible, .look-shows-word-pointed *)` | the name's own element; focus by keyboard only, as pointing is |
 | selected | `.look-T:where([data-selected])` | an attribute the name renderer sets, since `aria-selected` belongs to roles (option, row) a name's span doesn't have |
+
+`look-shows-message-pointed` and `look-shows-word-pointed` on an element around names draw them as if pointed at: the
+Look screen's scenes and its preview of a chosen state use them, so a scene is the same rules the app draws by.
 
 **What one resolution reads**: its things' own looks (one read each, two for a bookmark); their worlds' looks (one each
 not among the things); the theme (two: the user's looks' entity and its field); and each distinct shared look named by a
@@ -152,7 +169,7 @@ Every view that draws names carries `looks: Looks`, the resolved looks of exactl
 
 ```ts
 type Looks = { styles: Record<string, ResolvedLook>; things: Record<string, string> };
-type ResolvedLook = { layers: Partial<Record<LookState, Declaration[]>>; picture: { before: boolean; after: boolean }; note: string | null; fonts: FontFace[] };
+type ResolvedLook = { layers: Partial<Record<LookState, Declaration[]>>; picture: { before: boolean; after: boolean; crop: PictureCrop | null; image: string | null }; note: string | null; fonts: FontFace[] };
 ```
 
 A style's id is the first 16 hex digits of its SHA-256, so a style id always means the same look, the entries of a
@@ -183,9 +200,10 @@ for old page code (`start().names.element`). A name is
 
 ```html
 <span class="name-box look-box-T">
-  <img class="name-picture name-picture-before" alt="">     <!-- only where the place draws its things' pictures -->
+  <!-- only where the place draws its things' pictures -->
+  <span class="name-picture name-picture-before" style="--name-picture: url(…)" aria-hidden="true"></span>
   <span class="named named-name look-T" data-thing="T" data-selected>text</span>
-  <img class="name-picture name-picture-after" alt="">
+  <span class="name-picture name-picture-after" style="--name-picture: url(…)" aria-hidden="true"></span>
 </span>
 ```
 
@@ -213,15 +231,28 @@ A character's thing comes with it (`thing` on every character object and list ro
 answer's `things`; a bookmark's with the chat row that names it (`thing`, `label_thing`). A list page asked with `draws`
 is answered whole even when its token is unchanged, since its looks are part of the answer.
 
+### The motions
+
+The app's keyframes (`look-shimmer`, `-drift`, `-breathe`, `-flicker`, `-float`, in `NAME_BASE_CSS`) each move only
+what no effect sets and nothing that takes room, so a motion goes with every effect and never moves anything around
+the name: shimmer (a glint passing) and drift (a slow light) are a mask over the letters, breathe and flicker fade
+(opacity), float lifts the name by `top` (every name's span is `position: relative`, which moves nothing else).
+Inside `look-still`, and everywhere when the device asks for reduced motion, names are drawn still.
+
 ## Actions
 
 Each is one request; each edit answers `looks.look` and `looks.drawn` and, in `answer.refused`, the declarations it
 didn't store. A level is `{ theme: true }`, `{ thing }` (a world's own look is its thing's) or
 `{ shared: { id, world } }` (`world` null for the user's).
 
-- `looks.open` (thing), `looks.close`: the Look screen's thing, `looks.look`: its own look, its world's look and that
-  look's shared looks, the theme, the shared looks it uses (each with its look, or no name when it can't be found),
-  the shared looks it can use (its world's and the user's, by name), the fonts it can name, and its resolved look.
+- `looks.open` (thing), `looks.close`: the Look screen's thing. `looks.look` is the screen: the thing's name
+  (`named`), its small picture (its own picture's URL, and the image and crop its look shows instead), the levels it
+  resolves through least specific first (`levels`: the theme, its world's shared looks and its world when it has one
+  and isn't it, the shared looks it uses, the thing), each state as drawn with the level and the layer each declaration
+  comes from (`shown`: the state's layer over the ones below it, values as stored), the picture's sides and the note
+  with the level that sets them (`placement`), its own look as stored, the shared looks it uses (each with its look,
+  or no name when it can't be found), the shared looks it can use (its world's and the user's, by name), the fonts it
+  can name (each with its family and, uploaded, its face), and its looks. The page resolves nothing.
 - `looks.setDeclarations` (level, state, `set`, `reset`): sets and resets properties of one layer of one level.
 - `looks.writeCss` (level, state, css): the layer becomes what the text declares.
 - `looks.setPicture` (level, before, after: each true, false, or null to leave it to the levels under), `looks.setNote`
@@ -230,6 +261,14 @@ didn't store. A level is `{ theme: true }`, `{ thing }` (a world's own look is i
   `deleteShared`, `moveShared` (to a world or null).
 - `looks.use` (thing, shared, `before` another of its shared looks or null for last; moving it when used already),
   `looks.stopUsing`.
+- `looks.applyTo` (thing, what: a state's properties, the picture's sides or the note, `from` the level that shows
+  it, `to` another of the thing's levels or a new shared look `{ newShared: { name, world } }` made and used last in
+  the same request): the values as `from` sets them (or as the state shows them, when `from` doesn't set them in
+  that layer) are written at `to`, sanitized for `to`'s fonts; when `to` is less specific (a new shared look always
+  is), they are taken off `from`, so the name looks the same and the effect now applies to everything `to` draws.
+  Moving onto a more specific level keeps `from` as it is for everything else it draws.
+- `looks.cropPicture` (thing, crop or null for the whole picture), `looks.uploadPicture` (thing, the file),
+  `looks.useOwnPicture` (thing).
 - `looks.uploadFont` (world, name, the file): answers the font's id.
 
 ## What carrying looks costs worldbuilding
@@ -243,11 +282,8 @@ comes every 1,047 entries (was 1,232), and a selection holds 1,571 picked entrie
 ## Open
 
 - The theme's trigger mark (L4) and where the theme's own settings list the user's shared looks.
-- A thing's small picture itself (an entry's isn't stored yet): the look says on which sides it goes; the drawing view
-  will say which picture.
+- A picture of their own for entries, worlds and bookmarks: they draw another image, or none.
 - Removing a font from a world, and removing a font file no world lists.
-- Reduced motion: every motion has a still frame (`worldbuilding.md`); the app's keyframes and the page's
-  `prefers-reduced-motion` rule are the page's.
 - Names drawn in a `<select>`'s options or a `title` (the world link popups, the world button's title) can't be drawn
   by the renderer; they stay plain until those controls are drawn as lists.
 - Names linked in chat messages: not yet.

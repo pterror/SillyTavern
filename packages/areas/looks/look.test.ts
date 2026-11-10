@@ -1,5 +1,5 @@
 import { expect, test } from 'vite-plus/test';
-import { lookCss } from '@st/protocol/looks';
+import { lookCss, lookPlacementCss } from '@st/protocol/looks';
 import { MAX_USES, declarationsOfCss, isRefusal, resolveLevels, sanitizeDeclaration, storedLook } from './look.ts';
 import type { StoredLook } from './look.ts';
 
@@ -192,7 +192,7 @@ test('levels resolve theme first and the thing last, per layer and per property'
         ],
         wordPointed: [{ property: 'text-shadow', value: '0 0 4px gold' }],
     });
-    expect(resolved.picture).toEqual({ before: false, after: true });
+    expect(resolved.picture).toEqual({ before: false, after: true, crop: null, image: null });
     expect(resolved.note).toBeNull();
     expect(resolved.fonts).toEqual([
         { family: `look-font-${HASH.slice(0, 16)}`, url: `/fonts/${FONT}`, format: 'woff2' },
@@ -214,14 +214,44 @@ test('the rules put each state above rest in order, at the specificity of one cl
             wordPointed: [{ property: 'text-shadow', value: '0 0 2px gold' }],
             selected: [{ property: 'color', value: 'white' }],
         },
-        picture: { before: false, after: false },
+        picture: { before: false, after: false, crop: null, image: null },
         note: null,
         fonts: [],
     });
     expect(css.split('\n')).toEqual([
         '.look-42 { color: teal; }',
-        ':where(.look-scope:hover, .look-scope:focus-within) .look-42 { color: gold; }',
-        '.look-42:where(:hover, :focus-visible) { text-shadow: 0 0 2px gold; }',
+        ':where(.look-scope:hover, .look-scope:focus-within, .look-shows-message-pointed) .look-42 { color: gold; }',
+        '.look-42:where(:hover, :focus-visible, .look-shows-word-pointed *) { text-shadow: 0 0 2px gold; }',
         '.look-42:where([data-selected]) { color: white; }',
+    ]);
+});
+
+test("a small picture shows a crop of the thing's own picture, or another image, kept only when well formed", () => {
+    const image = `${'ab'.repeat(32)}.png`;
+    const kept = storedLook(
+        { picture: { before: true, crop: { x: 0.25, y: 0.1, width: 0.5, height: 0.4 }, image: '../secret.png' } },
+        'any',
+    );
+    expect(kept.look?.picture).toEqual({ before: true, crop: { x: 0.25, y: 0.1, width: 0.5, height: 0.4 } });
+    for (const crop of [
+        { x: 0.8, y: 0, width: 0.5, height: 0.5 },
+        { x: 0, y: 0, width: 0.01, height: 0.5 },
+        { x: -0.1, y: 0, width: 0.5, height: 0.5 },
+        { x: 0, y: 0, width: '1', height: 1 },
+    ])
+        expect(storedLook({ picture: { crop } }, 'any').look).toEqual({});
+    const resolved = resolveLevels([
+        { picture: { before: true, crop: { x: 0, y: 0, width: 1, height: 1 } } },
+        { picture: { image, crop: { x: 0.5, y: 0.5, width: 0.5, height: 0.5 } } },
+    ]);
+    expect(resolved.picture).toEqual({
+        before: true,
+        after: false,
+        crop: { x: 0.5, y: 0.5, width: 0.5, height: 0.5 },
+        image: `/look-images/${image}`,
+    });
+    expect(lookPlacementCss('7', resolved).split('\n')).toEqual([
+        '.look-box-7 > .name-picture-before { display: inline-block; }',
+        `.look-box-7 > .name-picture { background-image: url("/look-images/${image}"); background-size: 200% 200%; background-position: 100% 100%; }`,
     ]);
 });
