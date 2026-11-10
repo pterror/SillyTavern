@@ -840,6 +840,20 @@ offer) from its fields, counting only what differs from the state stored, so a s
 its counts from the run. It prints only totals. The steps change nothing on a store they have already converted, so a
 run on a store converted before the marker existed only fills in what that run didn't build.
 
+The server also refuses a store until `scripts/convert-card-lorebook-copies.mjs` has run on it (the marker
+`store/card-lorebook-copies-deleted`). It deletes every world made from a character's own lorebook by upstream's
+"Import Card Lore", whatever edits it has had since: a world is one when it holds an `originalData` that is an object
+with an `entries` list (`isCardBookCopy`), which upstream's `convertCharacterBook` wrote into every world it made and
+every later save of that world kept; the store keeps it as the world's owned book `<world>:o`
+(`WorldInfoEngine.cardCopyPage`). Each world goes with `books.delete`, so the links of characters (main world and
+extra books), chats and the global selection to it are removed in the same commit. It prints only totals. No write
+takes such a world (`'card copy'`), so none comes in again from upstream's files or an import.
+
+What can't be told apart: a world upstream duplicated, renamed or exported and imported again from such a world holds
+the same `originalData`, so it is deleted too; a world made from a card's book whose `originalData` something else
+removed (another tool's save) is an ordinary world and stays. Neither the name (`character_book.name`, or
+"`<name>`'s Lorebook") nor a character's link to it says more: a user's own world can have either.
+
 ## Open
 
 ### Other
