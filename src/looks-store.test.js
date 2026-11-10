@@ -128,7 +128,7 @@ test('a shared look moves between its world and the user without rewriting what 
     const id = (await act('looks.makeShared', { name: 'Moving', world: book, usedBy: a })).answer.id;
     await set({ shared: { id, world: book } }, 'rest', red);
     assert.deepEqual((await drawn([a]))[a].layers.rest, red);
-    assert.deepEqual((await act('looks.moveShared', { shared: { id, world: book }, to: null })).changed, ['looks.look', 'looks.drawn']);
+    assert.deepEqual((await act('looks.moveShared', { shared: { id, world: book }, to: null })).changed, ['looks.look', 'looks.drawn', 'looks.theme']);
     assert.deepEqual((await drawn([a]))[a].layers.rest, red);
     const exported = JSON.parse((await worlds.exportWorld(uiUser, book)).json);
     assert.equal(exported.sharedLooks, undefined);
@@ -219,7 +219,8 @@ test('the looks of what a session draws are answered again after an edit', async
     const view = await looks.area.views['looks.drawn'](context);
     assert.deepEqual(view.looks.styles[view.looks.things[a]].layers.rest, [{ property: 'color', value: 'navy' }]);
     looks.area.gone('s');
-    assert.deepEqual((await looks.area.views['looks.drawn'](context)).looks, { styles: {}, things: {} });
+    const { styles, things } = (await looks.area.views['looks.drawn'](context)).looks;
+    assert.deepEqual({ styles, things }, { styles: {}, things: {} });
 });
 
 test('a font is served by its id with a cache that never asks again, and nothing else is', async () => {
@@ -360,4 +361,71 @@ test('a small picture is a crop of the thing\'s own picture or another image, st
         server.closeAllConnections?.();
         await new Promise(resolve => server.close(resolve));
     }
+});
+
+test('the trigger mark is the theme\'s, set per state and drawn by the view of what the tab draws, the Look screen and the theme settings', async () => {
+    const at = { style: 'dotted', color: 'currentColor', opacity: 1 };
+    assert.deepEqual((await looks.area.views['looks.drawn'](context)).looks.mark, { rest: at, messagePointed: at, wordPointed: at });
+    const changed = await act('looks.setMark', { change: { rest: { style: 'none' }, messagePointed: { style: 'dashed', color: ' #ff0000 ' } } });
+    assert.deepEqual(changed.changed, ['looks.look', 'looks.drawn', 'looks.theme']);
+    const pointed = { style: 'dashed', color: '#ff0000', opacity: 1 };
+    assert.deepEqual((await looks.area.views['looks.drawn'](context)).looks.mark, {
+        rest: { ...at, style: 'none' },
+        messagePointed: pointed,
+        wordPointed: pointed,
+    });
+    const theme = await looks.area.views['looks.theme'](context);
+    assert.deepEqual(theme.mark.stored, { rest: { style: 'none' }, messagePointed: { style: 'dashed', color: '#ff0000' } });
+
+    const book = await importWorld({ entries: { 0: { uid: 0, key: ['Mark'], content: 'm' } } }, 'Marked');
+    const entry = await entryOf(book, 0);
+    await act('looks.open', { thing: entry });
+    assert.deepEqual((await looks.area.views['looks.look'](context)).mark, theme.mark);
+    await act('looks.close', {});
+
+    assert.equal((await act('looks.setMark', { change: { rest: { color: 'red; position: fixed' } } })).refused.startsWith('The mark\'s color'), true);
+    await act('looks.setMark', { change: { rest: { style: null }, messagePointed: { color: null } } });
+    assert.deepEqual((await looks.area.views['looks.theme'](context)).mark.stored, { messagePointed: { style: 'dashed' } });
+    await act('looks.resetMark', {});
+    assert.deepEqual((await looks.area.views['looks.theme'](context)).mark.stored, {});
+    const { values } = (await lib.entities(await lib.ids(TYPE.look, ['user'])))[0];
+    assert.equal(values.some(v => v.field === 'mark'), false);
+    const { styles } = await looks.looksFor(uiUser, [entry]);
+    assert.equal(Object.values(styles).some(style => JSON.stringify(style).includes('dashed')), false);
+});
+
+test('the CSS of a state goes to the levels that set each declaration, a new one to the level asked, and a removed one off its level', async () => {
+    const book = await importWorld({ entries: { 0: { uid: 0, key: ['Css'], content: 'c' } } }, 'Css');
+    const entry = await entryOf(book, 0);
+    await set({ theme: true }, 'rest', [{ property: 'text-shadow', value: '0 0 1px gray' }]);
+    await set({ thing: entry }, 'rest', [{ property: 'letter-spacing', value: '1px' }]);
+    await set({ thing: book }, 'rest', [{ property: 'font-weight', value: '600' }]);
+    const written = await act('looks.writeCss', {
+        thing: entry,
+        state: 'rest',
+        css: 'text-shadow: 0 0 2px gold; letter-spacing: 1px; font-style: italic; width: 9px',
+        replaces: ['text-shadow', 'letter-spacing', 'font-weight'],
+        newAt: { thing: book },
+    });
+    assert.deepEqual(written.answer.refused, [{ property: 'width', value: '9px', why: 'a look may not set this property' }]);
+    await act('looks.open', { thing: entry });
+    const shown = (await looks.area.views['looks.look'](context)).shown.rest.map(d => [d.property, d.value, d.level]);
+    assert.deepEqual(shown.sort(), [['font-style', 'italic', 1], ['letter-spacing', '1px', 2], ['text-shadow', '0 0 2px gold', 0]]);
+
+    await act('looks.writeCss', { thing: entry, state: 'rest', css: 'letter-spacing: 2px', replaces: ['text-shadow', 'letter-spacing', 'font-style'], newAt: { thing: entry } });
+    const after = (await looks.area.views['looks.look'](context)).shown.rest.map(d => [d.property, d.value, d.level]);
+    assert.deepEqual(after, [['letter-spacing', '2px', 2]]);
+    assert.equal((await act('looks.writeCss', { thing: entry, state: 'rest', css: '', replaces: [], newAt: { thing: '1' } })).refused, 'That isn\'t one of the looks this name is drawn through.');
+    await act('looks.close', {});
+    await act('looks.setDeclarations', { level: { thing: entry }, state: 'rest', set: [], reset: ['letter-spacing'] });
+});
+
+test('the theme settings list the user\'s own shared looks, renamed and deleted there', async () => {
+    const made = await act('looks.makeShared', { name: 'Gilded', world: null, usedBy: null });
+    const shared = { id: made.answer.id, world: null };
+    assert.equal((await looks.area.views['looks.theme'](context)).shared.some(s => s.id === shared.id && s.name === 'Gilded'), true);
+    await act('looks.renameShared', { shared, name: 'Gilt' });
+    assert.equal((await looks.area.views['looks.theme'](context)).shared.find(s => s.id === shared.id)?.name, 'Gilt');
+    assert.deepEqual((await act('looks.deleteShared', { shared })).changed, ['looks.look', 'looks.drawn', 'looks.theme']);
+    assert.equal((await looks.area.views['looks.theme'](context)).shared.some(s => s.id === shared.id), false);
 });

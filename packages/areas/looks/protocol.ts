@@ -1,7 +1,16 @@
 import * as v from 'valibot';
 import type { ActionSchemas } from '@st/protocol';
-import { DRAWN_VIEW, LOOK_STATES } from '@st/protocol/looks';
-import type { Declaration, FontFace, Looks, LookState, Named, PictureCrop } from '@st/protocol/looks';
+import { DRAWN_VIEW, LOOK_STATES, MARK_STYLES } from '@st/protocol/looks';
+import type {
+    Declaration,
+    FontFace,
+    Looks,
+    LookState,
+    MarkState,
+    Named,
+    PictureCrop,
+    ResolvedMark,
+} from '@st/protocol/looks';
 import {
     CSS_LENGTH_AT_MOST,
     DECLARATIONS_PER_LAYER_AT_MOST,
@@ -9,11 +18,13 @@ import {
     SHARED_LOOK_ID,
     SHARED_LOOK_NAME_AT_MOST,
 } from './look.ts';
-import type { Refusal, StoredLook } from './look.ts';
+import type { Refusal, StoredLook, StoredMark } from './look.ts';
 
-export type { Refusal, StoredLook };
+export type { Refusal, StoredLook, StoredMark };
 
 export const LOOK_VIEW = 'looks.look';
+// The theme settings' part: the trigger mark and the user's own shared looks.
+export const THEME_VIEW = 'looks.theme';
 export { DRAWN_VIEW };
 
 // Distinct shared looks one resolution reads, at two reads each; past them a name is drawn without the rest.
@@ -63,6 +74,11 @@ export type Placement = {
 
 export type SmallPicture = { own: string | null; image: string | null; crop: PictureCrop | null };
 
+// The trigger mark as the theme stores it and as each state draws it.
+export type MarkView = { stored: StoredMark; shown: ResolvedMark };
+
+export type ThemeView = { mark: MarkView; shared: SharedLookItem[] };
+
 export type LookView =
     | {
           thing: string;
@@ -77,6 +93,7 @@ export type LookView =
           uses: UsedLook[];
           available: SharedLookItem[];
           fonts: FontItem[];
+          mark: MarkView;
           looks: Looks;
       }
     | { thing: null };
@@ -101,6 +118,19 @@ const sharedName = v.pipe(
     v.maxLength(SHARED_LOOK_NAME_AT_MOST),
 );
 
+const markLayerChange = v.partial(
+    v.object({
+        style: v.nullable(v.picklist(MARK_STYLES)),
+        color: v.nullable(v.pipe(v.string(), v.maxLength(200))),
+        opacity: v.nullable(v.pipe(v.number(), v.minValue(0), v.maxValue(1))),
+    }),
+);
+const markChange = {
+    rest: markLayerChange,
+    messagePointed: markLayerChange,
+    wordPointed: markLayerChange,
+} satisfies Record<MarkState, unknown>;
+
 export const actions = {
     'looks.open': v.object({ thing: thingId }),
     'looks.close': v.object({}),
@@ -110,7 +140,18 @@ export const actions = {
         set: v.pipe(v.array(declaration), v.maxLength(DECLARATIONS_PER_LAYER_AT_MOST)),
         reset: v.pipe(v.array(v.pipe(v.string(), v.maxLength(64))), v.maxLength(DECLARATIONS_PER_LAYER_AT_MOST)),
     }),
-    'looks.writeCss': v.object({ level, state, css: v.pipe(v.string(), v.maxLength(CSS_LENGTH_AT_MOST)) }),
+    // The state's layer as the thing shows it: a declaration typed goes to the level that sets it, a new one to `newAt`;
+    // each of `replaces` the text leaves out is taken off the level that sets it.
+    'looks.writeCss': v.object({
+        thing: thingId,
+        state,
+        css: v.pipe(v.string(), v.maxLength(CSS_LENGTH_AT_MOST)),
+        replaces: v.pipe(v.array(v.pipe(v.string(), v.maxLength(64))), v.maxLength(DECLARATIONS_PER_LAYER_AT_MOST)),
+        newAt: level,
+    }),
+    // Each state's settings: a value sets it, null leaves it to the state below.
+    'looks.setMark': v.object({ change: v.partial(v.object(markChange)) }),
+    'looks.resetMark': v.object({}),
     'looks.setPicture': v.object({ level, before: v.nullable(v.boolean()), after: v.nullable(v.boolean()) }),
     'looks.setNote': v.object({ level, note: v.nullable(v.pipe(v.string(), v.maxLength(NOTE_LENGTH_AT_MOST))) }),
     'looks.makeShared': v.object({ name: sharedName, world: v.nullable(entityId), usedBy: v.nullable(thingId) }),

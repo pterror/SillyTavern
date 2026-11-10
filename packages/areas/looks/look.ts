@@ -1,6 +1,16 @@
 import { parse } from '@adobe/css-tools';
-import { LOOK_STATES } from '@st/protocol/looks';
-import type { Declaration, FontFace, LookState, PictureCrop, ResolvedLook } from '@st/protocol/looks';
+import { LOOK_STATES, MARK_STATES, MARK_STYLES } from '@st/protocol/looks';
+import type {
+    Declaration,
+    FontFace,
+    LookState,
+    MarkLayer,
+    MarkState,
+    MarkStyle,
+    PictureCrop,
+    ResolvedLook,
+    ResolvedMark,
+} from '@st/protocol/looks';
 
 // A thing's resolution reads its own look and at most two fields per shared look it uses: 1 + 2 × 3 = 7 reads, under
 // the 10 a card's own reads take.
@@ -531,3 +541,48 @@ export function resolveLevels(levels: StoredLook[]): ResolvedLook {
 
 export const isNoLook = (look: ResolvedLook): boolean =>
     Object.keys(look.layers).length === 0 && !look.picture.before && !look.picture.after && look.note === null;
+
+export type StoredMark = Partial<Record<MarkState, Partial<MarkLayer>>>;
+
+export const MARK_AT_REST: MarkLayer = Object.freeze({ style: 'dotted', color: 'currentColor', opacity: 1 });
+
+export const isMarkStyle = (value: unknown): value is MarkStyle =>
+    typeof value === 'string' && (MARK_STYLES as readonly string[]).includes(value);
+
+// The color as stored, or why it isn't one.
+export const markColor = (color: string): { color: string } | { refused: string } => {
+    const checked = sanitizeDeclaration('text-decoration-color', color, new Set());
+    return isRefusal(checked) ? { refused: checked.why } : { color: checked.value };
+};
+
+export const isMarkOpacity = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+
+// What isn't a mark's setting is left out.
+export function storedMark(raw: unknown): StoredMark {
+    if (!isPlainObject(raw)) return {};
+    const mark: StoredMark = {};
+    for (const state of MARK_STATES) {
+        const layer = raw[state];
+        if (!isPlainObject(layer)) continue;
+        const kept: Partial<MarkLayer> = {};
+        if (isMarkStyle(layer['style'])) kept.style = layer['style'];
+        const color = layer['color'];
+        const checked = typeof color === 'string' ? markColor(color) : null;
+        if (checked && 'color' in checked) kept.color = checked.color;
+        if (isMarkOpacity(layer['opacity'])) kept.opacity = layer['opacity'];
+        if (Object.keys(kept).length > 0) mark[state] = kept;
+    }
+    return mark;
+}
+
+// Each state is its own settings over the states below it.
+export function resolveMark(mark: StoredMark): ResolvedMark {
+    let below: MarkLayer = MARK_AT_REST;
+    const out = {} as ResolvedMark;
+    for (const state of MARK_STATES) {
+        below = { ...below, ...mark[state] };
+        out[state] = below;
+    }
+    return out;
+}

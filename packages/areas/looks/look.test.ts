@@ -1,6 +1,15 @@
 import { expect, test } from 'vite-plus/test';
-import { lookCss, lookPlacementCss } from '@st/protocol/looks';
-import { MAX_USES, declarationsOfCss, isRefusal, resolveLevels, sanitizeDeclaration, storedLook } from './look.ts';
+import { lookCss, lookPlacementCss, markCss, markShown } from '@st/protocol/looks';
+import {
+    MAX_USES,
+    declarationsOfCss,
+    isRefusal,
+    resolveLevels,
+    resolveMark,
+    sanitizeDeclaration,
+    storedLook,
+    storedMark,
+} from './look.ts';
 import type { StoredLook } from './look.ts';
 
 const HASH = 'a'.repeat(64);
@@ -254,4 +263,54 @@ test("a small picture shows a crop of the thing's own picture, or another image,
         '.look-box-7 > .name-picture-before { display: inline-block; }',
         `.look-box-7 > .name-picture { background-image: url("/look-images/${image}"); background-size: 200% 200%; background-position: 100% 100%; }`,
     ]);
+});
+
+test('the trigger mark is dotted in the text color at rest, and each state is its own settings over those below', () => {
+    expect(resolveMark({})).toEqual({
+        rest: { style: 'dotted', color: 'currentColor', opacity: 1 },
+        messagePointed: { style: 'dotted', color: 'currentColor', opacity: 1 },
+        wordPointed: { style: 'dotted', color: 'currentColor', opacity: 1 },
+    });
+    const pointing = resolveMark({ rest: { style: 'none' }, messagePointed: { style: 'dotted', opacity: 0.5 } });
+    expect(pointing.rest).toEqual({ style: 'none', color: 'currentColor', opacity: 1 });
+    expect(pointing.messagePointed).toEqual({ style: 'dotted', color: 'currentColor', opacity: 0.5 });
+    expect(pointing.wordPointed).toEqual(pointing.messagePointed);
+    const word = resolveMark({ rest: { style: 'dashed', color: '#ff0000' }, wordPointed: { style: 'large-dots' } });
+    expect(word.messagePointed).toEqual({ style: 'dashed', color: '#ff0000', opacity: 1 });
+    expect(word.wordPointed).toEqual({ style: 'large-dots', color: '#ff0000', opacity: 1 });
+});
+
+test("a stored mark keeps only a mark's settings: its styles, a color the sanitizer lets in, an opacity from 0 to 1", () => {
+    expect(
+        storedMark({
+            rest: { style: 'dashed', color: ' #00ff00 ', opacity: 0.4, width: 9 },
+            messagePointed: { style: 'wavy', color: 'red; position: fixed', opacity: 2 },
+            selected: { style: 'none' },
+        }),
+    ).toEqual({ rest: { style: 'dashed', color: '#00ff00', opacity: 0.4 } });
+    expect(storedMark('dotted')).toEqual({});
+});
+
+test("the mark's rules are the mark class's, at no specificity, the states in order; none draws no line", () => {
+    const css = markCss(resolveMark({ rest: { style: 'none' }, messagePointed: { style: 'dashed', opacity: 0.5 } }));
+    const [rest, message, word] = css.split('\n');
+    expect(rest).toBe(':where(.trigger-mark) { text-decoration-line: none; }');
+    expect(message).toMatch(
+        /^:where\(\.look-scope:hover, \.look-scope:focus-within, \.look-shows-message-pointed\) :where\(\.trigger-mark\) \{/,
+    );
+    expect(message).toContain('text-decoration-style: dashed;');
+    expect(message).toContain('text-decoration-color: color-mix(in srgb, currentColor 50%, transparent);');
+    expect(word).toMatch(
+        /^:where\(\.trigger-mark:hover, \.trigger-mark:focus-visible, \.look-shows-word-pointed \.trigger-mark\)/,
+    );
+    const large = markCss(resolveMark({ rest: { style: 'large-dots' } }));
+    expect(large).toContain(
+        'text-decoration-style: dotted; text-decoration-color: currentColor; text-decoration-thickness: 0.2em;',
+    );
+});
+
+test('a mark no state draws is not drawn', () => {
+    expect(markShown(resolveMark({}))).toBe(true);
+    expect(markShown(resolveMark({ rest: { style: 'none' }, messagePointed: { style: 'dotted' } }))).toBe(true);
+    expect(markShown(resolveMark({ rest: { style: 'none' } }))).toBe(false);
 });

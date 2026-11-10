@@ -14,6 +14,7 @@ export const FONTS_DIRECTORY = 'fonts';
 export const LOOK_IMAGES_DIRECTORY = 'look-images';
 export const USER_LOOKS = 'user';
 const THEME_FIELD = 'theme';
+const MARK_FIELD = 'mark';
 const USER_SHARED_FIELD = 'shared:';
 const BOOKMARK_THING = 'bookmark-';
 
@@ -231,23 +232,30 @@ export function looksPorts({ libOf }) {
         return fields.map(f => (book?.type === TYPE.book ? jsonOf(book, f) : undefined));
     };
 
+    /**
+     * A field of the user's looks; an empty value clears it.
+     * @param {LibraryEngine} lib
+     * @param {string} field
+     * @param {(current: unknown) => object | { refused: string }} edit
+     * @returns {Promise<import('@st/looks/server').Written>}
+     */
+    const editUserField = (lib, field, edit) => lib.serialized(TYPE.look, USER_LOOKS, async () => {
+        const records = [];
+        const { id, entity } = await lookEntity(lib, USER_LOOKS, [field]);
+        const before = jsonOf(entity, field);
+        const next = edit(before);
+        if ('refused' in next) return /** @type {{ refused: string }} */ (next);
+        const holder = created(lib, id, USER_LOOKS, records);
+        records.push(...fieldRecords(holder, field, before, Object.keys(next).length === 0 ? undefined : next, null));
+        if (records.length > 0) await lib.store.commit(records);
+        return 'ok';
+    });
+
     /** @type {Ports['editLook']} */
     async function editLook(who, level, edit) {
         const lib = await libOf(who.user);
         const actor = actorOf(who);
-        if ('theme' in level) {
-            return lib.serialized(TYPE.look, USER_LOOKS, async () => {
-                const records = [];
-                const { id, entity } = await lookEntity(lib, USER_LOOKS, [THEME_FIELD]);
-                const before = jsonOf(entity, THEME_FIELD);
-                const next = edit(before);
-                if ('refused' in next) return next;
-                const holder = created(lib, id, USER_LOOKS, records);
-                records.push(...fieldRecords(holder, THEME_FIELD, before, isEmptyLook(next) ? undefined : next, null));
-                if (records.length > 0) await lib.store.commit(records);
-                return 'ok';
-            });
-        }
+        if ('theme' in level) return editUserField(lib, THEME_FIELD, edit);
         if ('shared' in level) {
             const { id: look, world } = level.shared;
             const field = sharedField(world, look);
@@ -395,8 +403,11 @@ export function looksPorts({ libOf }) {
             return { id: await putByHash(lookImagesDirectory(who.user.directories.root), bytes, format) };
         },
         async readTheme(user) {
-            const { entity } = await lookEntity(await libOf(user), USER_LOOKS, [THEME_FIELD]);
-            return jsonOf(entity, THEME_FIELD);
+            const { entity } = await lookEntity(await libOf(user), USER_LOOKS, [THEME_FIELD, MARK_FIELD]);
+            return { look: jsonOf(entity, THEME_FIELD), mark: jsonOf(entity, MARK_FIELD) };
+        },
+        async editMark(who, edit) {
+            return editUserField(await libOf(who.user), MARK_FIELD, edit);
         },
         async readShared(user, world, ids) {
             const lib = await libOf(user);

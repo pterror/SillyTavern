@@ -19,9 +19,20 @@ export type ResolvedLook = {
     fonts: FontFace[];
 };
 
+// A mark is never selected.
+export const MARK_STATES = ['rest', 'messagePointed', 'wordPointed'] as const;
+export type MarkState = (typeof MARK_STATES)[number];
+export const MARK_STYLES = ['dotted', 'dashed', 'large-dots', 'none'] as const;
+export type MarkStyle = (typeof MARK_STYLES)[number];
+// `color` is a sanitized CSS color; `opacity` from 0 to 1 fades the mark, never the words.
+export type MarkLayer = { style: MarkStyle; color: string; opacity: number };
+export type ResolvedMark = Record<MarkState, MarkLayer>;
+
+export const TRIGGER_MARK_CLASS = 'trigger-mark';
+
 // A style's id is made from its content, so it always means the same look. `things` lists every thing drawn, those with
 // no look under NO_LOOK_STYLE, so a newer view that draws a thing without a look replaces an older view's rules for it.
-export type Looks = { styles: Record<string, ResolvedLook>; things: Record<string, string> };
+export type Looks = { styles: Record<string, ResolvedLook>; things: Record<string, string>; mark?: ResolvedMark };
 
 export const NO_LOOK_STYLE = 'none';
 
@@ -110,6 +121,40 @@ export function lookPlacementCss(thing: string, look: ResolvedLook): string {
 
 export const thingCss = (thing: string, look: ResolvedLook): string =>
     [lookCss(thing, look), lookPlacementCss(thing, look)].filter((css) => css !== '').join('\n');
+
+// No specificity, so custom CSS restyles the mark through its class alone; the states win by their order.
+export function markSelector(state: MarkState): string {
+    const mark = `.${TRIGGER_MARK_CLASS}`;
+    switch (state) {
+        case 'rest':
+            return `:where(${mark})`;
+        case 'messagePointed':
+            return `:where(.${LOOK_SCOPE_CLASS}:hover, .${LOOK_SCOPE_CLASS}:focus-within, .${LOOK_SHOWS_MESSAGE_POINTED_CLASS}) :where(${mark})`;
+        case 'wordPointed':
+            return `:where(${mark}:hover, ${mark}:focus-visible, .${LOOK_SHOWS_WORD_POINTED_CLASS} ${mark})`;
+    }
+}
+
+// The mark span's own underline, which no name inside it can take away; opacity fades only the line.
+export function markDeclarations({ style, color, opacity }: MarkLayer): string {
+    if (style === 'none') return 'text-decoration-line: none;';
+    const paint =
+        opacity >= 1 ? color : `color-mix(in srgb, ${color} ${Math.round(opacity * 1000) / 10}%, transparent)`;
+    const large = style === 'large-dots';
+    return [
+        'text-decoration-line: underline;',
+        `text-decoration-style: ${style === 'dashed' ? 'dashed' : 'dotted'};`,
+        `text-decoration-color: ${paint};`,
+        `text-decoration-thickness: ${large ? '0.2em' : 'auto'};`,
+        `text-underline-offset: ${large ? '0.2em' : 'auto'};`,
+    ].join(' ');
+}
+
+export const markCss = (mark: ResolvedMark): string =>
+    MARK_STATES.map((state) => `${markSelector(state)} { ${markDeclarations(mark[state])} }`).join('\n');
+
+export const markShown = (mark: ResolvedMark): boolean =>
+    MARK_STATES.some((state) => mark[state].style !== 'none' && mark[state].opacity > 0);
 
 export const fontFaceCss = (face: FontFace): string =>
     `@font-face { font-family: "${face.family}"; src: url("${face.url}") format("${face.format}"); font-display: swap; }`;

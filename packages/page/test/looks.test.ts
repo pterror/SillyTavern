@@ -1,7 +1,7 @@
 import { createRoot } from 'solid-js';
 import { afterEach, expect, test } from 'vite-plus/test';
-import { NO_LOOK_STYLE } from '@st/protocol/looks';
-import type { Looks, ResolvedLook } from '@st/protocol/looks';
+import { NO_LOOK_STYLE, markCss } from '@st/protocol/looks';
+import type { Looks, ResolvedLook, ResolvedMark } from '@st/protocol/looks';
 import { createClient } from '../src/client.ts';
 import { NAME_BASE_CSS, createLookSheet } from '../src/looks.ts';
 
@@ -118,4 +118,30 @@ test('the client holds the looks each view carries under its key, patches adding
     await settled();
     expect(last()).toContain('.look-1 { color: red; }');
     expect(last()).toContain('.look-2 { color: blue; }');
+});
+
+const markOf = (style: 'dotted' | 'dashed' | 'none'): ResolvedMark => ({
+    rest: { style, color: 'currentColor', opacity: 1 },
+    messagePointed: { style, color: 'currentColor', opacity: 1 },
+    wordPointed: { style, color: 'currentColor', opacity: 1 },
+});
+
+test('the trigger mark is drawn by the newest view that carries it, and says when it stops or starts being drawn', async () => {
+    const { looks, last } = sheet();
+    const told: boolean[] = [];
+    looks.onMarkShown((shown) => told.push(shown));
+    expect(looks.markShown()).toBe(true);
+    looks.hold('looks.drawn', { styles: {}, things: {}, mark: markOf('dashed') });
+    await settled();
+    expect(last()).toContain(markCss(markOf('dashed')));
+    expect(told).toEqual([]);
+    looks.hold('worldbuilding.overview', looksOf({ '7': look('red') }));
+    await settled();
+    expect(last()).toContain(markCss(markOf('dashed')));
+    looks.hold('looks.drawn', { styles: {}, things: {}, mark: markOf('none') });
+    await settled();
+    expect(looks.markShown()).toBe(false);
+    expect(told).toEqual([false]);
+    looks.hold('looks.drawn', { styles: {}, things: {}, mark: markOf('dotted') });
+    expect(told).toEqual([false, true]);
 });

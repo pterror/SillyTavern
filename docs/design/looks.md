@@ -81,7 +81,27 @@ longer found from other worlds, and is found again if it moves back. A deleted s
 reach, is left out of its resolution; the Look screen lists it with no name, so it can be dropped
 (`looks.stopUsing`). A shared look uses no other.
 
-The theme is a look with no `uses`; the trigger mark's look will be part of it.
+The theme is a look with no `uses`.
+
+### The trigger mark
+
+The words that brought an entry into a reply are marked in the chat by a span of their own (`trigger-mark`,
+`TRIGGER_MARK_CLASS`), outside any name's span. How it is drawn is the theme's: the field `mark` of the user's looks,
+beside `theme`, read with it in one read. Per state of the mark's own (`rest`, `messagePointed`, `wordPointed`; a mark
+is never selected), a style (`dotted`, `dashed`, `large-dots`, `none`), a color (one `text-decoration-color` the
+sanitizer lets in) and an opacity (0 to 1):
+
+```json
+{ "rest": { "style": "none" }, "messagePointed": { "style": "dotted", "opacity": 0.6 } }
+```
+
+Each state is its own settings over the states below it, over the default `dotted` in the text's color at full opacity
+(`resolveMark`), so "only when pointing at the message" is `none` at rest and `dotted` when the message is pointed at.
+A stored value of another shape is left out (`storedMark`). The rules (`markCss`) are the mark span's own underline,
+which no name inside it can take away; the opacity fades only the line (`color-mix` with `transparent`), never the
+words. Each selector is wrapped in `:where()`, so it has no specificity and custom CSS restyles the mark through its
+class alone; the states win by their order. A mark that no state draws (`markShown`) is not drawn at all: the words
+are plain text with no card on pointing.
 
 ### Fonts
 
@@ -168,7 +188,7 @@ A thing's own worst case is 1 + 2 × `MAX_USES` = 7 reads, under the 10 a card's
 Every view that draws names carries `looks: Looks`, the resolved looks of exactly the things it draws:
 
 ```ts
-type Looks = { styles: Record<string, ResolvedLook>; things: Record<string, string> };
+type Looks = { styles: Record<string, ResolvedLook>; things: Record<string, string>; mark?: ResolvedMark };
 type ResolvedLook = { layers: Partial<Record<LookState, Declaration[]>>; picture: { before: boolean; after: boolean; crop: PictureCrop | null; image: string | null }; note: string | null; fonts: FontFace[] };
 ```
 
@@ -177,7 +197,8 @@ world with no look of their own share one style, and two views' looks merge by k
 one with no look at all is under `NO_LOOK_STYLE`, so a newer answer that draws a thing whose look was taken away
 replaces the older answer's rules for it. The page writes each held thing's rules (`thingCss`: the layers' rules and
 the picture's and the note's) and its fonts' faces (`fontFaceCss`) into one stylesheet, keeping a thing's rules from
-the newest holder that drew it and dropping them when no holder draws it (`@st/page/looks`).
+the newest holder that drew it and dropping them when no holder draws it (`@st/page/looks`). `looks.drawn` also
+carries the trigger mark as each state draws it (`mark`), whose rules the page writes after the things'.
 
 The views carry a map, not a look per `Named`: one thing is often drawn many times in one view (a region's target in
 every relations line), and a world's entries share a style.
@@ -254,7 +275,14 @@ didn't store. A level is `{ theme: true }`, `{ thing }` (a world's own look is i
   or no name when it can't be found), the shared looks it can use (its world's and the user's, by name), the fonts it
   can name (each with its family and, uploaded, its face), and its looks. The page resolves nothing.
 - `looks.setDeclarations` (level, state, `set`, `reset`): sets and resets properties of one layer of one level.
-- `looks.writeCss` (level, state, css): the layer becomes what the text declares.
+- `looks.writeCss` (thing, state, css, `replaces`, `newAt`): the CSS of a state's own layer as the thing shows it. Each
+  declaration the text holds goes to the level that sets it in that layer (most specific first), unchanged ones to
+  none; one no level sets goes to `newAt`, one of the thing's levels; each of `replaces` the text leaves out is taken
+  off the level that sets it. Each level is written in one write, sanitized for its own fonts.
+- `looks.setMark` (`change`: per mark state, a style, color or opacity, or null to leave it to the state below),
+  `looks.resetMark`: the trigger mark. `looks.theme` is the theme settings' part: the mark as stored and as each state
+  draws it, and the user's own shared looks by name. The mark's edits, and the edits of the user's shared looks,
+  answer it too.
 - `looks.setPicture` (level, before, after: each true, false, or null to leave it to the levels under), `looks.setNote`
   (level, note or null).
 - `looks.makeShared` (name, world or null, `usedBy` or null: a thing that uses it at once, last), `renameShared`,
@@ -281,7 +309,8 @@ comes every 1,047 entries (was 1,232), and a selection holds 1,571 picked entrie
 
 ## Open
 
-- The theme's trigger mark (L4) and where the theme's own settings list the user's shared looks.
+- The marks of what the next reply will bring up, and marks in the unsent message.
+- The trigger mark is drawn from the latest reply's record (or the reply whose list is open), not each reply's own.
 - A picture of their own for entries, worlds and bookmarks: they draw another image, or none.
 - Removing a font from a world, and removing a font file no world lists.
 - Names drawn in a `<select>`'s options or a `title` (the world link popups, the world button's title) can't be drawn

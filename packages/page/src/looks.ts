@@ -1,5 +1,13 @@
-import { NAME_BOX_CLASS, NAME_PICTURE_CLASS, NAME_PICTURE_PROPERTY, fontFaceCss, thingCss } from '@st/protocol/looks';
-import type { Looks, ResolvedLook } from '@st/protocol/looks';
+import {
+    NAME_BOX_CLASS,
+    NAME_PICTURE_CLASS,
+    NAME_PICTURE_PROPERTY,
+    fontFaceCss,
+    markCss,
+    markShown,
+    thingCss,
+} from '@st/protocol/looks';
+import type { Looks, ResolvedLook, ResolvedMark } from '@st/protocol/looks';
 
 // Inside it, every name is drawn still: the frame a motion shows readers whose device asks for less motion.
 export const LOOK_STILL_CLASS = 'look-still';
@@ -32,6 +40,9 @@ export type LookSheet = {
     add: (holder: string, looks: Looks) => void;
     drop: (holder: string) => void;
     css: () => string;
+    // Whether the trigger mark is drawn at all; true until a view brings it.
+    markShown: () => boolean;
+    onMarkShown: (listener: (shown: boolean) => void) => () => void;
 };
 
 type Held = { at: number; things: Map<string, ResolvedLook> };
@@ -44,6 +55,8 @@ const lookOfThing = (looks: Looks, thing: string): ResolvedLook | undefined => {
 // A thing's rules come from the newest holder that draws it, and go when none does.
 export function createLookSheet(write: (css: string) => void): LookSheet {
     const held = new Map<string, Held>();
+    let mark: ResolvedMark | null = null;
+    const markListeners = new Set<(shown: boolean) => void>();
     let sequence = 0;
     let written: string | null = null;
     let queued = false;
@@ -63,7 +76,7 @@ export function createLookSheet(write: (css: string) => void): LookSheet {
             const own = thingCss(thing, look);
             if (own !== '') rules.push(own);
         }
-        return [NAME_BASE_CSS, ...faces.values(), ...rules].join('\n');
+        return [NAME_BASE_CSS, ...faces.values(), ...rules, ...(mark ? [markCss(mark)] : [])].join('\n');
     };
 
     const changed = () => {
@@ -86,19 +99,34 @@ export function createLookSheet(write: (css: string) => void): LookSheet {
         return into;
     };
 
+    const takeMark = (looks: Looks) => {
+        if (!looks.mark) return;
+        const was = mark ? markShown(mark) : true;
+        mark = looks.mark;
+        const shown = markShown(mark);
+        if (shown !== was) for (const listener of markListeners) listener(shown);
+    };
+
     return {
         hold(holder, looks) {
             held.set(holder, { at: ++sequence, things: thingsOf(looks) });
+            takeMark(looks);
             changed();
         },
         add(holder, looks) {
             held.set(holder, { at: ++sequence, things: thingsOf(looks, held.get(holder)?.things) });
+            takeMark(looks);
             changed();
         },
         drop(holder) {
             if (held.delete(holder)) changed();
         },
         css,
+        markShown: () => (mark ? markShown(mark) : true),
+        onMarkShown(listener) {
+            markListeners.add(listener);
+            return () => markListeners.delete(listener);
+        },
     };
 }
 
