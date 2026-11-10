@@ -39,7 +39,7 @@ test('a store without the worldbuilding marker is refused, naming the script; a 
     const { LibraryEngine } = await import('../src/library-engine.js');
     const lib = await LibraryEngine.open(engine, dir);
     await lib.close();
-    for (const marker of [stores.GREETINGS_BY_ID, stores.GREETING_LINKS, stores.GREETINGS_UNIQUE]) fs.writeFileSync(path.join(dir, marker), '');
+    for (const marker of [stores.GREETINGS_BY_ID, stores.GREETING_LINKS, stores.GREETINGS_UNIQUE, stores.CARD_BOOK_COPIES_DELETED]) fs.writeFileSync(path.join(dir, marker), '');
     const line = await stores.oldFormatLine({ root });
     expect(line).toBe(`${root} has lorebooks whose entries aren't yet ordered, linked and counted for worldbuilding: run node scripts/convert-lorebooks-to-worldbuilding.mjs --data-root <the folder holding it> once, with the server stopped`);
     await expect(stores.assertConverted([{ root }])).rejects.toThrow(stores.OldFormatError);
