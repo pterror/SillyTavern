@@ -130,6 +130,11 @@ State and other
 - The alternatives viewer (swipes and greetings, `packages/areas/alternatives`) edits in its own field, not the app's
   editor that the card fields use; `docs/design/alternatives.md` says only "an editor for the greeting being edited".
   It uses the same editor.
+- Settings, fully redesigned from first principles (`docs/design/settings-reorganization.md` regroups the existing
+  fields and doesn't count as that). Among what it decides: connection profiles (the connection-manager extension went
+  in `3c14df094`; stored profiles are still read, with nothing using them), presets, and each feature that commit
+  removed: regex scripts, quick replies, Data Bank, expressions, TTS, image generation, vectors, translate, memory.
+  With it, a good command palette over every action and setting, built on interact's keybinds and list.
 - Greetings:
   - An in-chat greeting equal to a card greeting links back to it (the other direction of "go"), so editing the card's updates the chat, and an edit in the chat can be applied to the card.
   - Editing a greeting in the chat twice with no message after it doesn't keep the first edit as a separate alternative.
