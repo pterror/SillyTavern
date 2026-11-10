@@ -557,8 +557,8 @@ describe('the add-member picker shows the candidates a page at a time from the s
         expect(await showPage(2, 5)).toEqual({ rows: [toEntity(b)], total: 7 });
 
         expect(queryMock.mock.calls).toEqual([
-            [{ excludeIds: [] }, { field: 'name', order: 'asc' }, 1, 5, ['rows', 'total']],
-            [{ excludeIds: [] }, { field: 'name', order: 'asc' }, 2, 5, ['rows', 'total']],
+            [{ excludeIds: [] }, { field: 'name', order: 'asc' }, 1, 5, ['rows', 'total'], { draws: 'page.groupCandidates' }],
+            [{ excludeIds: [] }, { field: 'name', order: 'asc' }, 2, 5, ['rows', 'total'], { draws: 'page.groupCandidates' }],
         ]);
         expect(pager.totalNumberLocator({ total: '~7' })).toBe(7);
         expect(groupCandidatesFilter.applyFiltersCalls).toEqual([]);

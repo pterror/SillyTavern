@@ -317,10 +317,10 @@ describe('persona images', () => {
         fs.writeFileSync(path.join(user.directories.avatars, 'me.png'), png);
         await images.writePersonaImage(user.store.lib, 'me.png', png);
         const listed = await (await post('/api/avatars/get')).json();
-        expect(listed).toEqual({ avatars: ['me.png'], thumbnails: { 'me.png': urls.stillUrl(identity.stillHash(png), 'avatar') }, thumbnails_still: {}, crops: {}, refs: { 'me.png': '/thumbnail?type=persona&file=me.png' } });
+        expect(listed).toEqual({ avatars: ['me.png'], thumbnails: { 'me.png': urls.stillUrl(identity.stillHash(png), 'avatar') }, thumbnails_still: {}, crops: {}, refs: { 'me.png': '/thumbnail?type=persona&file=me.png' }, looks: { styles: {}, things: {} }, things: {} });
         expect((await get(listed.thumbnails['me.png'])).status).toBe(200);
         expect((await post('/api/avatars/delete', { avatar: 'me.png' })).status).toBe(200);
-        expect(await (await post('/api/avatars/get')).json()).toEqual({ avatars: [], thumbnails: {}, thumbnails_still: {}, crops: {}, refs: {} });
+        expect(await (await post('/api/avatars/get')).json()).toEqual({ avatars: [], thumbnails: {}, thumbnails_still: {}, crops: {}, refs: {}, looks: { styles: {}, things: {} }, things: {} });
     });
 });
 
