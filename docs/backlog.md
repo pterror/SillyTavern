@@ -23,7 +23,6 @@
 - Backgrounds: `__transparent`, `_black`, `_white` named weirdly; `__transparent` odd size and square in the grid; backgrounds part of the theme, on the cascade.
 - A session on another device on an earlier message mustn't break; fix the desync.
 - Page blur (switching app on a phone) closes character info.
-- An empty thinking block is not the same as no thinking block (gemma inference breaks otherwise).
 - The chat box and reasoning editors sit outside chat's text classes (`public/scripts/chat-live-editor.js:60`), so chat's rules (`.mes_text blockquote`, `.mes_reasoning em`, ...) don't reach them; only the quote color is copied, as a second list (`public/style.css:7343-7358`). Putting the class on them draws its box too (`.mes_reasoning`'s border and padding, `public/style.css:460-469`; `.mes_text`'s line height and weight, `:1581-1594`), and code finds the rendered block by that class (`public/scripts/reasoning.js:1264`). The owner's to decide how those two editors get chat's look.
 - The live editor is for the card fields ("i mean the card fields", owner, 2026-10-02T05:55:17); the code also uses it on message, reasoning and chat box edits (`public/scripts/chat-live-editor.js`).
 - Live editor: lists, code blocks, tables and rules aren't drawn as chat's elements; their elements bring layout (bullets, indentation, cells) that the written text already shows, so each needs a decision on what of chat's look the editor takes.
@@ -101,9 +100,7 @@ State and other
 - Browse chats by latest message. Chat/bookmark tagging plus cross-character chat search.
 - Banning tags, authors etc. per user; local vs exported tags.
 - Encryption at rest (opt-in). A CLI for the engine and one for the app.
-- `/duplicate` loses the favourite.
 - Auto-install and management of llama.cpp / koboldcpp / ollama and models (optionally TTS and image gen).
-- Local import took 31 min for 1,171 cards.
 - /sysgen not using the selected request formatting.
 - Console noise: an ordinary action logs nothing on success ("specifically, single updates shouldn't log", owner, 2026-10-02T02:09:26).
 - A browser test reaches aihorde.net.
@@ -149,7 +146,7 @@ State and other
 - Group chats: characters answering one at a time is slow and awkward; the narrator approach makes it hard to see who speaks, with no pictures. A group chat model that's good at both. "ideally need full unification of group chats with regular chats" (owner, 2026-09-15T15:16:27).
 - Message styling per thing, cascading (character, group, chat, user, device) through the same levels as settings and looks, in place of dialogue colorizing.
 - A lorebook's name is edited where it's shown: the editor header's name is a field, committing it is the rename (one request, `/rename`'s answer), and the rename button goes, for every book; on a card's own book it renames the card's book. Owner approved 2026-11-08.
-- Lorebook names: trimmed on create but not on rename. Ordering global lorebooks needs a real order, not a leading-space hack.
+- Ordering global lorebooks needs a real order, not a leading-space hack.
 - Every lorebook converted from a card's embedded one is removed, whatever edits it has since ("EVERY lorebook that was converted from an embedded one MUST go IRREGARDLESS of edits", owner, 2026-11-10). A card's own book is reached only from its character, never listed among worlds.
 - Shared code lives in the page's folder: `src/library-engine.js` imports `public/scripts/hash-utils.js`. Code both sides use belongs in a shared package.
 - `LibraryEngine.query` is unreadable.
