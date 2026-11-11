@@ -124,9 +124,14 @@ State and other
   (`public/script.js:1267`, `menu_type === 'create' ? {}`), so `{{char}}` has no character. The macro preview button
   (`public/scripts/chats.js:1578`) uses the open chat's scope for any card, so it shows the open chat's character, not
   the card being edited. The scope is the card being edited; an unsaved card's request carries its name.
-- The alternatives viewer (swipes and greetings, `packages/areas/alternatives`) edits in its own field, not the app's
-  editor that the card fields use; `docs/design/alternatives.md` says only "an editor for the greeting being edited".
-  It uses the same editor.
+- One editor component, used by every area: there are three today, the live editor in the old page
+  (`public/scripts/live-editor/`), worldbuilding's own CodeMirror (`packages/areas/worldbuilding/page/Text.tsx`) and the
+  alternatives viewer's textareas (`packages/areas/alternatives/page/Alternatives.tsx`); `docs/design/alternatives.md`
+  says only "an editor for the greeting being edited". "we need a consistent component" (owner, 2026-11-11).
+- New character creates a blank character on the server straight away, so nothing on the page stands in for a character
+  that doesn't exist yet ("weren't we supposed to change 'new character' to create a blank character immediately to
+  eliminate all the fucky bugs related to fake new charcters", owner, 2026-11-11). Not found in earlier docs.
+- Card greetings: optionally keep when each was created and edited, maybe its history; needs design (owner, 2026-11-11).
 - Settings, fully redesigned from first principles (`docs/design/settings-reorganization.md` regroups the existing
   fields and doesn't count as that). Among what it decides: connection profiles (the connection-manager extension went
   in `3c14df094`; stored profiles are still read, with nothing using them), presets, and each feature that commit
