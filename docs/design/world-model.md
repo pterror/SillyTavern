@@ -36,17 +36,11 @@ world stores and cascades it, and the prompt reads the fields it knows (In the p
 
 A new entry exists at once, blank; nothing waits for it to be filled in (owner, on new characters).
 
-## Names and triggers
+## Names
 
-An entry's **keys** are the words that stand for it. A key is either a **name** or a **trigger**:
-
-- A **name** is a key whose occurrence in text means a reference to the entry. So a name is drawn in the entry's look,
-  linked, found by search, and its occurrences are the entry's mentions.
-- A **trigger** is a word associated with the entry without being a reference to it: "blood" is associated with an
-  entry on vampires without every "blood" in every text being a reference to it.
-
-Both are matched by the same keyword predicate; they differ only in whether an occurrence is a reference. This is why
-both exist (owner, m19).
+A **name** is how an entry is referred to: an occurrence of it in text is a reference to the entry. So a name is drawn
+in the entry's look, linked, found by search, and its occurrences are the entry's mentions. Words that only bring an
+entry into a prompt are triggers, which belong to the prompt (`prompt-model.md`, Reading worlds).
 
 Links are names found in the text, not markup written into it, so the text is exactly what was written and any reader
 of it (a person, the wiki, the prompt) gets it unchanged (`editor.md`, Model). A name shared by several entries is a
@@ -61,9 +55,6 @@ they're never core (owner, m6).
 Being **in** an entry is the one structural relation: groups, worlds and a character's own lore are entries that others
 are in. An entry can be in several, in an order it keeps (a fractional position, as `worldbuilding.md` stores
 relations).
-
-A pick-one group (upstream's inclusion group) is an entry with a selection rule (keep one of its active members, by
-weight or by score), not a separate book-level mechanism.
 
 ## The cascade
 
@@ -85,46 +76,14 @@ Settings levels (default, preset, user, group, character; `settings-scopes.md`) 
 
 A predicate selects entries: a field compared with a value, keywords found in a text, **related** (related by a given
 field to an entry in a set, one step or any number), combined with all / any / not. A predicate reads a context; the
-world's own context is its state. A consumer can add to the context and to the predicates that read it; the prompt
-does (In the prompt). Owner, on conditions and view filters: "if they are different things at all it's worrying."
+world's own context is its state. A reader of worlds can add to the context and to the predicates that read it, as the
+prompt does with the chat (`prompt-model.md`, Reading worlds). Owner, on conditions and view filters: "if they are different things at all it's worrying."
 
 ```ts
 View = { filter: Predicate, draw: Wiki | Overview | Board | Table, shows: Field[] }
 ```
 
 What a card or row shows is the view's choice (`shows`): cards for recognising entries, rows for comparing them.
-
-## In the prompt
-
-The prompt is a consumer of worlds; this section is how `prompt-model.md` reads them, not part of the world.
-
-- A prompt entry (content, role, placement, condition) is a world entry read through the fields the prompt knows;
-  each is `resolve`d, so a group or world can set placement or a condition for all its members.
-- The prompt's conditions (generation type, who, every n / from n, sticky and cooldown, chance, variables) are
-  predicates over a context that adds the chat: `{ state, chat, activations, generation }`, activations being earlier
-  turns, for sticky and cooldown. A view's filter is the same form with no chat, so a condition needing one is false
-  there.
-- The card provider reads a character entry's card fields.
-
-Activation:
-
-```ts
-active(chat) = select(budget, fix(S => S ∪ { e | eval(resolve(e, "when"), e, { ...ctx, scanned: chat + text(S) }) }))
-```
-
-- Re-scanning added text and following relations are both steps of the one fixpoint; there is no numeric recursion
-  limit. It ends because the set only grows over finitely many entries.
-- For the set to only grow, `not` may not apply to anything that reads the growing set (keywords looking in active
-  entries, related). Such a condition is refused when it's written, so every condition evaluates.
-- Chance is seeded per entry and turn, so the same chat always gives the same result.
-- `select` keeps entries in priority order while the budget lasts, and applies pick-one groups. An entry that came up
-  only through entries the budget cut is cut too. What's cut is shown, with why.
-- Placement is the prompt model's: a position in a parent, with layouts declaring the named sections.
-
-The test area is `active` over a chat typed into it and kept; the marks in chat are `active` recorded for each reply,
-on every visible reply. Both show why each entry came up, or didn't.
-
-A chat activates from its worlds, the persona and every member; a chat with one character is a group of one.
 
 ## Sharing
 
@@ -144,12 +103,12 @@ silently (`prompt-model.md`, What this replaced).
 - The current worldbuilding store (`worldbuilding-store.md`) keeps upstream's book JSON with relations in extension
   data. A change log per entry (as cyoa keeps one document per page) is the history this model needs. How the two
   meet, and the cost of reading state, is not worked out.
-- The budget's "cut what came up only through a cut entry" needs an algorithm; with priorities it isn't a single pass.
 - Name matching over large worlds: one automaton per world, linear in the text. Not measured against the current
   index.
 
 ## Changes to other documents
 
-- `worldbuilding.md`: inclusion groups are entries in this model; "a world is a lorebook" holds for import and export,
-  not for storage.
-- `prompt-model.md`: groups stop being a book-level rule; the card provider reads the character entry.
+- `worldbuilding.md`: "a world is a lorebook" holds for import and export, not for storage; triggers are the
+  prompt's (`prompt-model.md`, Reading worlds).
+- `prompt-model.md`: its entries and books are this model's entries and the entries they're in, not a second
+  structure; it reads worlds as its Reading worlds section says.

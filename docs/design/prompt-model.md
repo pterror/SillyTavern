@@ -116,8 +116,42 @@ The core evaluates always, generation type and all / any / not; the others are e
 (world info scanning for keywords, sticky, cooldown, chance and groups; the note's interval) and reach the core as
 their outcome.
 
-**Groups** stay as a book-level rule: of the active entries in a group, keep one (by weight, or by scoring), as
-inclusion groups do. An always-active entry shows none of the condition editor (WI4).
+**Groups**: of the active entries in a group, keep one (by weight, or by scoring), as inclusion groups do. A group
+is an entry its members are in (`world-model.md`, Relations and groups) with that rule as a field. An always-active
+entry shows none of the condition editor (WI4).
+
+## Reading worlds
+
+The prompt reads worlds (`world-model.md`); a world knows nothing about prompts. Entries and books here are that
+model's entries and the entries they're in, not a second structure.
+
+- A prompt entry's content, role, placement and condition are fields of a world entry, each `resolve`d through the
+  world's cascade, so a group or world can set them for all its members.
+- An entry's keywords are its names (`world-model.md`, Names) and its **triggers**: words that bring it into the
+  prompt without being references to it ("blood" for an entry on vampires). Both are matched the same way; only names
+  link.
+- Conditions are world predicates over a context with the chat added: `{ state, chat, activations, generation }`,
+  activations being earlier turns, for sticky and cooldown.
+- The card provider reads a character entry's card fields. A chat activates from its worlds, the persona and every
+  member; a chat with one character is a group of one.
+
+## Activation
+
+```ts
+active(chat) = select(budget, fix(S => S ∪ { e | eval(resolve(e, "when"), e, { ...ctx, scanned: chat + text(S) }) }))
+```
+
+- Re-scanning added text and following relations are both steps of one fixpoint; there is no numeric recursion
+  limit. It ends because the set only grows over finitely many entries.
+- For the set to only grow, `not` may not apply to anything that reads the growing set (keywords looking in active
+  entries, related). Such a condition is refused when it's written, so every condition evaluates.
+- Chance is seeded per entry and turn, so the same chat always gives the same result.
+- `select` keeps entries in priority order while the budget lasts, and applies groups. An entry that came up only
+  through entries the budget cut is cut too; what's cut is shown, with why. That needs an algorithm: with priorities
+  it isn't a single pass.
+
+The test area is `active` over a chat typed into it and kept; the marks in chat are `active` recorded for each reply,
+on every visible reply. Both show why each entry came up, or didn't.
 
 ## Layouts and rendering
 
