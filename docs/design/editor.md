@@ -49,5 +49,13 @@ Changed:
 
 ## Open
 
-- Where the shared package lives (interact or its own repository).
-- Whether rendered messages can be drawn from the same syntax tree without an editor per message, at long-chat sizes.
+- Whether anything changes message text between storage and the screen; the reader must draw the stored text.
+
+## Where it lives
+
+The core goes in interact: text as truth, drawing from a lossless syntax tree with the grammar passed in, dimmed marks
+and the reader, commands, and extension points. An app's own syntax (macros, slash commands, key hints) and how its
+text is synced are extensions and ports, kept in the app.
+
+The reader is a walk over the syntax tree into DOM elements. One table maps each syntax node to its element and
+classes, and both the editor's decorations and the reader use it.
