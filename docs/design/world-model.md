@@ -1,8 +1,9 @@
 # The world model
 
-One structure under worldbuilding, the prompt and sharing. It extends `prompt-model.md` (sections, placement,
-conditions, budget) and replaces the parts of `worldbuilding.md` that say otherwise, as listed at the end. Each part
-says what it is checked against; what isn't checked yet is under Unverified.
+The structure of a world: for putting it down, reading it and editing it together. It knows nothing about prompts.
+ST's prompt is one consumer of worlds, defined in `prompt-model.md`, which reads them (In the prompt, below). This
+replaces the parts of `worldbuilding.md` that say otherwise, as listed at the end. Each part says what it is checked
+against; what isn't checked yet is under Unverified.
 
 ## Stored and derived
 
@@ -27,31 +28,29 @@ index, but is never a second source of truth.
 ## Entries
 
 Everything authored is an entry: places, people, rules, history, and also characters, personas, groups and worlds.
-A prompt-model entry (content, role, placement, condition; `prompt-model.md`, Entries and books) is an entry whose
-fields include those; an always-on layout section is one whose condition is always.
 
 Fields are open: any entry can have any field. A kind is a set of fields used together, for authoring and reading
 convenience (owner, m8), never a type an entry must have. A character is an entry with the card's fields
-(description, personality, scenario, greetings, examples, ...); the card provider (`prompt-model.md`, Sections) reads
-them from that entry.
+(description, personality, scenario, greetings, examples, ...). What a field means is up to whoever reads it: the
+world stores and cascades it, and the prompt reads the fields it knows (In the prompt).
 
 A new entry exists at once, blank; nothing waits for it to be filled in (owner, on new characters).
 
 ## Names and triggers
 
-An entry's **keys** are what bring it up in a chat. A key is either a **name** or a **trigger**:
+An entry's **keys** are the words that stand for it. A key is either a **name** or a **trigger**:
 
 - A **name** is a key whose occurrence in text means a reference to the entry. So a name is drawn in the entry's look,
   linked, found by search, and its occurrences are the entry's mentions.
-- A **trigger** only brings the entry up. "blood" can bring up an entry on vampires without every "blood" in every
-  text being a reference to it.
+- A **trigger** is a word associated with the entry without being a reference to it: "blood" is associated with an
+  entry on vampires without every "blood" in every text being a reference to it.
 
-Both are matched by the same keyword condition; they differ only in whether an occurrence is a reference. This is why
+Both are matched by the same keyword predicate; they differ only in whether an occurrence is a reference. This is why
 both exist (owner, m19).
 
-Links are names found in the text, not markup written into it: the text is sent to the model as written, so it can't
-carry `[[...]]` (`editor.md`, Model). A name shared by several entries is a reference to each; the reader shows the
-choice rather than picking one.
+Links are names found in the text, not markup written into it, so the text is exactly what was written and any reader
+of it (a person, the wiki, the prompt) gets it unchanged (`editor.md`, Model). A name shared by several entries is a
+reference to each; the reader shows the choice rather than picking one.
 
 ## Relations and groups
 
@@ -73,8 +72,8 @@ resolve(e, field) = e.fields[field] ?? first(parents(e), p => resolve(p, field))
 ```
 
 `parents(e)` are the entries it's in, in its own order; a world is one of them. That one rule covers looks
-(theme → world → group → shared look → entry, `looks.md`), default placement, default conditions and every other
-setting. Where a value comes from is part of the answer, so the page can always say which parent set it.
+(theme → world → group → shared look → entry, `looks.md`) and every other field, including the ones only the prompt
+reads. Where a value comes from is part of the answer, so the page can always say which parent set it.
 
 Settings levels (default, preset, user, group, character; `settings-scopes.md`) are the same rule over levels.
 
@@ -82,23 +81,32 @@ Settings levels (default, preset, user, group, character; `settings-scopes.md`) 
   a value on a group or world sets it for every member that doesn't state its own; setting it on many entries is a
   bulk write of the same field.
 
-## Conditions and views: one predicate form
+## Predicates and views
 
-A condition is the prompt model's condition (always, keywords, generation type, who, every n / from n, sticky and
-cooldown, chance, variables), combined with all / any / not, plus **related**: an entry related by a given field to
-an entry in the set (one step, or any number).
-
-A view's filter is the same form evaluated with no chat: keywords match against entries' own text, and what needs a
-chat (generation type, sticky) is false. Owner: "if they are different things at all it's worrying."
+A predicate selects entries: a field compared with a value, keywords found in a text, **related** (related by a given
+field to an entry in a set, one step or any number), combined with all / any / not. A predicate reads a context; the
+world's own context is its state. A consumer can add to the context and to the predicates that read it; the prompt
+does (In the prompt). Owner, on conditions and view filters: "if they are different things at all it's worrying."
 
 ```ts
-ctx    = { state, chat?, activations?, generation? }  // activations: earlier turns, for sticky and cooldown
-View   = { filter: Condition, draw: Wiki | Overview | Board | Table, shows: Field[] }
+View = { filter: Predicate, draw: Wiki | Overview | Board | Table, shows: Field[] }
 ```
 
 What a card or row shows is the view's choice (`shows`): cards for recognising entries, rows for comparing them.
 
-## Activation
+## In the prompt
+
+The prompt is a consumer of worlds; this section is how `prompt-model.md` reads them, not part of the world.
+
+- A prompt entry (content, role, placement, condition) is a world entry read through the fields the prompt knows;
+  each is `resolve`d, so a group or world can set placement or a condition for all its members.
+- The prompt's conditions (generation type, who, every n / from n, sticky and cooldown, chance, variables) are
+  predicates over a context that adds the chat: `{ state, chat, activations, generation }`, activations being earlier
+  turns, for sticky and cooldown. A view's filter is the same form with no chat, so a condition needing one is false
+  there.
+- The card provider reads a character entry's card fields.
+
+Activation:
 
 ```ts
 active(chat) = select(budget, fix(S => S ∪ { e | eval(resolve(e, "when"), e, { ...ctx, scanned: chat + text(S) }) }))
@@ -111,8 +119,7 @@ active(chat) = select(budget, fix(S => S ∪ { e | eval(resolve(e, "when"), e, {
 - Chance is seeded per entry and turn, so the same chat always gives the same result.
 - `select` keeps entries in priority order while the budget lasts, and applies pick-one groups. An entry that came up
   only through entries the budget cut is cut too. What's cut is shown, with why.
-- Placement is the prompt model's (a position in a parent; layouts declare the named sections). An entry's placement
-  is `resolve(e, "placement")`, so a group or world can place all its members.
+- Placement is the prompt model's: a position in a parent, with layouts declaring the named sections.
 
 The test area is `active` over a chat typed into it and kept; the marks in chat are `active` recorded for each reply,
 on every visible reply. Both show why each entry came up, or didn't.
