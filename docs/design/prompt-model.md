@@ -132,8 +132,16 @@ model's entries and the entries they're in, not a second structure.
   link.
 - Conditions are world predicates over a context with the chat added: `{ state, chat, activations, generation }`,
   activations being earlier turns, for sticky and cooldown.
-- The card provider reads a character entry's card fields. A chat activates from its worlds, the persona and every
-  member; a chat with one character is a group of one.
+- Characters, personas and groups of characters are world entries; a character is an entry with the card's fields
+  (description, personality, scenario, greetings, examples, ...), which the card provider reads. A chat activates
+  from its worlds, the persona and every member; a chat with one character is a group of one.
+- Settings levels (default, preset, user, group, character; `settings-scopes.md`) are the world's cascade over those
+  levels.
+- Cards and lorebooks are formats for the world's `export`: a card is one character entry and its closure, a
+  lorebook a world's entries; a world file carries any selection, characters included. Upstream's formats are
+  written where they can say it; what they can't is listed as lost.
+- Unverified: characters as entries at 10 billion cards with no cost per card. The library engine's store and the
+  world's must be one store, or characters are entries in name only.
 
 ## Activation
 
