@@ -68,13 +68,11 @@ export function useField(id: string) {
             );
         },
         refusal,
-        set: async (next: unknown, restore: () => void) => {
+        set: async (next: unknown, showStored: () => void) => {
             setRefusal(null);
             const result = await client.send('settings.set', { path: field.path, value: next });
-            if (!result.ok) {
-                setRefusal(result.error);
-                restore();
-            }
+            if (!result.ok) setRefusal(result.error);
+            showStored();
         },
         unset: () => void client.send('settings.unset', { path: field.path }),
         reset: () => void client.send('settings.reset', { path: field.path }),
