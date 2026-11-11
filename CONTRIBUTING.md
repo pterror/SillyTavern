@@ -24,7 +24,7 @@
 Our standards are pretty low, but make sure the code is not too ugly:
 
 - Run VS Code's autoformat when you're done.
-- Check with ESLint by running `npm run lint`, then fix the errors.
+- Check with ESLint by running `pnpm run lint`, then fix the errors.
 - Use common sense and follow existing naming conventions.
 
 ### Use the correct target branch

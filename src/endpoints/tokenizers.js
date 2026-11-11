@@ -9,7 +9,6 @@ import { promisify } from 'node:util';
 import express from 'express';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
-import { Tokenizer } from '@agnai/web-tokenizers';
 import tiktoken from 'tiktoken';
 
 import { TEXTGEN_TYPES } from '../constants.js';
@@ -77,8 +76,11 @@ export function guesstimate(str) {
     return Math.ceil(byteLength / BYTES_PER_TOKEN);
 }
 
+/** @type {Map<string, Promise<string>>} */
+const pathRequests = new Map();
+
 /**
- * Gets a path to the tokenizer model. Downloads the model if it's a URL.
+ * Gets a path to the tokenizer model. Downloads the model if it's a URL; parallel calls for one URL share one download.
  * @param {string} model Model URL or path
  * @returns {Promise<string>} Path to the tokenizer model. Throws when the model can't be had.
  */
@@ -87,6 +89,24 @@ export async function getPathToTokenizer(model) {
         return model;
     }
 
+    const pending = pathRequests.get(model);
+    if (pending) {
+        return pending;
+    }
+    const request = getPathToDownloadedTokenizer(model);
+    pathRequests.set(model, request);
+    try {
+        return await request;
+    } finally {
+        pathRequests.delete(model);
+    }
+}
+
+/**
+ * @param {string} model Model URL
+ * @returns {Promise<string>}
+ */
+async function getPathToDownloadedTokenizer(model) {
     try {
         const url = new URL(model);
 
@@ -228,73 +248,12 @@ class SentencePieceTokenizer {
     }
 }
 
-/**
- * Web tokenizer for tokenizing text.
- */
-class WebTokenizer {
-    /**
-     * @type {Tokenizer} Web tokenizer instance
-     */
-    #instance;
-    /**
-     * @type {string} Path to the tokenizer model
-     */
-    #model;
-    /**
-     * @type {Promise<Tokenizer|null>|null}
-     */
-    #loadPromise;
-
-    /**
-     * Creates a new Web tokenizer.
-     * @param {string} model Path to the tokenizer model
-     */
-    constructor(model) {
-        this.#model = model;
-        this.fileIdentity = new FileIdentity(model, 'web-tokenizers');
-    }
-
-    /**
-     * Gets the Web tokenizer instance.
-     * @returns {Promise<Tokenizer|null>} Web tokenizer instance
-     */
-    async get() {
-        if (this.#instance) {
-            return this.#instance;
-        }
-
-        if (!this.#loadPromise) {
-            this.#loadPromise = this.#load();
-        }
-
-        return this.#loadPromise;
-    }
-
-    /**
-     * @returns {Promise<Tokenizer|null>}
-     */
-    async #load() {
-        try {
-            const pathToModel = await getPathToTokenizer(this.#model);
-            const fileBuffer = await fs.promises.readFile(pathToModel);
-            this.#instance = await Tokenizer.fromJSON(fileBuffer);
-            console.info('Instantiated the tokenizer for', path.parse(pathToModel).name);
-            return this.#instance;
-        } catch (error) {
-            console.error('Web tokenizer failed to load: ' + this.#model, error);
-            return null;
-        } finally {
-            this.#loadPromise = null;
-        }
-    }
-}
-
-class ExactJsonTokenizer {
-    /** @type {string} */
+class HfJsonTokenizer {
+    /** @type {string} Model URL or path */
     #model;
 
     /**
-     * @param {string} model
+     * @param {string} model Model URL or path
      */
     constructor(model) {
         this.#model = model;
@@ -306,7 +265,7 @@ class ExactJsonTokenizer {
      */
     async get() {
         try {
-            return await loadTokenizerFunctions(this.#model, 'hf-json');
+            return await loadTokenizerFunctions(await getPathToTokenizer(this.#model), 'hf-json');
         } catch (error) {
             console.error('Tokenizer failed to load: ' + this.#model, error);
             return null;
@@ -355,14 +314,13 @@ const spp_mistral = new SentencePieceTokenizer('src/tokenizers/mistral.model');
 const spp_yi = new SentencePieceTokenizer('src/tokenizers/yi.model');
 const spp_gemma = new SentencePieceTokenizer('src/tokenizers/gemma.model');
 const spp_jamba = new SentencePieceTokenizer('src/tokenizers/jamba.model');
-const claude_tokenizer = new WebTokenizer('src/tokenizers/claude.json');
-const llama3_tokenizer = new WebTokenizer('src/tokenizers/llama3.json');
-const llama3ExactTokenizer = new ExactJsonTokenizer('src/tokenizers/llama3.json');
-const commandRTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz');
-const commandATokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz');
-const qwen2Tokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz');
-const nemoTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/nemo.json.gz');
-const deepseekTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/deepseek.json.gz');
+const claudeTokenizer = new HfJsonTokenizer('src/tokenizers/claude.json');
+const llama3Tokenizer = new HfJsonTokenizer('src/tokenizers/llama3.json');
+const commandRTokenizer = new HfJsonTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz');
+const commandATokenizer = new HfJsonTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz');
+const qwen2Tokenizer = new HfJsonTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz');
+const nemoTokenizer = new HfJsonTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/nemo.json.gz');
+const deepseekTokenizer = new HfJsonTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/deepseek.json.gz');
 
 export const sentencepieceTokenizers = [
     'llama',
@@ -374,7 +332,7 @@ export const sentencepieceTokenizers = [
     'jamba',
 ];
 
-export const webTokenizers = [
+export const hfJsonTokenizers = [
     'claude',
     'llama3',
     'command-r',
@@ -422,17 +380,17 @@ export function getSentencepiceTokenizer(model) {
 }
 
 /**
- * Gets the Web tokenizer by the model name.
- * @param {string} model Web tokenizer model name
- * @returns {WebTokenizer|null} Web tokenizer
+ * Gets the HuggingFace JSON tokenizer by the model name.
+ * @param {string} model Tokenizer model name
+ * @returns {HfJsonTokenizer|null}
  */
-export function getWebTokenizer(model) {
+export function getHfJsonTokenizer(model) {
     if (model.includes('llama3')) {
-        return llama3_tokenizer;
+        return llama3Tokenizer;
     }
 
     if (model.includes('claude')) {
-        return claude_tokenizer;
+        return claudeTokenizer;
     }
 
     if (model.includes('command-r')) {
@@ -507,12 +465,12 @@ async function getTiktokenChunks(tokenizer, ids) {
 }
 
 /**
- * Gets the token chunks for the given token IDs using the Web tokenizer.
- * @param {Tokenizer|import('../tokenizer-loader.js').TokenizerFunctions} tokenizer Web tokenizer instance
+ * Gets the token chunks for the given token IDs.
+ * @param {import('../tokenizer-loader.js').TokenizerFunctions} tokenizer
  * @param {number[]} ids Token IDs
  * @returns {Promise<string[]>} Token chunks
  */
-async function getWebTokenizersChunks(tokenizer, ids) {
+async function getDecodedChunks(tokenizer, ids) {
     const chunks = [];
 
     for (let i = 0, lastProcessed = 0; i < ids.length; i++) {
@@ -821,8 +779,8 @@ export async function computeUpstreamLogitBias(biasPresetEntries, requestModel) 
             return {};
         }
         encodeFunction = (text) => new Uint32Array(instance.encodeIds(text));
-    } else if (webTokenizers.includes(model)) {
-        const tokenizer = model === 'llama3' ? llama3ExactTokenizer : getWebTokenizer(model);
+    } else if (hfJsonTokenizers.includes(model)) {
+        const tokenizer = getHfJsonTokenizer(model);
         const instance = await tokenizer?.get();
         if (!instance) {
             console.warn('Tokenizer not initialized:', model);
@@ -916,24 +874,6 @@ export async function computeTextgenLogitBias(logitBiasPreset, tokenizerOptions 
     }
 
     return result;
-}
-
-/**
- * Counts the tokens for the given messages using the WebTokenizer and Claude prompt conversion.
- * @param {Tokenizer} tokenizer Web tokenizer
- * @param {object[]} messages Array of messages
- * @returns {number} Number of tokens
- */
-export function countWebTokenizerTokens(tokenizer, messages) {
-    const jsonBody = messages.flatMap(x => Object.values(x)).join('\n\n');
-
-    // Fallback to strlen estimation
-    if (!tokenizer) {
-        return guesstimate(jsonBody);
-    }
-
-    const count = tokenizer.encode(jsonBody).length;
-    return count;
 }
 
 /**
@@ -1058,13 +998,13 @@ function createTiktokenDecodingHandler(modelId) {
 }
 
 /**
- * Creates an API handler for encoding WebTokenizer tokens.
- * @param {WebTokenizer|ExactJsonTokenizer} tokenizer WebTokenizer instance
+ * Creates an API handler for encoding tokens.
+ * @param {HfJsonTokenizer|RegistryTokenizer} tokenizer
  * @returns {TokenizationHandler} Handler function
  */
-function createWebTokenizerEncodingHandler(tokenizer) {
+function createTokenizerFunctionsEncodingHandler(tokenizer) {
     /**
-     * Request handler for encoding WebTokenizer tokens.
+     * Request handler for encoding tokens.
      * @param {import('express').Request} request
      * @param {import('express').Response} response
      */
@@ -1080,7 +1020,7 @@ function createWebTokenizerEncodingHandler(tokenizer) {
                 return response.send({ ids: [], count: guesstimate(text), chunks: [] });
             }
             const tokens = Array.from(await instance.encode(text));
-            const chunks = await getWebTokenizersChunks(instance, tokens);
+            const chunks = await getDecodedChunks(instance, tokens);
             return response.send({ ids: tokens, count: tokens.length, chunks });
         } catch (error) {
             console.error(error);
@@ -1090,13 +1030,13 @@ function createWebTokenizerEncodingHandler(tokenizer) {
 }
 
 /**
- * Creates an API handler for decoding WebTokenizer tokens.
- * @param {WebTokenizer|ExactJsonTokenizer} tokenizer WebTokenizer instance
+ * Creates an API handler for decoding tokens.
+ * @param {HfJsonTokenizer|RegistryTokenizer} tokenizer
  * @returns {TokenizationHandler} Handler function
  */
-function createWebTokenizerDecodingHandler(tokenizer) {
+function createTokenizerFunctionsDecodingHandler(tokenizer) {
     /**
-     * Request handler for decoding WebTokenizer tokens.
+     * Request handler for decoding tokens.
      * @param {import('express').Request} request
      * @param {import('express').Response} response
      * @returns {Promise<any>}
@@ -1109,8 +1049,8 @@ function createWebTokenizerDecodingHandler(tokenizer) {
 
             const ids = request.body.ids || [];
             const instance = await tokenizer?.get();
-            if (!instance) throw new Error('Failed to load the Web tokenizer');
-            const chunks = await getWebTokenizersChunks(instance, ids);
+            if (!instance) throw new Error('Failed to load the tokenizer');
+            const chunks = await getDecodedChunks(instance, ids);
             const text = await instance.decode(new Int32Array(ids));
             return response.send({ text, chunks });
         } catch (error) {
@@ -1120,7 +1060,7 @@ function createWebTokenizerDecodingHandler(tokenizer) {
     };
 }
 
-/** @type {{[key: string]: SentencePieceTokenizer | Tokenizer}} */
+/** @type {{[key: string]: SentencePieceTokenizer | HfJsonTokenizer}} */
 const LOCAL_TOKENIZER_INSTANCES = {
     llama: spp_llama,
     nerdstash: spp_nerd,
@@ -1129,8 +1069,8 @@ const LOCAL_TOKENIZER_INSTANCES = {
     yi: spp_yi,
     gemma: spp_gemma,
     jamba: spp_jamba,
-    claude: claude_tokenizer,
-    llama3: llama3_tokenizer,
+    claude: claudeTokenizer,
+    llama3: llama3Tokenizer,
     qwen2: qwen2Tokenizer,
     'command-r': commandRTokenizer,
     'command-a': commandATokenizer,
@@ -1139,35 +1079,27 @@ const LOCAL_TOKENIZER_INSTANCES = {
 };
 
 const SENTENCEPIECE_TOKENIZER_TYPES = new Set(['llama', 'nerdstash', 'nerdstash_v2', 'mistral', 'yi', 'gemma', 'jamba']);
-const WEB_TOKENIZER_TYPES = new Set(['claude', 'llama3', 'qwen2', 'command-r', 'command-a', 'nemo', 'deepseek']);
-
-/**
- * @param {string} key
- * @returns {SentencePieceTokenizer|WebTokenizer|ExactJsonTokenizer|undefined}
- */
-function getEncodingTokenizer(key) {
-    return key === 'llama3' ? llama3ExactTokenizer : LOCAL_TOKENIZER_INSTANCES[key];
-}
+const HF_JSON_TOKENIZER_TYPES = new Set(['claude', 'llama3', 'qwen2', 'command-r', 'command-a', 'nemo', 'deepseek']);
 
 /**
  * @param {string} key
  * @returns {Promise<string|null>}
  */
 export async function getLocalTokenizerFileIdentity(key) {
-    const tokenizer = Object.hasOwn(LOCAL_TOKENIZER_INSTANCES, key) ? getEncodingTokenizer(key) : undefined;
+    const tokenizer = Object.hasOwn(LOCAL_TOKENIZER_INSTANCES, key) ? LOCAL_TOKENIZER_INSTANCES[key] : undefined;
     return tokenizer ? tokenizer.fileIdentity.get() : null;
 }
 
 /**
  * @param {{id: number, source?: string}} tokenizer
  * @param {LocalTokenizerOptions} [options]
- * @returns {SentencePieceTokenizer|WebTokenizer|ExactJsonTokenizer|RegistryTokenizer|undefined}
+ * @returns {SentencePieceTokenizer|HfJsonTokenizer|RegistryTokenizer|undefined}
  */
 function getLocalTokenizer(tokenizer, options = {}) {
     if (tokenizer.source) {
         return new RegistryTokenizer(tokenizer.source, options);
     }
-    return getEncodingTokenizer(TOKENIZER_TYPE_KEYS[tokenizer.id]);
+    return LOCAL_TOKENIZER_INSTANCES[TOKENIZER_TYPE_KEYS[tokenizer.id]];
 }
 
 /**
@@ -1186,10 +1118,9 @@ export async function encodeTextByLocalTokenizerType(tokenizerType, text) {
         return ids;
     }
 
-    if (WEB_TOKENIZER_TYPES.has(tokenizerType)) {
-        const tokenizer = getEncodingTokenizer(tokenizerType);
-        const instance = await tokenizer?.get();
-        if (!instance) throw new Error(`Failed to load the Web tokenizer for type: ${tokenizerType}`);
+    if (HF_JSON_TOKENIZER_TYPES.has(tokenizerType)) {
+        const instance = await LOCAL_TOKENIZER_INSTANCES[tokenizerType].get();
+        if (!instance) throw new Error(`Failed to load the tokenizer for type: ${tokenizerType}`);
         return Array.from(await instance.encode(text ?? ''));
     }
 
@@ -1206,13 +1137,13 @@ router.post('/yi/encode', createSentencepieceEncodingHandler(spp_yi));
 router.post('/gemma/encode', createSentencepieceEncodingHandler(spp_gemma));
 router.post('/jamba/encode', createSentencepieceEncodingHandler(spp_jamba));
 router.post('/gpt2/encode', createTiktokenEncodingHandler('gpt2'));
-router.post('/claude/encode', createWebTokenizerEncodingHandler(claude_tokenizer));
-router.post('/llama3/encode', createWebTokenizerEncodingHandler(llama3ExactTokenizer));
-router.post('/qwen2/encode', createWebTokenizerEncodingHandler(qwen2Tokenizer));
-router.post('/command-r/encode', createWebTokenizerEncodingHandler(commandRTokenizer));
-router.post('/command-a/encode', createWebTokenizerEncodingHandler(commandATokenizer));
-router.post('/nemo/encode', createWebTokenizerEncodingHandler(nemoTokenizer));
-router.post('/deepseek/encode', createWebTokenizerEncodingHandler(deepseekTokenizer));
+router.post('/claude/encode', createTokenizerFunctionsEncodingHandler(claudeTokenizer));
+router.post('/llama3/encode', createTokenizerFunctionsEncodingHandler(llama3Tokenizer));
+router.post('/qwen2/encode', createTokenizerFunctionsEncodingHandler(qwen2Tokenizer));
+router.post('/command-r/encode', createTokenizerFunctionsEncodingHandler(commandRTokenizer));
+router.post('/command-a/encode', createTokenizerFunctionsEncodingHandler(commandATokenizer));
+router.post('/nemo/encode', createTokenizerFunctionsEncodingHandler(nemoTokenizer));
+router.post('/deepseek/encode', createTokenizerFunctionsEncodingHandler(deepseekTokenizer));
 router.post('/llama/decode', createSentencepieceDecodingHandler(spp_llama));
 router.post('/nerdstash/decode', createSentencepieceDecodingHandler(spp_nerd));
 router.post('/nerdstash_v2/decode', createSentencepieceDecodingHandler(spp_nerd_v2));
@@ -1221,13 +1152,13 @@ router.post('/yi/decode', createSentencepieceDecodingHandler(spp_yi));
 router.post('/gemma/decode', createSentencepieceDecodingHandler(spp_gemma));
 router.post('/jamba/decode', createSentencepieceDecodingHandler(spp_jamba));
 router.post('/gpt2/decode', createTiktokenDecodingHandler('gpt2'));
-router.post('/claude/decode', createWebTokenizerDecodingHandler(claude_tokenizer));
-router.post('/llama3/decode', createWebTokenizerDecodingHandler(llama3ExactTokenizer));
-router.post('/qwen2/decode', createWebTokenizerDecodingHandler(qwen2Tokenizer));
-router.post('/command-r/decode', createWebTokenizerDecodingHandler(commandRTokenizer));
-router.post('/command-a/decode', createWebTokenizerDecodingHandler(commandATokenizer));
-router.post('/nemo/decode', createWebTokenizerDecodingHandler(nemoTokenizer));
-router.post('/deepseek/decode', createWebTokenizerDecodingHandler(deepseekTokenizer));
+router.post('/claude/decode', createTokenizerFunctionsDecodingHandler(claudeTokenizer));
+router.post('/llama3/decode', createTokenizerFunctionsDecodingHandler(llama3Tokenizer));
+router.post('/qwen2/decode', createTokenizerFunctionsDecodingHandler(qwen2Tokenizer));
+router.post('/command-r/decode', createTokenizerFunctionsDecodingHandler(commandRTokenizer));
+router.post('/command-a/decode', createTokenizerFunctionsDecodingHandler(commandATokenizer));
+router.post('/nemo/decode', createTokenizerFunctionsDecodingHandler(nemoTokenizer));
+router.post('/deepseek/decode', createTokenizerFunctionsDecodingHandler(deepseekTokenizer));
 
 /**
  * @param {string} model
@@ -1359,7 +1290,7 @@ function chatCompletionTokenizerHandler(resolved, direction, directories = undef
     if (!resolved.source && sentencepieceTokenizers.includes(key)) {
         return encode ? createSentencepieceEncodingHandler(instance) : createSentencepieceDecodingHandler(instance);
     }
-    return encode ? createWebTokenizerEncodingHandler(instance) : createWebTokenizerDecodingHandler(instance);
+    return encode ? createTokenizerFunctionsEncodingHandler(instance) : createTokenizerFunctionsDecodingHandler(instance);
 }
 
 const OPENAI_ROUTE_NAMED_TOKENIZERS = [
@@ -1557,7 +1488,7 @@ export async function getLocalEncodeChunks(tokenizer, text, ids, options = {}) {
         return getTiktokenChunks(getTiktokenFor(tokenizer), ids);
     }
     const { isSentencepiece, instance } = await getLocalInstance(tokenizer, options);
-    return isSentencepiece ? instance.encodePieces(text) : await getWebTokenizersChunks(instance, ids);
+    return isSentencepiece ? instance.encodePieces(text) : await getDecodedChunks(instance, ids);
 }
 
 /**
@@ -1575,5 +1506,5 @@ export async function decodeWithLocalTokenizer(tokenizer, ids, options = {}) {
         const chunks = await Promise.all(ids.map(id => instance.decodeIds([id])));
         return { text: chunks.join(''), chunks };
     }
-    return { text: await instance.decode(new Int32Array(ids)), chunks: await getWebTokenizersChunks(instance, ids) };
+    return { text: await instance.decode(new Int32Array(ids)), chunks: await getDecodedChunks(instance, ids) };
 }

@@ -100,15 +100,19 @@ if %errorlevel% neq 0 (
     goto end
 )
 
-echo Installing npm packages and starting server
+echo Installing packages and starting server
+rem A node_modules without .modules.yaml was made by npm; pnpm would install around the packages npm left there.
+for %%m in (node_modules engine\node_modules tests\node_modules) do (
+    if exist "%%m\" if not exist "%%m\.modules.yaml" rmdir /s /q "%%m"
+)
 set NODE_ENV=production
 rem typescript/eslint in node_modules means a developer installed the dev dependencies on purpose - don't prune them.
-rem --include=dev overrides the dev omission NODE_ENV=production implies, so the server still runs as production.
-set NPM_DEV_FLAG=--omit=dev
-if exist "node_modules\typescript\" set NPM_DEV_FLAG=--include=dev
-if exist "node_modules\eslint\" set NPM_DEV_FLAG=--include=dev
-call npm install --no-save --no-audit --no-fund --loglevel=error --no-progress %NPM_DEV_FLAG% --ignore-scripts
-set NPM_DEV_FLAG=
+rem --prod=false overrides the dev omission NODE_ENV=production implies, so the server still runs as production.
+set PNPM_PROD_FLAG=--prod
+if exist "node_modules\typescript\" set PNPM_PROD_FLAG=--prod=false
+if exist "node_modules\eslint\" set PNPM_PROD_FLAG=--prod=false
+call scripts\pnpm.cmd install --frozen-lockfile --loglevel=error %PNPM_PROD_FLAG%
+set PNPM_PROD_FLAG=
 node server.js %*
 
 :end

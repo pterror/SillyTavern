@@ -11,7 +11,7 @@
         "./name": "./src/name.tsx"
     },
     "dependencies": {
-        "@st/protocol": "*",
+        "@st/protocol": "workspace:*",
         "solid-js": "1.9.17"
     },
     "devDependencies": {

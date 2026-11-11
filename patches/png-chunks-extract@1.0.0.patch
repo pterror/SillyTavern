@@ -1,7 +1,7 @@
-diff --git a/node_modules/png-chunks-extract/index.js b/node_modules/png-chunks-extract/index.js
+diff --git a/index.js b/index.js
 index 28d6674..0c959a7 100644
---- a/node_modules/png-chunks-extract/index.js
-+++ b/node_modules/png-chunks-extract/index.js
+--- a/index.js
++++ b/index.js
 @@ -65,9 +65,9 @@ function extractChunks (data) {
      }
  

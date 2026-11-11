@@ -51,7 +51,6 @@ rememberOpenRouterModels([]);
 const { resolveTokenizer, encodeWithTokenizer, tokenizers } = await import('../tokenizer-resolve.js');
 const { router: currentRouter } = await import('./tokenizers-current.js');
 const { default: express } = await import('express');
-const { Tokenizer } = await import('@agnai/web-tokenizers');
 
 {
     const result = await computeLogitBias([{ text: 'hello', value: -100 }], 'gpt-3.5-turbo');
@@ -264,13 +263,13 @@ if (canMockModelMap) {
         const clock = mock.method(performance, 'now', () => realNow);
         try {
             downloadRequests.length = 0;
-            await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the Web tokenizer for type: qwen2/);
+            await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the tokenizer for type: qwen2/);
             clock.mock.mockImplementation(() => realNow + 59_999);
-            await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the Web tokenizer for type: qwen2/);
+            await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the tokenizer for type: qwen2/);
             assert.deepEqual(downloadRequests, [qwen2Url], 'one request within 60 s');
 
             clock.mock.mockImplementation(() => realNow + 60_000);
-            await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the Web tokenizer for type: qwen2/);
+            await assert.rejects(() => encodeTextByLocalTokenizerType('qwen2', text), /Failed to load the tokenizer for type: qwen2/);
             assert.deepEqual(downloadRequests, [qwen2Url, qwen2Url], 'downloaded again after 60 s');
         } finally {
             clock.mock.restore();
@@ -289,10 +288,10 @@ if (canMockModelMap) {
         assert.deepEqual(downloadRequests, ['https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz'], 'the download was tried');
     });
 
-    await testCase('command-a, four parallel encodes on a cold cache: one request and one fromJSON', async () => {
+    await testCase('command-a, four parallel encodes on a cold cache: one request and one instantiation', async () => {
         const commandAUrl = 'https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz';
         downloadBodies.set(commandAUrl, zlib.gzipSync(fs.readFileSync(path.join(__dirname, '..', 'tokenizers', 'claude.json'))));
-        const fromJSON = mock.method(Tokenizer, 'fromJSON');
+        const info = mock.method(console, 'info');
         try {
             downloadRequests.length = 0;
             const results = await Promise.all([1, 2, 3, 4].map(() => encodeTextByLocalTokenizerType('command-a', text)));
@@ -301,9 +300,10 @@ if (canMockModelMap) {
                 assert.deepEqual(ids, results[0]);
             }
             assert.deepEqual(downloadRequests, [commandAUrl], 'one request');
-            assert.equal(fromJSON.mock.callCount(), 1, 'one fromJSON');
+            const instantiations = info.mock.calls.filter(call => call.arguments[0] === 'Instantiated the tokenizer for' && call.arguments[1] === 'command-a');
+            assert.equal(instantiations.length, 1, 'one instantiation');
         } finally {
-            fromJSON.mock.restore();
+            info.mock.restore();
             downloadBodies.delete(commandAUrl);
         }
     });

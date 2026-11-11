@@ -24,7 +24,7 @@ export async function sources(): Promise<string[]> {
         path.resolve(UI_ROOT, '../protocol'),
         path.resolve(UI_ROOT, '../tsconfig.base.json'),
         ...areas,
-        path.resolve(UI_ROOT, '../../package-lock.json'),
+        path.resolve(UI_ROOT, '../../pnpm-lock.yaml'),
     ];
 }
 
@@ -121,7 +121,7 @@ export async function ensureUi({
     } catch {
         throw new Error(
             `The new page has no released build for this source (${url}: ${response ? `HTTP ${response.status}` : 'unreachable'}), ` +
-                'and it can only be built here with the dev dependencies (npm install --include=dev).',
+                'and it can only be built here with the dev dependencies (pnpm install --prod=false).',
         );
     }
     await buildUi({ outDir });

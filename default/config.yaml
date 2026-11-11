@@ -331,7 +331,6 @@ requestOverrides: []
 # tokenizer: its token counts are estimated. A failed download is tried again after 60 seconds.
 enableDownloadableTokenizers: true
 # Memory for loaded tokenizers, counted as the size of their files on disk. Past this, the least recently used are unloaded; a single tokenizer bigger than this still loads.
-# The bundled web tokenizers (Claude, Llama 3 legacy routes, Command-R/A, Qwen2, Nemo, DeepSeek) stay loaded and don't count.
 tokenizerMemoryCacheCapacity: '256mb'
 # -- OPENAI CONFIGURATION --
 # A placeholder message to use in strict prompt post-processing mode when the prompt doesn't start with a user message

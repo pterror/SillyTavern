@@ -1,8 +1,13 @@
 {
-    "name": "st-engine-build",
+    "name": "@st/engine",
     "private": true,
     "type": "module",
-    "description": "Build-time tools for the st-engine wasm target.",
+    "description": "The st-engine runtime loaders, and the tools that build its wasm target.",
+    "dependencies": {
+        "@emnapi/core": "2.0.0-alpha.5",
+        "@emnapi/runtime": "2.0.0-alpha.5",
+        "@napi-rs/wasm-runtime": "1.2.4"
+    },
     "devDependencies": {
         "emnapi": "2.0.0-alpha.5"
     }

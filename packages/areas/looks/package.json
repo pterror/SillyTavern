@@ -9,8 +9,8 @@
     },
     "dependencies": {
         "@adobe/css-tools": "^4.4.4",
-        "@st/protocol": "*",
-        "@st/server-ui": "*",
+        "@st/protocol": "workspace:*",
+        "@st/server-ui": "workspace:*",
         "valibot": "1.5.0"
     },
     "devDependencies": {

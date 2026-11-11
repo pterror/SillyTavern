@@ -12,7 +12,7 @@ start_sillytavern() {
     fi
 
     # Execute init script to auto-populate config.yaml with missing values
-    $PREFIX npm run init
+    $PREFIX node src/server-init.js
 
     # Start the server
     exec $PREFIX node server.js --listen "$@"

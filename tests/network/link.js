@@ -36,13 +36,13 @@ function netemArgs(profile) {
 }
 
 /**
- * Needs CAP_NET_ADMIN on the loopback, which `npm run test:network` gets from its own user and network namespace.
+ * Needs CAP_NET_ADMIN on the loopback, which `pnpm run test:network` gets from its own user and network namespace.
  * @param {number} port
  */
 export function shapePort(port) {
     const probe = spawnSync('tc', ['qdisc', 'show', 'dev', 'lo'], { encoding: 'utf8' });
     if (probe.status !== 0) {
-        throw new Error('tc is unavailable; run the network suite with `npm run test:network`');
+        throw new Error('tc is unavailable; run the network suite with `pnpm run test:network`');
     }
     spawnSync('tc', ['qdisc', 'del', 'dev', 'lo', 'root'], { encoding: 'utf8' });
     tc(['qdisc', 'add', 'dev', 'lo', 'root', 'handle', '1:', 'prio', 'bands', '4', 'priomap', ...'1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1'.split(' ')]);

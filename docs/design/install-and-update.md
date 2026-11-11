@@ -1,7 +1,8 @@
 # Installing and updating
 
-Today: Node and git required; `git clone`, then `start.sh` runs `npm install`, rebuilds native modules (a C/C++
-toolchain and Python), builds or fetches the page (`scripts/build-ui.mjs --ensure`), and fetches the engine by
+Today: Node and git required; `git clone`, then `start.sh` runs `pnpm install` (the pnpm on PATH, else the version
+`packageManager` pins, through Node's corepack), which builds the native modules where there's a C/C++ toolchain and
+Python, builds or fetches the page (`scripts/build-ui.mjs --ensure`), and fetches the engine by
 source hash from a GitHub release (`engine/fetch.js`), building it with cargo between releases (Rust). There are
 no data migrations: the only one is importing upstream's data. Updating is `git pull` and the same script.
 

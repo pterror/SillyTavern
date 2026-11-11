@@ -11,6 +11,8 @@
     "start": "electron ."
   },
   "dependencies": {
-    "electron": "^41.1.1"
-  }
+    "electron": "^41.1.1",
+    "yargs": "^17.7.1"
+  },
+  "packageManager": "pnpm@11.21.0"
 }

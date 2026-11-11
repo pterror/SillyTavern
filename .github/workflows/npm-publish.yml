@@ -15,6 +15,7 @@ on:
 
 env:
   PUBLISH_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
   PUBLISH_REF: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
 permissions:
@@ -33,7 +34,8 @@ jobs:
           node-version: 24
       - name: Verify release tag matches package version
         run: test "$(node -p "require('./package.json').version")" = "$PUBLISH_TAG"
-      - run: npm ci --omit=dev --ignore-scripts
+      - run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile --prod --ignore-scripts
 
   publish-npm:
     needs: build
@@ -46,6 +48,6 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
-      - run: npm ci --omit=dev --ignore-scripts
-      # https://github.com/npm/cli/issues/9755
-      - run: npm publish --allow-directory=all
+      - run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile --prod --ignore-scripts
+      - run: pnpm publish --no-git-checks

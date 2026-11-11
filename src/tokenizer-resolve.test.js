@@ -725,7 +725,7 @@ await check('a local tokenizer that fails to load: no ids, estimate counts, drop
     const state = { api: TEXTGEN, type: TEXTGEN_TYPES.GENERIC, url: '', model: 'Qwen2-7B', tokenizerSetting: tokenizers.BEST_MATCH };
     const resolved = { kind: 'local', id: tokenizers.QWEN2, name: 'Qwen2', basis: 'local', localCopy: { id: tokenizers.QWEN2, name: 'Qwen2' } };
     const outcome = createTokenizerOutcome();
-    const encodeLocal = async () => { throw new Error('Failed to load the Web tokenizer for type: qwen2'); };
+    const encodeLocal = async () => { throw new Error('Failed to load the tokenizer for type: qwen2'); };
     assert.equal(await encodeWithTokenizer(resolved, 'hi', { encodeLocal, outcome }), null);
     assert.equal(await countWithTokenizer(resolved, 'Hello world', { encodeLocal, outcome }), estimateTokenCount('Hello world'));
     assert.equal(tokenizerOutcomeBasis(resolved, outcome), 'failed');
@@ -1569,7 +1569,7 @@ await check('tokenizerIdentity: a bundled file gives its sha256, with the reader
     const local = (id, name) => ({ kind: 'local', id, name, basis: 'local', localCopy: null });
     assert.equal(await tokenizerIdentity(local(tokenizers.LLAMA, 'Llama 1/2')), `file:sentencepiece:${fileSha256(bundled('llama.model'))}`);
     assert.equal(await tokenizerIdentity(local(tokenizers.LLAMA3, 'Llama 3')), `file:hf-json:${fileSha256(bundled('llama3.json'))}`);
-    assert.equal(await tokenizerIdentity(local(tokenizers.CLAUDE, 'Claude 1/2')), `file:web-tokenizers:${fileSha256(bundled('claude.json'))}`);
+    assert.equal(await tokenizerIdentity(local(tokenizers.CLAUDE, 'Claude 1/2')), `file:hf-json:${fileSha256(bundled('claude.json'))}`);
     assert.equal(await tokenizerIdentity({ id: tokenizers.GEMMA, name: 'Gemma / Gemini' }), `file:sentencepiece:${fileSha256(bundled('gemma.model'))}`, 'a local copy is a local file too');
 });
 

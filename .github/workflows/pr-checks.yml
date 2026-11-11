@@ -4,6 +4,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+
 permissions:
   contents: read
 
@@ -36,8 +39,10 @@ jobs:
         with:
           node-version: 24
 
-      - name: Run npm install
-        run: npm ci --ignore-scripts
+      - run: corepack enable pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run ESLint
         # Action ESLint
@@ -74,11 +79,10 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install root dependencies
-        run: npm ci --ignore-scripts
+      - run: corepack enable pnpm
 
-      - name: Install test dependencies
-        run: npm ci --ignore-scripts --prefix tests
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run unit tests
-        run: npm run test:unit --prefix tests
+        run: pnpm --dir tests run test:unit

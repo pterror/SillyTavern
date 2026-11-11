@@ -60,7 +60,7 @@ bin="$toplevel/node_modules/.bin"
 for tool in oxlint eslint vp; do
     if [ ! -x "$bin/$tool" ]; then
         echo "pre-commit: blocked -- $bin/$tool does not exist, so the checks can't run." >&2
-        echo "Run 'npm install' in this repo and try again." >&2
+        echo "Run 'pnpm install' in this repo and try again." >&2
         exit 1
     fi
 done
@@ -68,11 +68,11 @@ done
 git_dir="$(git rev-parse --absolute-git-dir)"
 staged="$(staged_tree)"
 
-if [ -f "$toplevel/node_modules/.package-lock.json" ]; then
+if [ -f "$toplevel/node_modules/.pnpm/lock.yaml" ]; then
     environment="$({
         readlink -f "$(command -v node)"
         realpath "$toplevel/node_modules"
-        cat "$toplevel/node_modules/.package-lock.json" "$hook_dir/pre-commit" "$hook_dir"/lib/*
+        cat "$toplevel/node_modules/.pnpm/lock.yaml" "$hook_dir/pre-commit" "$hook_dir"/lib/*
     } | sha256sum | head -c 64)"
 else
     environment="unknown-$$-$RANDOM"
@@ -136,7 +136,7 @@ touches 'public/*.js' 'public/*.mjs' 'public/*.html' 'packages/*.ts' 'packages/*
 # serve-ui builds the page from.
 if git cat-file -e "$staged:packages" 2>/dev/null; then
     touches 'packages/*' vite.config.ts package.json && run_packages=1
-    touches 'packages/*' vite.config.ts package.json package-lock.json public/lib.js public/live-editor-lib.js && run_tests=1
+    touches 'packages/*' vite.config.ts package.json pnpm-lock.yaml pnpm-workspace.yaml 'patches/*' public/lib.js public/live-editor-lib.js && run_tests=1
 fi
 
 if [ $((run_tsc + run_cycles + run_eslint + run_exports + run_routes + run_packages + run_tests)) -eq 0 ]; then
@@ -188,7 +188,7 @@ check_cycles() {
     if [ "$count" -gt "$baseline" ]; then
         echo "pre-commit: blocked -- import/no-cycle count in the staged tree went from $baseline to $count"
         echo ""
-        echo "This commit appears to introduce a new circular import. Circular imports have caused real TDZ crashes here (ReferenceError: Cannot access '<name>' before initialization) -- run 'npm run lint:cycles' to see the cycle paths and either break the cycle or, if this is intentional/a false positive, raise .oxlint-cycle-baseline to $count."
+        echo "This commit appears to introduce a new circular import. Circular imports have caused real TDZ crashes here (ReferenceError: Cannot access '<name>' before initialization) -- run 'pnpm run lint:cycles' to see the cycle paths and either break the cycle or, if this is intentional/a false positive, raise .oxlint-cycle-baseline to $count."
         return 1
     fi
 }

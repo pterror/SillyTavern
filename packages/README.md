@@ -45,5 +45,5 @@ old code. What an area needs that the core doesn't give is a gap in the core, no
 
 ## Checks
 
-`npm run check:packages` (format, lint, strict types) and `npm run test:packages`. The pre-commit hook runs both;
+`pnpm run check:packages` (format, lint, strict types) and `pnpm run test:packages`. The pre-commit hook runs both;
 nothing here is allowed a known failure.

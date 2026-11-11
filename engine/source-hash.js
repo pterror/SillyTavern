@@ -5,7 +5,7 @@ import path from 'node:path';
 export const ENGINE_DIR = import.meta.dirname;
 export const DIST_DIR = path.join(ENGINE_DIR, 'dist');
 
-const INPUT_FILES = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'build.rs', 'targets.json', 'package.json', 'package-lock.json'];
+const INPUT_FILES = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'build.rs', 'targets.json', 'package.json'];
 const INPUT_DIRS = ['src'];
 
 /**

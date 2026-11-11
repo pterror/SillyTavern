@@ -1,5 +1,5 @@
 
-hidden = [".config", "package-lock.json"]
+hidden = [".config", "pnpm-lock.yaml"]
 run = "chmod 755 ./start.sh && ./start.sh"
 entrypoint = "server.js"
 
@@ -16,7 +16,7 @@ PATH = "/home/runner/$REPL_SLUG/.config/npm/node_global/bin:/home/runner/$REPL_S
 npm_config_prefix = "/home/runner/$REPL_SLUG/.config/npm/node_global"
 
 [gitHubImport]
-requiredFiles = [".replit", "replit.nix", ".config", "package.json", "package-lock.json"]
+requiredFiles = [".replit", "replit.nix", ".config", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]
 
 [packager]
 language = "nodejs"

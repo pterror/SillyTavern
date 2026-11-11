@@ -16,6 +16,9 @@ concurrency:
   group: engine-release
   cancel-in-progress: false
 
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+
 permissions:
   contents: read
 
@@ -94,7 +97,8 @@ jobs:
       - working-directory: engine
         run: |
           rustup target add wasm32-wasip1-threads
-          npm ci --ignore-scripts --no-audit --no-fund
+          corepack enable pnpm
+          pnpm install --frozen-lockfile --ignore-scripts --filter @st/engine
       - run: node engine/build.js --wasm
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

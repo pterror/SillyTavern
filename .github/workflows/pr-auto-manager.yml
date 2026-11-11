@@ -54,7 +54,8 @@ jobs:
           xl_label: '🟥 ⬤⬤⬤⬤⬤'
           fail_if_xl: 'false'
           files_to_ignore: |
-            "package-lock.json"
+            "pnpm-lock.yaml"
+            "src/electron/pnpm-lock.yaml"
             "public/lib/*"
 
   label-by-branches:

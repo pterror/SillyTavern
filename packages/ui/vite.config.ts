@@ -1,4 +1,4 @@
-/// <reference types="vite-plus/test/config" />
+/// <reference types="vitest/config" />
 import path from 'node:path';
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';

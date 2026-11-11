@@ -6,6 +6,7 @@ import { lintConfig } from './config.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const FIXTURES = path.join(import.meta.dirname, 'fixtures');
+const VP = path.join(import.meta.dirname, 'node_modules/.bin/vp');
 
 type Diagnostic = { code: string; filename: string; labels: { span: { line: number } }[] };
 
@@ -13,8 +14,7 @@ function lint(): Diagnostic[] {
     const config = path.join(ROOT, `.oxlintrc.rules-test-${process.pid}.json`);
     fs.writeFileSync(config, JSON.stringify(lintConfig));
     try {
-        return JSON.parse(run(['vp', 'lint', '-c', config, '--format', 'json', path.relative(ROOT, FIXTURES)]))
-            .diagnostics;
+        return JSON.parse(run(['lint', '-c', config, '--format', 'json', path.relative(ROOT, FIXTURES)])).diagnostics;
     } finally {
         fs.rmSync(config);
     }
@@ -22,7 +22,7 @@ function lint(): Diagnostic[] {
 
 function run(args: string[]): string {
     try {
-        return execFileSync('npx', args, { cwd: ROOT, encoding: 'utf8' });
+        return execFileSync(VP, args, { cwd: ROOT, encoding: 'utf8' });
     } catch (error) {
         return (error as { stdout: string }).stdout;
     }

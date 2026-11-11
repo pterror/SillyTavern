@@ -17,9 +17,13 @@ ENV NODE_ENV=production
 # Bundle app source and set ownership
 COPY --chown=node:node . ./
 
+# pnpm, the version package.json pins
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable pnpm
+
 RUN \
-  echo "*** Install npm packages ***" && \
-  npm ci --no-audit --no-fund --loglevel=error --no-progress --omit=dev --ignore-scripts && npm cache clean --force
+  echo "*** Install packages ***" && \
+  pnpm install --frozen-lockfile --loglevel=error --prod --store-dir /tmp/pnpm-store && rm -rf /tmp/pnpm-store
 
 # The engine build for this source, so the container never fetches it at start
 RUN \
@@ -38,9 +42,9 @@ RUN \
 # release's, or built here when the image is built before the release is (the dev dependencies only for this step).
 RUN \
   echo "*** The new page ***" && \
-  npm install --include=dev --no-save --no-audit --no-fund --loglevel=error --no-progress --ignore-scripts && \
+  pnpm install --frozen-lockfile --loglevel=error --prod=false --store-dir /tmp/pnpm-store && \
   node scripts/build-ui.mjs --ensure && \
-  npm prune --omit=dev && npm cache clean --force
+  pnpm install --frozen-lockfile --loglevel=error --prod --store-dir /tmp/pnpm-store && rm -rf /tmp/pnpm-store
 
 # Set the entrypoint script and cleanup
 RUN \

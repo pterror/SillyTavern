@@ -17,7 +17,6 @@ globalThis.DATA_ROOT = tempDir;
 
 const { SentencePieceProcessor } = await import('@agnai/sentencepiece-js');
 const { loadTokenizerFile } = await import('./tokenizer-loader.js');
-const { getWebTokenizer } = await import('./endpoints/tokenizers.js');
 
 const model = name => path.join(root, 'src', 'tokenizers', `${name}.model`);
 const LLAMA = model('llama');
@@ -155,14 +154,6 @@ await testCase('a tiktoken config with no split encodes the text whole; one with
     assert.deepEqual((await loadEntry('whole', config(null, bothNamed))).encode('aaa<b>'), [257, 259], 'encoded whole');
     assert.deepEqual((await loadEntry('template', config(null, { '<a>': 258 }, '<|reserved_{id}|>'))).encode('<|reserved_259|>'), [259], 'the template names the rest');
     await assert.rejects(loadEntry('no-reserved-name', config(null, { '<a>': 258 })), /Special id 259 has no name/);
-});
-
-await testCase('web tokenizers are not unloaded', async () => {
-    const claude = await getWebTokenizer('claude').get();
-    assert.ok(claude);
-    await load(YI);
-    await unloadAll();
-    assert.equal(await getWebTokenizer('claude').get(), claude);
 });
 
 await testCase('without the setting, the budget is 256mb', async () => {

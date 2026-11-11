@@ -22,6 +22,8 @@
           pkgs.mkShell rec {
             packages = with pkgs; [
 	      nodejs_22
+	      # On nixpkgs' own Node it would build native addons against that Node's ABI instead of nodejs_22's.
+	      (pnpm.override { nodejs-slim = nodejs_22; })
 	      # Needed for node-gyp to build native addons from source (e.g. the `inotify` package used for
 	      # real IN_Q_OVERFLOW detection on Linux - see local-import-scan.js/character-metadata-db.js's
 	      # watcher-overflow handling) - this project's other native dep (@reflink/reflink)

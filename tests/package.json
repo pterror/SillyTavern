@@ -3,18 +3,38 @@
     "type": "module",
     "license": "AGPL-3.0",
     "scripts": {
-        "test": "npm run test:unit && npm run test:e2e",
+        "test": "pnpm run test:unit && pnpm run test:e2e",
         "test:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.config.json",
         "test:e2e": "playwright test",
         "test:network": "unshare -rn sh -c 'ip link set lo up && exec playwright test -c network.config.js \"$@\"' sh",
         "lint": "eslint \"**/*.js\" ./*.js",
         "lint:fix": "eslint \"**/*.js\" ./*.js --fix"
     },
-    "dependencies": {
+    "devDependencies": {
+        "@codemirror/view": "^6.43.13",
+        "@jest/globals": "^30.4.1",
+        "@lezer/highlight": "^1.2.5",
+        "@lezer/markdown": "^1.7.2",
         "@playwright/test": "1.61.1",
         "@types/jest": "^30.0.0",
+        "archiver": "^7.0.1",
+        "chevrotain": "^11.2.0",
         "eslint": "^8.57.0",
+        "eslint-plugin-jest": "^29.16.6",
+        "eslint-plugin-playwright": "^2.3.0",
+        "express": "^4.21.0",
+        "handlebars": "^4.7.9",
+        "happy-dom": "21.0.1",
         "jest": "^30.4.2",
-        "jest-environment-node": "^30.4.1"
+        "jest-environment-node": "^30.4.1",
+        "marked": "^18.0.14",
+        "moment": "^2.30.1",
+        "multer": "^2.1.1",
+        "node-persist": "^4.0.4",
+        "node-webpmux": "^3.2.1",
+        "omggif": "^1.0.10",
+        "png-chunk-text": "^1.0.0",
+        "png-chunks-extract": "^1.0.0",
+        "upng-js": "^2.1.0"
     }
 }

@@ -1,7 +1,7 @@
-diff --git a/node_modules/inotify-remastered-plus/src/bindings.cc b/node_modules/inotify-remastered-plus/src/bindings.cc
+diff --git a/src/bindings.cc b/src/bindings.cc
 index 7bda2c8..f041f20 100644
---- a/node_modules/inotify-remastered-plus/src/bindings.cc
-+++ b/node_modules/inotify-remastered-plus/src/bindings.cc
+--- a/src/bindings.cc
++++ b/src/bindings.cc
 @@ -16,6 +16,7 @@ namespace NodeInotify {
  		Nan::SetPrototypeMethod(t, "addWatch", Inotify::AddWatch);
  		Nan::SetPrototypeMethod(t, "removeWatch", Inotify::RemoveWatch);
@@ -51,10 +51,10 @@ index 7bda2c8..f041f20 100644
  				inotify->Unref();
  
  				if(event->mask & IN_IGNORED) {
-diff --git a/node_modules/inotify-remastered-plus/src/bindings.h b/node_modules/inotify-remastered-plus/src/bindings.h
+diff --git a/src/bindings.h b/src/bindings.h
 index d89d41f..23b0bd0 100644
---- a/node_modules/inotify-remastered-plus/src/bindings.h
-+++ b/node_modules/inotify-remastered-plus/src/bindings.h
+--- a/src/bindings.h
++++ b/src/bindings.h
 @@ -17,6 +17,7 @@ namespace NodeInotify {
  			static NAN_METHOD(AddWatch);
  			static NAN_METHOD(RemoveWatch);

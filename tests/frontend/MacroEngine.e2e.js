@@ -3380,7 +3380,7 @@ async function evaluateWithEngineAndCaptureMacroLogs(page, input) {
     /** @type {boolean} */
     let hasMacroErrors = false;
 
-    /** @param {import('playwright').ConsoleMessage} msg */
+    /** @param {import('@playwright/test').ConsoleMessage} msg */
     const handler = (msg) => {
         const text = msg.text();
         if (text.includes('[Macro] Warning:')) {

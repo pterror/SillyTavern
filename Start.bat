@@ -1,37 +1,24 @@
 @echo off
 pushd %~dp0
+rem A node_modules without .modules.yaml was made by npm; pnpm would install around the packages npm left there.
+for %%m in (node_modules engine\node_modules tests\node_modules) do (
+    if exist "%%m\" if not exist "%%m\.modules.yaml" rmdir /s /q "%%m"
+)
 set NODE_ENV=production
 rem typescript/eslint in node_modules means a developer installed the dev dependencies on purpose - don't prune them.
-rem --include=dev overrides the dev omission NODE_ENV=production implies, so the server still runs as production.
-set NPM_DEV_FLAG=--omit=dev
-if exist "node_modules\typescript\" set NPM_DEV_FLAG=--include=dev
-if exist "node_modules\eslint\" set NPM_DEV_FLAG=--include=dev
-call npm install --no-save --no-audit --no-fund --loglevel=error --no-progress %NPM_DEV_FLAG% --ignore-scripts
-set NPM_DEV_FLAG=
-
-rem --ignore-scripts above skips native builds. inotify-remastered-plus is `os: linux`-gated in its own
-rem package.json, so on a real Windows launch this probe always exits 0 immediately and the block below never
-rem actually does anything - kept here anyway for symmetry with start.sh and any non-native-Windows environment
-rem this same batch file might run under.
-node src\probe-inotify-remastered-plus.js >nul 2>&1
-if errorlevel 1 (
-    echo inotify-remastered-plus native binding is missing, unpatched, or broken, attempting a rebuild...
-    rem patch-package without a package name applies patches/; with one it generates a patch instead.
-    call npx patch-package >nul 2>&1
-    call npm rebuild inotify-remastered-plus --ignore-scripts=false
-    if errorlevel 1 (
-        echo inotify-remastered-plus rebuild failed - files added to watched import directories are imported at the next start only. This usually means no C/C++ compiler toolchain and/or Python 3 is installed.
-    ) else (
-        echo inotify-remastered-plus rebuild finished.
-    )
-)
+rem --prod=false overrides the dev omission NODE_ENV=production implies, so the server still runs as production.
+set PNPM_PROD_FLAG=--prod
+if exist "node_modules\typescript\" set PNPM_PROD_FLAG=--prod=false
+if exist "node_modules\eslint\" set PNPM_PROD_FLAG=--prod=false
+call scripts\pnpm.cmd install --frozen-lockfile --loglevel=error %PNPM_PROD_FLAG%
+set PNPM_PROD_FLAG=
 
 rem The new page's build for this checkout (packages/serve-ui): the one there, else its release's; between releases
 rem it's built here, which needs the dev dependencies (installed only then).
 node scripts\build-ui.mjs --ensure
 if errorlevel 1 (
     echo Installing the tools to build the new page...
-    call npm install --no-save --no-audit --no-fund --loglevel=error --no-progress --include=dev --ignore-scripts
+    call scripts\pnpm.cmd install --frozen-lockfile --loglevel=error --prod=false
     node scripts\build-ui.mjs --ensure
 )
 

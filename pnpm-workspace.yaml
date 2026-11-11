@@ -1,0 +1,20 @@
+packages:
+  - packages/*
+  - packages/areas/*
+  - packages/lint/fixtures/*
+  - engine
+  - tests
+
+# Minutes: a version installs once it has been published for a week.
+minimumReleaseAge: 10080
+
+# A dependency's build script runs only when it is listed here as true. inotify-remastered-plus builds with a C/C++
+# toolchain and Python; it's optional, so where they're missing its build fails without failing the install.
+allowBuilds:
+  fsevents: false
+  inotify-remastered-plus: true
+  unrs-resolver: false
+
+patchedDependencies:
+  inotify-remastered-plus@2.5.0: patches/inotify-remastered-plus@2.5.0.patch
+  png-chunks-extract@1.0.0: patches/png-chunks-extract@1.0.0.patch

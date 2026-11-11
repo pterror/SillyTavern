@@ -78,7 +78,7 @@ export async function ensureEngine({ platform = currentPlatform(), releaseBase =
     }
     const noRelease = `The engine for source hash ${key} has no release yet (engine-${key})`;
     if (!platform) {
-        throw new EngineFetchError(`${noRelease}, and this machine has no native target to build here. Run \`node engine/build.js --wasm\` (after \`npm ci\` in engine/), or retry once CI has finished building it.`);
+        throw new EngineFetchError(`${noRelease}, and this machine has no native target to build here. Run \`node engine/build.js --wasm\` (after a \`pnpm install\` with the dev dependencies), or retry once CI has finished building it.`);
     }
     console.log(`${noRelease}; building it here with cargo. This can take a few minutes.`);
     let file;

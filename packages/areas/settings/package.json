@@ -9,9 +9,9 @@
         "./page": "./page/index.ts"
     },
     "dependencies": {
-        "@st/page": "*",
-        "@st/protocol": "*",
-        "@st/server-ui": "*",
+        "@st/page": "workspace:*",
+        "@st/protocol": "workspace:*",
+        "@st/server-ui": "workspace:*",
         "solid-js": "1.9.17",
         "valibot": "1.5.0"
     },
