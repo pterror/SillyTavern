@@ -2513,9 +2513,9 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
             Box::new(move |s| s.chat_read(|v| cr::draft(v, owner)).map(JsTree))
         }
         "openingChoice" => {
-            let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
+            let (ses, tree, card) = (req_integer(a, "session")?, req_integer(a, "tree")?, opt_integer(a, "card")?);
             Box::new(move |s| {
-                s.chat_read(|v| cr::opening_choice(v, ses, tree))
+                s.chat_read(|v| cr::opening_choice(v, ses, tree, card))
                     .map(JsTree)
             })
         }

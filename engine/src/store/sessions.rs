@@ -1256,8 +1256,23 @@ fn convo_names_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
     Ok(())
 }
 
-pub fn opening_choice(view: &View, s: u64, tree: u64) -> Result<Option<u64>, StoreError> {
-    Ok(get_vals::<3>(view, &key::ids(OPENING_CHOICE, s, tree))?.map(|[i, _, _]| i))
+/// A session's choice of the opening a tree shows: the card greeting of a character's tree (`card` none), or of one
+/// member (`card`) of a group's tree.
+fn opening_choice_key(s: u64, tree: u64, card: Option<u64>) -> Vec<u8> {
+    let mut k = key::ids(OPENING_CHOICE, s, tree);
+    if let Some(c) = card {
+        crate::keyspace::val::put_u64(&mut k, c);
+    }
+    k
+}
+
+pub fn opening_choice(
+    view: &View,
+    s: u64,
+    tree: u64,
+    card: Option<u64>,
+) -> Result<Option<u64>, StoreError> {
+    Ok(get_vals::<3>(view, &opening_choice_key(s, tree, card))?.map(|[i, _, _]| i))
 }
 
 pub fn opening_chosen(
@@ -1265,31 +1280,37 @@ pub fn opening_chosen(
     out: &mut Out,
     s: u64,
     tree: u64,
+    card: Option<u64>,
     index: u64,
     at: Loc,
 ) -> Result<(), StoreError> {
-    clear_opening_choice(view, out, s, tree)?;
-    out.put(
-        key::ids(OPENING_CHOICE, s, tree),
-        varints(&[index, at.pos, at.len]),
-    );
+    let k = opening_choice_key(s, tree, card);
+    if let Some([_, rp, rl]) = get_vals::<3>(view, &k)? {
+        dead(out, Loc { pos: rp, len: rl });
+    }
+    out.put(k, varints(&[index, at.pos, at.len]));
     activity(view, out, s, tree, at.pos)
 }
 
+/// Every opening choice the session made in the tree: the tree's own and each member's
 fn clear_opening_choice(view: &View, out: &mut Out, s: u64, tree: u64) -> Result<(), StoreError> {
-    let k = key::ids(OPENING_CHOICE, s, tree);
-    if let Some([_, rp, rl]) = get_vals::<3>(view, &k)? {
+    let p = key::ids(OPENING_CHOICE, s, tree);
+    for (k, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        let [_, rp, rl] = parse_varints::<3>(&v)?;
         dead(out, Loc { pos: rp, len: rl });
         out.del(k);
     }
     Ok(())
 }
 
-pub fn opening_choice_live(view: &View, s: u64, tree: u64, pos: u64) -> Result<bool, StoreError> {
-    Ok(
-        get_vals::<3>(view, &key::ids(OPENING_CHOICE, s, tree))?
-            .is_some_and(|[_, rp, _]| rp == pos),
-    )
+pub fn opening_choice_live(
+    view: &View,
+    s: u64,
+    tree: u64,
+    card: Option<u64>,
+    pos: u64,
+) -> Result<bool, StoreError> {
+    Ok(get_vals::<3>(view, &opening_choice_key(s, tree, card))?.is_some_and(|[_, rp, _]| rp == pos))
 }
 
 pub fn opening_choice_repoint(
@@ -1297,10 +1318,11 @@ pub fn opening_choice_repoint(
     out: &mut Out,
     s: u64,
     tree: u64,
+    card: Option<u64>,
     from: u64,
     to: Loc,
 ) -> Result<(), StoreError> {
-    let k = key::ids(OPENING_CHOICE, s, tree);
+    let k = opening_choice_key(s, tree, card);
     if let Some([i, rp, _]) = get_vals::<3>(view, &k)?
         && rp == from
     {

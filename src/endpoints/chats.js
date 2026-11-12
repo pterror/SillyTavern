@@ -763,24 +763,6 @@ async function shapeSent(request, chat, sources) {
 }
 
 /**
- * A fresh group chat's openings: one greeting of each member that has any, picked at random each time it opens
- * @param {import('../chat-request.js').ChatContext} chat
- * @param {unknown[]} members the members' avatars, in the group's order
- * @returns {Promise<{ avatar: string, greeting_id: number, text: string }[]>}
- */
-async function pickGroupOpenings(chat, members) {
-    const picked = [];
-    for (const avatar of members) {
-        if (typeof avatar !== 'string') continue;
-        const { ids, greetings } = await cardGreetingsOf(chat.store, avatar);
-        if (ids.length === 0) continue;
-        const k = Math.floor(Math.random() * ids.length);
-        picked.push({ avatar, greeting_id: ids[k], text: String(greetings[k].mes) });
-    }
-    return picked;
-}
-
-/**
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {{ avatar_url?: unknown, group_id?: unknown, chat?: unknown, make_current?: unknown, fresh?: unknown, send_keys?: unknown, with_group?: unknown, with_character?: unknown, parts?: unknown }} body
@@ -832,7 +814,9 @@ async function openChatAnswer(request, response, body) {
             status: 200,
             answer: {
                 ...common,
-                group_openings: messages.length === 0 && !metadata.tainted && Array.isArray(members) ? await pickGroupOpenings(chat, members) : [],
+                group_openings: messages.length === 0 && !metadata.tainted
+                    ? (await chats.memberOpenings({ tree: chat.tree, actor: chat.session.reader() })).map(o => ({ avatar: o.avatar, greeting_id: o.greetingId, text: o.text }))
+                    : [],
                 openings: null,
                 card_openings: null,
                 chats: (await chatListOf(chat)).map(r => r.file_id),

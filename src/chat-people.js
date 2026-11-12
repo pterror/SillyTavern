@@ -63,6 +63,22 @@ export function libraryPeople(lib) {
             if (!e || e.type !== TYPE.character) return [];
             return greetingModelOf(e).greetings.filter(g => g.text !== '');
         },
+        /** @param {bigint} card */
+        async greetingModel(card) {
+            const [e] = await lib.entities([card]);
+            if (!e || e.type !== TYPE.character) return null;
+            const model = greetingModelOf(e);
+            return { greetings: model.greetings.filter(g => g.text !== ''), defaultId: model.defaultId, defaultEpoch: model.defaultEpoch };
+        },
+        /** @param {bigint} tree */
+        async members(tree) {
+            const [key] = await lib.store.libraryKeys([tree]);
+            if (!key || key.type !== TYPE.group) return [];
+            const [group] = await lib.groups([key.key]);
+            const avatars = (Array.isArray(group?.members) ? group.members : []).filter(a => typeof a === 'string');
+            const ids = await lib.ids(TYPE.character, avatars);
+            return avatars.flatMap((avatar, i) => (ids[i] === null || ids[i] === undefined ? [] : [{ id: ids[i], avatar }]));
+        },
         /** @type {import('./chat-engine.js').Books} */
         books: {
             lane: (keys, fn) => lib.books.lane(keys, fn),

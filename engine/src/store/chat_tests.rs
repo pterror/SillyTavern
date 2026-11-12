@@ -665,7 +665,7 @@ impl Model {
                 }
                 for t in 1..=3 {
                     assert_eq!(
-                        sessions::opening_choice(v, s, t)?,
+                        sessions::opening_choice(v, s, t, None)?,
                         ses.openings.get(&t).copied(),
                         "opening choice of {s} in {t}"
                     );
@@ -2534,15 +2534,34 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
     .unwrap();
     model.check(&s);
     assert_eq!(
-        s.derived(|v| sessions::opening_choice(v, 1, 2)).unwrap(),
+        s.derived(|v| sessions::opening_choice(v, 1, 2, None)).unwrap(),
         Some(3)
+    );
+    s.commit_wait(vec![rec(
+        "memberOpeningChoice",
+        vec![Value::Id(1), Value::Id(1), Value::Id(2), Value::Id(9), Value::UInt(4)],
+    )])
+    .unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::opening_choice(v, 1, 2, Some(9))).unwrap(),
+        Some(4)
+    );
+    assert_eq!(
+        s.derived(|v| sessions::opening_choice(v, 1, 2, None)).unwrap(),
+        Some(3),
+        "a member's choice is beside the tree's own"
     );
     let recs = vec![append(&mut model, 2, None, 5, "greeting", None, Some(1), 1)];
     s.commit_wait(recs).unwrap();
     model.check(&s);
     assert_eq!(
-        s.derived(|v| sessions::opening_choice(v, 1, 2)).unwrap(),
+        s.derived(|v| sessions::opening_choice(v, 1, 2, None)).unwrap(),
         None
+    );
+    assert_eq!(
+        s.derived(|v| sessions::opening_choice(v, 1, 2, Some(9))).unwrap(),
+        None,
+        "sending under the openings ends every choice of them"
     );
     drop(s);
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();

@@ -282,6 +282,9 @@ function alternativeEntry(nodeId, o, itemized) {
  * @property {(avatars: string[]) => Promise<Map<string, Speaker>>} byAvatar
  * @property {(ids: bigint[]) => Promise<Map<bigint, { group: boolean, name: string, created: number }>>} owners
  * @property {(tree: bigint) => Promise<{ id: number, text: string }[]>} [greetings] the card greetings of a character's tree
+ * @property {(card: bigint) => Promise<{ greetings: { id: number, text: string }[], defaultId: number | null, defaultEpoch: number } | null>} [greetingModel]
+ *   a card's greetings with text, its default and the default's epoch
+ * @property {(tree: bigint) => Promise<{ id: bigint, avatar: string }[]>} [members] a group tree's member cards, in order
  * @property {Books} [books]
  */
 
@@ -1161,6 +1164,47 @@ export class ChatEngine {
             if (already.length) answer.already_stored = already.map(id => external[ids.indexOf(id)]);
             return answer;
         }));
+    }
+
+    /**
+     * A group chat's openings at its root: of each member with a greeting, the one the session chose when the chat
+     * started, or the member's default when it chose none or its choice is gone
+     * @param {{ tree: bigint, actor: Actor }} p
+     * @returns {Promise<{ card: bigint, avatar: string, greetingId: number, text: string }[]>}
+     */
+    async memberOpenings({ tree, actor }) {
+        if (!this.people.members || !this.people.greetingModel) return [];
+        const { session } = await this.knownActorIds(actor);
+        const openings = [];
+        for (const member of await this.people.members(tree)) {
+            const model = await this.people.greetingModel(member.id);
+            if (!model || model.greetings.length === 0) continue;
+            const stored = session === null ? null : await this.store.chatRead('openingChoice', { session, tree, card: member.id });
+            const value = stored === null || stored === undefined ? 0 : Number(stored);
+            const chosen = value === 0 || Math.floor(value / EPOCH) !== model.defaultEpoch ? null : (value % EPOCH) - 1;
+            const greeting = model.greetings.find(g => g.id === chosen) ?? model.greetings.find(g => g.id === model.defaultId) ?? model.greetings[0];
+            openings.push({ card: member.id, avatar: member.avatar, greetingId: greeting.id, text: greeting.text });
+        }
+        return openings;
+    }
+
+    /**
+     * A choice of one greeting of each member, at random, for a group chat starting
+     * @param {bigint} tree
+     * @param {bigint} session
+     * @param {bigint} user
+     * @returns {Promise<object[]>}
+     */
+    async memberOpeningChoices(tree, session, user) {
+        if (!this.people.members || !this.people.greetingModel) return [];
+        const records = [];
+        for (const member of await this.people.members(tree)) {
+            const model = await this.people.greetingModel(member.id);
+            if (!model || model.greetings.length === 0) continue;
+            const greeting = model.greetings[Math.floor(Math.random() * model.greetings.length)];
+            records.push({ kind: 'memberOpeningChoice', session, user, tree, card: member.id, index: greetingChoice(greeting.id, model.defaultEpoch) });
+        }
+        return records;
     }
 
     /**
@@ -2056,7 +2100,7 @@ export class ChatEngine {
                 if (here?.at !== target) records.push({ kind: 'pointerMove', session, user, target });
             } else {
                 if (here === null || here.at !== null) records.push({ kind: 'pointerRoot', session, user, tree, time: this.now() });
-                if (!group) records.push({ kind: 'openingChoice', session, user, tree, index: 0 });
+                records.push(...(group ? await this.memberOpeningChoices(tree, session, user) : [{ kind: 'openingChoice', session, user, tree, index: 0 }]));
             }
             if (current !== null) records.push({ kind: 'currentChat', session, user, tree });
             const name = await freeName(chatNameAt(await this.owner(tree), this.now()), n => n === kept || this.nameTaken(tree, n, { session }));

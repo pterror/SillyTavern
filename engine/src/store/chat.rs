@@ -1604,11 +1604,11 @@ impl Deriver for OpeningChoice {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (s, u, tree, index) = (id(rec, 0), id(rec, 1), id(rec, 2), id(rec, 3));
         sessions::check_actor(view, Some(s), Some(u))?;
-        sessions::opening_chosen(view, out, s, tree, index, at)
+        sessions::opening_chosen(view, out, s, tree, None, index, at)
     }
 
     fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
-        sessions::opening_choice_live(view, id(rec, 0), id(rec, 2), pos)
+        sessions::opening_choice_live(view, id(rec, 0), id(rec, 2), None, pos)
     }
 
     fn repoint(
@@ -1619,7 +1619,33 @@ impl Deriver for OpeningChoice {
         view: &View,
         out: &mut Out,
     ) -> Result<(), StoreError> {
-        sessions::opening_choice_repoint(view, out, id(rec, 0), id(rec, 2), from, to)
+        sessions::opening_choice_repoint(view, out, id(rec, 0), id(rec, 2), None, from, to)
+    }
+}
+
+/// A group tree's opening from one member: which of the member's greetings a session shows, as `openingChoice`
+pub struct MemberOpeningChoice;
+
+impl Deriver for MemberOpeningChoice {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (s, u, tree, card, index) = (id(rec, 0), id(rec, 1), id(rec, 2), id(rec, 3), id(rec, 4));
+        sessions::check_actor(view, Some(s), Some(u))?;
+        sessions::opening_chosen(view, out, s, tree, Some(card), index, at)
+    }
+
+    fn is_live(&self, rec: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {
+        sessions::opening_choice_live(view, id(rec, 0), id(rec, 2), Some(id(rec, 3)), pos)
+    }
+
+    fn repoint(
+        &self,
+        rec: &Record,
+        from: u64,
+        to: Loc,
+        view: &View,
+        out: &mut Out,
+    ) -> Result<(), StoreError> {
+        sessions::opening_choice_repoint(view, out, id(rec, 0), id(rec, 2), Some(id(rec, 3)), from, to)
     }
 }
 
@@ -1735,6 +1761,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "conversationName" => &ConversationName,
         "conversationActive" => &ConversationActive,
         "openingChoice" => &OpeningChoice,
+        "memberOpeningChoice" => &MemberOpeningChoice,
         "forkSelection" => &ForkSelection,
         "messageAppend" => &MessageAppend,
         "messageDelete" => &MessageDelete,

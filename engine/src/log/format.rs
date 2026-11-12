@@ -378,6 +378,18 @@ pub static KINDS: &[Kind] = &[
         internal: false,
     },
     Kind {
+        name: "memberOpeningChoice",
+        base: 1832,
+        slots: &[
+            req("session", Ty::Id(Space::Position)),
+            req("user", Ty::Id(Space::User)),
+            req("tree", Ty::Id(Space::Entity)),
+            req("card", Ty::Id(Space::Entity)),
+            req("index", Ty::UInt),
+        ],
+        internal: false,
+    },
+    Kind {
         name: "draftValue",
         base: 1800,
         slots: &[

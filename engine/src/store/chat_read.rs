@@ -416,8 +416,8 @@ pub fn current_chats(
     ))
 }
 
-pub fn opening_choice(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
-    Ok(sessions::opening_choice(view, s, tree)?.map_or(Js::Null, |i| Js::Num(i as f64)))
+pub fn opening_choice(view: &View, s: u64, tree: u64, card: Option<u64>) -> Result<Js, StoreError> {
+    Ok(sessions::opening_choice(view, s, tree, card)?.map_or(Js::Null, |i| Js::Num(i as f64)))
 }
 
 fn order_page(list: Vec<(u64, u64)>) -> Js {
