@@ -1188,7 +1188,7 @@ export class ChatEngine {
     async rootPlacement(tree, id, content, greetings, user, session, moving) {
         const base = { kind: 'messagePlace', message: id, user, ...(session === null ? {} : { session }) };
         const greetingId = content?.extra?.greeting_id;
-        if (!Number.isInteger(greetingId)) return moving ? [{ ...base, first: false, group: 0 }] : [];
+        if (!Number.isInteger(greetingId) || (await this.owner(tree)).group) return moving ? [{ ...base, first: false, group: 0 }] : [];
         const group = greetingId + 1;
         const text = greetings.find(g => g.id === greetingId)?.text;
         const holds = (/** @type {Record<string, any> | undefined} */ c) => text !== undefined && c?.extra?.greeting_id === greetingId && c?.extra?.greeting_hash === hashGreetingText(text);
@@ -1543,7 +1543,7 @@ export class ChatEngine {
     groupOpenings({ tree, actor }) {
         return this.serialized(tree, async () => {
             const ids = await this.listed(tree, null, 0);
-            if (!ids.length) return 0;
+            if (!ids.length || (await this.owner(tree)).group) return 0;
             const stored = await this.stored(ids);
             const decoded = await this.decoded(ids.map(id => stored.get(id)));
             const greetings = this.people.greetings ? await this.people.greetings(tree) : [];

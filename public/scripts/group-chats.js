@@ -479,16 +479,14 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
     if (group && Array.isArray(group.members) && freshChat) {
         chat.splice(0, chat.length);
         chatElement.find('.mes').remove();
-        for (let member of group.members) {
-            const character = findGroupMemberCharacter(member);
+        for (const opening of answer.group_openings ?? []) {
+            const character = findGroupMemberCharacter(opening.avatar);
             if (!character) {
                 continue;
             }
 
-            const mes = await getFirstCharacterMessage(character);
-
-            // No first message
-            if (!(mes?.mes)) {
+            const mes = groupOpening(character, opening);
+            if (!mes.mes) {
                 continue;
             }
 
@@ -704,35 +702,20 @@ export function getGroupCharacterCardsLazy(groupId, characterAvatar) {
 }
 
 /**
- * Gets the first message for a character.
- * @param {Character} character Character object
- * @returns {Promise<ChatMessage>} First message object
+ * A member's greeting, shown as an opening of a fresh group chat
+ * @param {Character} character
+ * @param {{ greeting_id: number, text: string }} opening
+ * @returns {ChatMessage}
  */
-async function getFirstCharacterMessage(character) {
-    let messageText = character.first_mes;
-
-    // if there are alternate greetings, pick one at random
-    if (Array.isArray(character.data?.alternate_greetings)) {
-        const messageTexts = [character.first_mes, ...character.data.alternate_greetings].filter(x => x);
-        messageText = messageTexts[Math.floor(Math.random() * messageTexts.length)];
-    }
-
-    // Allow extensions to change the first message
-    const eventArgs = { input: messageText, output: '', character: character };
-    if (eventArgs.output) {
-        messageText = eventArgs.output;
-    }
-
+function groupOpening(character, opening) {
     const mes = {};
     mes.is_user = false;
     mes.is_system = false;
     mes.name = character.name;
     mes.send_date = getMessageTimeStamp();
     mes.original_avatar = character.avatar;
-    mes.extra = { 'gen_id': Date.now() * Math.random() * 1000000 };
-    mes.mes = messageText
-        ? substituteParams(messageText.trim(), { name2Override: character.name })
-        : '';
+    mes.extra = { 'gen_id': Date.now() * Math.random() * 1000000, greeting_id: opening.greeting_id };
+    mes.mes = substituteParams(opening.text.trim(), { name2Override: character.name });
     Object.assign(mes, characterAvatar(character));
     mes.node_id = provisionalNodeId(mes.name, mes.mes);
     return mes;

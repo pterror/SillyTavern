@@ -277,3 +277,26 @@ test('a chat opened by a tab answers the looks of its character, which a look ed
     const untabbed = await open({ avatar_url: 'Looked.png' });
     assert.deepEqual(untabbed.body.looks, { styles: {}, things: {} });
 });
+
+test('a fresh group chat opens on one greeting of each member that has any, by its id', async () => {
+    await writeCharacter('Mo.png', 'Mo', 'Mo here.', { alternateGreetings: ['Mo again.'] });
+    await writeCharacter('Quiet.png', 'Quiet', '');
+    await user.store.lib.writeGroup({ id: 'g-fresh', name: 'Fresh band', members: ['Mo.png', 'Quiet.png'] });
+    const opened = await open({ group_id: 'g-fresh' }, newSessionKey());
+    const [pick, ...rest] = opened.body.group_openings;
+    assert.deepEqual(rest, [], 'a member with no greeting opens nothing');
+    assert.equal(pick.avatar, 'Mo.png');
+    const { greetings } = await user.store.lib.greetingModel('Mo.png');
+    assert.equal(greetings.find(g => g.id === pick.greeting_id)?.text, pick.text);
+});
+
+test('a group\'s opening keeps its member\'s greeting id out of the group\'s greeting groups', async () => {
+    await writeCharacter('Ned.png', 'Ned', 'Ned here.', { alternateGreetings: ['Ned again.'] });
+    await user.store.lib.writeGroup({ id: 'g-stored', name: 'Stored band', members: ['Ned.png'] });
+    const tree = await treeOf(user.store, { group: 'g-stored' });
+    await user.store.chats.appendMessages({
+        tree, treeSpeaker: null, after: null, actor: { user: 'u', session: newSessionKey() },
+        contents: [{ name: 'Ned', is_user: false, mes: 'Ned again.', send_date: 1, original_avatar: 'Ned.png', extra: { greeting_id: 1 } }],
+    });
+    assert.deepEqual((await user.store.chats.store.chatRead('rootGroups', { tree })).map(g => g.group), [0]);
+});

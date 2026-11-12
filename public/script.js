@@ -5565,6 +5565,8 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
  * @property {ChatMessage[]} messages
  * @property {import('./scripts/chat-store.js').OpeningsResponse|null} openings
  * @property {import('./scripts/chat-store.js').OpeningsResponse|null} card_openings
+ * @property {{ avatar: string, greeting_id: number, text: string }[]} [group_openings] a fresh group chat's openings: a
+ *   greeting of each member, by its id
  * @property {string[]} [chats]
  * @property {number} [date_last_chat]
  * @property {Group} [group] The whole group, when the open asked `with_group`.
