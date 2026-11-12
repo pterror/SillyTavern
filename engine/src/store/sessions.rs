@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::StoreError;
-use super::chat::{self, APPEND_OWNER, children_prefix, message_loc, parent_of, require_message};
+use super::chat::{self, APPEND_OWNER, message_loc, parent_of, require_message};
+use super::order::{self, List};
 use super::derive::{Layer, Loc, Out, View};
 use super::kinds::{bytes, dead, id, key, loc_bytes, parse_loc, parse_varints, varints};
 use super::library::counter;
@@ -172,10 +173,10 @@ impl Fork {
         }
     }
 
-    fn prefix(self, tree: u64) -> Vec<u8> {
+    fn list(self) -> List {
         match self {
-            Fork::Message(m) => children_prefix(Some(m), tree),
-            Fork::Root(t) => children_prefix(None, t),
+            Fork::Message(m) => List::children(m),
+            Fork::Root(t) => List::roots(t),
         }
     }
 
@@ -269,7 +270,6 @@ pub fn followed(
     s: Option<u64>,
     u: Option<u64>,
     f: Fork,
-    tree: u64,
 ) -> Result<Option<u64>, StoreError> {
     let tiers = [
         s.map(|s| fork_key(FORK_SESSION, Some(s), f)),
@@ -283,13 +283,15 @@ pub fn followed(
             return Ok(Some(reply));
         }
     }
-    let p = f.prefix(tree);
-    match view
-        .scan_vals_rev(&p, &crate::store::kinds::key::prefix_end(&p), 1)?
-        .first()
-    {
-        Some((k, _)) => Ok(Some(chat::child_of_key(k, p.len())?)),
-        None => Ok(None),
+    order::last(view, f.list())
+}
+
+/// The last opening of a tree other than `m`.
+pub fn newest_root_but(view: &View, tree: u64, m: u64) -> Result<Option<u64>, StoreError> {
+    let roots = List::roots(tree);
+    match order::last(view, roots)? {
+        Some(last) if last == m => order::prev(view, roots, m),
+        found => Ok(found),
     }
 }
 
@@ -305,7 +307,7 @@ pub fn path_below(
         Some(m) => Fork::Message(m),
         None => Fork::Root(tree),
     };
-    while let Some(next) = followed(view, s, u, f, tree)? {
+    while let Some(next) = followed(view, s, u, f)? {
         out.push(next);
         f = Fork::Message(next);
     }
@@ -1386,15 +1388,7 @@ pub fn message_gone(
 ) -> Result<(), StoreError> {
     let to = match parent {
         Some(p) => Some(p),
-        None => {
-            let p = children_prefix(None, tree);
-            view.scan_vals_rev(&p, &key::prefix_end(&p), 2)?
-                .iter()
-                .map(|(k, _)| chat::child_of_key(k, p.len()))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .find(|o| *o != m)
-        }
+        None => newest_root_but(view, tree, m)?,
     };
     let sp = key::id(SESSIONS_AT, m);
     for (k, _) in view.scan(&sp, &key::prefix_end(&sp), usize::MAX)? {
@@ -1728,15 +1722,8 @@ fn after_subtree(view: &View, m: u64, root: u64) -> Result<Option<u64>, StoreErr
         let (_, r) = require_message(view, x)?;
         let tree = id(&r, APPEND_OWNER);
         let p = parent_of(view, x, &r)?;
-        let prefix = children_prefix(p, tree);
-        let mut start = chat::child_key(p, tree, chat_time(&r), x);
-        start.push(0);
-        if let Some((k, _)) = view
-            .scan(&start, &key::prefix_end(&prefix), 1)?
-            .into_iter()
-            .next()
-        {
-            return Ok(Some(chat::child_of_key(&k, prefix.len())?));
+        if let Some(n) = order::next(view, List::of(p, tree), x)? {
+            return Ok(Some(n));
         }
         match p {
             Some(p) => x = p,
@@ -1745,17 +1732,9 @@ fn after_subtree(view: &View, m: u64, root: u64) -> Result<Option<u64>, StoreErr
     }
 }
 
-fn chat_time(r: &Record) -> i64 {
-    match r.values[chat::APPEND_TIME] {
-        crate::log::format::Value::Time(t) => t,
-        _ => unreachable!("checked by Record::new"),
-    }
-}
-
-fn walk_next(view: &View, m: u64, root: u64, tree: u64) -> Result<Option<u64>, StoreError> {
-    let p = children_prefix(Some(m), tree);
-    if let Some((k, _)) = view.scan(&p, &key::prefix_end(&p), 1)?.into_iter().next() {
-        return Ok(Some(chat::child_of_key(&k, p.len())?));
+fn walk_next(view: &View, m: u64, root: u64) -> Result<Option<u64>, StoreError> {
+    if let Some(c) = order::first(view, List::children(m))? {
+        return Ok(Some(c));
     }
     after_subtree(view, m, root)
 }
@@ -1796,7 +1775,7 @@ pub fn depth_step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
             if lv.get(&key::id(DEPTH, n))?.as_deref() != Some(entry.as_slice()) {
                 o.put(key::id(DEPTH, n), entry);
             }
-            next = walk_next(&lv, n, root, tree)?;
+            next = walk_next(&lv, n, root)?;
         }
         drop(lv);
         o.apply(&mut local);

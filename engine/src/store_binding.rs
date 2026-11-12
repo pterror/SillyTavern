@@ -1478,6 +1478,19 @@ impl Store {
         Ok(promise)
     }
 
+    #[napi(ts_args_type = "batch: number", ts_return_type = "Promise<boolean>")]
+    pub fn message_order_conversion_step<'env>(&self, env: &'env Env, batch: u32) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.message_order_conversion_step(
+            batch.max(1) as usize,
+            Box::new(move |r| match r {
+                Ok(more) => deferred.resolve(move |_| Ok(more)),
+                Err(e) => deferred.reject(store_error(e)),
+            }),
+        );
+        Ok(promise)
+    }
+
     #[napi(
         ts_args_type = "after: Buffer | null, batch: number",
         ts_return_type = "Promise<Buffer | null>"
@@ -2369,16 +2382,21 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
             Box::new(move |s| s.chat_read(|v| cr::messages(v, &ids)).map(JsTree))
         }
         "children" => {
-            let (parent, tree, after, limit) = (
+            let (parent, tree, after, from, limit) = (
                 opt_integer(a, "parent")?,
                 req_integer(a, "tree")?,
                 opt_integer(a, "after")?,
+                opt_integer(a, "from")?,
                 limit(a)?,
             );
             Box::new(move |s| {
-                s.chat_read(|v| cr::children(v, parent, tree, after, limit))
+                s.chat_read(|v| cr::children(v, parent, tree, after, from, limit))
                     .map(JsTree)
             })
+        }
+        "places" => {
+            let ids = integers(a, "ids")?;
+            Box::new(move |s| s.chat_read(|v| cr::places(v, &ids)).map(JsTree))
         }
         "path" | "followed" | "landing" | "branchEnd" => {
             let (tree, at, ses, user) = (

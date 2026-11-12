@@ -94,29 +94,32 @@ always see the list as it is.
 
 ## Chat messages
 
-- **Every message is in one list:** its parent's children, or its tree's openings (below). The list replaces `CHILD`
-  and `ROOT` (`chat.rs`). There is one order and no second index beside it.
-  - The depth walk's first child and next sibling are `LIST_HEAD` and the next link.
-  - `MessageDelete`'s "has replies" check is `LIST_COUNT`.
-  - `SHAPE`'s reply count is `LIST_COUNT`.
-  - The `children` read pages by links, and gains `rank` and `at` (select).
-- **Where a message goes is in its record.** The append and parent records carry where the message goes: `after`
-  a sibling, `first`, or, when neither is given, the end. Order is an operation in the log, like every other change:
-  - a reply that was generated, or a swipe added, goes at the end;
+- **Every message is in one list:** its parent's replies (`List::children(parent)`), or its tree's openings
+  (`List::roots(tree)`, below). The lists replace `CHILD` and `ROOT` (`chat.rs`), and `SHAPE` no longer counts
+  replies. There is one order and no second index beside it.
+  - The depth walk's first reply and next sibling are the list's first node and the next link.
+  - A message's reply count, and `MessageDelete`'s "has replies" check, are `LIST_COUNT`.
+  - With no session's or user's choice, the reply a fork follows is its list's last.
+  - The `children` read pages in list order, `after` a sibling or `from` a place, with the list's `total`. The
+    `places` read gives each message's place among its alternatives and their count.
+- **Where a message goes is a record of its own,** `messagePlace (message, after | first)`: it takes the message out
+  of its list and puts it back after `after`, first, or, when neither is given, last. An append puts a message last,
+  and a re-parent puts it last among its new parent's replies; a place in the same commit moves it from there. Order
+  is an operation in the log, like every other change:
+  - a reply that was generated, or a swipe added, goes last;
   - **save as new alternative** goes directly after the alternative it was made from, before any made from it
     earlier;
-  - **a re-parent** names its place among the new parent's children, the end by default;
+  - **a move** among a message's alternatives (the Alternatives list's drag) is a place;
   - **a graft** (a message put between two) goes directly after the message it is put above, and that message then
-    moves under it. So the new one takes its place among the alternatives.
+    moves under it. So the new one takes its place among the alternatives;
+  - **a cut** that moves a message up, or moves the replies of what it cuts, puts them where the cut message was.
 - **An edit changes no order:** editing a message's text keeps its node and its place.
-- **Upstream imports** append the swipes in their array order. A batch of appends to one list is built in one pass,
-  and the bulk path must derive the same entries as the commit path (G12).
+- **Upstream imports** append in their array order, through the same derivers in the bulk path (G12).
 - **Reads:**
-  - `alternatives()` answers with the rank and a page;
-  - the counter `k/n` on each message is a rank and a count;
-  - the list opens at the current one's rank;
+  - `alternatives()` answers with the place and a page;
+  - the list opens at the current one's place;
   - a typed number is a select.
-  
+
   None of these reads the whole list.
 
 ## Openings and card greetings
@@ -124,26 +127,28 @@ always see the list as it is.
 `greeting-ids.md` puts the openings in card order. Each card greeting comes first, followed by the openings stored
 from it. After every card greeting come the openings from no greeting, then the openings from deleted greetings.
 
-- **A tree's openings are one list per greeting group:** `(tree, greeting id)`, plus `(tree, none)`. Which group an
-  opening joins is in its append record. The server knows it when it stores the opening, since it's the
-  `greeting_id` that the server's openings carry. Relinking an opening to another greeting (`relinkStarts`) is a move
-  between groups.
-- **A group list per tree index:** `LIST_GROUPS (tree, greeting id)` lists the groups a tree has. Groups from deleted
-  greetings follow the no-greeting group, by greeting id.
-  - This replaces "in the order they were stored" for openings from deleted greetings: they stay with their group.
-- **Order:**
-  - A card greeting that no stored opening holds comes first in its group, followed by the group's list.
-  - An opening's rank among the openings is the counts of the groups before it, plus its rank in its own group:
-    O(G + log n), where G is the number of groups. The card's greetings are read for the openings anyway (G is at most
-    the card's greeting count plus one).
+- **A tree's openings are one list.** The grouping by card greeting stays a read (`openingsInOrder`): each group's
+  stored openings in the list's order. The card's order is the card's, so the store can't keep it.
+  - So an opening's place among the openings costs reading the tree's openings: O(n), as before. Only a message's
+    replies, not a tree's openings, have a bounded place.
+- **An opening stored from a card greeting goes first** in the list, unless its add says where it goes. First in the
+  list is first in its group, right after the greeting.
 - **An edited greeting keeps its place.**
-  - Editing a card greeting in the chat stores an opening in that greeting's group, directly after the greeting. The
-    card greeting, which now has a text no opening holds, is offered again right before it (`greeting-ids.md`, An
+  - Editing a card greeting in the chat stores an opening from it, first in its group, directly after the greeting.
+    The card greeting, which now has a text no opening holds, is offered again right before it (`greeting-ids.md`, An
     opening's card greeting). The two stay where the greeting was.
   - Editing a stored opening keeps its node and its place, as any edit does.
   - Editing the greeting on the card changes only its text (`greeting-ids.md`), so its group and position stay.
-- **Duplicates follow their origin:** an alternative added to an opening, or a duplicate of it, goes directly after it
-  in its group.
+- **Duplicates follow their origin:** an alternative added to an opening, or a duplicate of it, goes directly after it,
+  and so directly after it in its group.
+
+## The cutover
+
+A store from before this has its replies and openings keyed by append time. `scripts/convert-message-order.mjs`, run
+once with the server stopped, moves every list over in steps (`order::conversion_step`): each message goes last in its
+list in the order it had, its old key goes, and its parent's shape loses the reply it counted. The store is then marked
+(`message-order`). A store without the mark is refused at start (`user-stores.js`, `CONVERSIONS`), as every earlier
+format change is.
 
 ## World relations
 

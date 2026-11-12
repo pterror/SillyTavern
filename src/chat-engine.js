@@ -316,6 +316,50 @@ function alternativeEntry(nodeId, o, itemized) {
 
 const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], defaultId: null, defaultEpoch: 0 });
 
+/**
+ * Where a new message goes among its alternatives (`docs/design/ordered-lists.md`): last, first, or right after a
+ * sibling (by node id).
+ * @typedef {{ last: true } | { first: true } | { after: string }} Place
+ */
+/** @type {Place} */
+export const LAST = Object.freeze({ last: true });
+
+export class PlaceError extends Error {}
+
+/**
+ * Whether a new opening goes first among a tree's openings: one stored from a card greeting without a place of its
+ * own. Openings are shown grouped by greeting in their list's order, so first is right after that greeting.
+ * @param {Record<string, any>} content
+ * @param {boolean} opening
+ * @param {Place} place
+ */
+function fromGreeting(content, opening, place) {
+    return opening && 'last' in place && Number.isInteger(content?.extra?.greeting_id);
+}
+
+/**
+ * @param {bigint} id
+ * @param {bigint} user
+ * @param {bigint | null} session
+ */
+function placedFirst(id, user, session) {
+    return [{ kind: 'messagePlace', message: id, first: true, user, ...(session === null ? {} : { session }) }];
+}
+
+/**
+ * @param {unknown} given a request's `place`
+ * @returns {Place | null} null when it names no place
+ */
+export function placeOf(given) {
+    if (given === undefined || given === null) return LAST;
+    if (typeof given !== 'object') return null;
+    const g = /** @type {Record<string, unknown>} */ (given);
+    if (g.first === true) return { first: true };
+    if (typeof g.after === 'string' && g.after !== '') return { after: g.after };
+    if (g.last === true) return LAST;
+    return null;
+}
+
 const EPOCH = 2 ** 32;
 
 /**
@@ -779,15 +823,14 @@ export class ChatEngine {
         const [id] = await this.messageIds([node_id]);
         const s = id === null ? undefined : (await this.stored([id])).get(id);
         if (!s) return null;
-        const siblings = await this.children(s.owner, s.parent);
-        const selected = siblings.indexOf(/** @type {bigint} */ (id));
+        const [here] = await this.store.chatRead('places', { ids: [id] });
         const from = Math.max(0, offset ?? 0);
-        const to = limit !== undefined ? from + limit : siblings.length;
-        const window = siblings.slice(from, to);
+        const page = await this.store.chatRead('children', { tree: s.owner, ...(s.parent === null ? {} : { parent: s.parent }), from: from + 1, limit: limit ?? Number(here.total) });
+        const window = page.ids;
         const stored = await this.stored(window);
         const decoded = await this.decoded(window.map(x => stored.get(x)));
         const alternatives = window.map((x, i) => alternativeEntry(this.externalId(stored.get(x)), decoded[i], !!stored.get(x).itemized));
-        return { selected: selected < 0 ? 0 : selected, total: siblings.length, alternatives };
+        return { selected: Number(here.place) - 1, total: Number(here.total), alternatives };
     }
 
     /**
@@ -841,9 +884,11 @@ export class ChatEngine {
         /** @type {{ group: number, seq: number, entry: any }[]} */
         const entries = rows.map((row, seq) => {
             const extra = row.message?.extra;
-            const group = groupOf.get(extra?.greeting_id) ?? Infinity;
-            if (group !== Infinity && extra?.greeting_hash === hashes[group]) held.add(group);
-            return { group, seq, entry: { row, holds: group !== Infinity && extra?.greeting_hash === hashes[group] ? group : null } };
+            const linked = groupOf.get(extra?.greeting_id);
+            const group = linked ?? (Number.isInteger(extra?.greeting_id) ? card.ids.length + 1 + extra.greeting_id : card.ids.length);
+            const holds = linked !== undefined && extra?.greeting_hash === hashes[linked] ? linked : null;
+            if (holds !== null) held.add(holds);
+            return { group, seq, entry: { row, holds } };
         });
         card.greetings.forEach((greeting, group) => {
             if (held.has(group)) return;
@@ -928,10 +973,11 @@ export class ChatEngine {
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
      * @param {Record<string, any> | Record<string, any>[]} p.contents
+     * @param {Place} [p.place] where the first new opening goes; each one after it follows the one before
      * @param {Actor} p.actor
      * @returns {Promise<{ ok: true, node_ids: (string | null)[], added: number, total: number }>}
      */
-    addOpenings({ tree, treeSpeaker, contents, actor }) {
+    addOpenings({ tree, treeSpeaker, contents, place = LAST, actor }) {
         return this.serialized(tree, async () => {
             const list = Array.isArray(contents) ? contents : [contents];
             const records = [];
@@ -945,6 +991,9 @@ export class ChatEngine {
             const now = this.now();
             let added = 0;
             const asStart = await this.startWriter(tree);
+            const placed = await this.placer(place, user, null);
+            /** @type {((id: bigint) => object[]) | null} */
+            let chosen = null;
             for (const given of list) {
                 const content = asStart(given);
                 if (!String(content?.mes ?? '').trim()) {
@@ -962,6 +1011,8 @@ export class ChatEngine {
                 const speaker = await this.speakerFor(content, treeSpeaker);
                 records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: null, owner: tree, time, session: null, user, sendKey: null }));
                 this.keyNew(records, id);
+                chosen ??= fromGreeting(content, true, place) ? await this.placer({ first: true }, user, null) : placed;
+                records.push(...chosen(id));
                 byIdentity.set(key, id);
                 ids.push(id);
                 added++;
@@ -984,10 +1035,11 @@ export class ChatEngine {
      * @param {number} [p.author]
      * @param {string | null} [p.ref]
      * @param {boolean} [p.regenerated]
+     * @param {Place} [p.place] where the first new message goes among its alternatives
      * @param {Actor} p.actor
      * @returns {Promise<{ ok: boolean, reason?: string, node_ids: string[], already_stored?: string[] }>}
      */
-    appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], changes = [], author = AUTHOR.user, ref = null, regenerated = false, actor }) {
+    appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], changes = [], author = AUTHOR.user, ref = null, regenerated = false, place = LAST, actor }) {
         const lorebooks = changes.flatMap(ops => (Array.isArray(ops) ? ops : [])).filter(op => op?.key === WORLD_INFO && !op.variable).map(op => op.value);
         return this.serialized(tree, () => this.withWorldLinks(lorebooks, async link => {
             /** @type {object[]} */
@@ -999,6 +1051,7 @@ export class ChatEngine {
                 if (!s || s.owner !== tree) return { ok: false, reason: 'unknown anchor', node_ids: [] };
             }
             const { user, session } = await this.actorIds(actor, records);
+            const placed = await this.placer(place, user, session);
             const keys = sendKeys.map(k => (typeof k === 'string' && k !== '' ? Buffer.from(k, 'utf8') : null));
             const present = keys.filter(k => k !== null);
             const sent = present.length ? await this.store.chatRead('sent', { owner: tree, keys: present }) : [];
@@ -1035,6 +1088,7 @@ export class ChatEngine {
                 const speaker = await this.speakerFor(content, treeSpeaker);
                 records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: cursor, owner: tree, time, session, user, sendKey: key }));
                 this.keyNew(records, id);
+                if (i === 0) records.push(...(fromGreeting(content, i === 0 && after === null, place) ? placedFirst(id, user, session) : placed(id)));
                 for (const c of produced) {
                     /** @type {Record<string, unknown>} */
                     const r = { kind: 'stateChange', id: this.next.change++, message: id, time, author: author | PRODUCED | (c.variable ? VARIABLE : 0), key: c.key, user };
@@ -1062,6 +1116,31 @@ export class ChatEngine {
     async stateMap(tree, at) {
         const state = await this.shownState(await this.store.chatRead('state', { tree, ...(at === null ? {} : { at }) }));
         return new Map(state.map(e => [stateKey(e.variable, e.field), e.json]));
+    }
+
+    /**
+     * Records that put each message given, in turn, where `place` says: the first at the place, each later one right
+     * after the one before.
+     * @param {Place} place
+     * @param {bigint} user
+     * @param {bigint | null} session
+     * @returns {Promise<(id: bigint) => object[]>}
+     */
+    async placer(place, user, session) {
+        if ('last' in place) return () => [];
+        /** @type {bigint | null} */
+        let after = null;
+        if ('after' in place) {
+            [after] = await this.messageIds([place.after]);
+            if (after === null) throw new PlaceError(`no message ${place.after}`);
+        }
+        let first = !('after' in place);
+        return id => {
+            const record = { kind: 'messagePlace', message: id, first, user, ...(after === null ? {} : { after }), ...(session === null ? {} : { session }) };
+            after = id;
+            first = false;
+            return [record];
+        };
     }
 
     /**
@@ -1368,6 +1447,33 @@ export class ChatEngine {
     }
 
     /**
+     * Moves a message among its alternatives.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string} p.node_id
+     * @param {Place} p.place
+     * @param {Actor} p.actor
+     * @returns {Promise<{ ok: true } | { ok: false, reason: string }>}
+     */
+    placeMessage({ tree, node_id, place, actor }) {
+        return this.serialized(tree, async () => {
+            const [id] = await this.messageIds([node_id]);
+            const s = id === null ? undefined : (await this.stored([id])).get(id);
+            if (!s || s.owner !== tree) return { ok: false, reason: 'unknown node' };
+            if ('after' in place) {
+                const [a] = await this.messageIds([place.after]);
+                const sa = a === null ? undefined : (await this.stored([a])).get(a);
+                if (!sa || sa.owner !== tree || sa.parent !== s.parent) return { ok: false, reason: 'not an alternative of it' };
+            }
+            const records = [];
+            const { user, session } = await this.actorIds(actor, records);
+            records.push({ kind: 'messagePlace', message: id, first: 'first' in place, user, ...('after' in place ? { after: (await this.messageIds([place.after]))[0] } : {}), ...(session === null ? {} : { session }) });
+            await this.store.commit(records);
+            return { ok: true };
+        });
+    }
+
+    /**
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
@@ -1404,6 +1510,7 @@ export class ChatEngine {
             } else if (moves) {
                 records.push(...this.moveTo(session, user, a, id));
             }
+            records.push({ kind: 'messagePlace', message: id, after: b, first: false, user, ...(session === null ? {} : { session }) });
             records.push({ kind: 'messageParent', message: b, parent: id, user, ...(session === null ? {} : { session }) });
             if (moves) records.push(...this.moveTo(session, user, id, b));
             await this.claimConversation(records, tree, actor, { user, session });
@@ -1643,6 +1750,7 @@ export class ChatEngine {
             }
             if (k <= end) {
                 records.push({ kind: 'messageParent', message: path[k], user, ...(parent === null ? {} : { parent }), ...(session === null ? {} : { session }) });
+                if (parent === before) records.push({ kind: 'messagePlace', message: path[k], after: path[fi], first: false, user, ...(session === null ? {} : { session }) });
                 first ??= path[k];
             }
             if (first !== null) records.push(this.moveTo(/** @type {bigint} */ (session), user, before, first)[0]);
@@ -1670,10 +1778,13 @@ export class ChatEngine {
             const actorPart = { user, ...(session === null ? {} : { session }) };
             const records = [];
             const keep = [];
+            let anchor = path[fi];
             for (let i = fi; i <= li; i++) {
                 for (const c of await this.children(p.tree, path[i])) {
                     if (i < li && c === path[i + 1]) continue;
                     records.push({ kind: 'messageParent', message: c, ...(before === null ? {} : { parent: before }), ...actorPart });
+                    records.push({ kind: 'messagePlace', message: c, after: anchor, first: false, ...actorPart });
+                    anchor = c;
                     keep.push(c);
                 }
             }

@@ -603,3 +603,38 @@ pub fn parse_list_key(k: &[u8]) -> Option<List> {
     let id = get_u64(k, &mut at)?;
     Some(List { space, id })
 }
+
+const OLD_CHILD: u64 = 93;
+const OLD_ROOT: u64 = 94;
+
+/// One step of the cutover from the keys that ordered a message's children by append time
+/// (`OLD_CHILD (parent, time, m)`, `OLD_ROOT (tree, time, m)`), and from the reply count in a message's shape. Each
+/// child goes last in its list, so every list keeps the order it had. Answers whether old keys remain.
+pub fn conversion_step(view: &View, out: &mut Out, batch: usize) -> Result<bool, StoreError> {
+    let start = key::of(OLD_CHILD);
+    let end = key::prefix_end(&key::of(OLD_ROOT));
+    let found = view.scan(&start, &end, batch + 1)?;
+    let more = found.len() > batch;
+    let mut w = Writes::new(view);
+    let mut shapes = Out::default();
+    for (k, _) in found.into_iter().take(batch) {
+        let mut at = 0;
+        let structure = get_u64(&k, &mut at).ok_or_else(|| bad("old child key"))?;
+        let owner = get_u64(&k, &mut at).ok_or_else(|| bad("old child key"))?;
+        get_u64(&k, &mut at).ok_or_else(|| bad("old child key"))?;
+        let m = get_u64(&k, &mut at).ok_or_else(|| bad("old child key"))?;
+        let list = if structure == OLD_CHILD {
+            super::chat::shape_add(&mut shapes, owner, -1);
+            List::children(owner)
+        } else {
+            List::roots(owner)
+        };
+        if !contains(&w, list, m)? {
+            insert(&mut w, list, m, Where::Last)?;
+        }
+        w.del(k);
+    }
+    w.finish(out);
+    out.entries.extend(shapes.entries);
+    Ok(more)
+}

@@ -45,8 +45,6 @@ pub mod key {
     pub const MSG_TEXT: u64 = 90;
     pub const MSG_TEXT_EDIT: u64 = 91;
     pub const MSG_VALUE: u64 = 92;
-    pub const CHILD: u64 = 93;
-    pub const ROOT: u64 = 94;
     pub const MSG_TIME: u64 = 95;
     pub const KEY_MAP: u64 = 96;
     pub const KEY_OF: u64 = 97;

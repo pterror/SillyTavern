@@ -33,7 +33,7 @@ import { SESSION_GONE_HEADER, requireSessionHeader, sessionHeaderOf } from '../r
 import { pageLooks, ui, uiUser } from '../ui-wiring.js';
 import { CHATS_LOOKS, CHAT_LOOKS, RECENT_LOOKS } from '../../public/scripts/name-holders.js';
 import { pageSettingsHash } from '../settings-hash.js';
-import { storedForm } from '../chat-engine.js';
+import { PlaceError, placeOf, storedForm } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
 
 /**
@@ -1173,23 +1173,33 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
         const given = request.body.contents ?? request.body.content;
         if (!given) return response.status(400).send({ error: 'content or contents is required' });
         const contents = (Array.isArray(given) ? given : [given]).map(storedForm);
+        const place = placeOf(request.body.place);
+        if (place === null) return response.status(400).send({ error: 'place is { last: true }, { first: true } or { after: <node id> }' });
         const chat = await chatOf(request);
         const s = chat && !opening ? await chat.store.chats.messageOf(chat.tree, sibling) : null;
         if (!chat || (!opening && !s)) return response.status(409).send({ ok: false, reason: 'unknown node' });
         const { chats } = chat.store;
         const actor = { user: chat.session.actor().user };
-        if (opening || s?.parent === null) {
-            const added = await chats.addOpenings({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, contents, actor });
-            return response.send({ ...added, ...await openingsAnswerOf(request, chat) });
+        try {
+            if (opening || s?.parent === null) {
+                const added = await chats.addOpenings({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, contents, place, actor });
+                return response.send({ ...added, ...await openingsAnswerOf(request, chat) });
+            }
+            const [parent] = await chats.externalIds([(s?.parent)]);
+            const nodeIds = [];
+            /** @type {import('../chat-engine.js').Place} */
+            let next = place;
+            for (const content of contents) {
+                const added = await chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after: parent, contents: [content], place: next, actor });
+                if (!added.ok) return response.status(409).send(added);
+                nodeIds.push(added.node_ids[0]);
+                if (!('last' in next)) next = { after: added.node_ids[0] };
+            }
+            return response.send({ ok: true, node_ids: nodeIds, message_counts: await storedMessageCounts(request, chat, nodeIds), links: await storedChatLinks(request.user.directories, chat, nodeIds) });
+        } catch (error) {
+            if (error instanceof PlaceError) return response.status(409).send({ ok: false, reason: error.message });
+            throw error;
         }
-        const [parent] = await chats.externalIds([(s?.parent)]);
-        const nodeIds = [];
-        for (const content of contents) {
-            const added = await chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after: parent, contents: [content], actor });
-            if (!added.ok) return response.status(409).send(added);
-            nodeIds.push(added.node_ids[0]);
-        }
-        return response.send({ ok: true, node_ids: nodeIds, message_counts: await storedMessageCounts(request, chat, nodeIds), links: await storedChatLinks(request.user.directories, chat, nodeIds) });
     } catch (error) {
         console.error('Error adding alternative:', error);
         return response.status(500).send({ error: true });

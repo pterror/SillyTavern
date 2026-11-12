@@ -698,6 +698,18 @@ pub static KINDS: &[Kind] = &[
         internal: false,
     },
     Kind {
+        name: "messagePlace",
+        base: 1700,
+        slots: &[
+            req("message", Ty::Id(Space::Message)),
+            opt("after", Ty::Id(Space::Message)),
+            req("first", Ty::Bit),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
+    Kind {
         name: "stateChange",
         base: 152,
         slots: &[

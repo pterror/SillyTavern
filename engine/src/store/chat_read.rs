@@ -1,4 +1,5 @@
-use super::chat::{self, APPEND_OWNER, children_prefix};
+use super::chat::{self, APPEND_OWNER};
+use super::order::{self, List};
 use super::derive::{Loc, View};
 use super::kinds::{Holder, bytes, key, parse_loc, parse_varints, text_value_of};
 use super::library::field_after;
@@ -199,33 +200,52 @@ pub fn children(
     parent: Option<u64>,
     tree: u64,
     after: Option<u64>,
+    from: Option<u64>,
     limit: usize,
 ) -> Result<Js, StoreError> {
-    let p = children_prefix(parent, tree);
-    let start = match after {
-        Some(a) => {
-            let (_, r) = chat::require_message(view, a)?;
-            let t = match r.values[chat::APPEND_TIME] {
-                Value::Time(t) => t,
-                _ => unreachable!("checked by Record::new"),
-            };
-            let mut k = chat::child_key(parent, tree, t, a);
-            k.push(0);
-            k
+    let list = List::of(parent, tree);
+    let start = match (after, from) {
+        (Some(a), _) => {
+            if !order::contains(view, list, a)? {
+                return Err(StoreError::Refused(format!("message {a} isn't among these")));
+            }
+            order::next(view, list, a)?
         }
-        None => p.clone(),
+        (None, Some(place)) => order::at_place(view, list, place)?,
+        (None, None) => order::first(view, list)?,
     };
-    let found = view.scan(&start, &key::prefix_end(&p), limit + 1)?;
-    let more = found.len() > limit;
-    let ids = found
-        .iter()
-        .take(limit)
-        .map(|(k, _)| chat::child_of_key(k, p.len()).map(Js::Big))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut ids = match start {
+        Some(s) => order::page_from(view, list, s, limit + 1)?,
+        None => Vec::new(),
+    };
+    let more = ids.len() > limit;
+    ids.truncate(limit);
     Ok(Js::Obj(vec![
-        ("ids", Js::Arr(ids)),
+        ("ids", Js::Arr(ids.into_iter().map(Js::Big).collect())),
         ("more", Js::Bool(more)),
+        ("total", Js::Num(order::count(view, list)? as f64)),
     ]))
+}
+
+/// Each message's 1-based place among its alternatives, and how many there are.
+pub fn places(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
+    let mut out = Vec::new();
+    for &m in ids {
+        if chat::message_entry(view, m)?.is_none() {
+            out.push(Js::Null);
+            continue;
+        }
+        let list = chat::list_of(view, m)?;
+        if !order::contains(view, list, m)? {
+            out.push(Js::Null);
+            continue;
+        }
+        out.push(Js::Obj(vec![
+            ("place", Js::Num(order::place(view, list, m)? as f64)),
+            ("total", Js::Num(order::count(view, list)? as f64)),
+        ]));
+    }
+    Ok(Js::Arr(out))
 }
 
 pub fn path(view: &View, at: Option<u64>) -> Result<Js, StoreError> {
@@ -249,7 +269,7 @@ pub fn followed(
         Some(m) => Fork::Message(m),
         None => Fork::Root(tree),
     };
-    Ok(opt_big(sessions::followed(view, s, u, f, tree)?))
+    Ok(opt_big(sessions::followed(view, s, u, f)?))
 }
 
 fn position_name(view: &View, p: u64) -> Result<Js, StoreError> {

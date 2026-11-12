@@ -828,6 +828,22 @@ impl Store {
     pub fn pairs_mode(&self) -> StoreResult<u64> {
         self.derived(|v| Ok(crate::search::pairs::state(v)?.0))
     }
+    pub fn message_order_conversion_step(
+        &self,
+        batch: usize,
+        done: Box<dyn FnOnce(StoreResult<bool>) + Send>,
+    ) {
+        let more = Arc::new(AtomicBool::new(false));
+        let found = more.clone();
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| {
+                found.store(order::conversion_step(view, out, batch)?, Ordering::Relaxed);
+                Ok(())
+            }),
+            Box::new(move |r| done(r.map(|()| more.load(Ordering::Relaxed)))),
+        ));
+    }
+
     pub fn world_order_conversion_step(
         &self,
         after: Option<Vec<u8>>,

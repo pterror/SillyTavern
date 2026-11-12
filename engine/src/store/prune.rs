@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
 use super::StoreError;
-use super::chat::{self, APPEND_OWNER, child_key, parent_of, require_message, shape_add};
+use super::chat::{self, APPEND_OWNER, parent_of, require_message};
+use super::order::{self, List, Writes};
 use super::derive::{Deriver, Layer, Loc, Out, View};
 use super::kinds::{dead, id, key, parse_varints, varints};
 use super::library::counter;
 use super::sessions;
 use crate::keyspace::val::{Val, get_u64};
-use crate::log::format::{Record, Value};
+use crate::log::format::Record;
 
 pub const PRUNE: u64 = 172;
 pub const PRUNE_IN: u64 = 173;
@@ -89,14 +90,7 @@ fn destination(
     if parent.is_some() {
         return Ok(parent);
     }
-    let p = chat::children_prefix(None, tree);
-    for (k, _) in view.scan_vals_rev(&p, &key::prefix_end(&p), 2)? {
-        let o = chat::child_of_key(&k, p.len())?;
-        if o != r {
-            return Ok(Some(o));
-        }
-    }
-    Ok(None)
+    sessions::newest_root_but(view, tree, r)
 }
 
 pub fn bookmarks_below(
@@ -173,14 +167,9 @@ impl Deriver for SubtreeDelete {
                 chat::bookmark_time_put(out, b, tree, chat::message_time(view, p)?);
             }
         }
-        let time = match append.values[chat::APPEND_TIME] {
-            Value::Time(t) => t,
-            _ => unreachable!("checked by Record::new"),
-        };
-        out.del(child_key(parent, tree, time, r));
-        if let Some(p) = parent {
-            shape_add(out, p, -1);
-        }
+        let mut w = Writes::new(view);
+        order::remove(&mut w, List::of(parent, tree), r)?;
+        w.finish(out);
         if let Some(s) = s {
             sessions::activity(view, out, s, tree, at.pos)?;
         }
@@ -218,11 +207,7 @@ impl Deriver for SubtreeDelete {
 }
 
 fn first_reply(view: &View, m: u64) -> Result<Option<u64>, StoreError> {
-    let p = key::id(key::CHILD, m);
-    match view.scan(&p, &key::prefix_end(&p), 1)?.into_iter().next() {
-        Some((k, _)) => Ok(Some(chat::child_of_key(&k, p.len())?)),
-        None => Ok(None),
-    }
+    order::first(view, List::children(m))
 }
 
 pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
@@ -257,7 +242,7 @@ pub fn step(view: &View, out: &mut Out) -> Result<bool, StoreError> {
                 let (l, rec) = require_message(&lv, c)?;
                 let parent = parent_of(&lv, c, &rec)?;
                 super::stats::removed(&lv, &mut o, c)?;
-                chat::delete_message(&lv, &mut o, c, (l, rec), c == r, time)?;
+                chat::delete_message(&lv, &mut o, c, (l, rec), time)?;
                 if c == r {
                     done = true;
                 } else {
@@ -327,10 +312,7 @@ pub fn drops(
                 }
             }
             if shape.replies > 0 {
-                let p = key::id(key::CHILD, m);
-                for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
-                    stack.push(chat::child_of_key(&k, p.len())?);
-                }
+                stack.extend(order::all(view, List::children(m))?);
             }
         }
     }

@@ -8,6 +8,7 @@ use crate::keyspace::val::{get_u64, put_bytes, put_u64};
 use crate::log::format::{FieldRef, Record, Value};
 use crate::search::{self, Scope};
 
+use super::order::{self, List, Where, Writes};
 use super::sessions::{self, Fork};
 
 pub const MES: u64 = 1;
@@ -52,10 +53,6 @@ pub fn text_in_append(flags: u64) -> bool {
     (flags >> FLAG_MES) & 3 == 0
 }
 
-fn time_key(k: &mut Vec<u8>, t: i64) {
-    put_u64(k, (t + (1 << 53)) as u64);
-}
-
 fn time_of(rec: &Record) -> i64 {
     time_at(rec, APPEND_TIME)
 }
@@ -74,28 +71,9 @@ pub fn opt_id(rec: &Record, i: usize) -> Option<u64> {
     }
 }
 
-pub fn child_key(parent: Option<u64>, owner: u64, time: i64, m: u64) -> Vec<u8> {
-    let mut k = match parent {
-        Some(p) => key::id(key::CHILD, p),
-        None => key::id(key::ROOT, owner),
-    };
-    time_key(&mut k, time);
-    put_u64(&mut k, m);
-    k
-}
-
-pub fn children_prefix(parent: Option<u64>, owner: u64) -> Vec<u8> {
-    match parent {
-        Some(p) => key::id(key::CHILD, p),
-        None => key::id(key::ROOT, owner),
-    }
-}
-
-pub fn child_of_key(k: &[u8], prefix_len: usize) -> Result<u64, StoreError> {
-    let mut at = prefix_len;
-    let bad = || StoreError::Entry("a child key doesn't decode".into());
-    get_u64(k, &mut at).ok_or_else(bad)?;
-    get_u64(k, &mut at).ok_or_else(bad)
+pub fn list_of(view: &View, m: u64) -> Result<List, StoreError> {
+    let (_, r) = require_message(view, m)?;
+    Ok(List::of(parent_of(view, m, &r)?, id(&r, APPEND_OWNER)))
 }
 
 pub type MessageEntry = (Loc, Option<u64>);
@@ -173,9 +151,9 @@ pub struct Shape {
     pub extras: u64,
 }
 
-fn shape_of(v: i64) -> Shape {
+fn shape_of(v: i64, replies: u64) -> Shape {
     Shape {
-        replies: (v & 0xff_ffff) as u64,
+        replies,
         itemized: v & SHAPE_ITEMIZED != 0,
         keyed: v & SHAPE_KEYED != 0,
         extras: (v >> 32) as u64,
@@ -186,12 +164,17 @@ pub fn shapes(view: &View, ids: &[u64]) -> Result<Vec<Shape>, StoreError> {
     let keys: Vec<Vec<u8>> = ids.iter().map(|m| key::id(SHAPE, *m)).collect();
     view.get_many(&keys)?
         .into_iter()
-        .map(|b| {
-            Ok(shape_of(match b {
-                Some(b) => crate::keyspace::val::counter_value(&b)
-                    .ok_or_else(|| StoreError::Entry("a message's shape doesn't decode".into()))?,
-                None => 0,
-            }))
+        .zip(ids)
+        .map(|(b, m)| {
+            Ok(shape_of(
+                match b {
+                    Some(b) => crate::keyspace::val::counter_value(&b).ok_or_else(|| {
+                        StoreError::Entry("a message's shape doesn't decode".into())
+                    })?,
+                    None => 0,
+                },
+                order::count(view, List::children(*m))?,
+            ))
         })
         .collect()
 }
@@ -487,9 +470,6 @@ impl Deriver for MessageAppend {
         sessions::check_actor(view, s, Some(u))?;
         out.put(key::id(key::MESSAGE, m), message_entry_bytes(at, parent));
         out.max(key::of(key::NEXT_MESSAGE), m + 1);
-        if let Some(p) = parent {
-            shape_add(out, p, 1);
-        }
         sessions::appended(view, out, m, parent)?;
         if let Some(s) = s {
             sessions::moved(
@@ -509,7 +489,9 @@ impl Deriver for MessageAppend {
             };
             sessions::chosen(view, out, s, u, f, m, at, false)?;
         }
-        out.put(child_key(parent, owner, time_of(rec), m), Vec::new());
+        let mut w = Writes::new(view);
+        order::insert(&mut w, List::of(parent, owner), m, Where::Last)?;
+        w.finish(out);
         if text_in_append(id(rec, APPEND_FLAGS)) {
             let text = bytes(rec, APPEND_TEXT);
             let h = Holder::Message(m);
@@ -579,8 +561,7 @@ impl Deriver for MessageDelete {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let m = id(rec, 0);
         let (l, append) = require_message(view, m)?;
-        let start = key::id(key::CHILD, m);
-        if !view.scan(&start, &key::prefix_end(&start), 1)?.is_empty() {
+        if order::count(view, List::children(m))? > 0 {
             return Err(StoreError::Refused(format!("message {m} has replies")));
         }
         if !bookmarks_at(view, m)?.is_empty() {
@@ -594,7 +575,7 @@ impl Deriver for MessageDelete {
         if let Some(s) = s {
             sessions::activity(view, out, s, owner, at.pos)?;
         }
-        delete_message(view, out, m, (l, append), false, time_at(rec, 3))
+        delete_message(view, out, m, (l, append), time_at(rec, 3))
     }
 
     fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
@@ -611,7 +592,6 @@ pub(super) fn delete_message(
     out: &mut Out,
     m: u64,
     (l, append): (Loc, Record),
-    detached: bool,
     time: i64,
 ) -> Result<(), StoreError> {
     let owner = id(&append, APPEND_OWNER);
@@ -633,7 +613,12 @@ pub(super) fn delete_message(
         dead(out, parse_loc(&v)?);
         out.del(key::id(key::MESSAGE_PARENT, m));
     }
-    out.del(child_key(parent, owner, time_of(&append), m));
+    let list = List::of(parent, owner);
+    if order::contains(view, list, m)? {
+        let mut w = Writes::new(view);
+        order::remove(&mut w, list, m)?;
+        w.finish(out);
+    }
     if let Value::Bytes(sk) = &append.values[APPEND_SEND_KEY]
         && view.get(&send_key_key(owner, sk))?.as_deref() == Some(&varints(&[m])[..])
     {
@@ -644,11 +629,6 @@ pub(super) fn delete_message(
     super::state::message_gone(view, out, m)?;
     dead(out, l);
     out.del(key::id(key::MESSAGE, m));
-    if let Some(p) = parent
-        && !detached
-    {
-        shape_add(out, p, -1);
-    }
     out.del(key::id(SHAPE, m));
     Ok(())
 }
@@ -705,15 +685,10 @@ impl Deriver for MessageParent {
         out.put(k, loc_bytes(at));
         let (l, _) = message_entry(view, m)?.expect("required above");
         out.put(key::id(key::MESSAGE, m), message_entry_bytes(l, new));
-        if let Some(o) = old {
-            shape_add(out, o, -1);
-        }
-        if let Some(n) = new {
-            shape_add(out, n, 1);
-        }
-        let t = time_of(&append);
-        out.del(child_key(old, owner, t, m));
-        out.put(child_key(new, owner, t, m), Vec::new());
+        let mut w = Writes::new(view);
+        order::remove(&mut w, List::of(old, owner), m)?;
+        order::insert(&mut w, List::of(new, owner), m, Where::Last)?;
+        w.finish(out);
         sessions::reparented(view, out, m, owner, at.pos)?;
         if let Some(s) = s {
             sessions::activity(view, out, s, owner, at.pos)?;
@@ -740,6 +715,51 @@ impl Deriver for MessageParent {
             from,
             to,
         )
+    }
+}
+
+pub const PLACE_AFTER: usize = 1;
+pub const PLACE_FIRST: usize = 2;
+
+pub struct MessagePlace;
+
+impl Deriver for MessagePlace {
+    fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let m = id(rec, 0);
+        let (s, u) = (opt_id(rec, 3), opt_id(rec, 4));
+        sessions::check_actor(view, s, u)?;
+        let (_, append) = require_message(view, m)?;
+        let owner = id(&append, APPEND_OWNER);
+        super::prune::refuse_doomed(view, owner, m)?;
+        let to = match (opt_id(rec, PLACE_AFTER), &rec.values[PLACE_FIRST]) {
+            (Some(a), _) if a == m => {
+                return Err(StoreError::Refused(format!("message {m} can't go after itself")));
+            }
+            (Some(a), Value::Bit(false)) => Where::After(a),
+            (None, Value::Bit(true)) => Where::First,
+            (None, _) => Where::Last,
+            (Some(_), _) => {
+                return Err(StoreError::Refused("a place is first or after a message, not both".into()));
+            }
+        };
+        let list = List::of(parent_of(view, m, &append)?, owner);
+        let mut w = Writes::new(view);
+        order::remove(&mut w, list, m)?;
+        order::insert(&mut w, list, m, to)?;
+        w.finish(out);
+        dead(out, at);
+        if let Some(s) = s {
+            sessions::activity(view, out, s, owner, at.pos)?;
+        }
+        Ok(())
+    }
+
+    fn is_live(&self, _: &Record, _: u64, _: &View) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
+        Ok(())
     }
 }
 
@@ -1663,6 +1683,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "messageAppend" => &MessageAppend,
         "messageDelete" => &MessageDelete,
         "messageParent" => &MessageParent,
+        "messagePlace" => &MessagePlace,
         "messageTime" => &MessageTime,
         "keyMap" => &KeyMap,
         "positionCreate" => &PositionCreate,
@@ -1701,7 +1722,7 @@ pub fn shape_scanned(v: &View, m: u64) -> Result<Shape, StoreError> {
     extras += count(key::id(sessions::BRANCH_FROM, m))?;
     extras += count(key::ids(super::state::STATE_AT, 1, m))?;
     Ok(Shape {
-        replies: count(key::id(key::CHILD, m))? as u64,
+        replies: order::count(v, List::children(m))?,
         itemized: v.get(&key::id(ITEMIZED, m))?.is_some(),
         keyed: v.get(&key_of_key(KEYED_MESSAGE, m))?.is_some(),
         extras: extras as u64,

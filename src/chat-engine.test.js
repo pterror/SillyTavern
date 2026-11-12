@@ -377,6 +377,50 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.equal(typeof ones[0].extra.greeting_hash, 'number');
         assert.equal(grouped.alternatives.find(a => a.mes === 'Greeting 3, edited in the chat').extra.greeting_hash, undefined);
 
+        await chats.appendMessages({ tree: t, treeSpeaker: ivy, after: null, contents: [from(9, 'Greeting 3, edited again')], actor: { user: actor.user } });
+        const edited = await chats.openingAlternatives({ tree: t, actor: { user: actor.user }, range: { limit: 20 }, card });
+        const origin = edited.alternatives.find(a => a.mes === 'Greeting 3, edited in the chat').node_id;
+        await chats.addOpenings({ tree: t, treeSpeaker: ivy, contents: [from(9, 'Greeting 3, a copy of the first edit')], place: { after: origin }, actor: { user: actor.user } });
+        const kept = await chats.openingAlternatives({ tree: t, actor: { user: actor.user }, range: { limit: 20 }, card });
+        assert.deepEqual(kept.alternatives.map(a => a.mes).slice(3, 7), [
+            'Greeting 3', 'Greeting 3, edited again', 'Greeting 3, edited in the chat', 'Greeting 3, a copy of the first edit',
+        ], 'an opening from a greeting goes right after the greeting, and a copy right after what it copies');
+
+        await store.close();
+    });
+
+    test(`${kind}: a new alternative goes where it's put, a graft takes the place of the message it goes above, and a move keeps it among its alternatives`, async () => {
+        const store = await engine.Store.open(path.join(root, `engine-places-${kind}`));
+        const chats = await ChatEngine.open(store, people);
+        const t = cara.id;
+        const say = (/** @type {string} */ mes) => ({ ...bot1, mes });
+        const [g] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: null, contents: [greeting], actor })).node_ids;
+        const [a] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: g, contents: [say('A')], actor })).node_ids;
+        const [b] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: g, contents: [say('B')], actor })).node_ids;
+        const [c] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: g, contents: [say('C')], actor })).node_ids;
+        const texts = async (/** @type {string} */ of) => (await chats.alternatives({ node_id: of })).alternatives.map(x => x.mes);
+        assert.deepEqual(await texts(a), ['A', 'B', 'C'], 'new replies go last');
+
+        const [a2] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: g, contents: [say('A, edited')], place: { after: a }, actor })).node_ids;
+        const [a3] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: g, contents: [say('A, edited again')], place: { after: a }, actor })).node_ids;
+        assert.deepEqual(await texts(a), ['A', 'A, edited again', 'A, edited', 'B', 'C'], 'a copy goes right after what it copies');
+        const window = await chats.alternatives({ node_id: a2, offset: 2, limit: 2 });
+        assert.deepEqual([window.selected, window.total, window.alternatives.map(x => x.mes)], [2, 5, ['A, edited', 'B']]);
+
+        await chats.appendMessages({ tree: t, treeSpeaker: cara, after: g, contents: [say('first')], place: { first: true }, actor });
+        assert.deepEqual((await texts(a)).slice(0, 2), ['first', 'A']);
+
+        assert.deepEqual(await chats.placeMessage({ tree: t, node_id: c, place: { after: a }, actor }), { ok: true });
+        assert.deepEqual(await texts(a), ['first', 'A', 'C', 'A, edited again', 'A, edited', 'B']);
+        assert.deepEqual(await chats.placeMessage({ tree: t, node_id: a3, place: { after: g }, actor }), { ok: false, reason: 'not an alternative of it' });
+
+        const [x] = (await chats.appendMessages({ tree: t, treeSpeaker: cara, after: b, contents: [user2], actor })).node_ids;
+        const grafted = await chats.graftMessage({ tree: t, treeSpeaker: cara, after: g, before: b, content: inserted, actor });
+        assert.equal(grafted.ok, true);
+        assert.deepEqual(await texts(a), ['first', 'A', 'C', 'A, edited again', 'A, edited', inserted.mes], 'the graft is where B was');
+        assert.deepEqual(await texts(b), ['B']);
+        assert.deepEqual(await texts(x), [user2.mes]);
+
         await store.close();
     });
 }

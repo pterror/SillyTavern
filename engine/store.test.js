@@ -358,8 +358,8 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.deepEqual(m1.itemized, { raw: true });
         assert.deepEqual(m1.branches, [9n]);
         assert.deepEqual(m1.sendKey, Buffer.alloc(16, 1));
-        assert.deepEqual(await store.chatRead('children', { parent: 0n, tree: 3n, limit: 1 }), { ids: [1n], more: true });
-        assert.deepEqual(await store.chatRead('children', { tree: 3n, limit: 5 }), { ids: [0n], more: false });
+        assert.deepEqual(await store.chatRead('children', { parent: 0n, tree: 3n, limit: 1 }), { ids: [1n], more: true, total: 2 });
+        assert.deepEqual(await store.chatRead('children', { tree: 3n, limit: 5 }), { ids: [0n], more: false, total: 1 });
         assert.deepEqual(await store.chatRead('path', { tree: 3n, at: 1n }), [0n, 1n]);
         assert.equal(await store.chatRead('landing', { tree: 3n, session: 1n }), 1n);
         assert.deepEqual((await store.chatRead('sessions', { ids: [1n, 5n] }))[1], null);

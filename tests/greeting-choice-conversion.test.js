@@ -71,6 +71,8 @@ test('a store from before greeting ids is refused until the conversion script ha
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-lorebooks-to-worldbuilding.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted).');
         expect(await stores.oldFormatLine({ root })).toContain('convert-card-lorebook-copies.mjs');
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-card-lorebook-copies.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Lorebooks looked at: 0.');
+        expect(await stores.oldFormatLine({ root })).toContain('convert-message-order.mjs');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-message-order.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Steps of 2000 messages: 1.');
         expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });
@@ -99,11 +101,11 @@ test('every stored first message with a card greeting\'s text is linked to it, o
         await before.appendMessages({ tree, treeSpeaker: null, after: null, contents: [content], actor: { user: 'u' } });
     }
     const links = async (/** @type {any} */ engine) => (await engine.openings(tree)).map(o => [o.message.mes, o.message.extra?.greeting_id ?? null, o.message.extra?.greeting_hash ?? null]);
-    expect(await links(before)).toEqual([['Hello', null, null], [' Bye ', null, null], ['Mine', greetings[0].id, null]]);
+    expect(await links(before)).toEqual([['Mine', greetings[0].id, null], ['Hello', null, null], [' Bye ', null, null]]);
 
     const after = await ChatEngine.open(lib.store, libraryPeople(lib), await lib.nextIds());
     expect(await convertOpeningLinks(lib, after, 'u')).toBe(2);
-    expect(await links(after)).toEqual([['Hello', greetings[0].id, hashGreetingText('Hello')], [' Bye ', greetings[1].id, hashGreetingText('Bye')], ['Mine', greetings[0].id, null]]);
+    expect(await links(after)).toEqual([['Mine', greetings[0].id, null], ['Hello', greetings[0].id, hashGreetingText('Hello')], [' Bye ', greetings[1].id, hashGreetingText('Bye')]]);
     expect(await convertOpeningLinks(lib, after, 'u')).toBe(0);
 });
 
@@ -132,6 +134,8 @@ test('a store converted by the first version of the script gets the links when i
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-lorebooks-to-worldbuilding.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted).');
         expect(await stores.oldFormatLine({ root })).toContain('convert-card-lorebook-copies.mjs');
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-card-lorebook-copies.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Lorebooks looked at: 0.');
+        expect(await stores.oldFormatLine({ root })).toContain('convert-message-order.mjs');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-message-order.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Steps of 2000 messages: 1.');
         expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });

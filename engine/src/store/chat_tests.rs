@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use super::chat::{self, FOLLOWING, MES, PINNED};
 use super::chat_read::Js;
 use super::kinds::{Holder, key, parse_loc, text_value_of};
 use super::sessions::{self, Fork};
 use super::*;
-use super::{prune, stats};
+use super::{order, prune, stats};
 use crate::log::format::{Value, kind_by_name, wtf8_from_utf16};
 use crate::search::Scope;
 
@@ -107,6 +107,7 @@ struct Msg {
     values: BTreeMap<String, String>,
     times: BTreeMap<String, i64>,
     send_key: Option<Vec<u8>>,
+    placed: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -144,6 +145,7 @@ struct Model {
     seq: u64,
     now: i64,
     root_times: BTreeMap<(u64, u64), i64>,
+    placed: u64,
 }
 
 fn fork_of(parent: Option<u64>, owner: u64) -> Fork {
@@ -163,12 +165,17 @@ impl Model {
         }
     }
 
+    fn place_last(&mut self, m: u64) {
+        self.placed += 1;
+        self.msgs.get_mut(&m).unwrap().placed = self.placed;
+    }
+
     fn children(&self, parent: Option<u64>, owner: u64) -> Vec<u64> {
-        let mut c: Vec<(i64, u64)> = self
+        let mut c: Vec<(u64, u64)> = self
             .msgs
             .iter()
             .filter(|(_, m)| m.parent == parent && (parent.is_some() || m.owner == owner))
-            .map(|(id, m)| (m.time, *id))
+            .map(|(id, m)| (m.placed, *id))
             .collect();
         c.sort();
         c.into_iter().map(|(_, id)| id).collect()
@@ -498,18 +505,11 @@ impl Model {
                     vec![*b]
                 );
             }
-            let scan_ids = |prefix: Vec<u8>| -> Vec<u64> {
-                v.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)
-                    .unwrap()
-                    .into_iter()
-                    .map(|(k, _)| chat::child_of_key(&k, prefix.len()).unwrap())
-                    .collect()
-            };
             for (id, m) in &self.msgs {
                 let (_, r) = chat::require_message(v, *id)?;
                 assert_eq!(chat::parent_of(v, *id, &r)?, m.parent, "parent of {id}");
                 assert_eq!(
-                    scan_ids(chat::children_prefix(Some(*id), m.owner)),
+                    order::all(v, order::List::children(*id))?,
                     self.children(Some(*id), m.owner),
                     "replies to {id}"
                 );
@@ -580,7 +580,7 @@ impl Model {
             let owners: BTreeSet<u64> = self.msgs.values().map(|m| m.owner).collect();
             for o in &owners {
                 assert_eq!(
-                    scan_ids(chat::children_prefix(None, *o)),
+                    order::all(v, order::List::roots(*o))?,
                     self.children(None, *o),
                     "roots of {o}"
                 );
@@ -886,8 +886,10 @@ fn append(
             values: BTreeMap::new(),
             times: BTreeMap::new(),
             send_key: sk.clone(),
+            placed: 0,
         },
     );
+    model.place_last(id);
     if let Some(s) = session {
         model.moved(s, user, owner, Some(id), true);
         model.choose(s, user, fork_of(parent, owner), id);
@@ -1075,6 +1077,7 @@ fn step(model: &mut Model, rng: &mut Rng, i: u64) -> Vec<Record> {
                 Some(cands[rng.below(cands.len() as u64) as usize])
             };
             model.msgs.get_mut(&m).unwrap().parent = new;
+            model.place_last(m);
             vec![rec(
                 "messageParent",
                 vec![Value::Id(m), opt(new), Value::Absent, Value::Absent],
@@ -1424,6 +1427,7 @@ fn a_large_moved_subtree_gets_its_depths_in_slices_marked_meanwhile() {
     model.moved(1, 1, 1, Some(n - 1), false);
     model.check(&s);
     model.msgs.get_mut(&1).unwrap().parent = Some(n);
+    model.place_last(1);
     s.commit_wait(vec![rec(
         "messageParent",
         vec![Value::Id(1), Value::Id(n), Value::Absent, Value::Absent],
@@ -1441,6 +1445,7 @@ fn a_large_moved_subtree_gets_its_depths_in_slices_marked_meanwhile() {
     )])
     .unwrap();
     model.msgs.get_mut(&5).unwrap().parent = Some(0);
+    model.place_last(5);
     s.commit_wait(vec![rec(
         "messageParent",
         vec![Value::Id(5), Value::Id(0), Value::Absent, Value::Absent],
@@ -1479,6 +1484,7 @@ fn a_depth_rewrite_cut_off_by_a_crash_resumes_on_open() {
     ));
     s.commit_wait(recs).unwrap();
     model.msgs.get_mut(&1).unwrap().parent = Some(n);
+    model.place_last(1);
     let done = std::sync::mpsc::channel();
     let tx = done.0;
     s.inner.submit(Job::Commit(
@@ -2831,7 +2837,7 @@ fn a_subtree_being_deleted_reads_as_deleted_and_its_delete_resumes_after_a_crash
         assert_eq!(chat::bookmark_at(v, 21)?, Some(1));
         assert_eq!(chat::bookmark_at(v, 20)?, None);
         assert_eq!(
-            sessions::followed(v, None, None, Fork::Message(1), 1)?,
+            sessions::followed(v, None, None, Fork::Message(1))?,
             None
         );
         assert_eq!(chat::path_to(v, Some(end))?, vec![0, 1]);
@@ -2982,6 +2988,7 @@ fn a_delete_beside_a_move_dooms_only_its_subtree_while_depths_are_rewritten() {
     }
     s.commit_wait(recs).unwrap();
     model.msgs.get_mut(&3).unwrap().parent = Some(0);
+    model.place_last(3);
     model.subtree_gone(1);
     commit_without_slices(
         &s,
@@ -3289,6 +3296,116 @@ fn an_unowned_tree_keeps_its_messages_until_a_character_takes_its_id() {
         );
         assert!(library::sort_num(v, 30, CHARACTER, Some(1.0), CHAT_SIZE)?.unwrap_or(0.0) > 0.0);
         assert_eq!(chat::path_to(v, Some(1))?, vec![0, 1]);
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+fn place(m: u64, after: Option<u64>, first: bool) -> Record {
+    rec(
+        "messagePlace",
+        vec![Value::Id(m), opt(after), Value::Bit(first), Value::Absent, Value::Absent],
+    )
+}
+
+#[test]
+fn a_place_moves_a_message_among_its_alternatives_and_nowhere_else() {
+    let dir = temp_dir("place");
+    let (s, mut model) = open_with_actors(&dir, small_pool());
+    s.commit_wait(vec![
+        append(&mut model, 1, None, 0, "root", None, None, 1),
+        append(&mut model, 1, Some(0), 30, "a", None, None, 1),
+        append(&mut model, 1, Some(0), 20, "b", None, None, 1),
+        append(&mut model, 1, Some(0), 10, "c", None, None, 1),
+        append(&mut model, 1, Some(1), 40, "under a", None, None, 1),
+    ])
+    .unwrap();
+    let replies = |s: &Store| s.derived(|v| order::all(v, order::List::children(0))).unwrap();
+    assert_eq!(replies(&s), vec![1, 2, 3], "appended order, not time order");
+
+    s.commit_wait(vec![place(3, Some(1), false)]).unwrap();
+    assert_eq!(replies(&s), vec![1, 3, 2]);
+    s.commit_wait(vec![place(2, None, true)]).unwrap();
+    assert_eq!(replies(&s), vec![2, 1, 3]);
+    s.commit_wait(vec![place(2, None, false)]).unwrap();
+    assert_eq!(replies(&s), vec![1, 3, 2]);
+
+    for refused in [place(3, Some(3), false), place(3, Some(4), false), place(3, Some(1), true)] {
+        assert!(matches!(s.commit_wait(vec![refused]), Err(StoreError::Refused(_))));
+    }
+    assert_eq!(replies(&s), vec![1, 3, 2], "a refused place changes nothing");
+
+    let places = s
+        .derived(|v| super::chat_read::places(v, &[1, 3, 2, 4, 99]))
+        .unwrap();
+    let want = |p: f64, t: f64| Js::Obj(vec![("place", Js::Num(p)), ("total", Js::Num(t))]);
+    assert_eq!(
+        places,
+        Js::Arr(vec![want(1.0, 3.0), want(2.0, 3.0), want(3.0, 3.0), want(1.0, 1.0), Js::Null])
+    );
+    assert_eq!(s.derived(|v| chat::shapes(v, &[0, 1])).unwrap().iter().map(|x| x.replies).collect::<Vec<_>>(), vec![3, 1]);
+
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    assert_eq!(replies(&s), vec![1, 3, 2], "a reopen keeps the order");
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_cutover_lists_every_reply_and_opening_in_its_old_order_and_drops_the_old_keys() {
+    let dir = temp_dir("order-cutover");
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    let old = |structure: u64, owner: u64, time: i64, m: u64| {
+        let mut k = key::id(structure, owner);
+        crate::keyspace::val::put_u64(&mut k, (time + (1 << 53)) as u64);
+        crate::keyspace::val::put_u64(&mut k, m);
+        k
+    };
+    let mut keys = Vec::new();
+    for (m, time) in [(11u64, 5i64), (12, 1), (13, 9)] {
+        keys.push(old(93, 10, time, m));
+    }
+    for (m, time) in [(10u64, 3i64), (20, 2)] {
+        keys.push(old(94, 7, time, m));
+    }
+    let written = keys.clone();
+    s.derive_now(move |_, out| {
+        for k in written {
+            out.put(k, Vec::new());
+        }
+        chat::shape_add(out, 10, 3);
+        chat::shape_add(out, 10, chat::SHAPE_KEYED);
+        Ok(())
+    })
+    .unwrap();
+    let mut steps = 0;
+    loop {
+        let more = Arc::new(AtomicBool::new(false));
+        let seen = more.clone();
+        s.derive_now(move |v, out| {
+            seen.store(order::conversion_step(v, out, 2)?, Ordering::Relaxed);
+            Ok(())
+        })
+        .unwrap();
+        steps += 1;
+        if !more.load(Ordering::Relaxed) {
+            break;
+        }
+    }
+    assert_eq!(steps, 3);
+    s.derived(|v| {
+        assert_eq!(order::all(v, order::List::children(10))?, vec![12, 11, 13]);
+        assert_eq!(order::all(v, order::List::roots(7))?, vec![20, 10]);
+        for k in &keys {
+            assert_eq!(v.get(k)?, None);
+        }
+        let shape = chat::shapes(v, &[10])?[0];
+        assert_eq!((shape.replies, shape.keyed), (3, true));
+        let raw = v.get(&key::id(chat::SHAPE, 10))?.unwrap();
+        assert_eq!(crate::keyspace::val::counter_value(&raw), Some(chat::SHAPE_KEYED));
         Ok(())
     })
     .unwrap();
