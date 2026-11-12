@@ -13,6 +13,22 @@ import { recordStored } from './stored-messages.js';
  */
 
 /**
+ * What the page knows that macros read, as a request says it: in its body, or in the header every request carries
+ * @param {{ body?: any, headers?: Record<string, unknown> }} request
+ * @returns {unknown}
+ */
+export function pageFactsOf(request) {
+    if (request.body?.macro_facts && typeof request.body.macro_facts === 'object') return request.body.macro_facts;
+    const header = request.headers?.['x-st-macro-facts'];
+    if (typeof header !== 'string' || header === '') return undefined;
+    try {
+        return JSON.parse(decodeURIComponent(header));
+    } catch {
+        return undefined;
+    }
+}
+
+/**
  * @param {unknown} body
  * @returns {PageMacroFacts}
  */

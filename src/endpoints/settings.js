@@ -1,4 +1,7 @@
 import fs from 'node:fs';
+import { chatContext } from '../chat-request.js';
+import { pageFactsOf } from '../macro-facts.js';
+import { shownMacroValues } from '../message-macros.js';
 import path from 'node:path';
 
 import express from 'express';
@@ -303,9 +306,11 @@ router.post('/save', async function (request, response) {
  * @param {import('express').Request} request
  * @param {unknown} sent The changed values, by settings key or path.
  * @param {unknown} expectedHashes The hashes of the values the page changed, by the same keys.
- * @returns {Promise<{ status: 200, answer: { result: 'ok', settingsHash: number, keyHashes: Record<string, number>, shown_counts?: object, card_token_counts?: object } } | { status: 400 | 409, answer: Record<string, unknown> }>}
+ * @param {unknown} [shown] The macros the page draws in the open chat's messages, whose values the answer carries as
+ *   the changed settings fill them in: `{ avatar_url, group_id, at, items: [{ node, speaker, sources }] }`.
+ * @returns {Promise<{ status: 200, answer: { result: 'ok', settingsHash: number, keyHashes: Record<string, number>, shown_counts?: object, card_token_counts?: object, message_macros?: object } } | { status: 400 | 409, answer: Record<string, unknown> }>}
  */
-export async function applySettingsChanges(request, sent, expectedHashes) {
+export async function applySettingsChanges(request, sent, expectedHashes, shown) {
     const directories = request.user.directories;
     if (typeof sent !== 'object' || sent === null || Array.isArray(sent)) {
         return {
@@ -361,7 +366,28 @@ export async function applySettingsChanges(request, sent, expectedHashes) {
     for (const top of new Set(Object.keys(keys).map(key => key.split('.')[0]))) {
         if (Object.hasOwn(known, top)) seedKeyHashes(keyHashes, known[top], top);
     }
-    return { status: 200, answer: { result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes, ...await shownCountsOf(request) } };
+    return { status: 200, answer: { result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes, ...await shownCountsOf(request), ...await shownMacrosOf(request, shown) } };
+}
+
+/**
+ * @param {import('express').Request} request
+ * @param {unknown} shown
+ * @returns {Promise<{ message_macros?: Record<string, Record<string, string | null>> }>}
+ */
+async function shownMacrosOf(request, shown) {
+    if (!shown || typeof shown !== 'object') return {};
+    const { avatar_url: avatarUrl, group_id: groupIdOf, at, items } = /** @type {Record<string, unknown>} */ (shown);
+    const avatar = typeof avatarUrl === 'string' && avatarUrl !== '' ? avatarUrl : null;
+    const groupId = typeof groupIdOf === 'string' && groupIdOf !== '' ? groupIdOf : null;
+    if (avatar === null && groupId === null) return {};
+    try {
+        const chat = await chatContext(request, { avatar, group: groupId });
+        const values = await shownMacroValues(request.user.directories, { avatar, groupId, chat, at: typeof at === 'string' && at !== '' ? at : null, pageFacts: pageFactsOf(request) }, items);
+        return values ? { message_macros: values } : {};
+    } catch (error) {
+        console.warn('Could not fill in the macros the page shows:', error);
+        return {};
+    }
 }
 
 /**
@@ -376,7 +402,7 @@ export function carriedSettings(refused) {
         if (carried === undefined || carried === null) return next();
         delete request.body.settings_changes;
         try {
-            const applied = await applySettingsChanges(request, carried?.keys, carried?.expectedHashes);
+            const applied = await applySettingsChanges(request, carried?.keys, carried?.expectedHashes, carried?.shown);
             if (applied.status !== 200) {
                 return response.status(applied.status).send({ ...applied.answer, settings_not_saved: true, error: { message: `The settings changed in another tab or device, so ${refused}.` } });
             }
@@ -391,8 +417,8 @@ export function carriedSettings(refused) {
 
 router.post('/save-partial', async function (request, response) {
     try {
-        const { keys: sent, expectedHashes } = request.body ?? {};
-        const applied = await applySettingsChanges(request, sent, expectedHashes);
+        const { keys: sent, expectedHashes, shown_macros: shown } = request.body ?? {};
+        const applied = await applySettingsChanges(request, sent, expectedHashes, shown);
         return response.status(applied.status).send(applied.answer);
     } catch (err) {
         console.error(err);

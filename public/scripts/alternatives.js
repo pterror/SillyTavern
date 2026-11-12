@@ -65,7 +65,7 @@ async function go(messageId, index) {
 /** @type {import('/ui/entry.js').StartOptions['alternatives']} */
 export const alternativesOldPage = {
     reader(item) {
-        return alternativeReader({ name: item.name, isUser: item.role === 'user' });
+        return alternativeReader({ name: item.name, isUser: item.role === 'user', macros: () => item.macros });
     },
     date: value => timestampToMoment(value).format('lll'),
     tokenizer: () => getTokenizerState(),

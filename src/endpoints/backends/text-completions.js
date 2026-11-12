@@ -35,7 +35,7 @@ import { noteReplyReasoning, noteReplyText, readReplyFinishSettings } from '../.
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { logBackendFailure } from '../../backend-unreachable.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStop, onGenerationStopFlush, stoppableController } from '../../generation-stop.js';
-import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
+import { pageFactsOf, macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
 import { fetchOutgoing } from '../../outgoing-fetch.js';
 
 export const router = express.Router();
@@ -617,7 +617,7 @@ export const generateTextCompletion = withGenerationStop(async function (request
             const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
             if (!skipPersistence) {
                 pendingAssistantPersist = {
-                    chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                    chat, pageFacts: pageFactsOf(request), anchorNodeId: replyAnchorNodeId, name2: built.name2,
                     isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                     activations: built.activations,
                     sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,

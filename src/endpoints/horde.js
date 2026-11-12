@@ -1,4 +1,5 @@
 import express from 'express';
+import { pageFactsOf } from '../macro-facts.js';
 import { getVersion, delay, Cache, tryParse } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { buildRawActionKoboldRequest } from './backends/kobold.js';
@@ -254,7 +255,7 @@ async function buildRawActionHordePayload(request, response) {
     if (!skipPersistence) chat.session.actor();
     const rawActionPersist = !skipPersistence
         ? {
-            chat, anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
+            chat, pageFacts: pageFactsOf(request), anchorNodeId: replyAnchorNodeId, name2: built.name2, isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
             itemization: startItemizing(built.itemize),
             countText: built.countText,
             finish: await readReplyFinishSettings(directories, { mainApi: 'koboldhorde', avatar: characterAvatar, groupId, name1: built.name1, name2: built.name2 }),

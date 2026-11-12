@@ -14,7 +14,7 @@ import { changeOps, changesSince } from './state-sync.js';
 import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-identity.js';
 import { holdDraft, releaseDraft } from './chat-draft.js';
 import { isFailedSend, keepFailedSend, wasSendStored } from './failed-sends.js';
-import { updateMessage, setStoreRef, storeRefOf, adoptStored, deepFreeze, claimPushedCounts } from './chat-store.js';
+import { updateMessage, setStoreRef, storeRefOf, adoptStored, deepFreeze, claimPushedCounts, takeMessageMacros } from './chat-store.js';
 import { hasPendingFileAttachment } from './chats.js';
 import { inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { eventSource, event_types } from './events.js';
@@ -242,7 +242,7 @@ window.addEventListener(REPLY_STORED_EVENT, (/** @type {any} */ event) => {
 
 /**
  * @param {number} mesId
- * @param {{mes: string, extra?: Record<string, any>}|null|undefined} stored
+ * @param {{mes: string, extra?: Record<string, any>, macros?: Record<string, Record<string, string | null>>}|null|undefined} stored
  * @param {{received?: boolean}} [options]
  * @returns {ChatMessage|null}
  */
@@ -266,6 +266,7 @@ export function applyStoredReply(mesId, stored, { received = false } = {}) {
         updates.swipe_info = swipeInfo;
     }
     const updated = updateMessage(mesId, updates);
+    takeMessageMacros(stored.macros);
     if (received) markServerFinishedReply(mesId);
     const activations = storedExtra.activations;
     if (received && newUi().settings.value('world_info_settings.world_info_overflow_alert') === true && activations?.cut?.some(c => c.why === 'budget')) {

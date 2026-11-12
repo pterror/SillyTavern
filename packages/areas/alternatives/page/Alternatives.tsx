@@ -16,7 +16,7 @@ export type ShownText = {
 };
 
 export type OldPage = {
-    reader(item: { name: string; role: Item['role'] }, mesId: number | null): ShownText;
+    reader(item: { name: string; role: Item['role']; macros: Item['macros'] }, mesId: number | null): ShownText;
     date(value: string | number): string;
     tokenizer(): Record<string, unknown> | null;
     cantGo(mesId: number): string | null;

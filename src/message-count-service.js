@@ -7,6 +7,7 @@ import { openingState } from './opening-state.js';
 import { extraOf, openingAlternatives, targetsOf } from './message-counts.js';
 import { requestStore } from './user-stores.js';
 import { chatContext } from './chat-request.js';
+import { fillSentMacros } from './message-macros.js';
 
 export const COUNTING_AT_ONCE = 4;
 const PUSH_EVERY_MS = 100;
@@ -237,12 +238,18 @@ export async function countSent(request, owner, sources) {
 }
 
 /**
+ * The chat's openings for the page, with their token counts and the values of the macros they draw. The openings are
+ * the start of the chat, so their macros read no messages.
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {Parameters<typeof openingState>[0]} p
  */
 export async function countedOpeningState(directories, p) {
     const state = await openingState(p);
-    await countFor(directories, p.store, { avatar: p.avatar }, { alternatives: openingAlternatives(state) });
+    const alternatives = openingAlternatives(state);
+    await Promise.all([
+        countFor(directories, p.store, { avatar: p.avatar }, { alternatives }),
+        fillSentMacros(directories, { avatar: p.avatar ?? null, groupId: null }, { alternatives }),
+    ]);
     return state;
 }
 

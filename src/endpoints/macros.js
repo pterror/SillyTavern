@@ -42,12 +42,25 @@ function modelOf(directories, settingsContext, mainApi, oaiSettings) {
  * @returns {Promise<import('../macro-substitution.js').SubstituteParamsContext>}
  */
 export async function previewContext(request, body = request.body ?? {}, { withChat = true } = {}) {
-    const { directories } = request.user;
     const avatar = typeof body.avatar_url === 'string' && body.avatar_url !== '' ? body.avatar_url : null;
     const groupId = typeof body.group_id === 'string' && body.group_id !== '' ? body.group_id : null;
-    const speakers = await resolveSpeakers(directories, { avatar, groupId });
     const chat = withChat && (avatar !== null || groupId !== null) ? await chatContext(request, { avatar, group: groupId }) : null;
-    const at = typeof body.at === 'string' && body.at !== '' ? body.at : null;
+    return macroContextOf(request.user.directories, {
+        avatar, groupId, chat,
+        at: typeof body.at === 'string' && body.at !== '' ? body.at : null,
+        name2: typeof body.name2 === 'string' ? body.name2 : null,
+        pageFacts: body.macro_facts,
+    });
+}
+
+/**
+ * What macros are filled in from, for a character or group, read from the chat when one is given
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {{ avatar: string | null, groupId: string | null, chat?: import('../chat-request.js').ChatContext | null, at?: string | null, name2?: string | null, pageFacts?: unknown }} owner
+ * @returns {Promise<import('../macro-substitution.js').SubstituteParamsContext>}
+ */
+export async function macroContextOf(directories, { avatar, groupId, chat = null, at = null, name2: speaker = null, pageFacts: facts }) {
+    const speakers = await resolveSpeakers(directories, { avatar, groupId });
     const settingsContext = settingsContextOf({ avatar, groupId, chat, nodeId: at });
     const {
         power_user: powerUser = {}, extension_settings: extensionSettings = {}, oai_settings: oaiSettings = {},
@@ -57,14 +70,14 @@ export async function previewContext(request, body = request.body ?? {}, { withC
     ]));
     const { chat: messages, metadata } = await loadChatHistory(chat, { nodeId: at });
     const chatMetadata = structuredClone(metadata);
-    const pageFacts = readPageMacroFacts(body.macro_facts);
+    const pageFacts = readPageMacroFacts(facts);
     const macroFacts = generationMacroFacts({
         powerUser, extensionSettings: structuredClone(extensionSettings), mainApi, pageFacts,
         lastGenerationType: pageFacts.lastGenerationType ?? '',
         ...apiTokenLimits({ ...limits, oai_settings: oaiSettings }, mainApi),
     });
     const name1 = typeof username === 'string' && username !== '' ? username : 'User';
-    const name2 = typeof body.name2 === 'string' ? body.name2 : speakers.name2;
+    const name2 = typeof speaker === 'string' ? speaker : speakers.name2;
     const isGroup = groupId !== null;
     const base = { ...macroFacts, name1, name2, isGroup, groupMembers: speakers.groupMembers, groupDisabledMembers: speakers.groupDisabledMembers, chat: messages, chatMetadata };
     const characterCard = await getCharacterCardFields(directories, {
@@ -95,6 +108,17 @@ function macroValues(context, macros, all) {
             return null;
         }
     });
+}
+
+/**
+ * The values of macros for a character or group, the safe ones only
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {Parameters<typeof macroContextOf>[1]} owner
+ * @param {string[]} macros
+ * @returns {Promise<(string | null)[]>}
+ */
+export async function macroValuesIn(directories, owner, macros) {
+    return macros.length ? macroValues(await macroContextOf(directories, owner), macros, false) : [];
 }
 
 /**

@@ -19,7 +19,7 @@ import { readReplyFinishSettings } from '../reply-reasoning.js';
 import { answerSessionOnHeaders, chatContext } from '../chat-request.js';
 import { withGenerationStop } from '../generation-stop.js';
 import { forwardAndPersistCompactStream } from './backends/text-completions.js';
-import { macroVariableChanges, storeMacroVariables } from '../macro-facts.js';
+import { pageFactsOf, macroVariableChanges, storeMacroVariables } from '../macro-facts.js';
 import { fetchOutgoing } from '../outgoing-fetch.js';
 
 const API_NOVELAI = 'https://api.novelai.net';
@@ -363,7 +363,7 @@ export const generateNovel = withGenerationStop(async function (req, res) {
         const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
         if (!skipPersistence) {
             pendingAssistantPersist = {
-                chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                chat, pageFacts: pageFactsOf(req), anchorNodeId: replyAnchorNodeId, name2: built.name2,
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 activations: built.activations,
                 sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,

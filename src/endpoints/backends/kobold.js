@@ -20,7 +20,7 @@ import { readReplyFinishSettings } from '../../reply-reasoning.js';
 import { answerSessionOnHeaders, chatContext } from '../../chat-request.js';
 import { withGenerationStop } from '../../generation-stop.js';
 import { forwardAndPersistCompactStream } from './text-completions.js';
-import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
+import { pageFactsOf, macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
 import { fetchOutgoing } from '../../outgoing-fetch.js';
 
 export const router = express.Router();
@@ -233,7 +233,7 @@ export const generateKobold = withGenerationStop(async function (request, respon
         const continuesUserMessage = isContinue && replyAnchorNodeId !== built.anchorNodeId;
         if (!skipPersistence) {
             pendingAssistantPersist = {
-                chat, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                chat, pageFacts: pageFactsOf(request), anchorNodeId: replyAnchorNodeId, name2: built.name2,
                 isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                 activations: built.activations,
                 sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,

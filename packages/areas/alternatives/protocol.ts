@@ -28,6 +28,8 @@ export type Item = {
     nodeId: string | null;
     card: { position: number; hash: number } | null;
     opening: number | null;
+    /** the values of the macros it draws, each macro's source to its value, null for one only known when sent */
+    macros: Record<string, string | null> | null;
 };
 
 export type ListView = {

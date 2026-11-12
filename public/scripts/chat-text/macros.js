@@ -8,8 +8,7 @@ import { macroPillContent, macroTooltipAttributes } from '../macro-pill.js';
 /**
  * @typedef {object} MacroValueSource
  * @property {(source: string) => string | null | undefined} get a macro's value: null when only known when sent,
- *   undefined while not yet known
- * @property {(sources: string[]) => Promise<unknown>} wantMacros asks for the values of macros not yet known
+ *   undefined when the text came without it
  */
 
 /**
@@ -31,7 +30,7 @@ function described(source) {
 
 /**
  * Macros drawn by their value, for reading: a value only known when sent shows what the macro is, a person their
- * name with their card on hover. A value not yet known is asked for, and the piece's element takes it when it comes.
+ * name with their card on hover. A text drawn again when its values change draws its pieces again.
  * @param {MacroValueSource} values
  * @param {(macroName: string) => MacroPerson | null} person
  * @param {import('../macro-pill.js').Translate} t
@@ -43,9 +42,6 @@ export function macroValuePieces(values, person, t) {
         /** @param {HTMLElement} element */
         const fill = (element) => {
             const value = values.get(source);
-            for (const attribute of [...element.attributes]) {
-                if (attribute.name !== 'class') element.removeAttribute(attribute.name);
-            }
             if (value === undefined) {
                 element.className = 'macro-value macro-value-unknown';
                 element.setAttribute('data-macro-source', source);
@@ -67,9 +63,6 @@ export function macroValuePieces(values, person, t) {
             draw() {
                 const element = document.createElement('span');
                 fill(element);
-                if (values.get(source) === undefined) {
-                    void values.wantMacros([source]).then(() => fill(element));
-                }
                 return element;
             },
         };

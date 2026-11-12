@@ -55,7 +55,7 @@ function setup({ mediaAllowed = true, autoplay = false, values = {}, grammar = {
         key: JSON.stringify([mediaAllowed, autoplay, values, grammar]),
         grammar: { dialogueQuotes: true, ...grammar },
         html: policy.chatHtmlPolicy({ mediaAllowed: () => mediaAllowed, autoplay: () => autoplay, styleScope: '.mes_text ' }),
-        macro: macros.macroValuePieces({ get: source => values[source], wantMacros: async () => undefined }, () => null, translate),
+        macro: macros.macroValuePieces({ get: source => values[source] }, () => null, translate),
     };
 }
 

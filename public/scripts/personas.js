@@ -12,13 +12,11 @@ import {
     saveSettingsDebounced,
     setUserName,
     updateMessage,
-    updateMessageBlock,
     chatOpEditMany,
 } from '../script.js';
 import { characterToEntity, groupToEntity } from './character-list.js';
 import { name1 } from './app-selection-state.js';
 import { chat, chat_metadata } from './chat-state.js';
-import { macrosIn } from './safe-macros.js';
 import { getRequestHeaders } from './request-headers.js';
 import { askOnChatOpen, takeChatOpenPart } from './chat-open-parts.js';
 import { charactersStore } from './character-store.js';
@@ -152,9 +150,6 @@ export async function setUserAvatar(imgfile, { toastPersonaNameChange = true, na
     reloadUserAvatar();
     updatePersonaUIStates({ navigateToCurrent: navigateToCurrent });
     selectCurrentPersona({ toastPersonaNameChange: toastPersonaNameChange });
-    chat.forEach((message, id) => {
-        if (macrosIn(String(message?.mes ?? '')).length) updateMessageBlock(id, message);
-    });
     saveSettingsDebounced('user_avatar');
     $('.zoomed_avatar[forchar]').remove();
 }

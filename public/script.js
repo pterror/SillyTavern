@@ -245,7 +245,7 @@ import { initFailedSends, keepFailedSend, recordSend, keptSendKeys, forgetStored
 import { initItemizedPrompts, ITEMIZED_PROMPT_FLAG, itemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
-import { token, setToken, getRequestHeaders } from './scripts/request-headers.js';
+import { token, setToken, getRequestHeaders, setMacroFactsHeader } from './scripts/request-headers.js';
 import { observeSessionAnswers, onChangeStream, prepareTabSession } from './scripts/tab-session.js';
 import { onStoppedReply, wholeReplyOf } from './scripts/generation-request.js';
 import { chat, chat_metadata, setChatMetadata } from './scripts/chat-state.js';
@@ -257,7 +257,7 @@ import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder, pageMacroFacts } from './scripts/macros/engine/MacroEnvBuilder.js';
-import { initMessageText, learnMessageMacros, redrawMessageText, showBiasText, showMessageText } from './scripts/message-text.js';
+import { initMessageText, redrawMessageText, shownMessageMacros, showBiasText, showMessageText } from './scripts/message-text.js';
 import { setSettingsCarrier } from './scripts/macro-values.js';
 import {
     updateMessage,
@@ -284,6 +284,7 @@ import {
     claimPushedCounts,
     hasCountOf,
     takePushedMessageCounts,
+    takeMessageMacros,
 } from './scripts/chat-store.js';
 export {
     updateMessage,
@@ -1244,6 +1245,10 @@ async function firstLoadInit() {
     initDomHandlers();
     initStandaloneMode();
     addDOMPurifyHooks();
+    setMacroFactsHeader(() => {
+        const { chatId, firstDisplayedMessageId, isMobile, utcOffset, lastGenerationType } = pageMacroFacts();
+        return { chatId, firstDisplayedMessageId, isMobile, utcOffset, lastGenerationType };
+    });
     initMessageText({
         settings: () => power_user,
         macroScope: openChatMacroScope,
@@ -1636,7 +1641,6 @@ export async function showMoreMessages(messagesToLoad = null) {
 
     const firstId = clamp(messageId - count, 0, Infinity);
     const messageElements = [];
-    await learnMessageMacros(chat.slice(firstId, messageId));
     chat.slice(firstId, messageId).forEach((message, id) => {
         messageElements.push(updateMessageElement(message, { messageId: firstId + id }));
     });
@@ -1685,7 +1689,6 @@ export async function printMessages() {
  * @param {Boolean} [options.fade=true] When false, the swipe chevrons will not fade in.
  */
 export async function redisplayChat({ targetChat = chat, startIndex = 0, fade = true } = {}) {
-    await learnMessageMacros(targetChat.slice(startIndex));
     const messageElements = chatElement.find('.mes');
     messageElements.removeClass('last_mes');
 
@@ -6204,7 +6207,7 @@ function partialChangesOf(payload, dirtyKeys) {
 /**
  * The settings changes the page holds that the server hasn't been sent, taken out of the waiting save, for an action
  * that the server answers from the settings to carry: the server applies them first.
- * @returns {{ keys: Record<string, any>, expectedHashes: Record<string, number> }|undefined}
+ * @returns {{ keys: Record<string, any>, expectedHashes: Record<string, number>, shown?: ReturnType<typeof shownMessageMacros> }|undefined} the changes, and the macros the chat shows, for the answer to carry their values
  */
 export function takePendingSettingsChanges() {
     if (!settingsReady) return undefined;
@@ -6213,7 +6216,8 @@ export function takePendingSettingsChanges() {
     const payload = settingsPayload();
     const dirtyKeys = full ? Object.keys(payload) : [...pendingSettingsKeys];
     pendingSettingsKeys.clear();
-    return partialChangesOf(payload, dirtyKeys) ?? undefined;
+    const changes = partialChangesOf(payload, dirtyKeys);
+    return changes ? { ...changes, shown: shownMessageMacros() } : undefined;
 }
 
 /**
@@ -6226,10 +6230,11 @@ export function returnPendingSettingsChanges(changes) {
 
 /**
  * Takes the server's answer to settings changes it applied, as a save's or an action's that carried them.
- * @param {{ keyHashes?: Record<string, number>, settingsHash?: number, shown_counts?: any, card_token_counts?: any }} answer
+ * @param {{ keyHashes?: Record<string, number>, settingsHash?: number, shown_counts?: any, card_token_counts?: any, message_macros?: any }} answer
  * @param {Record<string, any>} sent The changes as they were sent, by key.
  */
 export async function noteSettingsChangesSaved(answer, sent) {
+    takeMessageMacros(answer.message_macros);
     if (!takeServerKeyHashes(answer.keyHashes, Object.keys(sent).map(key => key.split('.')[0]))) {
         for (const [key, value] of Object.entries(sent)) {
             seedSettingsHashes(value, key);
@@ -6278,7 +6283,7 @@ async function performSave({ full }) {
             const result = await fetch('/api/settings/save-partial', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ keys: partialPayload, expectedHashes }),
+                body: JSON.stringify({ keys: partialPayload, expectedHashes, shown_macros: shownMessageMacros() }),
                 cache: 'no-cache',
             });
 

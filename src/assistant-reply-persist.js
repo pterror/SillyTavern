@@ -1,4 +1,6 @@
 import { storedForm } from './chat-engine.js';
+import { macrosIn } from '../public/scripts/safe-macros.js';
+import { MACRO_VALUES, macroValuesOf } from './message-macros.js';
 import { appendUnderStart } from './pending-opening.js';
 import { recordGenerationPersisted } from './generation-stop.js';
 import { finishReply } from './reply-reasoning.js';
@@ -81,7 +83,7 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
     return result;
 }
 
-/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra'] & { token_count?: number, text_token_count?: number }, links?: import('./chat-links.js').ChatLinks}} StoredReply */
+/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra'] & { token_count?: number, text_token_count?: number, macro_values?: Record<string, string | null> }, links?: import('./chat-links.js').ChatLinks, macros?: Record<string, Record<string, string | null>>}} StoredReply */
 
 /**
  * @param {object} body
@@ -90,7 +92,7 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
 export function attachStoredReply(body, persisted) {
     if (!persisted || !body || typeof body !== 'object') return;
     body.assistant_node_id = persisted.node_id;
-    body.assistant_message = { mes: persisted.mes, extra: persisted.extra };
+    body.assistant_message = { mes: persisted.mes, extra: persisted.extra, ...(persisted.macros ? { macros: persisted.macros } : {}) };
     if (persisted.links) body.assistant_links = persisted.links;
 }
 
@@ -188,7 +190,39 @@ async function persistReply(pending, generatedText) {
     }
     if (!result || 'error' in result) return result;
     const shown = await pending.chat.store.chats.shownMessage(pending.chat.tree, result.node_id);
-    return withReplyLinks(pending, await withReplyCounts(pending, shown ? { node_id: result.node_id, mes: shown.mes, extra: shown.extra ?? {} } : result));
+    const stored = shown ? { node_id: result.node_id, mes: shown.mes, extra: shown.extra ?? {} } : result;
+    return withReplyMacros(pending, await withReplyLinks(pending, await withReplyCounts(pending, stored)));
+}
+
+/**
+ * The values of the macros the reply draws, in its extra, and the sent message's, by its node, for the page to draw
+ * them with
+ * @param {{ chat: import('./chat-request.js').ChatContext, directories?: import('./users.js').UserDirectoryList, name2?: string, sentNodeId?: string | null, pageFacts?: unknown }} pending
+ * @param {StoredReply} reply
+ * @returns {Promise<StoredReply>}
+ */
+async function withReplyMacros(pending, reply) {
+    const directories = pending.directories ?? pending.chat.directories;
+    if (!directories) return reply;
+    try {
+        const sent = typeof pending.sentNodeId === 'string' ? await pending.chat.store.chats.shownMessage(pending.chat.tree, pending.sentNodeId) : null;
+        const drawn = (/** @type {Record<string, any>} */ extra) => [extra?.reasoning, extra?.bias].filter(text => typeof text === 'string' && text !== '');
+        const wanted = [
+            { texts: [reply.mes, ...drawn(reply.extra)], speaker: String(pending.name2 ?? '') },
+            ...(sent ? [{ texts: [String(sent.mes ?? ''), ...drawn(sent.extra)], speaker: sent.is_user ? null : String(sent.name ?? '') }] : []),
+        ];
+        if (!wanted.some(each => each.texts.some(text => macrosIn(text).length > 0))) return reply;
+        const owner = { avatar: pending.chat.avatar, groupId: pending.chat.groupId, chat: pending.chat, at: reply.node_id, pageFacts: pending.pageFacts };
+        const [own, ofSent] = await macroValuesOf(directories, owner, wanted);
+        return {
+            ...reply,
+            extra: { ...reply.extra, ...(Object.keys(own).length ? { [MACRO_VALUES]: own } : {}) },
+            ...(sent && ofSent && Object.keys(ofSent).length ? { macros: { [/** @type {string} */ (pending.sentNodeId)]: ofSent } } : {}),
+        };
+    } catch (error) {
+        console.warn('Could not fill in the macros of the stored reply:', error);
+        return reply;
+    }
 }
 
 /**

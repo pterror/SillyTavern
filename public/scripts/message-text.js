@@ -3,7 +3,6 @@ import { chat } from './chat-state.js';
 import { macroValuePieces } from './chat-text/macros.js';
 import { chatHtmlPolicy } from './chat-text/policy.js';
 import { drawnText, showText, stopText, textReader } from './chat-text/surface.js';
-import { MacroValues } from './macro-values.js';
 import { macrosIn, withFilledAbout } from './safe-macros.js';
 
 /**
@@ -32,23 +31,6 @@ let page;
  */
 export function initMessageText(dependencies) {
     page = dependencies;
-}
-
-/** @type {Map<string, MacroValues>} the open chat's macro values, by the character a message is from ('' for the user) */
-const chatValues = new Map();
-
-/**
- * @param {string | null} speaker the character the text is from, or null for the user
- * @returns {MacroValues}
- */
-function valuesFor(speaker) {
-    const key = speaker ?? '';
-    let values = chatValues.get(key);
-    if (!values) {
-        values = new MacroValues(() => (speaker === null ? page.macroScope() : { ...page.macroScope(), name2: speaker }));
-        chatValues.set(key, values);
-    }
-    return values;
 }
 
 /**
@@ -88,20 +70,29 @@ function grammarOptions(dialogueQuotes) {
 /**
  * @param {string | null} speaker
  * @param {string} kind
- * @param {Element | null} shownIn the message's text element, for its lore marks; none for text without them
+ * @param {() => Record<string, string | null> | undefined} valuesOf the values of the text's macros, as the server sent
+ *   them with it
+ * @param {Element | null} [loreIn] the message's text element, for its lore marks; none for text without them
  * @returns {TextSetup}
  */
-function chatSetup(speaker, kind, shownIn) {
+function chatSetup(speaker, kind, valuesOf, loreIn = null) {
     const grammar = grammarOptions(true);
-    const values = valuesFor(speaker);
+    /** @type {import('./chat-text/macros.js').MacroValueSource} */
+    const values = { get: source => valuesOf()?.[source] };
     return {
         key: JSON.stringify([kind, speaker, grammar]),
         grammar,
         html: MESSAGE_POLICY,
-        macro: macroValuePieces(values, name => withFilledAbout(page.macroPerson(name, { name: speaker ?? '' }), name, values.valueOf), page.t),
-        ...(shownIn ? { overlays: () => [page.loreMarks(shownIn, () => messageShownIn(shownIn))] } : {}),
+        macro: macroValuePieces(values, name => withFilledAbout(page.macroPerson(name, { name: speaker ?? '' }), name, values.get), page.t),
+        ...(loreIn ? { overlays: () => [page.loreMarks(loreIn, () => messageShownIn(loreIn))] } : {}),
     };
 }
+
+/**
+ * @param {Element} element an element of a message
+ * @returns {() => Record<string, string | null> | undefined} the values of its macros, as the chat has them now
+ */
+const valuesIn = element => () => messageShownIn(element)?.extra?.macro_values;
 
 /** @type {WeakMap<Element, ChatMessage>} */
 const shownMessages = new WeakMap();
@@ -136,25 +127,18 @@ export function showMessageText(element, message, { fade = false } = {}) {
         return;
     }
     shownMessages.set(element, message);
-    showText(element, text, chatSetup(speakerOf(message), 'message', element), { fade });
+    showText(element, text, chatSetup(speakerOf(message), 'message', valuesIn(element), element), { fade });
 }
 
 /**
- * Draws a message's text again, from scratch, with its macros' values learned again, for when what they are filled in
- * from changed (the persona, the card)
+ * Draws a message's text again, from scratch, for when its macros' values changed; not while it is being edited
  * @param {Element} element the message's `.mes_text`
  * @param {ChatMessage} message
  */
 export function redrawMessageText(element, message) {
+    if (element.querySelector('textarea')) return;
     stopText(element);
     showMessageText(element, message);
-    if (isAppMessage(message) || macrosIn(String(message.mes ?? '')).length === 0) return;
-    void valuesFor(speakerOf(message)).refresh().then((changed) => {
-        const shown = shownMessages.get(element);
-        if (!changed || !shown || !element.isConnected || element.querySelector('textarea')) return;
-        stopText(element);
-        showMessageText(element, shown);
-    });
 }
 
 /**
@@ -165,7 +149,7 @@ export function redrawMessageText(element, message) {
  * @param {{ fade?: boolean }} [options] fade: the reasoning is being streamed
  */
 export function showReasoningText(element, message, reasoning, { fade = false } = {}) {
-    showText(element, reasoning, chatSetup(speakerOf(message), 'reasoning', null), { fade });
+    showText(element, reasoning, chatSetup(speakerOf(message), 'reasoning', valuesIn(element)), { fade });
 }
 
 /**
@@ -179,7 +163,7 @@ export function showBiasText(element, bias) {
         element.replaceChildren();
         return;
     }
-    showText(element, bias, chatSetup(null, 'bias', null));
+    showText(element, bias, chatSetup(null, 'bias', valuesIn(element)));
 }
 
 /**
@@ -189,15 +173,16 @@ export function showBiasText(element, bias) {
  * @returns {HTMLElement}
  */
 export function drawnMessageText(text, { name, isUser }) {
-    return drawnText(text, chatSetup(isUser ? null : name, 'message', null));
+    return drawnText(text, chatSetup(isUser ? null : name, 'message', () => undefined));
 }
 
 /**
  * An alternative of a message drawn for the list of alternatives, the parts a search matched marked
- * @param {{ name: string, isUser: boolean }} speaker
+ * @param {{ name: string, isUser: boolean, macros: () => Record<string, string | null> | null | undefined }} alternative
+ *   macros: the values of its macros, as the list has them
  * @returns {{ element: HTMLElement, show: (text: string, matches: readonly number[] | null) => void, stop: () => void }}
  */
-export function alternativeReader({ name, isUser }) {
+export function alternativeReader({ name, isUser, macros }) {
     /** @type {readonly number[] | null} */
     let matches = null;
     /** @type {Set<() => void>} */
@@ -215,7 +200,7 @@ export function alternativeReader({ name, isUser }) {
             return () => listeners.delete(listener);
         },
     };
-    const shown = textReader({ ...chatSetup(isUser ? null : name, 'alternative', null), overlays: () => [search] });
+    const shown = textReader({ ...chatSetup(isUser ? null : name, 'alternative', () => macros() ?? undefined), overlays: () => [search] });
     return {
         element: shown.element,
         show(text, found) {
@@ -249,22 +234,16 @@ export function cardTextSetup(kind, { values, person, styleScope = '' }) {
 }
 
 /**
- * Learns the values of the macros in messages before they are drawn, in one request for each speaker, so their
- * text is drawn whole
- * @param {readonly ChatMessage[]} messages
- * @returns {Promise<void>}
+ * The macros the open chat's messages draw, for an action that may change their values to be answered with them
+ * @returns {{ avatar_url?: string, group_id?: string, at?: string | null, items: { node: string, speaker: string | null, sources: string[] }[] } | undefined}
  */
-export async function learnMessageMacros(messages) {
-    /** @type {Map<string | null, string[]>} */
-    const wanted = new Map();
-    for (const message of messages) {
-        if (!message || isAppMessage(message)) continue;
-        const sources = [String(message.mes ?? ''), String(message.extra?.reasoning ?? '')].flatMap(macrosIn);
-        if (!sources.length) continue;
-        const speaker = speakerOf(message);
-        wanted.set(speaker, [...(wanted.get(speaker) ?? []), ...sources]);
-    }
-    await Promise.all([...wanted].map(([speaker, sources]) => valuesFor(speaker).wantMacros(sources)));
+export function shownMessageMacros() {
+    const items = chat.flatMap((message) => {
+        if (!message || typeof message.node_id !== 'string' || isAppMessage(message)) return [];
+        const sources = [message.mes, message.extra?.reasoning, message.extra?.bias].flatMap(text => (typeof text === 'string' ? macrosIn(text) : []));
+        return sources.length ? [{ node: message.node_id, speaker: speakerOf(message), sources: [...new Set(sources)] }] : [];
+    });
+    return items.length ? { ...page.macroScope(), items } : undefined;
 }
 
 /**

@@ -10,6 +10,8 @@ export type Alternative = {
     isUser: boolean;
     isSystem: boolean;
     date: string | number | null;
+    /** the values of the macros it draws, each macro's source to its value, null for one only known when sent */
+    macros?: Record<string, string | null>;
 };
 
 export type Listed = {
@@ -126,6 +128,7 @@ export function itemsOf(listed: Listed, target: Target, hash: (text: string) => 
             nodeId: a.nodeId,
             card,
             opening: at >= 0 ? at : null,
+            macros: a.macros ?? null,
         };
     });
 }

@@ -39,6 +39,8 @@ import { TOKEN_KEY_KINDS, readCount, tokenKeyHash } from './token-count-store.js
 import { textMatches } from './text-matches.js';
 import { getEngine } from '../engine/load.js';
 import { hashGreetingText } from './greeting-ops.js';
+import { macrosIn } from '../public/scripts/safe-macros.js';
+import { macroValuesOf } from './message-macros.js';
 
 /** @typedef {import('@st/server-ui').User} User */
 /** @typedef {import('@st/server-ui').ViewContext} ViewContext */
@@ -327,39 +329,65 @@ async function tokenizerOf(user, tokenizer) {
     return state ? openTokenizer(state, directoriesOf(user)) : null;
 }
 
+/**
+ * @param {import('@st/server-ui').ViewContext} context
+ * @param {import('@st/alternatives/protocol').Target} target
+ * @returns {Promise<import('@st/alternatives/server').Listed | null>}
+ */
+async function listedAlternatives(context, target) {
+    if ('message' in target) {
+        const store = await userStore(directoriesOf(context.user), context.user.handle);
+        const found = await store.chats.alternatives({ node_id: target.message });
+        if (!found) return null;
+        return { alternatives: found.alternatives.map(alternativeOf), current: found.selected, card: null, openings: null };
+    }
+    const chat = await chatOfTab(context);
+    if ('opening' in target) {
+        if (!chat) return null;
+        const card = chat.avatar ? await readCardGreetings(chat.store, chat.avatar) : null;
+        const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, ...(card ? { card } : {}) });
+        return {
+            alternatives: openings.alternatives.map(alternativeOf),
+            current: openings.total > 0 ? openings.default_index : null,
+            card: card && chat.avatar ? { avatar: chat.avatar, greetings: card.texts, defaultPosition: card.defaultIndex } : null,
+            openings: null,
+        };
+    }
+    const store = chat?.store ?? await userStore(directoriesOf(context.user), context.user.handle);
+    const card = await readCardGreetings(store, target.greetings);
+    if (!card) return null;
+    const inChat = chat && chat.avatar === target.greetings
+        ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, card })
+        : null;
+    return {
+        alternatives: card.texts.map(text => ({ nodeId: null, text, name: card.name, isUser: false, isSystem: false, date: null })),
+        current: card.defaultIndex,
+        card: { avatar: target.greetings, greetings: card.texts, defaultPosition: card.defaultIndex },
+        openings: inChat ? inChat.alternatives.map(entry => (typeof entry.mes === 'string' ? entry.mes : '')) : null,
+    };
+}
+
+/**
+ * The listed alternatives, each with the values of the macros it draws. They are read out of the chat, so their macros
+ * read no messages.
+ * @param {import('@st/server-ui').ViewContext} context
+ * @param {import('@st/alternatives/server').Listed | null} listed
+ * @returns {Promise<import('@st/alternatives/server').Listed | null>}
+ */
+async function withMacroValues(context, listed) {
+    if (!listed) return listed;
+    const wanted = listed.alternatives.map(a => ({ texts: [a.text], speaker: a.isUser ? null : a.name }));
+    if (!wanted.some(each => macrosIn(each.texts[0]).length > 0)) return listed;
+    const chat = await chatOfTab(context);
+    const owner = { avatar: listed.card?.avatar ?? chat?.avatar ?? null, groupId: null, pageFacts: undefined };
+    const values = await macroValuesOf(directoriesOf(context.user), owner, wanted);
+    return { ...listed, alternatives: listed.alternatives.map((a, i) => ({ ...a, macros: values[i] })) };
+}
+
 /** @type {import('@st/alternatives/server').Ports} */
 const alternativesPorts = {
     async list(context, target) {
-        if ('message' in target) {
-            const store = await userStore(directoriesOf(context.user), context.user.handle);
-            const found = await store.chats.alternatives({ node_id: target.message });
-            if (!found) return null;
-            return { alternatives: found.alternatives.map(alternativeOf), current: found.selected, card: null, openings: null };
-        }
-        const chat = await chatOfTab(context);
-        if ('opening' in target) {
-            if (!chat) return null;
-            const card = chat.avatar ? await readCardGreetings(chat.store, chat.avatar) : null;
-            const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, ...(card ? { card } : {}) });
-            return {
-                alternatives: openings.alternatives.map(alternativeOf),
-                current: openings.total > 0 ? openings.default_index : null,
-                card: card && chat.avatar ? { avatar: chat.avatar, greetings: card.texts, defaultPosition: card.defaultIndex } : null,
-                openings: null,
-            };
-        }
-        const store = chat?.store ?? await userStore(directoriesOf(context.user), context.user.handle);
-        const card = await readCardGreetings(store, target.greetings);
-        if (!card) return null;
-        const inChat = chat && chat.avatar === target.greetings
-            ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, card })
-            : null;
-        return {
-            alternatives: card.texts.map(text => ({ nodeId: null, text, name: card.name, isUser: false, isSystem: false, date: null })),
-            current: card.defaultIndex,
-            card: { avatar: target.greetings, greetings: card.texts, defaultPosition: card.defaultIndex },
-            openings: inChat ? inChat.alternatives.map(entry => (typeof entry.mes === 'string' ? entry.mes : '')) : null,
-        };
+        return withMacroValues(context, await listedAlternatives(context, target));
     },
     hash: text => hashGreetingText(text),
     counts: {

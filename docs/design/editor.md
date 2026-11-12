@@ -67,8 +67,9 @@ The screen shows the stored text.
   the model receives. `allow_name2_display` stays for what it also is: whether a reply keeps a leading `Name:` when
   it arrives.
 - Every macro in every text is drawn as its value (Editing and reading), not only in the first message. The values
-  are the server's (`/api/macros/values`), learned for the messages being printed before they are drawn, so a text is
-  drawn whole.
+  are the server's, sent with the messages in the answer that delivers them (`extra.macro_values`, derived and never
+  stored): opening a chat, alternatives, openings, an edit, a stored reply. A settings change is answered with the
+  values of the macros the chat shows, so a persona switch redraws them without a request of its own.
 - Passes that exist only because HTML is edited as a string go: `align*` to `$$`, `&amp;` in code, removing every
   U+200B, U+FFFE as a quote, trimming the result.
 

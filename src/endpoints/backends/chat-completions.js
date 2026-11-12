@@ -86,7 +86,7 @@ import { getCookieSecret } from '../../users.js';
 import { fetchGoogleModels, GoogleModelsHttpError } from './google-models.js';
 import { encodeContent, encodeIndexFrame, encodeReasoningFrame, encodeStoredReplyFrame, encodeToolCallDeltaFrame, encodeControlFrame, createGenerationRecord, createResumableWriter, detachFromResponse, writeStoredMessagesFrame } from './llamacpp-compact-stream.js';
 import { withGenerationStop, generationIdFor, isGenerationStopped, onGenerationStopFlush, stoppableController } from '../../generation-stop.js';
-import { macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
+import { pageFactsOf, macroVariableChanges, storeMacroVariables } from '../../macro-facts.js';
 import { fetchOutgoing } from '../../outgoing-fetch.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
@@ -3187,7 +3187,7 @@ export const generateChatCompletion = withGenerationStop(async function (request
             if (!skipPersistence) {
                 chat.session.actor();
                 pendingAssistantPersist = {
-                    chat, directories, anchorNodeId: replyAnchorNodeId, name2: built.name2,
+                    chat, directories, pageFacts: pageFactsOf(request), anchorNodeId: replyAnchorNodeId, name2: built.name2,
                     isSwipe, isContinue, anchorContent: continuesUserMessage ? userMessage : built.anchorContent,
                     activations: built.activations,
                     sentNodeId: replyAnchorNodeId !== built.anchorNodeId ? replyAnchorNodeId : null,
