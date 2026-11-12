@@ -378,6 +378,32 @@ pub static KINDS: &[Kind] = &[
         internal: false,
     },
     Kind {
+        name: "draftValue",
+        base: 1800,
+        slots: &[
+            req("at", Ty::Sel(HANG)),
+            opt("greeting", Ty::UInt),
+            req("text", Ty::Text),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
+    Kind {
+        name: "draftEdit",
+        base: 1816,
+        slots: &[
+            req("at", Ty::Sel(HANG)),
+            opt("greeting", Ty::UInt),
+            req("offset", Ty::UInt),
+            req("removed", Ty::UInt),
+            req("text", Ty::Text),
+            opt("session", Ty::Id(Space::Position)),
+            opt("user", Ty::Id(Space::User)),
+        ],
+        internal: false,
+    },
+    Kind {
         name: "forkSelection",
         base: 7,
         slots: &[

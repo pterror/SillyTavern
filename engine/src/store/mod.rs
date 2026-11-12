@@ -8,6 +8,7 @@ pub mod chat_search;
 pub mod choices;
 pub mod commit_checks;
 pub mod derive;
+pub mod drafts;
 pub mod entry_label;
 pub mod entry_page;
 pub mod history;
@@ -2070,6 +2071,8 @@ mod references_tests;
 mod relations_tests;
 #[cfg(test)]
 mod searched_tests;
+#[cfg(test)]
+mod drafts_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]

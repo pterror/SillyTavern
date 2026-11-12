@@ -367,6 +367,19 @@ for (const [name, engine] of Object.entries(bindings)) {
         assert.deepEqual(await store.chatRead('history', { session: 1n, limit: 10 }), [{ n: 1, target: 1n, tree: null, gone: false }]);
         assert.equal((await store.chatRead('recent', { limit: 10 }))[0].session, 1n);
         assert.deepEqual(await store.chatRead('messageCount', { tree: 3n, at: 1n }), { count: 2, estimate: false });
+        await store.commit([
+            { kind: 'entityCreate', entity: 40n, type: 0, key: 'drafted.png', added: 0 },
+            { kind: 'draftValue', message: 1n, text: 'after reply one' },
+            { kind: 'draftValue', tree: 40n, text: 'at the root' },
+            { kind: 'draftValue', tree: 40n, greeting: 2, text: 'after greeting 2' },
+            { kind: 'draftEdit', tree: 40n, greeting: 2, offset: 0, removed: 1, text: 'A' },
+        ]);
+        assert.equal(await store.chatRead('draft', { message: 1n }), 'after reply one');
+        assert.equal(await store.chatRead('draft', { message: 0n }), null);
+        assert.equal(await store.chatRead('draft', { tree: 40n }), 'at the root');
+        assert.equal(await store.chatRead('draft', { tree: 40n, greeting: 2 }), 'After greeting 2');
+        await store.commit([{ kind: 'draftValue', message: 1n, text: '' }]);
+        assert.equal(await store.chatRead('draft', { message: 1n }), null);
         assert.deepEqual(await store.chatRead('ids', { space: 1, keys: ['0190a1b2-0000-7000-8000-00000000000a', 'nope'] }), [1n, null]);
         assert.deepEqual(await store.chatRead('keyStates', { space: 1, keys: ['0190a1b2-0000-7000-8000-00000000000a', 'nope'] }), [{ id: 1n }, null]);
         assert.deepEqual(await store.chatRead('nextIds', {}), { message: 3n, position: 10n, user: 2n, change: 2n });

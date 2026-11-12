@@ -2502,6 +2502,16 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "draft" => {
+            use crate::store::drafts::Owner;
+            let owner = match (opt_integer(a, "message")?, opt_integer(a, "tree")?, opt_integer(a, "greeting")?) {
+                (Some(m), None, None) => Owner::Message(m),
+                (None, Some(t), None) => Owner::Root(t),
+                (None, Some(t), Some(g)) => Owner::Greeting(t, g),
+                _ => return Err(invalid("a draft is read by message, or by tree with or without greeting".into())),
+            };
+            Box::new(move |s| s.chat_read(|v| cr::draft(v, owner)).map(JsTree))
+        }
         "openingChoice" => {
             let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
             Box::new(move |s| {

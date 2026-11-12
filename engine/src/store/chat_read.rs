@@ -704,6 +704,10 @@ pub fn sent(view: &View, owner: u64, keys: &[Vec<u8>]) -> Result<Js, StoreError>
     Ok(Js::Arr(out))
 }
 
+pub fn draft(view: &View, o: super::drafts::Owner) -> Result<Js, StoreError> {
+    Ok(super::drafts::draft(view, o)?.map_or(Js::Null, Js::Text))
+}
+
 pub fn conversation_name(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
     Ok(sessions::convo_name(view, s, tree)?.map_or(Js::Null, Js::Text))
 }
