@@ -109,7 +109,6 @@ for (const autoParse of [false, true]) {
             const at = context.chat.findIndex(m => !m.is_user && m.mes?.includes('Two days'));
             const { updateMessageBlock } = await import('/script.js');
             updateMessageBlock(at, context.chat[at]);
-            await context.eventSource.emit(context.eventTypes.MESSAGE_UPDATED, at);
         });
         await expect.poll(() => replyState(page, avatar)).toEqual(WANT);
 

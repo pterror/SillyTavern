@@ -1,5 +1,5 @@
 import { SlashCommandParser } from './SlashCommandParser.js';
-import { addOneMessage, default_avatar, extension_prompts, extractMessageBias, generateQuietPrompt, getCurrentCharacter, characterAvatar, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, storeSentMessage, substituteParams, system_avatar, system_message_types } from '../../script.js';
+import { addOneMessage, default_avatar, extension_prompts, extractMessageBias, generateQuietPrompt, getCurrentCharacter, characterAvatar, name2, neutralCharacterName, reloadCurrentChat, removeMacros, setExtensionPrompt, storeSentMessage, system_avatar, system_message_types } from '../../script.js';
 import { chat, chat_metadata } from '../chat-state.js';
 import { eventSource, event_types } from '../events.js';
 import { getMessageTimeStamp } from '../RossAscends-mods.js';
@@ -187,12 +187,11 @@ export async function sendMessageAs(args, text) {
         is_user: false,
         is_system: isSystem,
         send_date: getMessageTimeStamp(),
-        mes: substituteParams(mesText),
+        mes: mesText,
         force_avatar: force_avatar,
         force_avatar_url: force_avatar_url,
         original_avatar: original_avatar,
         extra: {
-            bias: bias.trim().length ? bias : null,
             gen_id: Date.now(),
             isSmallSys: compact,
             api: 'manual',
@@ -253,11 +252,10 @@ export async function sendNarratorMessage(args, text) {
         is_user: false,
         is_system: isSystem,
         send_date: getMessageTimeStamp(),
-        mes: substituteParams(text.trim()),
+        mes: text.trim(),
         force_avatar: system_avatar,
         extra: {
             type: system_message_types.NARRATOR,
-            bias: bias.trim().length ? bias : null,
             gen_id: Date.now(),
             isSmallSys: compact,
             api: 'manual',

@@ -50,6 +50,20 @@ export function registerCoreMacros() {
         handler: () => '',
     });
 
+    MacroRegistry.registerMacro('bias', {
+        category: MacroCategory.UTILITY,
+        description: 'Starts the reply with its text, from the last message that has one. Sends nothing where it is written.',
+        unnamedArgs: [
+            {
+                name: 'text',
+                description: 'What the reply starts with',
+                optional: true,
+            },
+        ],
+        returns: '',
+        handler: () => '',
+    });
+
     MacroRegistry.registerMacro('trim', {
         category: MacroCategory.UTILITY,
         description: 'Trims whitespace. Non-scoped: trims newlines around the macro (post-processing). Scoped: returns the content (auto-trimmed by the engine).',

@@ -41,7 +41,8 @@ function extractMessageBias(message) {
  * @typedef {object} GetBiasStringsParams
  * @property {string} textareaText
  * @property {string} [type]
- * @property {{is_user?: boolean, is_system?: boolean, extra?: {type?: string, bias?: string}}[]} [chat]
+ * @property {{is_user?: boolean, is_system?: boolean, mes?: string, extra?: {type?: string}}[]} [chat] the bias is read from the
+ *   `{{bias}}` the last message by the user (or a narrator) wrote
  * @property {string} [userPromptBias]
  * @property {import('./macro-substitution.js').SubstituteParamsContext} [macroContext]
  */
@@ -72,9 +73,7 @@ export function getBiasStrings({ textareaText, type, chat = [], userPromptBias =
                 continue;
             }
             if (mes && (mes.is_user || mes.is_system || mes.extra?.type === system_message_types.NARRATOR)) {
-                if (mes.extra?.bias?.trim()?.length > 0) {
-                    promptBias = mes.extra.bias;
-                }
+                promptBias = extractMessageBias(String(mes.mes ?? ''));
                 break;
             }
         }

@@ -1292,8 +1292,7 @@ function setReasoningEventHandlers() {
         }
 
         const textarea = messageBlock.find('.reasoning_edit_textarea');
-        let newReasoning = String(textarea.val());
-        newReasoning = substituteParams(newReasoning);
+        const newReasoning = String(textarea.val());
         unmountChatEditor(textarea[0]);
         textarea.remove();
         if (newReasoning === reasoningOf(message.extra)) {
@@ -1543,8 +1542,8 @@ export function markServerFinishedReply(messageId) {
 }
 
 function registerReasoningAppEvents() {
-    const eventHandler = (/** @type {string} */ type, /** @type {number} */ idx) => {
-        if (type === event_types.MESSAGE_RECEIVED && serverFinishedReplies.delete(idx)) {
+    const splitArrivedReply = (/** @type {number} */ idx) => {
+        if (serverFinishedReplies.delete(idx)) {
             console.debug('[Reasoning] The server already split the reasoning off message', idx);
             return;
         }
@@ -1553,7 +1552,7 @@ function registerReasoningAppEvents() {
         }
 
         console.debug('[Reasoning] Auto-parsing reasoning block for message', idx);
-        const prefix = type === event_types.MESSAGE_RECEIVED ? PromptReasoning.getLatestPrefix() : '';
+        const prefix = PromptReasoning.getLatestPrefix();
         let message = chat[idx];
 
         if (!message) {
@@ -1592,9 +1591,7 @@ function registerReasoningAppEvents() {
         }
     };
 
-    for (const event of [event_types.MESSAGE_RECEIVED, event_types.MESSAGE_UPDATED]) {
-        eventSource.on(event, (/** @type {number} */ idx) => eventHandler(event, idx));
-    }
+    eventSource.on(event_types.MESSAGE_RECEIVED, splitArrivedReply);
 
     for (const event of [event_types.GENERATION_STOPPED, event_types.GENERATION_ENDED, event_types.CHAT_CHANGED]) {
         eventSource.on(event, () => PromptReasoning.clearLatest());

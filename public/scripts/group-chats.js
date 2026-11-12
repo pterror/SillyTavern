@@ -60,7 +60,6 @@ import {
     cancelTtsPlay,
     displayPastChats,
     sendMessageAsUser,
-    getBiasStrings,
     saveMetadata,
     deactivateSendButtons,
     activateSendButtons,
@@ -973,8 +972,7 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             //toastr.warning('All group members are disabled. Enable at least one to get a reply.');
 
             // Send user message as is
-            const bias = getBiasStrings(userInput, type);
-            await sendMessageAsUser(userInput, bias.messageBias);
+            await sendMessageAsUser(userInput);
             await saveMetadata();
             $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
         }

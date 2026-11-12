@@ -144,7 +144,6 @@ import {
     escapeHtml,
     equalsIgnoreCaseAndAccents,
     importFromExternalUrl,
-    trimSpaces,
     clamp,
     shakeElement,
     createTimeout,
@@ -3891,40 +3890,6 @@ export function triggerAutoContinue(messageChunk, isImpersonate, api) {
     }
 }
 
-export function getBiasStrings(textareaText, type) {
-    if (type == 'impersonate' || type == 'continue') {
-        return { messageBias: '', promptBias: '', isUserPromptBias: false };
-    }
-
-    let promptBias = '';
-    let messageBias = extractMessageBias(textareaText);
-
-    // If user input is not provided, retrieve the bias of the most recent relevant message
-    if (!textareaText) {
-        for (let i = chat.length - 1; i >= 0; i--) {
-            const mes = chat[i];
-            if (type === 'swipe' && chat.length - 1 === i) {
-                continue;
-            }
-            if (mes && (mes.is_user || mes.is_system || mes.extra?.type === system_message_types.NARRATOR)) {
-                if (mes.extra?.bias?.trim()?.length > 0) {
-                    promptBias = mes.extra.bias;
-                }
-                break;
-            }
-        }
-    }
-
-    promptBias = messageBias || promptBias || power_user.user_prompt_bias || '';
-    const isUserPromptBias = promptBias === power_user.user_prompt_bias;
-
-    // Substitute params for everything
-    messageBias = substituteParams(messageBias);
-    promptBias = substituteParams(promptBias);
-
-    return { messageBias, promptBias, isUserPromptBias };
-}
-
 /**
  * Removes all {{macros}} from a string.
  * @param {string} str String to remove macros from.
@@ -3936,8 +3901,8 @@ export function removeMacros(str) {
 
 /**
  * Inserts a user message into the chat history.
- * @param {string} messageText Message text.
- * @param {string} messageBias Message bias.
+ * @param {string} messageText Message text, stored as written: its macros are filled in when it is sent, and a
+ *   `{{bias}}` in it is read from there for the reply.
  * @param {number} [insertAt] Optional index to insert the message at.
  * @param {boolean} [compact] Send as a compact display message.
  * @param {string} [name] Name of the user sending the message. Defaults to name1.
@@ -3949,13 +3914,13 @@ export function removeMacros(str) {
  *  (src/chat-engine.js) - see Generate()'s own `willUseRawAction` local for the full rationale.
  * @returns {Promise<any>} A promise that resolves to the message when it is inserted.
  */
-export async function sendMessageAsUser(messageText, messageBias, insertAt = null, compact = false, name = name1, avatar = user_avatar, skipTreePersistence = false) {
+export async function sendMessageAsUser(messageText, insertAt = null, compact = false, name = name1, avatar = user_avatar, skipTreePersistence = false) {
     const message = {
         name: name,
         is_user: true,
         is_system: false,
         send_date: getMessageTimeStamp(),
-        mes: substituteParams(messageText),
+        mes: messageText,
         persona: avatar,
         extra: {
             isSmallSys: compact,
@@ -3965,11 +3930,6 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
     // Lock user avatar to a persona.
     if (personaStore.has(avatar)) {
         Object.assign(message, personaAvatar(avatar));
-    }
-
-    if (messageBias) {
-        message.extra.bias = messageBias;
-        message.mes = removeMacros(message.mes);
     }
 
     await populateFileAttachment(message);
@@ -6372,66 +6332,17 @@ function bindSharedSettings(settings) {
     settings.watch(['power_user.max_context_unlocked'], () => switchMaxContextSize());
 }
 
-// Common code for message editor done and auto-save
+/**
+ * Takes the edit box's text into the message exactly as written: an edit fills in no macros and trims nothing
+ * @param {JQuery<HTMLElement>} div
+ * @returns {{ mesBlock: JQuery<HTMLElement>, text: string, mes: ChatMessage }}
+ */
 function applyMessageEdit(div) {
     const mesBlock = div.closest('.mes_block');
-    let text = mesBlock.find('.edit_textarea').val()
-        ?? mesBlock.find('.mes_text').text();
-    const mesElement = div.closest('.mes');
-    const mesId = Number(mesElement.attr('mesid'));
-    let mes = chat[mesId];
-
-    if (!mes.extra || typeof mes.extra !== 'object') {
-        updateMessage(mesId, { extra: {} });
-        mes = chat[mesId];
-    }
-
-    const cardGreeting = cardGreetingOfEditedOpening(mesId, mes, String(text));
-    if (cardGreeting !== null) {
-        return finishMessageEdit(mesBlock, mesId, mes, cardGreeting, '');
-    }
-
-    if (power_user.trim_spaces) {
-        text = text.trim();
-    }
-
-    const keepsMacros = mesId === 0 && !mes.is_user && !mes.is_system;
-    const bias = substituteParams(extractMessageBias(text));
-    if (!keepsMacros) {
-        text = substituteParams(text);
-        if (bias) {
-            text = removeMacros(text);
-        }
-    }
-
-    return finishMessageEdit(mesBlock, mesId, mes, text, bias);
-}
-
-/**
- * @param {number} mesId
- * @param {ChatMessage} mes
- * @param {string} text
- * @returns {string|null}
- */
-function cardGreetingOfEditedOpening(mesId, mes, text) {
-    if (mesId !== 0 || mes.is_user || mes.is_system || (selected_group != null && selected_group !== '')) return null;
-    const character = getCurrentCharacter();
-    if (!character) return null;
-    const same = power_user.trim_spaces
-        ? (/** @type {string} */ greeting) => greeting.trim() === text.trim()
-        : (/** @type {string} */ greeting) => greeting === text;
-    const greeting = cardToGreetingsModel(character).greetings.find(g => typeof g === 'string' && g !== '' && same(g));
-    return greeting ?? null;
-}
-
-/**
- * @param {JQuery<HTMLElement>} mesBlock
- * @param {number} mesId
- * @param {ChatMessage} mes
- * @param {string} text
- * @param {string} bias
- */
-function finishMessageEdit(mesBlock, mesId, mes, text, bias) {
+    const text = String(mesBlock.find('.edit_textarea').val() ?? mesBlock.find('.mes_text').text());
+    const mesId = Number(div.closest('.mes').attr('mesid'));
+    const mes = chat[mesId];
+    /** @type {Partial<ChatMessage>} */
     const editUpdates = { mes: text };
     if (mes.swipe_id !== undefined) {
         ensureSwipes(mes, mesId);
@@ -6439,18 +6350,10 @@ function finishMessageEdit(mesBlock, mesId, mes, text, bias) {
         newSwipes[mes.swipe_id] = text;
         editUpdates.swipes = newSwipes;
     }
-
-    const biasValue = (mes?.is_system || mes?.is_user || mes.extra?.type === system_message_types.NARRATOR)
-        ? (bias ?? null) : null;
-    editUpdates.extra = { ...(mes.extra || {}), bias: biasValue };
-
     updateMessage(mesId, editUpdates);
-    mes = chat[mesId];
     syncMesToSwipe(mesId);
-
     chat_metadata.tainted = true;
-
-    return { mesBlock, text, mes, bias };
+    return { mesBlock, text, mes: chat[mesId] };
 }
 
 function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
@@ -6554,7 +6457,7 @@ export async function messageEdit(editMessageId) {
     editTextArea.dataset.macros = '';
     messageText.append(editTextArea);
 
-    const text = trimSpaces(editMessage.mes || '');
+    const text = String(editMessage.mes ?? '');
     const $editTextArea = $(editTextArea);
     $editTextArea.val(text);
 
@@ -6630,7 +6533,6 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
         reasoningEditDone.trigger('click');
     }
 
-    await eventSource.emit(event_types.MESSAGE_UPDATED, messageId);
     if (messageId == this_edit_mes_id) {
         this_edit_mes_id = undefined;
     } else {
@@ -6675,7 +6577,6 @@ async function messageEditDone(div) {
         reasoningEditDone.trigger('click');
     }
 
-    await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
     const editedMesId = this_edit_mes_id;
     this_edit_mes_id = undefined;
     cancelDebounce(messageEditAutoSaveDebounced);

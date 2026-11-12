@@ -6,7 +6,6 @@ export const event_types = {
     MESSAGE_RECEIVED: 'message_received',
     MESSAGE_EDITED: 'message_edited',
     MESSAGE_DELETED: 'message_deleted',
-    MESSAGE_UPDATED: 'message_updated',
     IMPERSONATE_READY: 'impersonate_ready',
     CHAT_CHANGED: 'chat_id_changed',
     // TODO: Naming convention is inconsistent with other events

@@ -143,7 +143,7 @@ async function askCharacter(args, text) {
 
     if (text) {
         const mesText = text.trim();
-        await sendMessageAsUser(mesText, '');
+        await sendMessageAsUser(mesText);
     }
 
     setCharacterId(character);
@@ -260,7 +260,6 @@ async function triggerGenerationCallback(args, value) {
 async function sendUserMessageCallback(args, text) {
     text = String(text ?? '').trim();
     const compact = isTrueBoolean(args?.compact);
-    const bias = extractMessageBias(text);
 
     let insertAt = Number(args?.at);
 
@@ -272,9 +271,9 @@ async function sendUserMessageCallback(args, text) {
     if ('name' in args) {
         const name = args.name || '';
         const avatar = findPersona({ name })?.avatar || user_avatar;
-        message = await sendMessageAsUser(text, bias, insertAt, compact, name, avatar);
+        message = await sendMessageAsUser(text, insertAt, compact, name, avatar);
     } else {
-        message = await sendMessageAsUser(text, bias, insertAt, compact);
+        message = await sendMessageAsUser(text, insertAt, compact);
     }
 
     return await slashCommandReturnHelper.doReturn(args.return ?? 'none', message, { objectToStringFunc: x => x.mes });
@@ -463,7 +462,6 @@ async function messageRoleCallback(args, role) {
         existingMessage.after(newMessageElement);
         existingMessage.remove();
     }
-    await eventSource.emit(event_types.MESSAGE_UPDATED, modifyAt);
     await chatOpEdit(modifyAt).catch(error =>
         console.error('Could not save the role change for that message:', error));
 
@@ -530,7 +528,6 @@ async function messageNameCallback(args, name) {
         existingMessage.after(newMessageElement);
         existingMessage.remove();
     }
-    await eventSource.emit(event_types.MESSAGE_UPDATED, modifyAt);
     await chatOpEdit(modifyAt).catch(error =>
         console.error('Could not save the name change for that message:', error));
 

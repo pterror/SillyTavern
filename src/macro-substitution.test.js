@@ -48,6 +48,7 @@ assert.equal(substituteParams('{{custom}}', { dynamicMacros: { custom: () => 'fn
 
 assert.equal(substituteParams('a{{newline}}b'), 'a\nb');
 assert.equal(substituteParams('a{{noop}}b'), 'ab');
+assert.equal(substituteParams('Go. {{bias "[calm]"}}'), 'Go. ', 'a bias sends nothing where it is written');
 assert.equal(substituteParams('{{reverse:abc}}'), 'cba');
 assert.equal(substituteParams('before{{//a comment}}after'), 'beforeafter');
 assert.equal(substituteParams('no macros here'), 'no macros here');

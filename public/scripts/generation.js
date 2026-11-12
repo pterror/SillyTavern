@@ -1,9 +1,9 @@
 import {
-    cleanUpMessage, deactivateSendButtons, dropLastMessage, extension_prompts, extractJsonFromData, extractMessageBias, extractMessageFromData,
+    cleanUpMessage, deactivateSendButtons, dropLastMessage, extension_prompts, extractJsonFromData, extractMessageFromData,
     extractMultiSwipes, extractTitleFromData, getCurrentCharacter, getCurrentDraftContext, hideStopButton, hideSwipeButtons,
-    online_status, parseAndSaveLogprobs, processCommands, removeLastMessage, removeMacros, resolveClientToolHandoffLoop,
+    online_status, parseAndSaveLogprobs, processCommands, removeLastMessage, resolveClientToolHandoffLoop,
     saveReply, sendMessageAsUser, setGenerationProgress, setSendButtonState, showStopButton, storeSentMessage,
-    StreamingProcessor, substituteParams, swipe, triggerAutoContinue, unblockGeneration, updateMessageBlock,
+    StreamingProcessor, swipe, triggerAutoContinue, unblockGeneration, updateMessageBlock,
     updateMessageItemizedPromptButton, takePendingSettingsChanges, noteSettingsChangesSaved, settingsChangesConflicted,
     returnPendingSettingsChanges,
 } from '../script.js';
@@ -25,7 +25,6 @@ import { generatedTextFiltered, playMessageSound, power_user } from './power-use
 import { extractReasoningFromData, extractReasoningSignatureFromData, markServerFinishedReply, PromptReasoning } from './reasoning.js';
 import { reasoningOf } from './reasoning-block.js';
 import { takeStoredReply } from './llamacpp-compact-stream.js';
-import { sendSystemMessage, system_message_types } from './system-messages.js';
 import { ToolManager } from './tool-calling.js';
 import { REPLY_NOT_SAVED_EVENT, REPLY_STORED_EVENT } from './tokenizer-notices.js';
 import { uuidv4 } from './utils.js';
@@ -703,15 +702,10 @@ async function generateOnce(type, options = {}, pendingSends = []) {
 
     deactivateSendButtons();
 
-    const messageBias = isImpersonate || isContinue ? '' : substituteParams(extractMessageBias(textareaText));
     const noAttachTypes = ['regenerate', 'swipe', 'impersonate', 'quiet', 'continue'];
     let sentUserMessage;
     if ((textareaText != '' || (hasPendingFileAttachment() && !noAttachTypes.includes(type))) && automatic_trigger !== true && type !== 'quiet' && !depth) {
-        if (messageBias && !removeMacros(textareaText)) {
-            sendSystemMessage(system_message_types.GENERIC, ' ', { bias: messageBias });
-        } else {
-            sentUserMessage = await sendMessageAsUser(textareaText, messageBias, /** @type {number} */ (/** @type {unknown} */ (null)), false, name1, user_avatar, true);
-        }
+        sentUserMessage = await sendMessageAsUser(textareaText, /** @type {number} */ (/** @type {unknown} */ (null)), false, name1, user_avatar, true);
     }
 
     if (sentDraftContext && textareaText) {

@@ -36,20 +36,20 @@ assert.deepEqual(
 
 {
     const chat = [
-        { is_user: true, extra: { bias: '' } },
-        { is_user: true, extra: { bias: ' [angry]' } },
+        { is_user: true, mes: 'calm', extra: {} },
+        { is_user: true, mes: 'Go. {{bias "[angry]"}}', extra: { bias: ' [ignored]' } },
         { is_user: false },
     ];
     const result = getBiasStrings({ textareaText: '', type: 'send', chat });
     assert.equal(result.messageBias, '', 'no textarea -> no messageBias');
-    assert.equal(result.promptBias, ' [angry]', 'falls back to most recent eligible message with a bias');
+    assert.equal(result.promptBias, ' [angry]', 'reads the bias the most recent eligible message writes, not extra.bias');
     assert.equal(result.isUserPromptBias, false);
 }
 
 {
     const chat = [
-        { is_user: true, extra: { bias: ' [old]' } },
-        { is_user: true, extra: { bias: ' [newest, should be skipped for swipe]' } },
+        { is_user: true, mes: '{{bias "[old]"}}' },
+        { is_user: true, mes: '{{bias "[newest, should be skipped for swipe]"}}' },
     ];
     const result = getBiasStrings({ textareaText: '', type: 'swipe', chat });
     assert.equal(result.promptBias, ' [old]', 'swipe skips the last chat entry');
