@@ -1,7 +1,10 @@
 import {
     commands as cmCommands,
+    grammarLanguage,
+    keyHints,
     keybinds,
     lookChanged,
+    lookDecorations,
     markdownFormat,
     markdownPaste,
     modifierHeld,
@@ -210,10 +213,10 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
             latest = id;
             edited(current);
         },
-        grammar: grammarOf(setup.grammar),
-        look: lookOf(setup, pill),
-        textClass: TEXT_CLASS,
         extensions: [
+            grammarLanguage(grammarOf(setup.grammar)),
+            lookDecorations(lookOf(setup, pill)),
+            EditorView.contentAttributes.of({ class: TEXT_CLASS }),
             history(),
             keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
             EditorView.lineWrapping,
@@ -234,7 +237,8 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
         const binding = KEYS.find(key => key.id === id);
         return binding ? formatSteps(binding.keys, step => formatKey(step)) : undefined;
     };
-    const bar = toolbar({ view, tools: shownTools, keyOf, held: shortcutsShown });
+    const bar = toolbar({ view, tools: shownTools });
+    const stopHints = keyHints({ buttons: bar.buttons, keyOf, held: shortcutsShown });
     bar.element.classList.add('chat-editor-toolbar');
     bar.element.setAttribute('aria-label', page.t`Formatting`);
     holder.prepend(bar.element);
@@ -259,6 +263,7 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
         redraw,
         stop() {
             stopKeys();
+            stopHints();
             bar.stop();
             made.stop();
             holder.remove();

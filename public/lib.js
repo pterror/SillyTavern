@@ -12,8 +12,9 @@ import Bowser from 'bowser';
 import DiffMatchPatch from 'diff-match-patch';
 import { isProbablyReaderable, Readability } from '@mozilla/readability';
 import { reader } from '@pterror/interact-editor/reader';
-import { markdownGrammar } from '@pterror/interact-markdown/grammar';
-import { definitionOf, markdownLook } from '@pterror/interact-markdown/look';
+import { GFM, parser as markdownParser } from '@lezer/markdown';
+import { htmlInMarkdown } from '@pterror/interact-markdown/html-in-markdown';
+import { definitionOf, gfmLook, htmlLook, markdownLook } from '@pterror/interact-markdown/look';
 import moment from 'moment';
 import seedrandom from 'seedrandom';
 import * as Popper from '@popperjs/core';
@@ -34,8 +35,12 @@ export {
     Readability,
     isProbablyReaderable,
     reader,
-    markdownGrammar,
+    markdownParser,
+    GFM,
+    htmlInMarkdown,
     markdownLook,
+    gfmLook,
+    htmlLook,
     definitionOf,
     moment,
     seedrandom,

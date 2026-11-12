@@ -1,4 +1,4 @@
-import { markdownGrammar, reader } from '../../lib.js';
+import { GFM, htmlInMarkdown, markdownParser, reader } from '../../lib.js';
 import { EMOJIS } from '../emojis.js';
 import { fadeIn } from './fade-in.js';
 import { chatMarkdownExtensions } from './grammar.js';
@@ -36,7 +36,11 @@ export function grammarOf(options) {
     const key = JSON.stringify([options.dialogueQuotes, options.encodeTags, options.escapeLines, options.reasoningMarkers]);
     let grammar = grammars.get(key);
     if (!grammar) {
-        grammar = markdownGrammar(chatMarkdownExtensions({ ...options, emojis: EMOJIS }));
+        grammar = markdownParser.configure([
+            GFM,
+            ...(options.encodeTags ? [] : [htmlInMarkdown]),
+            ...chatMarkdownExtensions({ ...options, emojis: EMOJIS }),
+        ]);
         grammars.set(key, grammar);
     }
     return grammar;

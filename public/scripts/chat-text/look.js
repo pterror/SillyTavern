@@ -1,4 +1,4 @@
-import { definitionOf, markdownLook } from '../../lib.js';
+import { definitionOf, gfmLook, htmlLook, markdownLook } from '../../lib.js';
 import { htmlAttributeRegex, parseImageSize } from './grammar.js';
 
 /**
@@ -103,7 +103,7 @@ function markdownBlockElement(block, read, html) {
  * @returns {Look}
  */
 export function chatLook({ html, emojis, macro, pill, reasoningMarkers = [] }) {
-    const base = markdownLook(html);
+    const base = { ...markdownLook(html), ...gfmLook(html), ...htmlLook(html) };
     const markers = new Set(reasoningMarkers.map(marker => marker.trim()).filter(Boolean));
     /**
      * @param {SyntaxNode} node an HTML element or one of its tags

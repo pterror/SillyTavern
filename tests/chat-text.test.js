@@ -11,9 +11,13 @@ jest.unstable_mockModule('../public/lib.js', async () => {
     const { default: css } = await import('@adobe/css-tools');
     const { default: hljs } = await import('highlight.js');
     const { reader } = await import('@pterror/interact-editor/reader');
-    const { markdownGrammar } = await import('@pterror/interact-markdown/grammar');
-    const { definitionOf, markdownLook } = await import('@pterror/interact-markdown/look');
-    return { DOMPurify: createDOMPurify(/** @type {any} */ (window)), css, hljs, reader, markdownGrammar, markdownLook, definitionOf };
+    const { GFM, parser: markdownParser } = await import('@lezer/markdown');
+    const { htmlInMarkdown } = await import('@pterror/interact-markdown/html-in-markdown');
+    const { definitionOf, gfmLook, htmlLook, markdownLook } = await import('@pterror/interact-markdown/look');
+    return {
+        DOMPurify: createDOMPurify(/** @type {any} */ (window)), css, hljs, reader,
+        markdownParser, GFM, htmlInMarkdown, markdownLook, gfmLook, htmlLook, definitionOf,
+    };
 });
 /** @type {import('../public/scripts/macro-pill.js').Translate} */
 const translate = (strings, ...values) => String.raw({ raw: strings }, ...values);
