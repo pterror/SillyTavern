@@ -10,6 +10,7 @@ import { substituteParams } from '../macro-substitution.js';
 import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
 import { resolveTextGenBackend } from '../textgen-backend-resolve.js';
 import { storeRoute } from '../user-stores.js';
+import { carriedSettings } from './settings.js';
 import { isSafeMacro, macrosIn, withMacroValues } from '../../public/scripts/safe-macros.js';
 
 export const router = express.Router();
@@ -109,7 +110,7 @@ export async function withSafeMacrosFilled(request, scope, texts) {
     return texts.map(text => withMacroValues(text, source => values.get(source)));
 }
 
-router.post('/values', storeRoute('filling in macros', async (request, response) => {
+router.post('/values', carriedSettings('no macros were filled in'), storeRoute('filling in macros', async (request, response) => {
     const macros = request.body?.macros;
     if (!Array.isArray(macros) || macros.length > MAX_MACROS || !macros.every(m => typeof m === 'string' && m.length <= MAX_MACRO_LENGTH)) {
         return response.status(400).send({ error: `macros must be a list of at most ${MAX_MACROS} texts` });

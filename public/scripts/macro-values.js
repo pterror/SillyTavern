@@ -5,6 +5,40 @@ import { macrosIn, mentionAboutMacro } from './safe-macros.js';
 let pageMacroFacts = () => ({});
 
 /**
+ * @typedef {{ keys: Record<string, any>, expectedHashes: Record<string, number> }} SettingsChanges
+ * @typedef {object} SettingsCarrier the page's settings changes the server hasn't been sent, which a request for values
+ *   carries so the values are filled in from the settings as the page has them
+ * @property {() => SettingsChanges | undefined} take
+ * @property {(answer: any, sent: Record<string, any>) => Promise<void>} saved
+ * @property {(conflictingKeys?: string[]) => Promise<void>} conflicted
+ * @property {(changes: SettingsChanges) => void} returned
+ */
+
+/** @type {SettingsCarrier} */
+let settingsCarrier = { take: () => undefined, saved: async () => {}, conflicted: async () => {}, returned: () => {} };
+
+/**
+ * @param {SettingsCarrier} carrier
+ */
+export function setSettingsCarrier(carrier) {
+    settingsCarrier = carrier;
+}
+
+/**
+ * @param {Response} response
+ * @returns {any} the answer to the settings changes a request carried, which the server names in a header
+ */
+function settingsSavedOf(response) {
+    const header = response.headers.get('X-ST-Settings-Saved');
+    if (!header) return null;
+    try {
+        return JSON.parse(decodeURIComponent(header));
+    } catch {
+        return null;
+    }
+}
+
+/**
  * @param {() => import('../../src/macro-facts.js').PageMacroFacts} facts
  */
 export function setPageMacroFacts(facts) {
@@ -43,16 +77,27 @@ async function send(batch) {
     await Promise.resolve();
     batches.delete(JSON.stringify([batch.scope, batch.all]));
     const { macros, scope, all } = batch;
+    const changes = settingsCarrier.take();
+    /** @type {Response | null} */
+    let response = null;
     try {
-        const response = await fetch('/api/macros/values', {
+        response = await fetch('/api/macros/values', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ ...scope, macros, all, macro_facts: pageMacroFacts() }),
+            body: JSON.stringify({ ...scope, macros, all, macro_facts: pageMacroFacts(), ...(changes ? { settings_changes: changes } : {}) }),
         });
+        const answer = await response.json().catch(() => null);
+        if (changes) {
+            const saved = settingsSavedOf(response);
+            if (saved) await settingsCarrier.saved(saved, changes.keys);
+            else if (answer?.settings_not_saved) await settingsCarrier.conflicted(answer.conflictingKeys ?? undefined);
+            else settingsCarrier.returned(changes);
+        }
         if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-        const { values } = await response.json();
+        const values = answer?.values;
         return macros.map((_, i) => (typeof values?.[i] === 'string' ? values[i] : null));
     } catch (error) {
+        if (changes && !response) settingsCarrier.returned(changes);
         console.error('Could not fill in macros:', error);
         return macros.map(() => null);
     }

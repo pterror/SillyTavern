@@ -258,6 +258,7 @@ import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder, pageMacroFacts } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { initMessageText, learnMessageMacros, redrawMessageText, showBiasText, showMessageText } from './scripts/message-text.js';
+import { setSettingsCarrier } from './scripts/macro-values.js';
 import {
     updateMessage,
     updateIn,
@@ -1288,6 +1289,12 @@ async function firstLoadInit() {
         onEditStart: id => { if (id === 'greeting_field') beginGreetingPagerEdit(); },
         onEditEnd: id => { if (id === 'greeting_field') endGreetingPagerEdit(); },
         editorKey: () => (menu_type === 'create' ? '' : getEditorCharacterAvatar()),
+    });
+    setSettingsCarrier({
+        take: takePendingSettingsChanges,
+        saved: noteSettingsChangesSaved,
+        conflicted: settingsChangesConflicted,
+        returned: returnPendingSettingsChanges,
     });
     initChatLiveEditor({
         macroScope: openChatMacroScope,

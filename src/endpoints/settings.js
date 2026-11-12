@@ -364,6 +364,31 @@ export async function applySettingsChanges(request, sent, expectedHashes) {
     return { status: 200, answer: { result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes, ...await shownCountsOf(request) } };
 }
 
+/**
+ * A step that applies the settings changes the page carried with an action before anything is read from the settings,
+ * and names the answer to them in a header; refused changes refuse the action.
+ * @param {string} refused what the page is told did not happen when the changes are refused
+ * @returns {import('express').RequestHandler}
+ */
+export function carriedSettings(refused) {
+    return async function applyCarriedSettings(request, response, next) {
+        const carried = request.body?.settings_changes;
+        if (carried === undefined || carried === null) return next();
+        delete request.body.settings_changes;
+        try {
+            const applied = await applySettingsChanges(request, carried?.keys, carried?.expectedHashes);
+            if (applied.status !== 200) {
+                return response.status(applied.status).send({ ...applied.answer, settings_not_saved: true, error: { message: `The settings changed in another tab or device, so ${refused}.` } });
+            }
+            response.setHeader('X-ST-Settings-Saved', encodeURIComponent(JSON.stringify(applied.answer)));
+            return next();
+        } catch (error) {
+            console.error('Could not apply the settings changes the action carried:', error);
+            return response.status(500).send({ settings_not_saved: true, error: { message: `The settings changes could not be saved, so ${refused}.` } });
+        }
+    };
+}
+
 router.post('/save-partial', async function (request, response) {
     try {
         const { keys: sent, expectedHashes } = request.body ?? {};
