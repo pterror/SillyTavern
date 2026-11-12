@@ -99,9 +99,8 @@ test.describe('Reasoning hidden blocks', () => {
                 second: getComputedStyle(secondDetails).display,
             };
 
-            const textarea = document.createElement('textarea');
-            textarea.className = 'reasoning_edit_textarea';
-            textarea.value = ' ';
+            const textarea = document.createElement('div');
+            textarea.className = 'reasoning_editor';
             firstDetails.querySelector('.mes_reasoning').before(textarea);
 
             const after = {
@@ -143,7 +142,7 @@ test.describe('Reasoning hidden blocks', () => {
                             <div class="mes_reasoning_actions">
                                 <button class="mes_button edit_button mes_reasoning_edit">Edit</button>
                             </div>
-                            <textarea class="reasoning_edit_textarea">\n</textarea>
+                            <div class="reasoning_editor"></div>
                             <div class="mes_reasoning"></div>
                         </details>
                     </div>
@@ -200,14 +199,16 @@ test.describe('Reasoning hidden blocks', () => {
 
             addReasoning.click();
             addReasoning.click();
-            await new Promise(resolve => setTimeout(resolve, 100));
+            for (let waited = 0; waited < 5000 && !chat.querySelector('.reasoning_editor .cm-editor'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
 
-            const textareas = chat.querySelectorAll('.reasoning_edit_textarea');
+            const textareas = chat.querySelectorAll('.reasoning_editor');
             return {
                 addDisplay: getComputedStyle(addReasoning).display,
                 detailsOpen: chat.querySelector('.mes_reasoning_details')?.open,
                 textareaCount: textareas.length,
-                textareaValue: textareas[0]?.value,
+                textareaValue: textareas[0] && (await import('/live-editor-lib.js')).view.EditorView.findFromDOM(textareas[0].querySelector('.cm-editor') ?? textareas[0])?.state.doc.toString(),
             };
         });
 
@@ -262,6 +263,9 @@ test.describe('Reasoning hidden blocks', () => {
             };
 
             closeAll.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
 
             return {
@@ -298,23 +302,29 @@ test.describe('Reasoning hidden blocks', () => {
             }
 
             addReasoning.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
             const details = chat.querySelector('.mes_reasoning_details');
-            const textarea = chat.querySelector('.reasoning_edit_textarea');
+            const textarea = chat.querySelector('.reasoning_editor');
             const beforeDone = {
                 detailsOpen: details?.open,
-                textareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
-                textareaValue: textarea?.value,
+                textareaCount: chat.querySelectorAll('.reasoning_editor').length,
+                textareaValue: textarea && (await import('/live-editor-lib.js')).view.EditorView.findFromDOM(textarea.querySelector('.cm-editor') ?? textarea)?.state.doc.toString(),
             };
 
             chat.querySelector('.mes_reasoning_edit_done')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
 
             return {
                 beforeDone,
                 afterDone: {
                     detailsOpen: details?.open,
-                    textareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
+                    textareaCount: chat.querySelectorAll('.reasoning_editor').length,
                 },
             };
         }, createEditableReasoningMessageHtml());
@@ -345,21 +355,27 @@ test.describe('Reasoning hidden blocks', () => {
             }
 
             addReasoning.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
             const details = chat.querySelector('.mes_reasoning_details');
             const beforeCancel = {
                 detailsOpen: details?.open,
-                textareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
+                textareaCount: chat.querySelectorAll('.reasoning_editor').length,
             };
 
             chat.querySelector('.mes_reasoning_edit_cancel')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
 
             return {
                 beforeCancel,
                 afterCancel: {
                     detailsOpen: details?.open,
-                    textareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
+                    textareaCount: chat.querySelectorAll('.reasoning_editor').length,
                 },
             };
         }, createEditableReasoningMessageHtml());
@@ -386,28 +402,40 @@ test.describe('Reasoning hidden blocks', () => {
             chat.innerHTML = messageHtml;
 
             chat.querySelector('.mes_edit_add_reasoning')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
             await scriptModule.messageEdit(0);
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
-            const editTextarea = chat.querySelector('#curEditTextarea');
+            const editTextarea = chat.querySelector('.mes_editor');
             if (editTextarea) {
-                editTextarea.value = 'Foo edited';
+                {
+                    const editorView = (await import('/live-editor-lib.js')).view.EditorView.findFromDOM(editTextarea.querySelector('.cm-editor') ?? editTextarea);
+                    editorView?.dispatch({ changes: { from: 0, to: editorView.state.doc.length, insert: 'Foo edited' } });
+                }
             }
             const beforeDone = {
                 detailsOpen: chat.querySelector('.mes_reasoning_details')?.open,
-                reasoningTextareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
-                messageTextareaCount: chat.querySelectorAll('#curEditTextarea').length,
+                reasoningTextareaCount: chat.querySelectorAll('.reasoning_editor').length,
+                messageTextareaCount: chat.querySelectorAll('.mes_editor').length,
             };
 
             chat.querySelector('.mes_edit_done')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
 
             return {
                 beforeDone,
                 afterDone: {
                     detailsOpen: chat.querySelector('.mes_reasoning_details')?.open,
-                    reasoningTextareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
-                    messageTextareaCount: chat.querySelectorAll('#curEditTextarea').length,
+                    reasoningTextareaCount: chat.querySelectorAll('.reasoning_editor').length,
+                    messageTextareaCount: chat.querySelectorAll('.mes_editor').length,
                     messageValue: context.chat[0]?.mes,
                     reasoningValue: context.chat[0]?.extra?.reasoning,
                 },
@@ -440,28 +468,40 @@ test.describe('Reasoning hidden blocks', () => {
             chat.innerHTML = messageHtml;
 
             chat.querySelector('.mes_edit_add_reasoning')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
             await scriptModule.messageEdit(0);
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
-            const editTextarea = chat.querySelector('#curEditTextarea');
+            const editTextarea = chat.querySelector('.mes_editor');
             if (editTextarea) {
-                editTextarea.value = 'Foo should cancel';
+                {
+                    const editorView = (await import('/live-editor-lib.js')).view.EditorView.findFromDOM(editTextarea.querySelector('.cm-editor') ?? editTextarea);
+                    editorView?.dispatch({ changes: { from: 0, to: editorView.state.doc.length, insert: 'Foo should cancel' } });
+                }
             }
             const beforeCancel = {
                 detailsOpen: chat.querySelector('.mes_reasoning_details')?.open,
-                reasoningTextareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
-                messageTextareaCount: chat.querySelectorAll('#curEditTextarea').length,
+                reasoningTextareaCount: chat.querySelectorAll('.reasoning_editor').length,
+                messageTextareaCount: chat.querySelectorAll('.mes_editor').length,
             };
 
             chat.querySelector('.mes_edit_cancel')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
 
             return {
                 beforeCancel,
                 afterCancel: {
                     detailsOpen: chat.querySelector('.mes_reasoning_details')?.open,
-                    reasoningTextareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
-                    messageTextareaCount: chat.querySelectorAll('#curEditTextarea').length,
+                    reasoningTextareaCount: chat.querySelectorAll('.reasoning_editor').length,
+                    messageTextareaCount: chat.querySelectorAll('.mes_editor').length,
                     messageValue: context.chat[0]?.mes,
                     reasoningValue: context.chat[0]?.extra?.reasoning,
                 },
@@ -545,15 +585,18 @@ test.describe('Reasoning hidden blocks', () => {
             const beforeAddDisplay = details ? getComputedStyle(details).display : null;
             const addReasoning = chat.querySelector('.mes_edit_add_reasoning');
             addReasoning?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
-            const textarea = chat.querySelector('.reasoning_edit_textarea');
+            const textarea = chat.querySelector('.reasoning_editor');
             return {
                 beforeAddDisplay,
                 afterAddDisplay: details ? getComputedStyle(details).display : null,
                 detailsOpen: details?.open,
                 hasContent: details?.getAttribute('data-has-content'),
-                textareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
-                textareaValue: textarea?.value,
+                textareaCount: chat.querySelectorAll('.reasoning_editor').length,
+                textareaValue: textarea && (await import('/live-editor-lib.js')).view.EditorView.findFromDOM(textarea.querySelector('.cm-editor') ?? textarea)?.state.doc.toString(),
             };
         }, createEditableReasoningMessageHtml({ detailsAttributes: '' }));
 
@@ -648,17 +691,26 @@ test.describe('Reasoning hidden blocks', () => {
             chat.innerHTML = messageHtml;
 
             chat.querySelector('.mes_edit_add_reasoning')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
-            const textarea = chat.querySelector('.reasoning_edit_textarea');
-            textarea.value = 'visible reasoning';
+            const textarea = chat.querySelector('.reasoning_editor');
+            {
+                const editorView = (await import('/live-editor-lib.js')).view.EditorView.findFromDOM(textarea.querySelector('.cm-editor') ?? textarea);
+                editorView?.dispatch({ changes: { from: 0, to: editorView.state.doc.length, insert: 'visible reasoning' } });
+            }
             chat.querySelector('.mes_reasoning_edit_done')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
 
             const details = chat.querySelector('.mes_reasoning_details');
             return {
                 detailsOpen: details?.open,
                 hasContent: details?.getAttribute('data-has-content'),
-                textareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
+                textareaCount: chat.querySelectorAll('.reasoning_editor').length,
                 reasoningText: chat.querySelector('.mes_reasoning')?.textContent,
             };
         }, createEditableReasoningMessageHtml({ includeMessageContainers: true }));
@@ -683,17 +735,26 @@ test.describe('Reasoning hidden blocks', () => {
             chat.innerHTML = messageHtml;
 
             chat.querySelector('.mes_edit_add_reasoning')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
-            const textarea = chat.querySelector('.reasoning_edit_textarea');
-            textarea.value = '   ';
+            const textarea = chat.querySelector('.reasoning_editor');
+            {
+                const editorView = (await import('/live-editor-lib.js')).view.EditorView.findFromDOM(textarea.querySelector('.cm-editor') ?? textarea);
+                editorView?.dispatch({ changes: { from: 0, to: editorView.state.doc.length, insert: '   ' } });
+            }
             chat.querySelector('.mes_reasoning_edit_done')?.click();
+            for (let waited = 0; waited < 5000 && chat.querySelector('.reasoning_editor:not(:has(.cm-editor))'); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
             await new Promise(resolve => setTimeout(resolve, 100));
 
             const details = chat.querySelector('.mes_reasoning_details');
             return {
                 detailsOpen: details?.open,
                 hasContent: details?.getAttribute('data-has-content'),
-                textareaCount: chat.querySelectorAll('.reasoning_edit_textarea').length,
+                textareaCount: chat.querySelectorAll('.reasoning_editor').length,
             };
         }, createEditableReasoningMessageHtml({ includeMessageContainers: true }));
 

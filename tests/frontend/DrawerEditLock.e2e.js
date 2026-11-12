@@ -82,7 +82,7 @@ test.describe('Nothing covers what is being edited', () => {
         await expect(page.locator('#char-info-panel')).toHaveClass(/closedDrawer/);
         await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
         await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
-        await expect(page.locator('#curEditTextarea')).toHaveCount(1);
+        await expect(page.locator('.mes_editor .cm-content')).toHaveCount(1);
 
         await page.locator('#user-settings-button .drawer-icon').click();
         await expect(page.locator('#user-settings-block')).toHaveClass(/openDrawer/);
@@ -90,7 +90,7 @@ test.describe('Nothing covers what is being edited', () => {
         expect(await isCut(page.locator('#sheld'))).toBe(false);
 
         await page.locator('#chat .mes[mesid="0"] .mes_edit_cancel').click();
-        await expect(page.locator('#curEditTextarea')).toHaveCount(0);
+        await expect(page.locator('.mes_editor .cm-content')).toHaveCount(0);
         await expect.poll(() => isCut(page.locator('#sheld'))).toBe(false);
     });
 });

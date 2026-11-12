@@ -78,7 +78,7 @@ function lineLayout(page, selector) {
 async function measureMessageEditor(page) {
     await testSetup.awaitST({ page });
     const { mes, rendered, edited } = await editedMessage(page);
-    const nested = await mes.locator('.cm-content blockquote > blockquote > .cm-line').allTextContents();
+    const nested = await mes.locator('.cm-content blockquote > blockquote .cm-line').allTextContents();
     const editorSelector = `#chat .mes[mesid="${await mes.getAttribute('mesid')}"] .cm-editor`;
     await mes.locator('.cm-line').last().scrollIntoViewIfNeeded();
     const lines = await lineLayout(page, editorSelector);

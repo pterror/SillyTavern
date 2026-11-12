@@ -597,7 +597,7 @@ test.describe('character field edit mode', () => {
                             await fillField(page, f, 'in progress');
                             await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
                             await expectBlockedByFlash(page, f);
-                            await expect(page.locator('#curEditTextarea')).toHaveCount(0);
+                            await expect(page.locator('.mes_editor .cm-content')).toHaveCount(0);
                             await expectEditMode(page, field);
                             await expect(f.textarea).toHaveValue('in progress');
                             await f.cancel.click();
@@ -628,7 +628,7 @@ test.describe('character field edit mode', () => {
                     await withDrawerPinned(page, async () => {
                         await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
                         await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
-                        await expect(page.locator('#curEditTextarea')).toBeVisible();
+                        await expect(page.locator('.mes_editor .cm-content')).toBeVisible();
                         try {
                             await openInfoTab(page, field.tab);
                             await fieldLocators(page, field.id).pencil.click();
@@ -650,7 +650,7 @@ test.describe('character field edit mode', () => {
                         await fillField(page, f, 'in progress');
                         await page.locator(`#chat .mes[mesid="${mesId}"] .mes_reasoning_edit`).click();
                         await expectBlockedByFlash(page, f);
-                        await expect(page.locator('.reasoning_edit_textarea')).toHaveCount(0);
+                        await expect(page.locator('.reasoning_editor .cm-content')).toHaveCount(0);
                         await expectEditMode(page, field);
                         await expect(f.textarea).toHaveValue('in progress');
                         await f.cancel.click();
@@ -663,7 +663,7 @@ test.describe('character field edit mode', () => {
                     await withDrawerPinned(page, async () => {
                         const mesId = await addUserMessageWithReasoning(page);
                         await page.locator(`#chat .mes[mesid="${mesId}"] .mes_reasoning_edit`).click();
-                        await expect(page.locator('.reasoning_edit_textarea')).toBeVisible();
+                        await expect(page.locator('.reasoning_editor .cm-content')).toBeVisible();
                         try {
                             await openInfoTab(page, field.tab);
                             await fieldLocators(page, field.id).pencil.click();
@@ -1067,8 +1067,8 @@ test.describe('character field edit mode', () => {
                     }, TEXT_METRICS);
                     const before = await read(mesText);
                     await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
-                    await expect(page.locator('#curEditTextarea')).toBeVisible();
-                    expect(await read(page.locator('#curEditTextarea'))).toEqual(before);
+                    await expect(page.locator('.mes_editor .cm-content')).toBeVisible();
+                    expect(await read(page.locator('.mes_editor .cm-content'))).toEqual(before);
                     await page.locator('#chat .mes[mesid="0"] .mes_edit_cancel').click();
                 });
             });

@@ -763,7 +763,7 @@ export function initRossMods() {
         if (!$(e.target).closest('#sheld').length) {
             return;
         }
-        if ($('#curEditTextarea').length) {
+        if ($('.mes_editor').length) {
             return;
         }
         var swipeTargetMes = $(e.target).closest('.mes');
@@ -784,7 +784,7 @@ export function initRossMods() {
         if (!$(e.target).closest('#sheld').length) {
             return;
         }
-        if ($('#curEditTextarea').length) {
+        if ($('.mes_editor').length) {
             return;
         }
         var swipeTargetMes = $(e.target).closest('.mes');
@@ -1013,7 +1013,7 @@ export function initRossMods() {
         if (event.key == 'Escape' && !event.defaultPrevented) {
             //dont override Escape hotkey functions from script.js
             //"close edit box" and "cancel stream generation".
-            if ($('#curEditTextarea').is(':visible') || $('#mes_stop').is(':visible')) {
+            if ($('.mes_editor').length || $('#mes_stop').is(':visible')) {
                 console.debug('escape key, but deferring to script.js routines');
                 return;
             }

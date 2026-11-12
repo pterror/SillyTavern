@@ -173,9 +173,9 @@ test('an edit opened on an overswipe\'s message while its reply streams in is re
         await page.locator('#chat .mes[mesid="2"] .swipe_right').click();
         await expect.poll(() => page.locator('#chat .mes[mesid="2"] .mes_text').textContent(), { timeout: 30000 }).toMatch(/^\s*Reply(?! number 1)/);
         await page.locator('#chat .mes[mesid="2"] .mes_text').click();
-        const opened = await page.locator('#chat .mes[mesid="2"] .edit_textarea').count();
+        const opened = await page.locator('#chat .mes[mesid="2"] .mes_editor .cm-content').count();
         if (opened) {
-            await page.locator('#chat .mes[mesid="2"] .edit_textarea').fill('Edited while streaming.');
+            await page.locator('#chat .mes[mesid="2"] .mes_editor .cm-content').fill('Edited while streaming.');
             await page.locator('#chat .mes[mesid="2"] .mes_edit_done').click();
         }
         await settled(page);

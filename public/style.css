@@ -500,7 +500,7 @@ input[type='checkbox']:focus-visible {
     cursor: default;
 }
 
-.mes:has(.edit_textarea) .mes_reasoning_details:not([data-has-content="true"]) .mes_reasoning_header {
+.mes:has(.mes_editor) .mes_reasoning_details:not([data-has-content="true"]) .mes_reasoning_header {
     cursor: pointer;
 }
 
@@ -518,13 +518,13 @@ input[type='checkbox']:focus-visible {
 .mes_bias:empty,
 .mes:not(.reasoning) .mes_reasoning_details,
 .mes_reasoning_details:not([open]) .mes_reasoning_actions,
-.mes_reasoning_details:has(.reasoning_edit_textarea) .mes_reasoning,
-.mes_reasoning_details:has(.reasoning_edit_textarea) .mes_reasoning_header,
-.mes_reasoning_details:has(.reasoning_edit_textarea) .mes_reasoning_actions .mes_button:not(.edit_button),
-.mes_reasoning_details:not(:has(.reasoning_edit_textarea)) .mes_reasoning_actions .edit_button,
-.mes_block:has(.edit_textarea):has(.reasoning_edit_textarea) .mes_reasoning_actions,
+.mes_reasoning_details:has(.reasoning_editor) .mes_reasoning,
+.mes_reasoning_details:has(.reasoning_editor) .mes_reasoning_header,
+.mes_reasoning_details:has(.reasoning_editor) .mes_reasoning_actions .mes_button:not(.edit_button),
+.mes_reasoning_details:not(:has(.reasoning_editor)) .mes_reasoning_actions .edit_button,
+.mes_block:has(.mes_editor):has(.reasoning_editor) .mes_reasoning_actions,
 .mes.reasoning:has(.mes_reasoning_details[data-has-content="true"]) .mes_edit_add_reasoning,
-.mes:has(.mes_reasoning_details .reasoning_edit_textarea) .mes_edit_add_reasoning,
+.mes:has(.mes_reasoning_details .reasoning_editor) .mes_edit_add_reasoning,
 .mes_reasoning_details:not([data-has-content="true"]) .mes_reasoning_arrow,
 .mes_reasoning_details:not([data-has-content="true"]) .mes_reasoning,
 .mes_reasoning_details:not([data-has-content="true"]) .mes_reasoning_copy {
@@ -535,7 +535,7 @@ input[type='checkbox']:focus-visible {
     background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 33%, var(--SmartThemeBlurTintColor) 66%);
 }
 
-#chat:not([data-show-hidden-reasoning="true"]) .mes_reasoning_details:not([data-has-content="true"]):not([data-state="done"]):not(:has(.reasoning_edit_textarea)):not(.mes:has(.edit_textarea) .mes_reasoning_details) {
+#chat:not([data-show-hidden-reasoning="true"]) .mes_reasoning_details:not([data-has-content="true"]):not([data-state="done"]):not(:has(.reasoning_editor)):not(.mes:has(.mes_editor) .mes_reasoning_details) {
     display: none;
 }
 
@@ -562,8 +562,8 @@ input[type='checkbox']:focus-visible {
     color: var(--SmartThemeEmColor);
 }
 
-.mes_reasoning i,
-.mes_reasoning em {
+:is(.mes_reasoning, .reasoning_editor) i,
+:is(.mes_reasoning, .reasoning_editor) em {
     color: hsl(from var(--reasoning-em-color) h calc(s * var(--reasoning-saturation)) l);
 }
 
@@ -572,8 +572,8 @@ input[type='checkbox']:focus-visible {
     color: inherit;
 }
 
-.mes_reasoning q i,
-.mes_reasoning q em {
+:is(.mes_reasoning, .reasoning_editor) q i,
+:is(.mes_reasoning, .reasoning_editor) q em {
     color: hsl(from var(--SmartThemeQuoteColor) h calc(s * var(--reasoning-saturation)) l);
 }
 
@@ -581,7 +581,7 @@ input[type='checkbox']:focus-visible {
     color: var(--SmartThemeUnderlineColor);
 }
 
-.mes_reasoning u {
+:is(.mes_reasoning, .reasoning_editor) u {
     color: hsl(from var(--SmartThemeUnderlineColor) h calc(s * var(--reasoning-saturation)) l);
 }
 
@@ -589,7 +589,7 @@ input[type='checkbox']:focus-visible {
     color: var(--SmartThemeQuoteColor);
 }
 
-.mes_reasoning q {
+:is(.mes_reasoning, .reasoning_editor) q {
     color: hsl(from var(--SmartThemeQuoteColor) h calc(s * var(--reasoning-saturation)) l);
 }
 
@@ -597,10 +597,10 @@ input[type='checkbox']:focus-visible {
 .mes_text font[color] i,
 .mes_text font[color] u,
 .mes_text font[color] q,
-.mes_reasoning font[color] em,
-.mes_reasoning font[color] i,
-.mes_reasoning font[color] u,
-.mes_reasoning font[color] q {
+:is(.mes_reasoning, .reasoning_editor) font[color] em,
+:is(.mes_reasoning, .reasoning_editor) font[color] i,
+:is(.mes_reasoning, .reasoning_editor) font[color] u,
+:is(.mes_reasoning, .reasoning_editor) font[color] q {
     color: inherit;
 }
 
@@ -754,7 +754,7 @@ small {
     margin-right: unset !important;
 }
 
-.mes.smallSysMes:not(:has(.edit_textarea)) .ch_name {
+.mes.smallSysMes:not(:has(.mes_editor)) .ch_name {
     display: none;
 }
 
@@ -1265,8 +1265,8 @@ body .panelControlBar {
 
 .mes_text q:before,
 .mes_text q:after,
-.mes_reasoning q:before,
-.mes_reasoning q:after {
+:is(.mes_reasoning, .reasoning_editor) q:before,
+:is(.mes_reasoning, .reasoning_editor) q:after {
     content: '';
 
 }
@@ -1597,7 +1597,7 @@ body.hideAllSwipeButtons :is(.swipe_left, .swipe_right),
     opacity: 0.4;
 }
 
-.mes_text.inline_media:not(:has(.edit_textarea)) {
+.mes_text.inline_media:not(:has(.mes_editor)) {
     display: none;
 }
 
@@ -1648,7 +1648,8 @@ textarea.autoSetHeight {
 }
 
 .cm-editor.live-editor .macro-pill,
-.cm-editor.live-editor .macro-pill-glue {
+.cm-editor.live-editor .macro-pill-glue,
+.chat-editor .macro-pill {
     white-space: nowrap;
 }
 
@@ -5289,23 +5290,82 @@ input[type="range"]::-webkit-slider-thumb {
     opacity: 1;
 }
 
-.reasoning_edit_textarea,
-.edit_textarea {
+.chat-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.chat-editor .cm-editor {
     padding: 5px;
-    margin: 0;
-    outline: none;
     background-color: var(--black50a);
-    font-family: inherit;
-    font-size: inherit;
-    font-weight: inherit;
-    line-height: inherit;
-    letter-spacing: inherit;
-    word-spacing: inherit;
-    word-break: inherit;
-    overflow-wrap: inherit;
+    border-radius: 5px;
     max-height: 75vh;
     max-height: 75dvh;
-    field-sizing: content;
+}
+
+.chat-editor .cm-editor.cm-focused {
+    outline: none;
+}
+
+.chat-editor .cm-scroller {
+    font-family: inherit;
+    line-height: inherit;
+}
+
+.chat-editor .cm-content.cm-lineWrapping {
+    word-break: inherit;
+    overflow-wrap: inherit;
+}
+
+/* CodeMirror measures lines, not the margins between the blocks wrapping them, so a block's margin would put the lines
+ * where it doesn't have them. */
+.chat-editor .cm-content :not(.cm-line):has(.cm-line) {
+    display: flow-root;
+    margin: 0;
+}
+
+/* The <br> CodeMirror puts in an empty line gives the line its height; page rules for read <br>s must not reach it. */
+.chat-editor .cm-line > br {
+    all: revert !important;
+}
+
+.chat-editor .cm-content .mark {
+    opacity: 0.45;
+}
+
+.chat-editor-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    min-height: calc(var(--mainFontSize) * 2);
+}
+
+.chat-editor-toolbar button {
+    padding: 0.2em 0.5em;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: none;
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+.chat-editor-toolbar button:hover,
+.chat-editor-toolbar button[aria-pressed="true"] {
+    opacity: 1;
+    border-color: var(--SmartThemeBorderColor);
+}
+
+.chat-editor-toolbar button[aria-disabled="true"] {
+    opacity: 0.3;
+    cursor: default;
+}
+
+.chat-editor-toolbar button[data-keys]::after {
+    content: attr(data-keys);
+    margin-inline-start: 0.3em;
+    font-size: 0.75em;
 }
 
 body:is([data-generating="true"], [data-swiping="true"]) :is(
@@ -7339,10 +7399,6 @@ textarea.live-editor-textarea {
 
 .cm-editor.live-chat-text q {
     color: var(--SmartThemeQuoteColor);
-}
-
-.cm-editor.live-chat-text.live-reasoning-text q {
-    color: hsl(from var(--SmartThemeQuoteColor) h calc(s * var(--reasoning-saturation)) l);
 }
 
 .cm-editor.live-chat-text font[color] q {

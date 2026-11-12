@@ -1,4 +1,4 @@
-import { macroPillContent, macroTooltipAttributes } from '../macro-pill.js';
+import { macroPill, macroPillContent, macroTooltipAttributes } from '../macro-pill.js';
 
 /**
  * @typedef {import('@pterror/interact-editor/look').Piece} Piece
@@ -65,6 +65,31 @@ export function macroValuePieces(values, person, t) {
                 fill(element);
                 return element;
             },
+        };
+    };
+}
+
+/**
+ * Macros drawn as pills, for editing: one token Backspace deletes whole, showing its value. A macro whose value didn't
+ * come with the text, or every macro while they are shown as written, is drawn as written.
+ * @param {MacroValueSource} values
+ * @param {(macroName: string) => MacroPerson | null} person
+ * @param {import('../macro-pill.js').Translate} t
+ * @param {() => boolean} asWritten whether macros are shown as written now
+ * @returns {(source: string) => Piece | undefined}
+ */
+export function macroPills(values, person, t, asWritten) {
+    return (source) => {
+        const value = values.get(source);
+        if (value === undefined || asWritten()) return undefined;
+        const name = macroNameOf(source);
+        const macro = { source, name, value };
+        const shownPerson = macroPillContent(macro, t).kind === 'mention' && name ? person(name) : null;
+        return {
+            same: other => 'source' in other && other.source === source && 'value' in other && other.value === value,
+            source,
+            value,
+            draw: () => macroPill(macro, { t, compact: true, person: shownPerson }),
         };
     };
 }

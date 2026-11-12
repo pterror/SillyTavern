@@ -124,11 +124,17 @@ importers:
         specifier: ^2.11.8
         version: 2.11.8
       '@pterror/interact-editor':
-        specifier: github:pterror/interact#c89bb2ed2764ec3f8614dfda2dbdf695baa06c75&path:/packages/editor
-        version: https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)
+        specifier: github:pterror/interact#97b77f78eaf7d098de87ea4ace16cda17598ccf7&path:/packages/editor
+        version: https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list)
+      '@pterror/interact-keybinds':
+        specifier: github:pterror/interact#97b77f78eaf7d098de87ea4ace16cda17598ccf7&path:/packages/keybinds
+        version: https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/keybinds(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list)
+      '@pterror/interact-list':
+        specifier: github:pterror/interact#97b77f78eaf7d098de87ea4ace16cda17598ccf7&path:/packages/list
+        version: https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list
       '@pterror/interact-markdown':
-        specifier: github:pterror/interact#c89bb2ed2764ec3f8614dfda2dbdf695baa06c75&path:/packages/markdown
-        version: https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75#path:/packages/markdown(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@lezer/html@1.3.13)(@lezer/markdown@1.7.2)(@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3))
+        specifier: github:pterror/interact#97b77f78eaf7d098de87ea4ace16cda17598ccf7&path:/packages/markdown
+        version: https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/markdown(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@lezer/html@1.3.13)(@lezer/markdown@1.7.2)(@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list))
       '@reflink/reflink':
         specifier: ^0.1.19
         version: 0.1.19
@@ -1675,8 +1681,8 @@ packages:
   '@popperjs/core@2.11.8':
     resolution: {integrity: sha512-P1st0aksCrn9sGZhp8GMYwBnQsbvAWsZAX44oXNNvLHGqAOcoVxmjZiohstwQ7SqKnbR47akdNi+uleWD8+g6A==}
 
-  '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75#path:/packages/editor':
-    resolution: {gitHosted: true, integrity: sha512-Iotan7qFBEJ1lgQ5lETdJ2BgAfvK2yzLLu7GbL+ykr/ixOz4rGMRvRLTTABUefExg4g0pcVfnVcg9O/qDz+N1Q==, path: /packages/editor, tarball: https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75}
+  '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/editor':
+    resolution: {gitHosted: true, integrity: sha512-6H6pZEb0Wtc1Fg/jvSZNgJ48de+Xq+EcPCK2NxQ4JzOM4b4r6s8E5QW77HpfTeoOFwcSo0myMHsD3Sjd9X7HdA==, path: /packages/editor, tarball: https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7}
     version: 0.1.0
     peerDependencies:
       '@codemirror/autocomplete': ^6.20.3
@@ -1697,8 +1703,18 @@ packages:
       '@pterror/interact-list':
         optional: true
 
-  '@pterror/interact-markdown@https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75#path:/packages/markdown':
-    resolution: {gitHosted: true, integrity: sha512-Iotan7qFBEJ1lgQ5lETdJ2BgAfvK2yzLLu7GbL+ykr/ixOz4rGMRvRLTTABUefExg4g0pcVfnVcg9O/qDz+N1Q==, path: /packages/markdown, tarball: https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75}
+  '@pterror/interact-keybinds@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/keybinds':
+    resolution: {gitHosted: true, integrity: sha512-6H6pZEb0Wtc1Fg/jvSZNgJ48de+Xq+EcPCK2NxQ4JzOM4b4r6s8E5QW77HpfTeoOFwcSo0myMHsD3Sjd9X7HdA==, path: /packages/keybinds, tarball: https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7}
+    version: 0.1.0
+    peerDependencies:
+      '@pterror/interact-list': workspace:^
+
+  '@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list':
+    resolution: {gitHosted: true, integrity: sha512-6H6pZEb0Wtc1Fg/jvSZNgJ48de+Xq+EcPCK2NxQ4JzOM4b4r6s8E5QW77HpfTeoOFwcSo0myMHsD3Sjd9X7HdA==, path: /packages/list, tarball: https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7}
+    version: 0.1.0
+
+  '@pterror/interact-markdown@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/markdown':
+    resolution: {gitHosted: true, integrity: sha512-6H6pZEb0Wtc1Fg/jvSZNgJ48de+Xq+EcPCK2NxQ4JzOM4b4r6s8E5QW77HpfTeoOFwcSo0myMHsD3Sjd9X7HdA==, path: /packages/markdown, tarball: https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7}
     version: 0.1.0
     peerDependencies:
       '@codemirror/language': ^6.12.4
@@ -5925,7 +5941,7 @@ snapshots:
 
   '@popperjs/core@2.11.8': {}
 
-  '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)':
+  '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list)':
     dependencies:
       '@lezer/common': 1.5.3
     optionalDependencies:
@@ -5933,13 +5949,20 @@ snapshots:
       '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.6
       '@codemirror/view': 6.43.13
+      '@pterror/interact-list': https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list
 
-  '@pterror/interact-markdown@https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75#path:/packages/markdown(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@lezer/html@1.3.13)(@lezer/markdown@1.7.2)(@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3))':
+  '@pterror/interact-keybinds@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/keybinds(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list)':
+    dependencies:
+      '@pterror/interact-list': https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list
+
+  '@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list': {}
+
+  '@pterror/interact-markdown@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/markdown(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@lezer/html@1.3.13)(@lezer/markdown@1.7.2)(@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list))':
     dependencies:
       '@lezer/common': 1.5.3
       '@lezer/html': 1.3.13
       '@lezer/markdown': 1.7.2
-      '@pterror/interact-editor': https://codeload.github.com/pterror/interact/tar.gz/c89bb2ed2764ec3f8614dfda2dbdf695baa06c75#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)
+      '@pterror/interact-editor': https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/97b77f78eaf7d098de87ea4ace16cda17598ccf7#path:/packages/list)
     optionalDependencies:
       '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.6

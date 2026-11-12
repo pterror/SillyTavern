@@ -14,7 +14,9 @@ import { htmlAttributeRegex, parseImageSize } from './grammar.js';
  * @typedef {object} LookOptions
  * @property {Html} html the HTML policy
  * @property {Readonly<Record<string, string>>} emojis what each shortcode draws
- * @property {(source: string) => Piece} macro the piece a macro is drawn as
+ * @property {(source: string) => Piece} macro the piece a macro is drawn as in reading
+ * @property {(source: string) => Piece | undefined} [pill] the piece a macro is drawn as in an editor; none draws it as
+ *   written
  * @property {readonly string[]} [reasoningMarkers] the reasoning prefix and suffix, drawn as text where they are
  */
 
@@ -100,7 +102,7 @@ function markdownBlockElement(block, read, html) {
  * @param {LookOptions} options
  * @returns {Look}
  */
-export function chatLook({ html, emojis, macro, reasoningMarkers = [] }) {
+export function chatLook({ html, emojis, macro, pill, reasoningMarkers = [] }) {
     const base = markdownLook(html);
     const markers = new Set(reasoningMarkers.map(marker => marker.trim()).filter(Boolean));
     /**
@@ -172,7 +174,7 @@ export function chatLook({ html, emojis, macro, reasoningMarkers = [] }) {
         ImageSize: MARK,
         Macro: {
             source: 'replaced',
-            piece: (node, read, surface) => (surface === 'reader' ? macro(read(node.from, node.to)) : undefined),
+            piece: (node, read, surface) => (surface === 'reader' ? macro(read(node.from, node.to)) : pill?.(read(node.from, node.to))),
         },
         MacroMark: MARK,
         ReasoningMarkerLine: { block: true, element: 'p' },

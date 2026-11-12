@@ -101,8 +101,8 @@ async function overswipeAndWrite(page, mesId, text) {
     const message = page.locator(`#chat .mes[mesid="${mesId}"]`);
     await message.hover();
     await message.locator('.swipe_right').click({ force: true });
-    await expect(message.locator('.edit_textarea')).toBeVisible({ timeout: 10000 });
-    await message.locator('.edit_textarea').fill(text);
+    await expect(message.locator('.mes_editor .cm-content')).toBeVisible({ timeout: 10000 });
+    await message.locator('.mes_editor .cm-content').fill(text);
     await page.waitForTimeout(3000);
     return message;
 }
@@ -141,7 +141,7 @@ test.describe('overswiping a user message', () => {
         await page.locator('#chat .mes[mesid="1"]').hover();
         await page.locator('#chat .mes[mesid="1"] .swipe_right').click({ force: true });
         await expect.poll(() => shown(page, 1)).toEqual({ chat: ['Hello there.', 'How far is the city?'], counter: '2/2' });
-        await expect(page.locator('#chat .mes[mesid="1"] .edit_textarea')).toHaveCount(0);
+        await expect(page.locator('#chat .mes[mesid="1"] .mes_editor .cm-content')).toHaveCount(0);
         expect(await storedAlternatives(page, question)).toEqual(['How far is it?', 'How far is the city?']);
         await expectNoWarnings(page);
     });
@@ -152,7 +152,7 @@ test.describe('overswiping a user message', () => {
         await message.locator('.mes_edit_duplicate').click({ force: true });
         await expect.poll(() => storedAlternatives(page, question)).toEqual(['How far is it?', 'Is it far?']);
         await expect.poll(() => shown(page, 1)).toEqual({ chat: ['Hello there.', 'Is it far?'], counter: '2/2' });
-        await expect(message.locator('.edit_textarea')).toHaveCount(0);
+        await expect(message.locator('.mes_editor .cm-content')).toHaveCount(0);
         await expectNoWarnings(page);
     });
 

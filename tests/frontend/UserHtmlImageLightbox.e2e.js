@@ -109,8 +109,8 @@ test.describe('Lightbox on images in user-written HTML', () => {
                     await image.click();
 
                     await expectLightboxThenClose(page);
-                    await expect(page.locator('.edit_textarea')).toHaveCount(0);
-                    await expect(page.locator('.reasoning_edit_textarea')).toHaveCount(0);
+                    await expect(page.locator('.mes_editor')).toHaveCount(0);
+                    await expect(page.locator('.reasoning_editor')).toHaveCount(0);
                 } finally {
                     await setClickToEdit(page, previous);
                 }

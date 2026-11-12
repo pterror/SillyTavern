@@ -115,7 +115,7 @@ for (const autoParse of [false, true]) {
         const user = page.locator('#chat .mes[mesid="1"]');
         await user.hover();
         await user.locator('.mes_edit').click({ force: true });
-        await user.locator('.edit_textarea').fill('How far is the city?');
+        await user.locator('.mes_editor .cm-content').fill('How far is the city?');
         await user.locator('.mes_edit_duplicate').click({ force: true });
         await expect(page.locator('#chat .mes')).toHaveCount(2, { timeout: 10000 });
         await expect.poll(() => page.evaluate(() => {

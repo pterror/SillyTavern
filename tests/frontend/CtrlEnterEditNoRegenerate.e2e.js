@@ -20,7 +20,7 @@ test('Ctrl+Enter finishing a user message edit does not ask to regenerate', asyn
     await expect.poll(() => page.evaluate(() => String(stTest.context().chat[1]?.node_id ?? '')), { timeout: 10000 }).toMatch(/^(?!card:).+/);
 
     await page.locator('#chat .mes[mesid="1"] .mes_edit').click();
-    const editor = page.locator('#chat .mes[mesid="1"] .cm-content').or(page.locator('#chat .mes[mesid="1"] #curEditTextarea:not(.live-editor-textarea)'));
+    const editor = page.locator('#chat .mes[mesid="1"] .mes_editor .cm-content');
     await expect(editor).toBeFocused();
     await page.keyboard.press('End');
     await page.keyboard.type(' (edited)');

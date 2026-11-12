@@ -210,7 +210,9 @@ import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
-import { initChatBoxEditor, initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
+import { initChatBoxEditor, initChatLiveEditor } from './scripts/chat-live-editor.js';
+import { initChatEditors, loadChatEditor } from './scripts/chat-text/editors.js';
+import { readerSelection } from './scripts/chat-text/surface.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, discardFieldEdit, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
 import { pagerSelection, selectedGreetingIndex } from './scripts/greeting-pager-selection.js';
@@ -256,7 +258,7 @@ import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder, pageMacroFacts } from './scripts/macros/engine/MacroEnvBuilder.js';
-import { initMessageText, redrawMessageText, shownMessageMacros, showBiasText, showMessageText } from './scripts/message-text.js';
+import { editingIn, initMessageText, messageEditorSetup, redrawMessageText, shownMessageMacros, showBiasText, showMessageText } from './scripts/message-text.js';
 import { setSettingsCarrier } from './scripts/macro-values.js';
 import {
     updateMessage,
@@ -1105,7 +1107,6 @@ let this_del_mes = -1;
 let deleteToolCallsInDeleteMode = true;
 
 /** @type {string} */
-let this_edit_mes_chname = '';
 /** @type {number|undefined} */
 let this_edit_mes_id = undefined;
 
@@ -1311,6 +1312,13 @@ async function firstLoadInit() {
         macroPerson: (macroName, characterName) => macroPerson(macroName, { name: characterName }),
     });
     initChatBoxEditor(/** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')));
+    initChatEditors({
+        hotkeys: () => Boolean(power_user.enable_md_hotkeys),
+        toolbarChoice: () => (Array.isArray(power_user.editor_toolbar) ? power_user.editor_toolbar : []),
+        uploadImage: uploadEditorImage,
+        person: (macroName, speaker) => macroPerson(macroName, { name: speaker }),
+        t,
+    });
     initMacroColorsEditor({
         getColors: () => macroColorsOf(power_user.macro_colors),
         setColors: (colors) => {
@@ -5659,7 +5667,8 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
     eventSource.emit(event_types.CHAT_LOADED, { detail: { character: getCurrentCharacter() } });
 
     delay(debounce_timeout.short).then(() => {
-        if (getMountedTextarea(document.activeElement) || $(document.activeElement).is('input:visible, textarea:visible')) {
+        const active = document.activeElement;
+        if (getMountedTextarea(active) || $(active).is('input:visible, textarea:visible') || (active instanceof HTMLElement && active.isContentEditable)) {
             return;
         }
         $('#send_textarea').trigger('click').trigger('focus');
@@ -6334,15 +6343,36 @@ function bindSharedSettings(settings) {
     settings.watch(['power_user.max_context_unlocked'], () => switchMaxContextSize());
 }
 
+/** @type {{ mesId: number, editor: import('./scripts/chat-text/editor.js').ChatEditor } | null} the message being edited */
+let messageEditing = null;
+
 /**
- * Takes the edit box's text into the message exactly as written: an edit fills in no macros and trims nothing
- * @param {JQuery<HTMLElement>} div
+ * @returns {string | undefined} the text of the message being edited, as edited
+ */
+function editedMessageText() {
+    return messageEditing?.editor.text();
+}
+
+/**
+ * Closes the editor of the message being edited, keeping nothing it holds
+ */
+function stopMessageEditor() {
+    if (!messageEditing) return;
+    const textElement = chatElement.find(`.mes[mesid="${messageEditing.mesId}"] .mes_text`)[0];
+    if (textElement) editingIn(textElement, null);
+    messageEditing.editor.stop();
+    messageEditing = null;
+    drawerStackChanged();
+}
+
+/**
+ * Takes an edit into the message exactly as written: an edit fills in no macros and trims nothing
+ * @param {number} mesId
+ * @param {string} text
  * @returns {{ mesBlock: JQuery<HTMLElement>, text: string, mes: ChatMessage }}
  */
-function applyMessageEdit(div) {
-    const mesBlock = div.closest('.mes_block');
-    const text = String(mesBlock.find('.edit_textarea').val() ?? mesBlock.find('.mes_text').text());
-    const mesId = Number(div.closest('.mes').attr('mesid'));
+function applyMessageEdit(mesId, text) {
+    const mesBlock = chatElement.find(`.mes[mesid="${mesId}"] .mes_block`);
     const mes = chat[mesId];
     /** @type {Partial<ChatMessage>} */
     const editUpdates = { mes: text };
@@ -6381,9 +6411,9 @@ function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
     is_delete_mode = true;
 }
 
-const messageEditAutoSaveDebounced = debounce((mesId) => {
-    if (isComposedSlot(chat[mesId])) return;
-    chatOpEdit(mesId).catch(error =>
+const messageEditAutoSaveDebounced = debounce(() => {
+    if (!messageEditing || isComposedSlot(chat[messageEditing.mesId])) return;
+    messageEditing.editor.save().catch(error =>
         console.error('Could not save the edited message:', error));
 }, DEFAULT_SAVE_EDIT_TIMEOUT);
 
@@ -6402,17 +6432,24 @@ async function uploadEditorImage(file) {
     return (await response.json()).path;
 }
 
-function messageEditAuto(div) {
-    const { mesBlock, mes } = applyMessageEdit(div);
+/**
+ * @param {number} mesId
+ * @param {string} text
+ */
+function messageEditAuto(mesId, text) {
+    const { mesBlock, mes } = applyMessageEdit(mesId, text);
     showBiasText(mesBlock.find('.mes_bias')[0], String(mes.extra?.bias ?? ''));
-    messageEditAutoSaveDebounced(this_edit_mes_id);
+    messageEditAutoSaveDebounced();
 }
 
 /**
  * Create the message edit UI.
  * @param {number} editMessageId The ID of the message to edit
+ * @param {{ from: number, to: number }} [place] where in the text the editor opens selected: where the reader was, or
+ *   the end of the text
+ * @param {number} [reasoningAt] where the cursor goes in the reasoning, when the edit was opened from there
  */
-export async function messageEdit(editMessageId) {
+export async function messageEdit(editMessageId, place, reasoningAt) {
     const editMessage = chat[editMessageId];
     if (!editMessage) {
         console.warn(`Message with id ${editMessageId} not found in chat array.`);
@@ -6435,7 +6472,6 @@ export async function messageEdit(editMessageId) {
     }
 
     this_edit_mes_id = editMessageId;
-    this_edit_mes_chname = editMessage.name || (editMessage.is_user ? name1 : name2);
 
     refreshSwipeButtons();
 
@@ -6447,39 +6483,40 @@ export async function messageEdit(editMessageId) {
     messageBlock.find('.mes_buttons').css('display', 'none');
     messageBlock.find('.mes_edit_buttons').css('display', 'inline-flex');
 
+    const { chatEditor } = await loadChatEditor();
+
     // Also edit reasoning, if it exists
     const reasoningEdit = messageBlock.find('.mes_reasoning_edit:visible');
     if (reasoningEdit.length > 0) {
-        reasoningEdit.trigger('click');
+        reasoningEdit.trigger('click', [reasoningAt]);
     }
-
-    const editTextArea = document.createElement('textarea');
-    editTextArea.id = 'curEditTextarea';
-    editTextArea.className = 'edit_textarea mdHotkeys';
-    editTextArea.dataset.macros = '';
-    messageText.append(editTextArea);
 
     const text = String(editMessage.mes ?? '');
-    const $editTextArea = $(editTextArea);
-    $editTextArea.val(text);
-
-    const cssAutofit = CSS.supports('field-sizing', 'content');
-    if (!cssAutofit) {
-        $editTextArea.height(0);
-        $editTextArea.height(editTextArea.scrollHeight);
-    }
-
-    $editTextArea.trigger('focus');
-
-    // Sets the cursor at the end of the text
-    editTextArea.setSelectionRange(text.length, text.length);
-
-    void mountChatEditor(editTextArea, {
-        name: this_edit_mes_chname,
-        isSystem: Boolean(editMessage.is_system),
-        isUser: Boolean(editMessage.is_user),
-        messageId: editMessageId,
+    stopMessageEditor();
+    const { setup, macroValue, speaker } = messageEditorSetup(messageText[0], editMessage, 'message');
+    const editor = chatEditor({
+        parent: messageText[0],
+        setup,
+        macroValue,
+        speaker,
+        initial: text,
+        edited: (now) => {
+            if (power_user.auto_save_msg_edits === true) messageEditAuto(editMessageId, now);
+        },
+        save: async (now) => {
+            applyMessageEdit(editMessageId, now);
+            await chatOpEdit(editMessageId);
+        },
+        className: 'mes_editor',
+        label: t`Message text`,
     });
+    messageEditing = { mesId: editMessageId, editor };
+    editingIn(messageText[0], editor);
+    drawerStackChanged();
+    const from = Math.min(place?.from ?? text.length, text.length);
+    const to = Math.min(place?.to ?? from, text.length);
+    editor.view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true });
+    if (reasoningAt === undefined) editor.view.focus();
 
     if (Number(this_edit_mes_id) === chat.length - 1) {
         chatElement.scrollTop(chatScrollPosition);
@@ -6522,7 +6559,7 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
     }
 
     const thisMesBlock = thisMesDiv.find('.mes_block');
-    unmountChatEditor(thisMesBlock.find('#curEditTextarea')[0]);
+    if (messageEditing?.mesId === Number(messageId)) stopMessageEditor();
     thisMesBlock.find('.mes_text').empty();
     thisMesDiv.find('.mes_edit_buttons').css('display', 'none');
     thisMesBlock.find('.mes_buttons').css('display', '');
@@ -6556,7 +6593,7 @@ async function messageEditDone(div) {
     }
 
     const composed = isComposedSlot(chat[this_edit_mes_id]);
-    let { mesBlock, mes } = applyMessageEdit(div);
+    let { mesBlock, mes } = applyMessageEdit(Number(this_edit_mes_id), editedMessageText() ?? String(chat[this_edit_mes_id]?.mes ?? ''));
     if (composed && !String(chat[this_edit_mes_id]?.mes ?? '').length) {
         await messageEditCancel(this_edit_mes_id);
         return;
@@ -6564,7 +6601,7 @@ async function messageEditDone(div) {
 
     await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
     mes = chat[this_edit_mes_id] ?? mes;
-    unmountChatEditor(mesBlock.find('#curEditTextarea')[0]);
+    stopMessageEditor();
     mesBlock.find('.mes_text').empty();
     mesBlock.find('.mes_edit_buttons').css('display', 'none');
     mesBlock.find('.mes_buttons').css('display', '');
@@ -7713,7 +7750,7 @@ export function closeMessageEditor(what = 'all') {
         }
     }
     if (what === 'reasoning' || what === 'all') {
-        document.querySelectorAll('.reasoning_edit_textarea').forEach((el) => {
+        document.querySelectorAll('.reasoning_editor').forEach((el) => {
             const cancelButton = el.closest('.mes')?.querySelector('.mes_reasoning_edit_cancel');
             if (cancelButton instanceof HTMLElement) {
                 cancelButton.click();
@@ -9969,28 +10006,6 @@ jQuery(async function () {
         chooseBogusFolder($(this), tagId);
     });
 
-    const cssAutofit = CSS.supports('field-sizing', 'content');
-    if (!cssAutofit) {
-        /**
-         * Sets the scroll height of the edit textarea to fit the content.
-         * @param {HTMLTextAreaElement} e Textarea element to auto-fit
-         */
-        function autoFitEditTextArea(e) {
-            const scrollTop = chatElement.scrollTop();
-            e.style.height = '0px';
-            const newHeight = e.scrollHeight + 4;
-            e.style.height = `${newHeight}px`;
-            chatElement.scrollTop(scrollTop);
-        }
-        const autoFitEditTextAreaDebounced = debounce(autoFitEditTextArea, debounce_timeout.short);
-        document.addEventListener('input', e => {
-            if (e.target instanceof HTMLTextAreaElement && e.target.classList.contains('edit_textarea')) {
-                const scrollbarShown = e.target.clientWidth < e.target.offsetWidth && e.target.offsetHeight >= window.innerHeight * 0.75;
-                const immediately = (e.target.scrollHeight > e.target.offsetHeight && !scrollbarShown) || e.target.value === '';
-                immediately ? autoFitEditTextArea(e.target) : autoFitEditTextAreaDebounced(e.target);
-            }
-        });
-    }
 
     const chatElementScroll = document.getElementById('chat');
     const chatScrollHandler = function () {
@@ -10693,7 +10708,9 @@ jQuery(async function () {
 
     //********************
     //***Message Editor***
-    $(document).on('click', '.mes_edit', async function () {
+    // A press on Edit leaves the read text's selection alone, so the edit opens with it selected
+    $(document).on('mousedown', '.mes_edit', event => event.preventDefault());
+    $(document).on('click', '.mes_edit', async function (_event, /** @type {{ text?: number, reasoning?: number } | undefined} */ clickedAt) {
         if (is_delete_mode) {
             return;
         }
@@ -10722,13 +10739,9 @@ jQuery(async function () {
             }
             var edit_mes_id = Number($(this).closest('.mes').attr('mesid'));
 
-            await messageEdit(edit_mes_id);
-        }
-    });
-
-    $(document).on('input', '#curEditTextarea', function () {
-        if (power_user.auto_save_msg_edits === true) {
-            messageEditAuto($(this));
+            const textElement = $(this).closest('.mes').find('.mes_text')[0];
+            const textPlace = clickedAt?.text !== undefined ? { from: clickedAt.text, to: clickedAt.text } : textElement ? readerSelection(textElement) : undefined;
+            await messageEdit(edit_mes_id, textPlace, clickedAt?.reasoning);
         }
     });
 
@@ -10815,7 +10828,7 @@ jQuery(async function () {
             return;
         }
 
-        const text = $(this).closest('.mes_block').find('.edit_textarea').val();
+        const text = editedMessageText();
         if (typeof text !== 'string' || !text.length) {
             return;
         }
@@ -10868,7 +10881,7 @@ jQuery(async function () {
         const clone = structuredClone(chat[this_edit_mes_id]);
         clone.send_date = Date.now();
         const this_edit_mes_element = $(this).closest('.mes');
-        clone.mes = this_edit_mes_element.find('.edit_textarea').val().toString();
+        clone.mes = editedMessageText() ?? String(clone.mes ?? '');
 
         if (power_user.trim_spaces) {
             clone.mes = clone.mes.trim();
@@ -11243,7 +11256,7 @@ jQuery(async function () {
 
     $(document).on('keydown', function (e) {
         if (e.key === 'Escape' && !e.originalEvent.isComposing && !e.isDefaultPrevented()) {
-            const isEditVisible = $('#curEditTextarea').is(':visible') || $('.reasoning_edit_textarea').length > 0;
+            const isEditVisible = messageEditing !== null || $('.reasoning_editor').length > 0;
             if (isEditVisible && power_user.auto_save_msg_edits === false) {
                 closeMessageEditor('all');
                 $('#send_textarea').trigger('focus');

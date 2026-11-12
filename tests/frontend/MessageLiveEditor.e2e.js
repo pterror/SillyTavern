@@ -52,13 +52,39 @@ test.describe('message edits in the live editor', () => {
         await mes.locator('.mes_edit').click();
         const editor = mes.locator('.cm-editor');
         await expect(editor).toBeVisible();
-        await expect(page.locator('#curEditTextarea')).toHaveClass(/live-editor-textarea/);
         await page.keyboard.press('Control+End');
         await page.keyboard.type(' New **bold**.');
         await mes.locator('.mes_edit_done').click();
         await expect(page.locator('#chat .cm-editor')).toHaveCount(0);
         await expect(mes.locator('.mes_text strong')).toHaveText('bold');
         expect((await storedMessage(page, id)).mes).toBe('Old *text*. New **bold**.');
+    });
+
+    test('Edit keeps the place selected in the read text; with nothing selected the cursor goes to the end', async ({ page }) => {
+        await setAutoSave(page, false);
+        const id = await chatWithUserMessage(page, 'Pick *this* word.');
+        const mes = page.locator(`#chat .mes[mesid="${id}"]`);
+        const selectionOf = () => mes.locator('.cm-editor').evaluate(async (element) => {
+            const { view } = await import('/live-editor-lib.js');
+            const { from, to } = view.EditorView.findFromDOM(/** @type {HTMLElement} */ (element))?.state.selection.main ?? { from: -1, to: -1 };
+            return [from, to];
+        });
+        await mes.locator('.mes_text em').evaluate((em) => {
+            const range = document.createRange();
+            range.selectNodeContents(/** @type {Node} */ (em.firstChild));
+            const selection = window.getSelection();
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+        });
+        await mes.locator('.mes_edit').click();
+        await expect(mes.locator('.cm-editor')).toBeVisible();
+        expect(await selectionOf()).toEqual([6, 10]);
+        await mes.locator('.mes_edit_cancel').click();
+        await page.evaluate(() => window.getSelection()?.removeAllRanges());
+        await mes.locator('.mes_edit').click();
+        await expect(mes.locator('.cm-editor')).toBeVisible();
+        expect(await selectionOf()).toEqual([17, 17]);
+        await mes.locator('.mes_edit_cancel').click();
     });
 
     test('the text is styled as the message is, its markup shown dimmed', async ({ page }) => {
@@ -69,7 +95,7 @@ test.describe('message edits in the live editor', () => {
         await expect(mes.locator('.cm-editor')).toBeVisible();
         await page.keyboard.press('Control+End');
         await expect(mes.locator('.cm-editor strong')).toHaveText('**strong**');
-        expect(await mes.locator('.cm-editor strong .live-syntax').first().evaluate(el => Number(getComputedStyle(el).opacity))).toBeLessThan(1);
+        expect(await mes.locator('.cm-editor strong .mark').first().evaluate(el => Number(getComputedStyle(el).opacity))).toBeLessThan(1);
         await mes.locator('.mes_edit_cancel').click();
     });
 
@@ -118,14 +144,14 @@ test.describe('message edits in the live editor', () => {
         const id = await chatWithUserMessage(page, 'Message');
         const mes = page.locator(`#chat .mes[mesid="${id}"]`);
         await mes.locator('.mes_edit').click();
-        await expect(mes.locator('#curEditTextarea')).toHaveCount(1);
+        await expect(mes.locator('.mes_editor')).toHaveCount(1);
         await mes.locator('.mes_edit_add_reasoning').click();
-        const reasoningEditor = mes.locator('.reasoning_edit_textarea + .cm-editor');
+        const reasoningEditor = mes.locator('.reasoning_editor .cm-editor');
         await expect(reasoningEditor).toBeVisible();
         await reasoningEditor.locator('.cm-content').click();
         await page.keyboard.type('Thinking *hard*');
         await mes.locator('.mes_edit_done').click();
-        await expect(page.locator('#chat .reasoning_edit_textarea')).toHaveCount(0);
+        await expect(page.locator('#chat .reasoning_editor')).toHaveCount(0);
         await expect(page.locator('#chat .cm-editor')).toHaveCount(0);
         await expect.poll(async () => (await storedMessage(page, id)).extra?.reasoning).toBe('Thinking *hard*');
     });
@@ -142,26 +168,6 @@ test.describe('message edits in the live editor', () => {
         await page.waitForTimeout(300);
         await expect(page.locator('.autoComplete-wrap')).toHaveCount(0);
         await page.keyboard.press('Escape');
-        await mes.locator('.mes_edit_cancel').click();
-    });
-
-    test('focus moving from the edit box into its editor is not seen as the box losing focus', async ({ page }) => {
-        await setAutoSave(page, false);
-        const id = await chatWithUserMessage(page, 'Focus');
-        await page.evaluate(() => {
-            // @ts-ignore
-            window.__editBlurs = 0;
-            document.addEventListener('focusout', (event) => {
-                // @ts-ignore
-                if (event.target instanceof HTMLElement && event.target.id === 'curEditTextarea') window.__editBlurs++;
-            }, true);
-        });
-        const mes = page.locator(`#chat .mes[mesid="${id}"]`);
-        await mes.locator('.mes_edit').click();
-        await expect(mes.locator('.cm-editor')).toBeVisible();
-        await expect(mes.locator('.cm-content')).toBeFocused();
-        // @ts-ignore
-        expect(await page.evaluate(() => window.__editBlurs)).toBe(0);
         await mes.locator('.mes_edit_cancel').click();
     });
 });

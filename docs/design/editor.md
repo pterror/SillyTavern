@@ -16,7 +16,8 @@ greetings and other alternatives, worldbuilding text, prompt manager prompts, au
 
 - An editor shows formatting marks dimmed, in place, always. The cursor moves through them as characters; Backspace
   deletes one `*`; `![alt](url)` is editable text with a preview beside it that takes the same space either way.
-  Typing a mark changes nothing around it.
+  Typing a mark changes nothing around it, but for overtype: typing the closing mark that is already next steps over
+  it (interact-markdown's `overtype`, its own extension, composed in).
 - A reading surface (rendered messages, the wiki view) shows no marks. Both are drawn from the same syntax tree and
   styles; they differ only in the marks and in macro pill styling.
 - Going from reading to editing is an explicit action (Edit, a key), never focus or a click into the text.
@@ -35,6 +36,9 @@ field is reserved space, so it never moves the field.
 
 - Slash-command suggestions are the editor's own, the same mechanism as macro suggestions.
 - Find and replace and its presets move over unchanged; their redesign is a separate item.
+- Open: which commands the toolbar and the bar beside the selection hold, and how a person chooses them. Until that
+  is decided the toolbar holds the commands a person's `editor_toolbar` setting lists, none by default, there is no
+  bar beside the selection, and every formatting command is reachable by its key.
 
 ## Taken from cyoa, and what changes
 

@@ -84,7 +84,7 @@ test.describe('editing a card greeting in the chat', () => {
 
         const edited = `Zero edited in chat ${s}`;
         await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
-        await page.locator('#curEditTextarea').fill(edited);
+        await page.locator('.mes_editor .cm-content').fill(edited);
         await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(edited, { timeout: 10000 });
 
@@ -153,7 +153,7 @@ test.describe('editing the opening to a card greeting\'s text', () => {
      */
     async function editOpening(page, text) {
         await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
-        await page.locator('#curEditTextarea').fill(text);
+        await page.locator('.mes_editor .cm-content').fill(text);
         await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
     }
 

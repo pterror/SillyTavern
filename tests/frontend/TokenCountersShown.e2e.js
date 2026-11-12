@@ -149,7 +149,7 @@ test('an edited message shows the count of its new text, and the page asks for n
 
     const requested = countRequests(page);
     await page.locator('#chat .mes[mesid="2"] .mes_edit').click();
-    await page.locator('#curEditTextarea').fill('Two days on foot, if the bridge still stands, and three more if it has fallen into the water since the spring floods.');
+    await page.locator('.mes_editor .cm-content').fill('Two days on foot, if the bridge still stands, and three more if it has fallen into the water since the spring floods.');
     await page.locator('#chat .mes[mesid="2"] .mes_edit_done').click();
     await expect.poll(async () => (await shownCounts(page))[2]).toBeGreaterThan(before[2]);
     const after = await expectCountersShowChat(page, 3);

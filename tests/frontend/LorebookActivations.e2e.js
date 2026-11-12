@@ -218,7 +218,7 @@ test('the words that brought an entry in are underlined where they were written;
         await expect(page.locator('#WorldInfo')).toBeVisible();
         await expect(page.locator('#world_popup_entries_list .world_entry[uid="0"]')).toBeVisible({ timeout: 10000 });
         await expect.poll(() => page.locator('#world_editor_select option:checked').textContent()).toBe(book);
-        await expect(page.locator('#curEditTextarea')).toHaveCount(0);
+        await expect(page.locator('.mes_editor')).toHaveCount(0);
     } finally {
         await setLoreMarks(page, 'on').catch(() => {});
         await mock.close();

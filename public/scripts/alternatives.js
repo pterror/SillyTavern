@@ -8,7 +8,7 @@ import { alternativeReader } from './message-text.js';
 import { isStoredNodeId } from './node-identity.js';
 import { selected_group } from './group-chats.js';
 import { newUi } from './new-ui-page.js';
-import { editPosition } from './live-editor/positions.js';
+import { editPosition } from './chat-text/surface.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';

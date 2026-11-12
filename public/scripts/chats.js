@@ -24,7 +24,7 @@ import {
     chatElement,
     updateIn,
 } from '../script.js';
-import { drawnText } from './chat-text/surface.js';
+import { drawnText, editPosition } from './chat-text/surface.js';
 import { cardTextSetup } from './message-text.js';
 import { fetchMacroValues, macroValuesOf } from './macro-values.js';
 import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
@@ -1331,14 +1331,11 @@ export function initChatUtilities() {
     });
 
     $(document).on('click', 'body .mes .mes_text, body .mes .mes_reasoning', function (event) {
-        if (!power_user.click_to_edit) return;
-        if ($(event.target).closest('a[href]', this).length) return;
-        if (window.getSelection().toString()) return;
-        if ($('.edit_textarea').length) return;
-        $(this).closest('.mes').find('.mes_edit').trigger('click');
-        if ($(event.target).closest('.mes_reasoning').length) {
-            $('.reasoning_edit_textarea').trigger('focus');
-        }
+        if ($('.mes_editor').length) return;
+        const at = editPosition(/** @type {MouseEvent} */ (event.originalEvent), this, power_user.click_to_edit);
+        if (at === null) return;
+        const inReasoning = this.classList.contains('mes_reasoning');
+        $(this).closest('.mes').find('.mes_edit').trigger('click', [inReasoning ? { reasoning: at } : { text: at }]);
     });
 
     $(document).on('click', '.open_media_overrides', openExternalMediaOverridesDialog);

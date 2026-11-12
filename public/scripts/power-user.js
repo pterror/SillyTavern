@@ -222,6 +222,7 @@ export const power_user = {
     wi_last_editor_book: '',
     enable_auto_select_input: false,
     enable_md_hotkeys: false,
+    editor_toolbar: [],
     hotkey_overlay: true,
     tag_import_setting: tag_import_setting.ASK,
     tag_sort_mode: tag_sort_mode.MANUAL,

@@ -130,13 +130,30 @@ export function showMessageText(element, message, { fade = false } = {}) {
     showText(element, text, chatSetup(speakerOf(message), 'message', valuesIn(element), element), { fade });
 }
 
+/** @type {WeakMap<Element, { redraw: () => void }>} the editor open in a message's text element */
+const openEditors = new WeakMap();
+
 /**
- * Draws a message's text again, from scratch, for when its macros' values changed; not while it is being edited
+ * Says an editor is open in a message's text element, so drawing it again draws the editor's macros again instead
+ * @param {Element} element
+ * @param {{ redraw: () => void } | null} editor none when it closed
+ */
+export function editingIn(element, editor) {
+    if (editor) openEditors.set(element, editor);
+    else openEditors.delete(element);
+}
+
+/**
+ * Draws a message's text again, from scratch, for when its macros' values changed; in an editor open in it, its macros
  * @param {Element} element the message's `.mes_text`
  * @param {ChatMessage} message
  */
 export function redrawMessageText(element, message) {
-    if (element.querySelector('textarea')) return;
+    const editing = openEditors.get(element);
+    if (editing) {
+        editing.redraw();
+        return;
+    }
     stopText(element);
     showMessageText(element, message);
 }
@@ -254,4 +271,21 @@ export function shownMessageMacros() {
 export function messageStyles(message) {
     if (!message || isAppMessage(message)) return [];
     return [...drawnMessageText(String(message.mes ?? ''), { name: String(message.name ?? ''), isUser: Boolean(message.is_user) }).querySelectorAll('style')];
+}
+
+/**
+ * How a message's text, or its reasoning, is drawn in an editor opened in it: as the message draws it, its macros'
+ * values those the chat has for the message now
+ * @param {Element} element the message's text or reasoning element
+ * @param {ChatMessage} message
+ * @param {'message' | 'reasoning'} kind
+ * @returns {{ setup: TextSetup, macroValue: (source: string) => string | null | undefined, speaker: string }}
+ */
+export function messageEditorSetup(element, message, kind) {
+    const valuesOf = valuesIn(element);
+    return {
+        setup: chatSetup(speakerOf(message), kind, valuesOf),
+        macroValue: source => valuesOf()?.[source],
+        speaker: speakerOf(message) ?? '',
+    };
 }

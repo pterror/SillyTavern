@@ -1,5 +1,7 @@
 import { blockWhileFieldEditing } from './character-field-editor.js';
-import { mountChatEditor, unmountChatEditor } from './chat-live-editor.js';
+import { loadChatEditor } from './chat-text/editors.js';
+import { messageEditorSetup } from './message-text.js';
+import { drawerStackChanged } from './drawer-stack.js';
 import {
     moment,
 } from '../lib.js';
@@ -1183,6 +1185,28 @@ function setReasoningEventHandlers() {
      * @param {object} message Message object
      * @param {string} value Reasoning value
      */
+    /**
+     * @param {JQuery<HTMLElement>} messageBlock
+     * @returns {import('./chat-text/editor.js').ChatEditor | undefined} the reasoning editor open in the message
+     */
+    const reasoningEditorIn = (messageBlock) => {
+        const holder = messageBlock.find('.reasoning_editor')[0];
+        return holder ? reasoningEditors.get(holder) : undefined;
+    };
+
+    /**
+     * Closes the message's reasoning editor, keeping nothing it holds
+     * @param {JQuery<HTMLElement>} messageBlock
+     */
+    const stopReasoningEditor = (messageBlock) => {
+        const holder = messageBlock.find('.reasoning_editor')[0];
+        if (!holder) return;
+        reasoningEditors.get(holder)?.stop();
+        reasoningEditors.delete(holder);
+        holder.remove();
+        drawerStackChanged();
+    };
+
     function updateReasoningFromValue(messageId, message, value) {
         const reasoning = value;
         const type = reasoningOf(message.extra) !== null ? ReasoningType.Edited : ReasoningType.Manual;
@@ -1198,7 +1222,7 @@ function setReasoningEventHandlers() {
     $(document).on('click', '.mes_reasoning_header', function (e) {
         const details = $(this).closest('.mes_reasoning_details');
         const mes = $(this).closest('.mes');
-        const mesEditArea = mes.find('#curEditTextarea');
+        const mesEditArea = mes.find('.mes_editor');
 
         if (mesEditArea.length) {
             const summary = $(mes).find('.mes_reasoning_summary');
@@ -1219,7 +1243,7 @@ function setReasoningEventHandlers() {
         e.preventDefault();
     });
 
-    $(document).on('click', '.mes_reasoning_edit', function (e) {
+    $(document).on('click', '.mes_reasoning_edit', async function (e, /** @type {number | undefined} */ at) {
         e.stopPropagation();
         e.preventDefault();
         const { message, messageId, messageBlock } = getMessageFromJquery(this);
@@ -1227,7 +1251,7 @@ function setReasoningEventHandlers() {
             return;
         }
 
-        if (messageBlock.find('.reasoning_edit_textarea').length > 0) {
+        if (messageBlock.find('.reasoning_editor').length > 0) {
             return;
         }
 
@@ -1237,40 +1261,44 @@ function setReasoningEventHandlers() {
 
         const reasoning = String(message?.extra?.reasoning ?? '');
         const chatElement = document.getElementById('chat');
-        const textarea = document.createElement('textarea');
+        const holder = document.createElement('div');
         const reasoningBlock = messageBlock.find('.mes_reasoning');
-        textarea.classList.add('reasoning_edit_textarea');
-        textarea.value = reasoning;
-        $(textarea).insertBefore(reasoningBlock);
+        holder.className = 'reasoning_editor';
+        $(holder).insertBefore(reasoningBlock);
 
-        if (!CSS.supports('field-sizing', 'content')) {
-            const resetHeight = function () {
-                const scrollTop = chatElement.scrollTop;
-                textarea.style.height = '0px';
-                textarea.style.height = `${textarea.scrollHeight}px`;
-                chatElement.scrollTop = scrollTop;
-            };
-
-            textarea.addEventListener('input', resetHeight);
-            resetHeight();
-        }
-
-        textarea.focus();
-        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-
-        void mountChatEditor(textarea, {
-            name: message.name ?? '',
-            isSystem: Boolean(message.is_system),
-            isUser: Boolean(message.is_user),
-            messageId,
-            isReasoning: true,
+        const { chatEditor } = await loadChatEditor();
+        if (!holder.isConnected) return;
+        const { setup, macroValue, speaker } = messageEditorSetup(reasoningBlock[0], message, 'reasoning');
+        /** @type {import('./chat-text/editor.js').ChatEditor} */
+        const editor = chatEditor({
+            parent: holder,
+            setup,
+            macroValue,
+            speaker,
+            initial: reasoning,
+            edited: () => {
+                if (!power_user.auto_save_msg_edits) return;
+                editor.save().catch(error => console.error('Could not save the edited reasoning:', error));
+            },
+            save: async (now) => {
+                const current = chat[messageId];
+                if (!current?.extra) return;
+                updateReasoningFromValue(messageId, current, now);
+                updateReasoningUI(messageBlock);
+                await chatOpEdit(messageId);
+            },
+            label: t`Reasoning`,
         });
+        reasoningEditors.set(holder, editor);
+        drawerStackChanged();
+        editor.view.dispatch({ selection: { anchor: Math.min(at ?? reasoning.length, reasoning.length) }, scrollIntoView: true });
+        editor.view.focus();
 
-        const textareaRect = textarea.getBoundingClientRect();
+        const holderRect = holder.getBoundingClientRect();
         const chatRect = chatElement.getBoundingClientRect();
 
-        if (textareaRect.bottom > chatRect.bottom) {
-            const scrollOffset = textareaRect.bottom - chatRect.bottom;
+        if (holderRect.bottom > chatRect.bottom) {
+            const scrollOffset = holderRect.bottom - chatRect.bottom;
             chatElement.scrollTop += scrollOffset;
         }
     });
@@ -1291,10 +1319,8 @@ function setReasoningEventHandlers() {
             return;
         }
 
-        const textarea = messageBlock.find('.reasoning_edit_textarea');
-        const newReasoning = String(textarea.val());
-        unmountChatEditor(textarea[0]);
-        textarea.remove();
+        const newReasoning = reasoningEditorIn(messageBlock)?.text() ?? String(message.extra.reasoning ?? '');
+        stopReasoningEditor(messageBlock);
         if (newReasoning === reasoningOf(message.extra)) {
             closeReasoningDetailsWithoutContent(messageBlock);
             return;
@@ -1313,9 +1339,7 @@ function setReasoningEventHandlers() {
         e.preventDefault();
 
         const { messageBlock } = getMessageFromJquery(this);
-        const textarea = messageBlock.find('.reasoning_edit_textarea');
-        unmountChatEditor(textarea[0]);
-        textarea.remove();
+        stopReasoningEditor(messageBlock);
 
         messageBlock.find('.mes_reasoning_edit_cancel:visible').trigger('click');
 
@@ -1330,7 +1354,7 @@ function setReasoningEventHandlers() {
         }
 
         const details = messageBlock.find('.mes_reasoning_details');
-        if (details.find('.reasoning_edit_textarea').length > 0) {
+        if (details.find('.reasoning_editor').length > 0) {
             return;
         }
 
@@ -1371,9 +1395,7 @@ function setReasoningEventHandlers() {
         await chatOpEdit(messageId).catch(error =>
             console.error('Could not save the cleared reasoning block:', error));
         updateMessageBlock(messageId, chat[messageId]);
-        const textarea = messageBlock.find('.reasoning_edit_textarea');
-        unmountChatEditor(textarea[0]);
-        textarea.remove();
+        stopReasoningEditor(messageBlock);
     });
 
     $(document).on('pointerup', '.mes_reasoning_copy', async function () {
@@ -1387,23 +1409,10 @@ function setReasoningEventHandlers() {
         await copyText(reasoning);
         toastr.info(t`Copied!`, '', { timeOut: 2000 });
     });
-
-    $(document).on('input', '.reasoning_edit_textarea', function () {
-        if (!power_user.auto_save_msg_edits) {
-            return;
-        }
-
-        const { message, messageId, messageBlock } = getMessageFromJquery(this);
-        if (!message?.extra) {
-            return;
-        }
-
-        updateReasoningFromValue(messageId, message, String($(this).val()));
-        updateReasoningUI(messageBlock);
-        chatOpEdit(messageId).catch(error =>
-            console.error('Could not save the edited reasoning:', error));
-    });
 }
+
+/** @type {WeakMap<Element, import('./chat-text/editor.js').ChatEditor>} each open reasoning editor, by its element */
+const reasoningEditors = new WeakMap();
 
 /**
  * Removes reasoning from a string if auto-parsing is enabled.

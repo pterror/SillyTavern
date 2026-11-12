@@ -1,8 +1,6 @@
 import { EMOJIS } from './emojis.js';
 import { MacroValues } from './macro-values.js';
-import { macrosIn } from './safe-macros.js';
-import { getFocusedField, loadLiveEditor, mountLiveEditor } from './live-editor/registry.js';
-import { drawerStackChanged } from './drawer-stack.js';
+import { getFocusedField, loadLiveEditor } from './live-editor/registry.js';
 import { drawnMessageText } from './message-text.js';
 
 /**
@@ -32,7 +30,6 @@ const editors = new Map();
  * @property {boolean} isSystem
  * @property {boolean} isUser
  * @property {number | (() => number)} messageId
- * @property {boolean} [isReasoning]
  * @property {boolean} [isChatBox]
  */
 
@@ -45,10 +42,9 @@ function chatEditorOptions(chatDeps, target) {
     const { isSystem, isUser } = target;
     const nameNow = () => (typeof target.name === 'function' ? target.name() : target.name);
     const messageIdNow = () => (typeof target.messageId === 'function' ? target.messageId() : target.messageId);
-    const isReasoning = Boolean(target.isReasoning);
     const isChatBox = Boolean(target.isChatBox);
     const { power_user, uploadImage, macroPerson } = chatDeps;
-    const fillsMacros = () => isReasoning || isChatBox || (Number(messageIdNow()) === 0 && !isSystem && !isUser);
+    const fillsMacros = () => isChatBox || (Number(messageIdNow()) === 0 && !isSystem && !isUser);
     const values = new MacroValues(() => (isUser ? chatDeps.macroScope() : { ...chatDeps.macroScope(), name2: nameNow() }));
     return {
         draw: text => drawnMessageText(text, { name: nameNow(), isUser }),
@@ -57,8 +53,8 @@ function chatEditorOptions(chatDeps, target) {
             dialogueQuotes: !isSystem,
             encodeTags: !isSystem && Boolean(power_user.encode_tags),
         },
-        contentClass: isReasoning || isChatBox ? '' : 'mes_text',
-        editorClass: isChatBox ? 'live-chat-text' : isReasoning ? 'live-chat-text live-reasoning-text' : '',
+        contentClass: isChatBox ? '' : 'mes_text',
+        editorClass: isChatBox ? 'live-chat-text' : '',
         macros: {
             values: {
                 get: source => (fillsMacros() ? values.get(source) : null),
@@ -73,37 +69,6 @@ function chatEditorOptions(chatDeps, target) {
 }
 
 /**
- * @param {HTMLTextAreaElement} textarea
- * @param {ChatEditorTarget} target
- */
-export async function mountChatEditor(textarea, target) {
-    if (!deps || editors.has(textarea)) return;
-    takeDetachedEditorsAway();
-    const holder = { editor: null, ended: false };
-    editors.set(textarea, holder);
-    drawerStackChanged();
-    try {
-        const options = chatEditorOptions(deps, target);
-        await options.macros.values.wantMacros(macrosIn(textarea.value));
-        if (holder.ended || !textarea.isConnected) {
-            editors.delete(textarea);
-            return;
-        }
-        const editor = await mountLiveEditor(textarea, options);
-        if (holder.ended || !textarea.isConnected) {
-            editor.destroy();
-            editors.delete(textarea);
-            return;
-        }
-        holder.editor = editor;
-        if (document.activeElement === textarea) editor.takeFocus();
-    } catch (error) {
-        editors.delete(textarea);
-        console.error('The editor could not be loaded; the text box stays a plain text box', error);
-    }
-}
-
-/**
  * @param {HTMLTextAreaElement | null | undefined} textarea
  */
 export function unmountChatEditor(textarea) {
@@ -113,13 +78,6 @@ export function unmountChatEditor(textarea) {
     holder.ended = true;
     holder.editor?.destroy();
     editors.delete(textarea);
-    drawerStackChanged();
-}
-
-function takeDetachedEditorsAway() {
-    for (const textarea of [...editors.keys()]) {
-        if (!textarea.isConnected) unmountChatEditor(textarea);
-    }
 }
 
 /**

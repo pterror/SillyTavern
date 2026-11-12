@@ -58,10 +58,10 @@ test.describe('Clicking a link in a chat message with click to edit on', () => {
             const message = page.locator('#chat .mes').last();
 
             await message.locator('.mes_text a[href]').click();
-            await expect(page.locator('.edit_textarea')).toHaveCount(0);
+            await expect(page.locator('.mes_editor .cm-content')).toHaveCount(0);
 
             await message.locator('.mes_text').getByText('message words').click();
-            await expect(page.locator('.edit_textarea')).toHaveCount(1);
+            await expect(page.locator('.mes_editor .cm-content')).toHaveCount(1);
         } finally {
             await setClickToEdit(page, previous);
         }
@@ -76,11 +76,11 @@ test.describe('Clicking a link in a chat message with click to edit on', () => {
             await expect(link).toHaveText('the reasoning link');
 
             await link.click();
-            await expect(page.locator('.edit_textarea')).toHaveCount(0);
-            await expect(page.locator('.reasoning_edit_textarea')).toHaveCount(0);
+            await expect(page.locator('.mes_editor .cm-content')).toHaveCount(0);
+            await expect(page.locator('.reasoning_editor')).toHaveCount(0);
 
             await message.locator('.mes_reasoning').getByText('reasoning words').click();
-            await expect(page.locator('.edit_textarea')).toHaveCount(1);
+            await expect(page.locator('.mes_editor .cm-content')).toHaveCount(1);
         } finally {
             await setClickToEdit(page, previous);
         }

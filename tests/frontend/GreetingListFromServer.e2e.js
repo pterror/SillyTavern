@@ -516,9 +516,9 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
      */
     async function editOpeningInChat(page, text) {
         await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
-        await page.locator('#curEditTextarea').fill(text);
+        await page.locator('.mes_editor .cm-content').fill(text);
         await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
-        await expect(page.locator('#curEditTextarea')).toHaveCount(0);
+        await expect(page.locator('.mes_editor .cm-content')).toHaveCount(0);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(text, { timeout: 10000 });
     }
 
@@ -585,9 +585,9 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openCharacter(page, avatar);
         const y = `Hello {{user}}, I am {{char}} ${s}.`;
         await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
-        await page.locator('#curEditTextarea').fill(y);
+        await page.locator('.mes_editor .cm-content').fill(y);
         await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
-        await expect(page.locator('#curEditTextarea')).toHaveCount(0);
+        await expect(page.locator('.mes_editor .cm-content')).toHaveCount(0);
         await expect.poll(async () => (await openingSwipes(page)).swipes[0], { timeout: 10000 }).toBe(y);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).not.toContainText('{{user}}');
 

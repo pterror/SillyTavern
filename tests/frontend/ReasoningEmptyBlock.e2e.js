@@ -94,7 +94,7 @@ test.describe('an empty reasoning block', () => {
         await reply.hover();
         await reply.locator('.mes_edit').click();
         await reply.locator('.mes_edit_add_reasoning').click();
-        await expect(reply.locator('.reasoning_edit_textarea')).toHaveValue('');
+        await expect(reply.locator('.reasoning_editor .cm-content')).toHaveText('');
         await reply.locator('.mes_edit_done').click();
         await expect.poll(() => blockState(page, avatar)).toEqual(EMPTY);
 

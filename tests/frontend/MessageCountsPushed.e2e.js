@@ -159,7 +159,7 @@ test('an edit in flight shows its count as waiting, and a failed edit shows no c
             await route.continue();
         });
         await page.locator('#chat .mes[mesid="1"] .mes_edit').click();
-        await page.locator('#curEditTextarea').fill(`Edited message of ${s}, now with many more words than it had before`);
+        await page.locator('.mes_editor .cm-content').fill(`Edited message of ${s}, now with many more words than it had before`);
         await page.locator('#chat .mes[mesid="1"] .mes_edit_done').click();
         await expect(counter(page, 1)).toHaveText('…');
         release();
@@ -169,7 +169,7 @@ test('an edit in flight shows its count as waiting, and a failed edit shows no c
 
         await page.route('**/api/chats/message/edit', route => route.abort());
         await page.locator('#chat .mes[mesid="1"] .mes_edit').click();
-        await page.locator('#curEditTextarea').fill(`A failed edit of ${s}`);
+        await page.locator('.mes_editor .cm-content').fill(`A failed edit of ${s}`);
         await page.locator('#chat .mes[mesid="1"] .mes_edit_done').click();
         await expect(page.locator('#chat .mes[mesid="1"] .mes_text')).toContainText(`A failed edit of ${s}`);
         await expect(counter(page, 1)).toHaveText('', { timeout: 15000 });

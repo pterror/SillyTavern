@@ -208,7 +208,7 @@ test.describe('the paste picker in the app', () => {
         });
     });
 
-    test('in a message edit: switching works, and the first Escape only puts the picker away', async ({ page }) => {
+    test('in a message edit: pasted HTML is written as markdown', async ({ page }) => {
         await page.evaluate(async () => {
             const { power_user } = await import('/scripts/power-user.js');
             power_user.auto_save_msg_edits = false;
@@ -229,13 +229,10 @@ test.describe('the paste picker in the app', () => {
         await expect(editor).toBeVisible();
         await page.keyboard.press('Control+End');
         await paste(page, editor, { 'text/html': HTML, 'text/plain': PLAIN });
-        const read = () => page.locator('#curEditTextarea').inputValue();
-        expect(await read()).toBe('Edit me.' + PLAIN);
-        await page.keyboard.press('Control+Alt+v');
-        expect(await read()).toBe('Edit me.' + MARKDOWN);
-        await page.keyboard.press('Escape');
-        await expect(editor.locator('.live-paste-picker')).toHaveCount(0);
-        await expect(editor).toBeVisible();
+        await expect.poll(() => editor.evaluate(async (element) => {
+            const { view } = await import('/live-editor-lib.js');
+            return view.EditorView.findFromDOM(/** @type {HTMLElement} */ (element))?.state.doc.toString();
+        })).toBe('Edit me.' + MARKDOWN);
         await mes.locator('.mes_edit_cancel').click();
     });
 });

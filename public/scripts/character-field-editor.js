@@ -5,7 +5,7 @@ import { MacroValues } from './macro-values.js';
 import { cardTextSetup } from './message-text.js';
 import { drawnText, showText, stopText } from './chat-text/surface.js';
 import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
-import { editPosition } from './live-editor/positions.js';
+import { editPosition } from './chat-text/surface.js';
 import { drawerStackChanged } from './drawer-stack.js';
 
 /**
@@ -104,7 +104,7 @@ function getPanel(id) {
 
 /** @returns {boolean} */
 function isMessageEditOpen() {
-    return $('#curEditTextarea').length > 0 || $('.reasoning_edit_textarea').length > 0;
+    return $('.mes_editor').length > 0 || $('.reasoning_editor').length > 0;
 }
 
 /**

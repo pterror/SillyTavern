@@ -23,7 +23,7 @@ import { chatLook } from './look.js';
  * @property {() => Overlay[]} [overlays] the overlays of a reader made for a container
  */
 
-const TEXT_CLASS = 'chat-text';
+export const TEXT_CLASS = 'chat-text';
 
 /** @type {Map<string, import('@lezer/markdown').MarkdownParser>} */
 const grammars = new Map();
@@ -32,7 +32,7 @@ const grammars = new Map();
  * @param {Omit<GrammarOptions, 'emojis'>} options
  * @returns {import('@lezer/markdown').MarkdownParser}
  */
-function grammarOf(options) {
+export function grammarOf(options) {
     const key = JSON.stringify([options.dialogueQuotes, options.encodeTags, options.escapeLines, options.reasoningMarkers]);
     let grammar = grammars.get(key);
     if (!grammar) {
@@ -50,12 +50,22 @@ function grammarOf(options) {
 function readerOf(setup, overlays) {
     const made = reader({
         grammar: grammarOf(setup.grammar),
-        look: chatLook({ html: setup.html, emojis: EMOJIS, macro: setup.macro, reasoningMarkers: setup.grammar.reasoningMarkers }),
+        look: lookOf(setup),
         overlays: [codeHighlighting, ...overlays],
         textClass: TEXT_CLASS,
     });
     readers.set(made.element, made);
     return made;
+}
+
+/**
+ * How a kind of text is drawn, for reading and, with the pieces macros are drawn as there, for editing
+ * @param {TextSetup} setup
+ * @param {(source: string) => Piece | undefined} [pill] the piece a macro is drawn as in an editor
+ * @returns {import('@pterror/interact-editor/look').Look}
+ */
+export function lookOf(setup, pill) {
+    return chatLook({ html: setup.html, emojis: EMOJIS, macro: setup.macro, pill, reasoningMarkers: setup.grammar.reasoningMarkers });
 }
 
 /** @type {WeakMap<Node, Reader>} each reader, by the element it draws into */
@@ -73,6 +83,60 @@ export function sourcePositionAt(node, offset) {
         if (drawnBy) return drawnBy.positionAt(node, offset);
     }
     return undefined;
+}
+
+/**
+ * @param {MouseEvent} event
+ * @returns {{ node: Node, offset: number } | null} the place in the page under the pointer
+ */
+function caretAt(event) {
+    // @ts-ignore Firefox
+    if (document.caretPositionFromPoint) {
+        // @ts-ignore
+        const position = document.caretPositionFromPoint(event.clientX, event.clientY);
+        return position ? { node: position.offsetNode, offset: position.offset } : null;
+    }
+    if (document.caretRangeFromPoint) {
+        const range = document.caretRangeFromPoint(event.clientX, event.clientY);
+        return range ? { node: range.startContainer, offset: range.startOffset } : null;
+    }
+    return null;
+}
+
+/**
+ * Where in its source a click or double-click on read text starts an edit: the source position the reader drew there.
+ * A click on a link or an image, or a click when click to edit is off or text is selected, starts none.
+ * @param {MouseEvent} event
+ * @param {HTMLElement} rendered the element the text is read in
+ * @param {boolean} clickToEdit
+ * @returns {number | null}
+ */
+export function editPosition(event, rendered, clickToEdit) {
+    if (event.type === 'click' && (!clickToEdit || window.getSelection()?.toString())) return null;
+    const target = event.target;
+    if (target instanceof Element) {
+        const link = target.closest('a[href]');
+        if (link && rendered.contains(link)) return null;
+    }
+    if (target instanceof HTMLImageElement) return null;
+    const caret = caretAt(event);
+    if (!caret || !rendered.contains(caret.node)) return 0;
+    return sourcePositionAt(caret.node, caret.offset) ?? 0;
+}
+
+/**
+ * Where the reader's selection in a text is, as source positions: what an edit opened from it starts selected
+ * @param {Element} rendered the element the text is read in
+ * @returns {{ from: number, to: number } | undefined} the range, none when nothing in the text is selected
+ */
+export function readerSelection(rendered) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !selection.anchorNode || !selection.focusNode) return undefined;
+    if (!rendered.contains(selection.anchorNode) || !rendered.contains(selection.focusNode)) return undefined;
+    const anchor = sourcePositionAt(selection.anchorNode, selection.anchorOffset);
+    const focus = sourcePositionAt(selection.focusNode, selection.focusOffset);
+    if (anchor === undefined || focus === undefined) return undefined;
+    return { from: Math.min(anchor, focus), to: Math.max(anchor, focus) };
 }
 
 /** @type {WeakMap<Element, { key: string, reader: Reader, fade: ReturnType<typeof fadeIn>, text: string }>} */

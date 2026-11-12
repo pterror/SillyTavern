@@ -8,6 +8,7 @@ const UI_ROOT = path.resolve(import.meta.dirname, '../ui');
 const CONFIG_FILE = path.join(UI_ROOT, 'vite.config.ts');
 const PUBLIC = path.resolve(UI_ROOT, '../../public');
 const DIST = path.join(UI_ROOT, 'dist');
+// Built in one build, so the editor and the reader share one copy of CodeMirror and lezer.
 const LIBRARIES = { lib: path.join(PUBLIC, 'lib.js'), 'live-editor-lib': path.join(PUBLIC, 'live-editor-lib.js') };
 const PAGE_DIR = 'ui';
 const LIBRARY_DIR = 'lib';
@@ -69,19 +70,17 @@ export async function buildUi({ outDir = DIST }: { outDir?: string } = {}): Prom
         logLevel: 'warn',
         build: { outDir: path.join(outDir, PAGE_DIR) },
     });
-    for (const [name, entry] of Object.entries(LIBRARIES)) {
-        await build({
-            configFile: false,
-            root: PUBLIC,
-            logLevel: 'warn',
-            build: {
-                outDir: path.join(outDir, LIBRARY_DIR),
-                emptyOutDir: false,
-                minify: true,
-                lib: { entry, formats: ['es'], fileName: () => `${name}.js` },
-            },
-        });
-    }
+    await build({
+        configFile: false,
+        root: PUBLIC,
+        logLevel: 'warn',
+        build: {
+            outDir: path.join(outDir, LIBRARY_DIR),
+            emptyOutDir: false,
+            minify: true,
+            lib: { entry: LIBRARIES, formats: ['es'], fileName: (_format, name) => `${name}.js` },
+        },
+    });
     await fs.writeFile(path.join(outDir, SOURCE_HASH_FILE), source);
 }
 
@@ -149,7 +148,7 @@ export async function serveUi({ dev, outDir = DIST, releases = RELEASE_BASE }: S
     await ensureUi({ outDir, releases });
     const libraries = {
         directory: path.join(outDir, LIBRARY_DIR),
-        files: Object.keys(LIBRARIES).map((name) => `${name}.js`),
+        files: (await fs.readdir(path.join(outDir, LIBRARY_DIR))).filter((file) => file.endsWith('.js')),
     };
     for (const file of libraries.files) {
         router.get(`/${file}`, (_request, response) => {
