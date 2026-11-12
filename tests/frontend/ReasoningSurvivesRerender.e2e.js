@@ -122,7 +122,7 @@ for (const autoParse of [false, true]) {
         await expect.poll(() => page.evaluate(() => {
             // @ts-ignore
             const m = stTest.context().chat[1];
-            return m.mes === 'How far is the city?' && m.node_id === m.swipe_info?.[m.swipe_id]?.node_id;
+            return m.mes === 'How far is the city?' && typeof m.node_id === 'string' && m.node_id === m.swipe_info?.[m.swipe_id]?.node_id;
         }), { timeout: 10000 }).toBe(true);
         expect(await page.evaluate(async () => {
             const { switchToAlternativePath } = await import('/scripts/node-navigation.js');
