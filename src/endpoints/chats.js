@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { pageFactsOf } from '../macro-facts.js';
 import path from 'node:path';
 
 import readline from 'node:readline';
@@ -708,7 +709,7 @@ async function recordLastOpened(request, opened) {
  * @param {string} avatar
  */
 function openingsForPage(request, chat, avatar) {
-    return countedOpeningState(request.user.directories, { store: chat.store, tree: chat.tree, actor: chat.session.reader(), avatar });
+    return countedOpeningState(request.user.directories, { store: chat.store, tree: chat.tree, actor: chat.session.reader(), avatar, pageFacts: pageFactsOf(request) });
 }
 
 /**

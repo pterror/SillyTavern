@@ -241,14 +241,15 @@ export async function countSent(request, owner, sources) {
  * The chat's openings for the page, with their token counts and the values of the macros they draw. The openings are
  * the start of the chat, so their macros read no messages.
  * @param {import('./users.js').UserDirectoryList} directories
- * @param {Parameters<typeof openingState>[0]} p
+ * @param {Parameters<typeof openingState>[0] & { pageFacts?: unknown }} p pageFacts: what the page knows that macros
+ *   read, as the request it answers says
  */
 export async function countedOpeningState(directories, p) {
     const state = await openingState(p);
     const alternatives = openingAlternatives(state);
     await Promise.all([
         countFor(directories, p.store, { avatar: p.avatar }, { alternatives }),
-        fillSentMacros(directories, { avatar: p.avatar ?? null, groupId: null }, { alternatives }),
+        fillSentMacros(directories, { avatar: p.avatar ?? null, groupId: null, pageFacts: p.pageFacts }, { alternatives }),
     ]);
     return state;
 }

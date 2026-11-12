@@ -621,6 +621,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
         if (mapping.v1) setAtPath(mergeData, mapping.v1, converted.value);
         setAtPath(mergeData, mapping.v2, converted.value);
         mergeData._loadedFieldHashes = { [mapping.v2]: chain.hash };
+        if (avatar === getCurrentCharacter()?.avatar) mergeData.shown_macros = shownMessageMacros();
 
         try {
             const fetchResult = await fetch('/api/characters/merge-attributes', {
@@ -674,6 +675,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                     const payload = await fetchResult.json();
                     savedHash = payload?.hashes?.[mapping.v2];
                     savedCounts = payload?.card_token_counts ?? null;
+                    takeMessageMacros(payload?.message_macros);
                 } catch { /* no body, or not JSON - the fallback below covers it */ }
             }
 

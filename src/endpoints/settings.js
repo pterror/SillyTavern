@@ -1,7 +1,5 @@
 import fs from 'node:fs';
-import { chatContext } from '../chat-request.js';
-import { pageFactsOf } from '../macro-facts.js';
-import { shownMacroValues } from '../message-macros.js';
+import { shownMacrosAnswer } from '../message-macros.js';
 import path from 'node:path';
 
 import express from 'express';
@@ -366,29 +364,9 @@ export async function applySettingsChanges(request, sent, expectedHashes, shown)
     for (const top of new Set(Object.keys(keys).map(key => key.split('.')[0]))) {
         if (Object.hasOwn(known, top)) seedKeyHashes(keyHashes, known[top], top);
     }
-    return { status: 200, answer: { result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes, ...await shownCountsOf(request), ...await shownMacrosOf(request, shown) } };
+    return { status: 200, answer: { result: 'ok', settingsHash: pageSettingsHash(stored), keyHashes, ...await shownCountsOf(request), ...await shownMacrosAnswer(request, shown) } };
 }
 
-/**
- * @param {import('express').Request} request
- * @param {unknown} shown
- * @returns {Promise<{ message_macros?: Record<string, Record<string, string | null>> }>}
- */
-async function shownMacrosOf(request, shown) {
-    if (!shown || typeof shown !== 'object') return {};
-    const { avatar_url: avatarUrl, group_id: groupIdOf, at, items } = /** @type {Record<string, unknown>} */ (shown);
-    const avatar = typeof avatarUrl === 'string' && avatarUrl !== '' ? avatarUrl : null;
-    const groupId = typeof groupIdOf === 'string' && groupIdOf !== '' ? groupIdOf : null;
-    if (avatar === null && groupId === null) return {};
-    try {
-        const chat = await chatContext(request, { avatar, group: groupId });
-        const values = await shownMacroValues(request.user.directories, { avatar, groupId, chat, at: typeof at === 'string' && at !== '' ? at : null, pageFacts: pageFactsOf(request) }, items);
-        return values ? { message_macros: values } : {};
-    } catch (error) {
-        console.warn('Could not fill in the macros the page shows:', error);
-        return {};
-    }
-}
 
 /**
  * A step that applies the settings changes the page carried with an action before anything is read from the settings,

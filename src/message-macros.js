@@ -1,4 +1,5 @@
 import { macrosIn, mentionAboutMacro } from '../public/scripts/safe-macros.js';
+import { chatContext } from './chat-request.js';
 import { pageFactsOf } from './macro-facts.js';
 
 /**
@@ -64,6 +65,9 @@ function shownOf({ messages = [], alternatives = [] }) {
     return shown;
 }
 
+/** `{{input}}`: the chat box's text, which only the action that sends it carries, so it is only known when sent */
+const INPUT = /^\{\{\s*input\s*\}\}$/i;
+
 /**
  * @param {string[]} sources
  * @returns {string[]} the macros, and for each one naming a person the macro their card's text comes from
@@ -98,7 +102,7 @@ export async function macroValuesOf(directories, owner, wanted) {
         const filled = await macroValuesIn(directories, { ...owner, name2: speaker }, list);
         values.set(speaker, new Map(list.map((source, i) => [source, filled[i]])));
     }
-    return wanted.map(({ speaker }, i) => Object.fromEntries(sources[i].map(source => [source, values.get(speaker)?.get(source) ?? null])));
+    return wanted.map(({ speaker }, i) => Object.fromEntries(sources[i].map(source => [source, INPUT.test(source) ? null : values.get(speaker)?.get(source) ?? null])));
 }
 
 /**
@@ -169,4 +173,26 @@ export async function storedMessageMacros(request, chat, nodeIds) {
     if (!wanted.length) return undefined;
     const filled = await macroValuesOf(request.user.directories, chatMacroOwner(request, chat), wanted);
     return Object.fromEntries(wanted.map((each, i) => [each.node, filled[i]]));
+}
+
+/**
+ * The answer's part for an action that may have changed the values of the macros the page shows: their values now
+ * @param {import('express').Request} request
+ * @param {unknown} shown the macros the page shows, as `shownMessageMacros` lists them (page)
+ * @returns {Promise<{ message_macros?: Record<string, Record<string, string | null>> }>}
+ */
+export async function shownMacrosAnswer(request, shown) {
+    if (!shown || typeof shown !== 'object') return {};
+    const { avatar_url: avatarUrl, group_id: groupIdOf, at, items } = /** @type {Record<string, unknown>} */ (shown);
+    const avatar = typeof avatarUrl === 'string' && avatarUrl !== '' ? avatarUrl : null;
+    const groupId = typeof groupIdOf === 'string' && groupIdOf !== '' ? groupIdOf : null;
+    if (avatar === null && groupId === null) return {};
+    try {
+        const chat = await chatContext(request, { avatar, group: groupId });
+        const values = await shownMacroValues(request.user.directories, { avatar, groupId, chat, at: typeof at === 'string' && at !== '' ? at : null, pageFacts: pageFactsOf(request) }, items);
+        return values ? { message_macros: values } : {};
+    } catch (error) {
+        console.warn('Could not fill in the macros the page shows:', error);
+        return {};
+    }
 }

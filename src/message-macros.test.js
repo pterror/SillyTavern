@@ -57,6 +57,10 @@ test('the macros the page says it shows are answered by node', async () => {
     assert.equal(await shownMacroValues(/** @type {any} */ ({}), owner, 'nothing'), undefined);
 });
 
+test('the chat box\'s text is only known when sent', async () => {
+    assert.deepEqual(await macroValuesOf(/** @type {any} */ ({}), owner, [{ texts: ['{{input}}'], speaker: null }]), [{ '{{input}}': null }]);
+});
+
 test('texts are answered in order', async () => {
     assert.deepEqual(await macroValuesOf(/** @type {any} */ ({}), owner, [{ texts: ['{{a}}'], speaker: 'X' }, { texts: ['none'], speaker: 'X' }]), [{ '{{a}}': '{{a}}@X' }, {}]);
 });

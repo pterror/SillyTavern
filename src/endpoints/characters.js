@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { pageFactsOf } from '../macro-facts.js';
+import { shownMacrosAnswer } from '../message-macros.js';
 import { cardTokenCounts } from '../card-token-counts.js';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
@@ -1111,7 +1113,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         }
 
         // ── Single mode (default behavior) ───────────────────────
-        const update = request.body;
+        const { shown_macros: shown, ...update } = request.body;
 
         let result;
         if (request.file) {
@@ -1128,7 +1130,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
 
         if (result.ok) {
             const counts = await savedCardCounts(request, update.avatar);
-            response.status(200).json({ ...(result.hashes ? { hashes: result.hashes } : {}), ...(counts ? { card_token_counts: counts } : {}) });
+            response.status(200).json({ ...(result.hashes ? { hashes: result.hashes } : {}), ...(counts ? { card_token_counts: counts } : {}), ...await shownMacrosAnswer(request, shown) });
         } else if (result.error === 'conflict' && result.conflictingFields) {
             response.status(409).json({ error: 'conflict', conflictingFields: result.conflictingFields });
         } else if (result.error === 'greeting-fields-forbidden') {
@@ -2334,7 +2336,7 @@ async function tabStreamSession(request, store, send) {
         if (here === null || !records.some(r => r.entity === here.tree)) return;
         const owner = await ownerOf(here.tree);
         if (!owner || !('avatar' in owner)) return;
-        const openings = await countedOpeningState(request.user.directories, { store, tree: here.tree, actor: { user: request.user.profile.handle, session }, avatar: owner.avatar });
+        const openings = await countedOpeningState(request.user.directories, { store, tree: here.tree, actor: { user: request.user.profile.handle, session }, avatar: owner.avatar, pageFacts: pageFactsOf(request) });
         const json = JSON.stringify(openings);
         if (openingsPushed?.tree === here.tree && openingsPushed.json === json) return;
         openingsPushed = { tree: here.tree, json };
