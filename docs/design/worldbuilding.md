@@ -43,8 +43,9 @@ Any shape is allowed: an entry can be related to several entries by the same kin
 text are one more relation, **mentions**, derived from the text and never stored by hand.
 
 A relation is stored on the entry it starts from (its source), in its extension data: its kind, the target entry, its
-position among the relations of that kind targeting that entry, and whether it is **weak**. The position is a
-fractional order key, so reordering writes only the entry it moves. A weak relation draws the entry in the target's
+position among the relations of that kind targeting that entry, and whether it is **weak**. The relations of a kind
+targeting an entry are an ordered list (`ordered-lists.md`). Placing one names the relation it goes after, and costs
+O(log n) at most. A weak relation draws the entry in the target's
 region like any other, but doesn't keep it off the top level (below, Grouping inside a cell); it is how a loop is drawn:
 in "A in B, B in A" with nothing else holding either, one of the two is weak, and the loop opens from it.
 

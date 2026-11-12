@@ -138,6 +138,9 @@ One extension field of the entry, `extensions.relations`, stored as the entry's 
 [{ "kind": 1, "targetEntry": "4711", "position": "m" }, { "kind": 2, "targetEntry": "4790", "position": "a", "weak": true }]
 ```
 
+The `position` described here, and the `SOURCES_ORDER` tree built over it (below), are replaced by ordered lists
+(`ordered-lists.md`, World relations). This store's design is not yet rewritten for that.
+
 A relation names its target by the target's **entity id** (`targetEntry`, decimal), which the store never gives to
 another entity: deleting an entry and making another under its key (upstream's `uid`) leaves every relation meaning
 what it meant. `position` is a fractional order key compared as bytes, so moving a relation among the others of its

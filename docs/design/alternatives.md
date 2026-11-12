@@ -96,6 +96,12 @@ beside the stored message; at a first message shown from the card (no row of its
 beside the card's greetings (the greeting stays the card's: a stored copy of it would be a duplicate once the card's
 greeting is edited). A temporary chat (no character or group) keeps its swipes on the page.
 
+Where the new alternative goes is part of the add (`ordered-lists.md`):
+- a new swipe goes at the end;
+- saving an edit as a new alternative puts it directly after the one it was made from.
+
+Its number, the counter and a typed number are a rank and a select in the list, never a read of the whole list.
+
 ## Creating a character
 
 A character being created isn't on the server yet, so its greetings are the create form's (the pager there adds,

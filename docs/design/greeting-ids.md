@@ -63,9 +63,9 @@ The exact text is matched first, then the text without surrounding whitespace.
 A card greeting is left out of the openings exactly when a stored opening links to it with its current text's hash:
 editing the card greeting offers its new text again beside the opening that had the old one.
 
-The openings are in card order: each card greeting, then the stored openings from it in the order they were stored;
-after every card greeting, the openings from no greeting, and those from a deleted greeting, in the order they were
-stored.
+The openings are in card order: each card greeting, then the stored openings from it, in their group's order. After
+every card greeting come the openings from no greeting, then each deleted greeting's openings. A group's order puts
+an edit or a duplicate directly after what it came from (`ordered-lists.md`, Openings and card greetings).
 
 Chats imported from upstream are linked as they are written. Openings stored before this are written again once by
 `scripts/convert-greeting-choices.mjs`.

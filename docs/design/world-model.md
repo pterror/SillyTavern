@@ -49,7 +49,7 @@ m5): a world with none is a set of entries. Mentions and what refers to an entry
 they're never core (owner, m6).
 
 Being **in** an entry is the one structural relation: a group, a region, the world are entries others are in. An entry
-can be in several, in an order it keeps (a fractional position, as `worldbuilding.md` stores relations).
+can be in several, and each keeps the order of what is in it (an ordered list, `ordered-lists.md`).
 
 ## The cascade
 
