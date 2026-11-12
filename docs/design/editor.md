@@ -84,8 +84,8 @@ not kept beside it.
 ## Where it lives
 
 The core goes in interact: text as truth, drawing from a lossless syntax tree with the grammar passed in, dimmed marks
-and the reader, commands, and extension points. An app's own syntax (macros, slash commands, key hints) and how its
-text is synced are extensions and ports, kept in the app.
+and the reader, commands, and extension points. An app's own syntax (macros, slash commands) and how its text is synced
+are extensions and ports, kept in the app. The design of the core is interact's `docs/design.md`, Editor.
 
 The reader is a walk over the syntax tree into DOM elements. One table maps each syntax node to its element and
 classes, and both the editor's decorations and the reader use it.
