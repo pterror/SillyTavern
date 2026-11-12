@@ -18,6 +18,7 @@ pub mod library_search;
 pub mod local_import;
 pub mod lock;
 pub mod names_offer;
+pub mod order;
 pub mod overview;
 pub mod prune;
 pub mod references;
@@ -964,6 +965,21 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn tightened(&self) -> u64 {
         self.inner.tightened.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn derive_now(
+        &self,
+        f: impl FnOnce(&View, &mut Out) -> StoreResult<()> + Send + 'static,
+    ) -> StoreResult<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.inner.submit(Job::Derive(
+            Box::new(f),
+            Box::new(move |r| {
+                let _ = tx.send(r);
+            }),
+        ));
+        self.inner.ks.pool().exec.recv(&rx).unwrap()
     }
 
     #[cfg(test)]
@@ -2012,6 +2028,8 @@ mod books_tests;
 mod carriers_tests;
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod order_tests;
 #[cfg(test)]
 mod choices_tests;
 #[cfg(test)]
