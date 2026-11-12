@@ -1371,9 +1371,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
         for (const msg of loaded.messages) {
             if (msg.is_system === true) continue;
             if (msg.mes != null && msg.mes !== '') {
-                const displayText = msg.extra?.display_text;
-                const text = (displayText != null && displayText !== '') ? displayText : msg.mes;
-                buffer += `${msg.name}: ${String(text).replace(/\r?\n/g, '\n')}\n\n`;
+                buffer += `${msg.name}: ${String(msg.mes).replace(/\r?\n/g, '\n')}\n\n`;
             }
         }
         return response.status(200).json({ message: `Chat saved to ${exportfilename}`, result: buffer });
