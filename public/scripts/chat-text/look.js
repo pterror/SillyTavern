@@ -1,4 +1,4 @@
-import { markdownLook } from '../../lib.js';
+import { definitionOf, markdownLook } from '../../lib.js';
 import { htmlAttributeRegex, parseImageSize } from './grammar.js';
 
 /**
@@ -15,6 +15,7 @@ import { htmlAttributeRegex, parseImageSize } from './grammar.js';
  * @property {Html} html the HTML policy
  * @property {Readonly<Record<string, string>>} emojis what each shortcode draws
  * @property {(source: string) => Piece} macro the piece a macro is drawn as
+ * @property {readonly string[]} [reasoningMarkers] the reasoning prefix and suffix, drawn as text where they are
  */
 
 const MARK = { class: 'mark', mark: true };
@@ -99,18 +100,39 @@ function markdownBlockElement(block, read, html) {
  * @param {LookOptions} options
  * @returns {Look}
  */
-export function chatLook({ html, emojis, macro }) {
+export function chatLook({ html, emojis, macro, reasoningMarkers = [] }) {
+    const base = markdownLook(html);
+    const markers = new Set(reasoningMarkers.map(marker => marker.trim()).filter(Boolean));
+    /**
+     * @param {SyntaxNode} node an HTML element or one of its tags
+     * @param {Read} read
+     * @returns {boolean} whether it is, or its element opens with, a reasoning marker
+     */
+    const isMarker = (node, read) => {
+        const element = node.name === 'Element' ? node : node.parent?.name === 'Element' ? node.parent : null;
+        const opening = element?.firstChild;
+        return markers.has(read(node.from, node.to).trim()) || (opening ? markers.has(read(opening.from, opening.to).trim()) : false);
+    };
+    /**
+     * @param {string} selector
+     * @returns {(node: SyntaxNode, read: Read) => Rule | undefined} the base rule, but a reasoning marker is drawn as text
+     */
+    const unlessMarker = (selector) => {
+        const rule = base[selector];
+        return (node, read) => (isMarker(node, read) ? undefined : typeof rule === 'function' ? rule(node, read) : rule);
+    };
     /** @type {Rule} */
     const image = {
         class: 'mark',
         source: 'beside',
         piece: (node, read) => {
-            const src = childText(node, 'URL', read);
+            const target = node.getChild('URL') ? node : definitionOf(node, read);
+            const src = target ? childText(target, 'URL', read) : undefined;
             const alt = node.getChild('LinkMark');
             const altEnd = alt?.nextSibling;
             const altText = alt && altEnd ? read(alt.to, altEnd.from) : '';
-            const title = childText(node, 'LinkTitle', read);
-            const size = parseImageSize((childText(node, 'ImageSize', read) ?? '').slice(1)) ?? {};
+            const title = target ? childText(target, 'LinkTitle', read) : undefined;
+            const size = parseImageSize((target ? childText(target, 'ImageSize', read) ?? '' : '').slice(1)) ?? {};
             const shown = html('img', {
                 alt: decoded(altText),
                 src: src ?? '',
@@ -123,7 +145,12 @@ export function chatLook({ html, emojis, macro }) {
         },
     };
     return {
-        ...markdownLook(html),
+        ...base,
+        CloseTag: unlessMarker('CloseTag'),
+        Element: unlessMarker('Element'),
+        MismatchedCloseTag: unlessMarker('MismatchedCloseTag'),
+        OpenTag: unlessMarker('OpenTag'),
+        SelfClosingTag: unlessMarker('SelfClosingTag'),
         CodeText: { element: 'code', class: 'hljs' },
         DialogueQuote: { element: 'q' },
         Emoji: {

@@ -74,9 +74,10 @@ The screen shows the stored text.
   U+200B, U+FFFE as a quote, trimming the result.
 
 Drawing is syntax in the one grammar and table, not passes over HTML: dialogue quotes, a single newline as a line
-break, emoji shortcodes, image sizes, lines kept out of markdown (`markdown_escape_strings`), reasoning markers in a
-body drawn as text. Inline HTML is a node with one policy: drawn or shown as text (`encode_tags`), classes prefixed,
-styles scoped to messages, external media, links opening a new tab, autoplay.
+break, emoji shortcodes, image sizes (on an image or its reference definition), lines kept out of markdown
+(`markdown_escape_strings`), reasoning markers in a body drawn as text, inside HTML blocks too. Inline HTML is a node
+with one policy: drawn or shown as text (`encode_tags`), classes prefixed, styles scoped to messages, external media,
+links opening a new tab, autoplay; inline SVG is drawn under the same policy.
 
 Overlays are ranges over the source text, drawn the way the editor draws decorations: lore marks (activation reports
 ranges in the text it read, so nothing is rendered twice), search matches, code highlighting, fade-in of streamed text.

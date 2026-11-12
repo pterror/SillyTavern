@@ -12,8 +12,8 @@ jest.unstable_mockModule('../public/lib.js', async () => {
     const { default: hljs } = await import('highlight.js');
     const { reader } = await import('@pterror/interact-editor/reader');
     const { markdownGrammar } = await import('@pterror/interact-markdown/grammar');
-    const { markdownLook } = await import('@pterror/interact-markdown/look');
-    return { DOMPurify: createDOMPurify(/** @type {any} */ (window)), css, hljs, reader, markdownGrammar, markdownLook };
+    const { definitionOf, markdownLook } = await import('@pterror/interact-markdown/look');
+    return { DOMPurify: createDOMPurify(/** @type {any} */ (window)), css, hljs, reader, markdownGrammar, markdownLook, definitionOf };
 });
 /** @type {import('../public/scripts/macro-pill.js').Translate} */
 const translate = (strings, ...values) => String.raw({ raw: strings }, ...values);
@@ -138,6 +138,30 @@ describe('chat text, read', () => {
         const grammar = { reasoningMarkers: ['<think>', '</think>'] };
         expect(drawn('<think>\n*plan*\n</think>\nreply', { grammar })).toBe('<p>&lt;think&gt;</p><p><em>plan</em></p><p>&lt;/think&gt;</p><p>reply</p>');
         expect(drawn('a <think> b', { grammar })).toBe('<p>a &lt;think&gt; b</p>');
+    });
+
+    test('draws a reasoning marker as text inside an HTML block too', () => {
+        const grammar = { reasoningMarkers: ['<think>', '</think>'] };
+        const shown = surface.drawnText('<div>\n<think>\n*plan*\n</think>\n</div>', setup({ grammar }));
+        expect(shown.querySelector('div > div')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('<think> *plan* </think>');
+        expect(drawn('<div>a </think> b</div>', { grammar })).toBe('<div class="html-block"><div>a &lt;/think&gt; b</div></div>');
+    });
+
+    test('resolves reference links and images, with an image definition\'s size', () => {
+        expect(drawn('[a][r] ![i][s]\n\n[r]: http://x.y "T"\n[s]: /i.png =10x20')).toBe(
+            '<p><a href="http://x.y" title="T" target="_blank" rel="noopener">a</a> <img alt="i" src="/i.png" width="10" height="20"></p>',
+        );
+        expect(drawn('[nothing][here]')).toBe('<p>[nothing][here]</p>');
+    });
+
+    test('draws inline SVG under the policy, in the SVG namespace', () => {
+        const shown = surface.drawnText('<svg viewBox="0 0 2 2" onload="x()"><circle r="1" onclick="y()"/><image href="https://e.x/a.png"/></svg>', setup({ mediaAllowed: false }));
+        const svg = shown.querySelector('svg');
+        expect(svg?.namespaceURI).toBe('http://www.w3.org/2000/svg');
+        expect(svg?.getAttribute('viewBox')).toBe('0 0 2 2');
+        expect(svg?.hasAttribute('onload')).toBe(false);
+        expect(svg?.querySelector('circle')?.hasAttribute('onclick')).toBe(false);
+        expect(svg?.querySelector('image')?.hasAttribute('hidden')).toBe(true);
     });
 
     test('keeps the escaped lines out of markdown', () => {

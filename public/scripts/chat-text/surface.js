@@ -50,7 +50,7 @@ function grammarOf(options) {
 function readerOf(setup, overlays) {
     const made = reader({
         grammar: grammarOf(setup.grammar),
-        look: chatLook({ html: setup.html, emojis: EMOJIS, macro: setup.macro }),
+        look: chatLook({ html: setup.html, emojis: EMOJIS, macro: setup.macro, reasoningMarkers: setup.grammar.reasoningMarkers }),
         overlays: [codeHighlighting, ...overlays],
         textClass: TEXT_CLASS,
     });

@@ -22,10 +22,17 @@ const ELEMENTS = new Set([
     'picture', 'pre', 'progress', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'section', 'select', 'small', 'source', 'span',
     'strike', 'strong', 'style', 'sub', 'summary', 'sup', 'table', 'tbody', 'td', 'textarea', 'tfoot', 'th', 'thead',
     'time', 'tr', 'track', 'tt', 'u', 'ul', 'var', 'video', 'wbr',
+    'svg', 'animate', 'animatecolor', 'animatemotion', 'animatetransform', 'circle', 'clippath', 'defs', 'desc',
+    'ellipse', 'feblend', 'fecolormatrix', 'fecomponenttransfer', 'fecomposite', 'feconvolvematrix',
+    'fediffuselighting', 'fedisplacementmap', 'fedistantlight', 'fedropshadow', 'feflood', 'fefunca', 'fefuncb',
+    'fefuncg', 'fefuncr', 'fegaussianblur', 'feimage', 'femerge', 'femergenode', 'femorphology', 'feoffset',
+    'fepointlight', 'fespecularlighting', 'fespotlight', 'fetile', 'feturbulence', 'filter', 'g', 'image', 'line',
+    'lineargradient', 'marker', 'mask', 'metadata', 'mpath', 'path', 'pattern', 'polygon', 'polyline',
+    'radialgradient', 'rect', 'set', 'stop', 'switch', 'symbol', 'text', 'textpath', 'title', 'tspan', 'view',
 ]);
 
-const MEDIA = new Set(['audio', 'video', 'source', 'track', 'img', 'picture', 'input']);
-const MEDIA_URLS = ['src', 'srcset', 'poster'];
+const MEDIA = new Set(['audio', 'video', 'source', 'track', 'img', 'picture', 'input', 'image', 'feimage']);
+const MEDIA_URLS = ['src', 'srcset', 'poster', 'href', 'xlink:href'];
 const OPENS_PAGES = new Set(['a', 'area']);
 const KEPT_CLASS = /^(?:fa-|note-)|^monospace$/;
 

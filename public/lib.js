@@ -13,7 +13,7 @@ import DiffMatchPatch from 'diff-match-patch';
 import { isProbablyReaderable, Readability } from '@mozilla/readability';
 import { reader } from '@pterror/interact-editor/reader';
 import { markdownGrammar } from '@pterror/interact-markdown/grammar';
-import { markdownLook } from '@pterror/interact-markdown/look';
+import { definitionOf, markdownLook } from '@pterror/interact-markdown/look';
 import moment from 'moment';
 import seedrandom from 'seedrandom';
 import * as Popper from '@popperjs/core';
@@ -36,6 +36,7 @@ export {
     reader,
     markdownGrammar,
     markdownLook,
+    definitionOf,
     moment,
     seedrandom,
     Popper,
