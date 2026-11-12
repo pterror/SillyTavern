@@ -101,11 +101,11 @@ test('every stored first message with a card greeting\'s text is linked to it, o
         await before.appendMessages({ tree, treeSpeaker: null, after: null, contents: [content], actor: { user: 'u' } });
     }
     const links = async (/** @type {any} */ engine) => (await engine.openings(tree)).map(o => [o.message.mes, o.message.extra?.greeting_id ?? null, o.message.extra?.greeting_hash ?? null]);
-    expect(await links(before)).toEqual([['Mine', greetings[0].id, null], ['Hello', null, null], [' Bye ', null, null]]);
+    expect(await links(before)).toEqual([['Hello', null, null], [' Bye ', null, null], ['Mine', greetings[0].id, null]]);
 
     const after = await ChatEngine.open(lib.store, libraryPeople(lib), await lib.nextIds());
     expect(await convertOpeningLinks(lib, after, 'u')).toBe(2);
-    expect(await links(after)).toEqual([['Mine', greetings[0].id, null], ['Hello', greetings[0].id, hashGreetingText('Hello')], [' Bye ', greetings[1].id, hashGreetingText('Bye')]]);
+    expect(await links(after)).toEqual([['Hello', greetings[0].id, hashGreetingText('Hello')], ['Mine', greetings[0].id, null], [' Bye ', greetings[1].id, hashGreetingText('Bye')]]);
     expect(await convertOpeningLinks(lib, after, 'u')).toBe(0);
 });
 

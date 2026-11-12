@@ -173,12 +173,6 @@ impl Fork {
         }
     }
 
-    fn list(self) -> List {
-        match self {
-            Fork::Message(m) => List::children(m),
-            Fork::Root(t) => List::roots(t),
-        }
-    }
 
     pub fn of(view: &View, m: u64) -> Result<(Fork, u64), StoreError> {
         let (_, r) = require_message(view, m)?;
@@ -283,16 +277,33 @@ pub fn followed(
             return Ok(Some(reply));
         }
     }
-    order::last(view, f.list())
+    match f {
+        Fork::Message(m) => order::last(view, List::children(m)),
+        Fork::Root(t) => last_root(view, t, None),
+    }
+}
+
+/// The last opening of a tree, other than `but`: the last of its highest greeting group. A tree's openings are kept
+/// in groups; with no one's choice to follow, this is the one a tree shows.
+fn last_root(view: &View, tree: u64, but: Option<u64>) -> Result<Option<u64>, StoreError> {
+    for g in order::last_root_groups(view, tree, 2)? {
+        let list = List::roots(tree, g);
+        match order::last(view, list)? {
+            Some(last) if Some(last) == but => {
+                if let Some(p) = order::prev(view, list, last)? {
+                    return Ok(Some(p));
+                }
+            }
+            Some(last) => return Ok(Some(last)),
+            None => {}
+        }
+    }
+    Ok(None)
 }
 
 /// The last opening of a tree other than `m`.
 pub fn newest_root_but(view: &View, tree: u64, m: u64) -> Result<Option<u64>, StoreError> {
-    let roots = List::roots(tree);
-    match order::last(view, roots)? {
-        Some(last) if last == m => order::prev(view, roots, m),
-        found => Ok(found),
-    }
+    last_root(view, tree, Some(m))
 }
 
 pub fn path_below(
@@ -1720,9 +1731,8 @@ fn after_subtree(view: &View, m: u64, root: u64) -> Result<Option<u64>, StoreErr
             return Ok(None);
         }
         let (_, r) = require_message(view, x)?;
-        let tree = id(&r, APPEND_OWNER);
         let p = parent_of(view, x, &r)?;
-        if let Some(n) = order::next(view, List::of(p, tree), x)? {
+        if let Some(n) = order::next(view, chat::list_of(view, x)?, x)? {
             return Ok(Some(n));
         }
         match p {

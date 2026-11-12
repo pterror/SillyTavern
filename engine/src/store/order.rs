@@ -15,14 +15,17 @@ pub const LIST_LINK: u64 = 300;
 pub const LIST_HEAD: u64 = 301;
 pub const LIST_TAIL: u64 = 302;
 pub const LIST_COUNT: u64 = 303;
+pub const LIST_GROUPS: u64 = 304;
 
 pub const LEVELS: usize = 32;
 
-/// A list's identity: a space and an id, both fixed width.
+/// A list's identity: a space, an id and a group, each fixed width. A tree's openings are one list per group (its
+/// greeting's id + 1, or 0 for none); a message's replies are one list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct List {
     space: u64,
     id: u64,
+    group: u64,
 }
 
 pub const CHILDREN: u64 = 0;
@@ -33,28 +36,32 @@ impl List {
         List {
             space: CHILDREN,
             id: parent,
+            group: 0,
         }
     }
 
-    pub fn roots(tree: u64) -> List {
+    pub fn roots(tree: u64, group: u64) -> List {
         List {
             space: ROOTS,
             id: tree,
+            group,
         }
     }
 
-    pub fn of(parent: Option<u64>, tree: u64) -> List {
-        match parent {
-            Some(p) => List::children(p),
-            None => List::roots(tree),
-        }
+    pub fn group(self) -> u64 {
+        self.group
     }
 
     fn key(self, structure: u64) -> Vec<u8> {
         let mut k = key::of(structure);
         put_u64(&mut k, self.space);
         put_u64(&mut k, self.id);
+        put_u64(&mut k, self.group);
         k
+    }
+
+    fn groups_key(self) -> Option<Vec<u8>> {
+        (self.space == ROOTS).then(|| self.key(LIST_GROUPS))
     }
 
     fn link_key(self, x: u64, level: usize) -> Vec<u8> {
@@ -519,6 +526,11 @@ pub fn insert(w: &mut Writes, list: List, x: u64, to: Where) -> Result<(), Store
         }
     }
     w.put(list.count_key(), varints(&[n + 1]));
+    if n == 0
+        && let Some(k) = list.groups_key()
+    {
+        w.put(k, Vec::new());
+    }
     Ok(())
 }
 
@@ -582,6 +594,9 @@ pub fn remove(w: &mut Writes, list: List, x: u64) -> Result<(), StoreError> {
     let n = count(w, list)?;
     if n <= 1 {
         w.del(list.count_key());
+        if let Some(k) = list.groups_key() {
+            w.del(k);
+        }
     } else {
         w.put(list.count_key(), varints(&[n - 1]));
     }
@@ -596,12 +611,65 @@ pub fn all(r: &impl Read, list: List) -> Result<Vec<u64>, StoreError> {
     }
 }
 
-pub fn parse_list_key(k: &[u8]) -> Option<List> {
-    let mut at = 0;
-    get_u64(k, &mut at)?;
-    let space = get_u64(k, &mut at)?;
-    let id = get_u64(k, &mut at)?;
-    Some(List { space, id })
+/// The groups a tree's openings are in, ascending.
+pub fn root_groups(view: &View, tree: u64) -> Result<Vec<u64>, StoreError> {
+    let p = groups_prefix(tree);
+    view.scan(&p, &key::prefix_end(&p), usize::MAX)?
+        .into_iter()
+        .map(|(k, _)| {
+            let mut at = p.len();
+            get_u64(&k, &mut at).ok_or_else(|| bad("group key"))
+        })
+        .collect()
+}
+
+/// The highest groups a tree's openings are in, descending, at most `limit`.
+pub fn last_root_groups(view: &View, tree: u64, limit: usize) -> Result<Vec<u64>, StoreError> {
+    let p = groups_prefix(tree);
+    view.scan_vals_rev(&p, &key::prefix_end(&p), limit)?
+        .into_iter()
+        .map(|(k, _)| {
+            let mut at = p.len();
+            get_u64(&k, &mut at).ok_or_else(|| bad("group key"))
+        })
+        .collect()
+}
+
+fn groups_prefix(tree: u64) -> Vec<u8> {
+    let mut k = key::of(LIST_GROUPS);
+    put_u64(&mut k, ROOTS);
+    put_u64(&mut k, tree);
+    k
+}
+
+/// A page of the trees with openings in group 0, which the cutover fills: the trees found, and where the next page
+/// starts (none at the end).
+pub fn trees_with_ungrouped_roots(
+    view: &View,
+    after: Option<u64>,
+    limit: usize,
+) -> Result<(Vec<u64>, Option<u64>), StoreError> {
+    let mut start = key::of(LIST_GROUPS);
+    put_u64(&mut start, ROOTS);
+    let end = key::prefix_end(&start);
+    if let Some(a) = after {
+        put_u64(&mut start, a + 1);
+    }
+    let found = view.scan(&start, &end, limit + 1)?;
+    let next = (found.len() > limit).then_some(());
+    let mut trees = Vec::new();
+    let mut last = None;
+    for (k, _) in found.into_iter().take(limit) {
+        let mut at = key::of(LIST_GROUPS).len();
+        get_u64(&k, &mut at).ok_or_else(|| bad("group key"))?;
+        let tree = get_u64(&k, &mut at).ok_or_else(|| bad("group key"))?;
+        let group = get_u64(&k, &mut at).ok_or_else(|| bad("group key"))?;
+        if group == 0 {
+            trees.push(tree);
+        }
+        last = Some(tree);
+    }
+    Ok((trees, next.and(last)))
 }
 
 const OLD_CHILD: u64 = 93;
@@ -627,7 +695,7 @@ pub fn conversion_step(view: &View, out: &mut Out, batch: usize) -> Result<bool,
             super::chat::shape_add(&mut shapes, owner, -1);
             List::children(owner)
         } else {
-            List::roots(owner)
+            List::roots(owner, 0)
         };
         if !contains(&w, list, m)? {
             insert(&mut w, list, m, Where::Last)?;

@@ -385,7 +385,40 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(kept.alternatives.map(a => a.mes).slice(3, 7), [
             'Greeting 3', 'Greeting 3, edited again', 'Greeting 3, edited in the chat', 'Greeting 3, a copy of the first edit',
         ], 'an opening from a greeting goes right after the greeting, and a copy right after what it copies');
+        for (let offset = 0; offset < kept.total; offset++) {
+            const part = await chats.openingAlternatives({ tree: t, actor: { user: actor.user }, range: { offset, limit: 3 }, card });
+            assert.deepEqual(part.alternatives, kept.alternatives.slice(offset, offset + 3), `the page from ${offset}`);
+        }
+        const copy = kept.alternatives.find(a => a.mes === 'Greeting 3, a copy of the first edit');
+        const [here] = await store.chatRead('places', { ids: [(await chats.messageIds([copy.node_id]))[0]] });
+        assert.deepEqual([Number(here.group), Number(here.place), Number(here.total)], [10, 3, 3]);
 
+        await store.close();
+    });
+
+    test(`${kind}: the cutover's grouping moves each linked opening into its greeting's group in the order it had, the one holding the greeting first`, async () => {
+        const store = await engine.Store.open(path.join(root, `engine-grouping-${kind}`));
+        const greetings = [{ id: 5, text: 'Greeting 1' }];
+        const chats = await ChatEngine.open(store, { ...ivyPeople, greetings: async () => greetings });
+        const t = ivy.id;
+        const said = (/** @type {string} */ mes, /** @type {Record<string, any>} */ extra = {}) => ({ name: 'Ivy', is_user: false, is_system: false, send_date: '2025-10-10T10:00:00.000Z', mes, extra });
+        const ids = [];
+        for (const content of [said('Greeting 1, edited', { greeting_id: 5 }), said('plain'), said('Greeting 1'), said('from a deleted one', { greeting_id: 2 })]) {
+            ids.push(...(await chats.appendMessages({ tree: t, treeSpeaker: ivy, after: null, contents: [content], actor })).node_ids);
+        }
+        const internal = await chats.messageIds(ids);
+        const { user } = await chats.knownActorIds(actor);
+        await store.commit(internal.map(message => ({ kind: 'messagePlace', message, first: false, group: 0, user })));
+        const groups = async () => (await store.chatRead('rootGroups', { tree: t })).map(g => Number(g.group));
+        assert.deepEqual(await groups(), [0]);
+
+        assert.equal(await chats.groupOpenings({ tree: t, actor }), 3);
+        assert.deepEqual(await groups(), [0, 3, 6]);
+        const group = async (/** @type {number} */ g) => (await store.chatRead('children', { tree: t, group: g, limit: 10 })).ids;
+        assert.deepEqual(await group(6), [internal[2], internal[0]]);
+        assert.deepEqual(await group(0), [internal[1]]);
+        assert.deepEqual(await group(3), [internal[3]]);
+        assert.equal(await chats.groupOpenings({ tree: t, actor }), 0, 'a second run has nothing left to move');
         await store.close();
     });
 

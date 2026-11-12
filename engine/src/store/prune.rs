@@ -168,7 +168,7 @@ impl Deriver for SubtreeDelete {
             }
         }
         let mut w = Writes::new(view);
-        order::remove(&mut w, List::of(parent, tree), r)?;
+        order::remove(&mut w, chat::list_of(view, r)?, r)?;
         w.finish(out);
         if let Some(s) = s {
             sessions::activity(view, out, s, tree, at.pos)?;

@@ -84,8 +84,7 @@ export async function chatNamePosition(chat, name) {
  */
 async function rootIsCurrent(chat) {
     const { chats } = chat.store;
-    const [opening] = await chats.store.chatRead('children', { tree: chat.tree, limit: 1 }).then(page => page.ids);
-    if (opening === undefined) return true;
+    if (!await chats.hasOpenings(chat.tree)) return true;
     const sid = await chats.sessionId(chat.session.reader().session ?? undefined);
     if (sid === null) return false;
     const where = await chats.store.chatRead('sessionInTree', { session: sid, tree: chat.tree });

@@ -1141,8 +1141,7 @@ export class LibraryEngine {
      * @param {bigint} tree
      */
     async holdsChats(tree) {
-        const children = await this.store.chatRead('children', { tree, limit: 1 });
-        if (children.ids.length > 0) return true;
+        if ((await this.store.chatRead('rootGroups', { tree })).length > 0) return true;
         return (await this.store.chatRead('treeBookmarks', { tree, limit: 1 })).length > 0;
     }
 

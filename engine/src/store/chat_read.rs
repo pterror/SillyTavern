@@ -199,11 +199,15 @@ pub fn children(
     view: &View,
     parent: Option<u64>,
     tree: u64,
+    group: u64,
     after: Option<u64>,
     from: Option<u64>,
     limit: usize,
 ) -> Result<Js, StoreError> {
-    let list = List::of(parent, tree);
+    let list = match parent {
+        Some(p) => List::children(p),
+        None => List::roots(tree, group),
+    };
     let start = match (after, from) {
         (Some(a), _) => {
             if !order::contains(view, list, a)? {
@@ -243,9 +247,33 @@ pub fn places(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
         out.push(Js::Obj(vec![
             ("place", Js::Num(order::place(view, list, m)? as f64)),
             ("total", Js::Num(order::count(view, list)? as f64)),
+            ("group", Js::Num(list.group() as f64)),
         ]));
     }
     Ok(Js::Arr(out))
+}
+
+/// A tree's opening groups, ascending: each one's group, count and first opening.
+pub fn root_groups(view: &View, tree: u64) -> Result<Js, StoreError> {
+    let mut out = Vec::new();
+    for g in order::root_groups(view, tree)? {
+        let list = List::roots(tree, g);
+        out.push(Js::Obj(vec![
+            ("group", Js::Num(g as f64)),
+            ("count", Js::Num(order::count(view, list)? as f64)),
+            ("first", opt_big(order::first(view, list)?)),
+        ]));
+    }
+    Ok(Js::Arr(out))
+}
+
+/// A page of the trees whose openings the cutover put in group 0, and where the next page starts.
+pub fn ungrouped_trees(view: &View, after: Option<u64>, limit: usize) -> Result<Js, StoreError> {
+    let (trees, next) = order::trees_with_ungrouped_roots(view, after, limit)?;
+    Ok(Js::Obj(vec![
+        ("trees", Js::Arr(trees.into_iter().map(Js::Big).collect())),
+        ("next", opt_big(next)),
+    ]))
 }
 
 pub fn path(view: &View, at: Option<u64>) -> Result<Js, StoreError> {

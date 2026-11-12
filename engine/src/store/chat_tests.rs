@@ -580,7 +580,7 @@ impl Model {
             let owners: BTreeSet<u64> = self.msgs.values().map(|m| m.owner).collect();
             for o in &owners {
                 assert_eq!(
-                    order::all(v, order::List::roots(*o))?,
+                    order::all(v, order::List::roots(*o, 0))?,
                     self.children(None, *o),
                     "roots of {o}"
                 );
@@ -3306,7 +3306,14 @@ fn an_unowned_tree_keeps_its_messages_until_a_character_takes_its_id() {
 fn place(m: u64, after: Option<u64>, first: bool) -> Record {
     rec(
         "messagePlace",
-        vec![Value::Id(m), opt(after), Value::Bit(first), Value::Absent, Value::Absent],
+        vec![Value::Id(m), opt(after), Value::Bit(first), Value::Absent, Value::Absent, Value::Absent],
+    )
+}
+
+fn regroup(m: u64, after: Option<u64>, first: bool, group: u64) -> Record {
+    rec(
+        "messagePlace",
+        vec![Value::Id(m), opt(after), Value::Bit(first), Value::UInt(group), Value::Absent, Value::Absent],
     )
 }
 
@@ -3340,7 +3347,7 @@ fn a_place_moves_a_message_among_its_alternatives_and_nowhere_else() {
     let places = s
         .derived(|v| super::chat_read::places(v, &[1, 3, 2, 4, 99]))
         .unwrap();
-    let want = |p: f64, t: f64| Js::Obj(vec![("place", Js::Num(p)), ("total", Js::Num(t))]);
+    let want = |p: f64, t: f64| Js::Obj(vec![("place", Js::Num(p)), ("total", Js::Num(t)), ("group", Js::Num(0.0))]);
     assert_eq!(
         places,
         Js::Arr(vec![want(1.0, 3.0), want(2.0, 3.0), want(3.0, 3.0), want(1.0, 1.0), Js::Null])
@@ -3398,7 +3405,7 @@ fn the_cutover_lists_every_reply_and_opening_in_its_old_order_and_drops_the_old_
     assert_eq!(steps, 3);
     s.derived(|v| {
         assert_eq!(order::all(v, order::List::children(10))?, vec![12, 11, 13]);
-        assert_eq!(order::all(v, order::List::roots(7))?, vec![20, 10]);
+        assert_eq!(order::all(v, order::List::roots(7, 0))?, vec![20, 10]);
         for k in &keys {
             assert_eq!(v.get(k)?, None);
         }
@@ -3409,6 +3416,43 @@ fn the_cutover_lists_every_reply_and_opening_in_its_old_order_and_drops_the_old_
         Ok(())
     })
     .unwrap();
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn openings_keep_a_list_per_greeting_group_and_a_tree_shows_the_last_of_its_highest_group() {
+    let dir = temp_dir("groups");
+    let (s, mut model) = open_with_actors(&dir, small_pool());
+    s.commit_wait(vec![
+        append(&mut model, 1, None, 0, "none", None, None, 1),
+        append(&mut model, 1, None, 1, "from 5", None, None, 1),
+        append(&mut model, 1, None, 2, "from 5 again", None, None, 1),
+        append(&mut model, 1, None, 3, "from 2", None, None, 1),
+        append(&mut model, 1, Some(1), 4, "reply", None, None, 1),
+    ])
+    .unwrap();
+    s.commit_wait(vec![regroup(1, None, false, 6), regroup(2, None, true, 6), regroup(3, None, false, 3)]).unwrap();
+    let group = |s: &Store, g: u64| s.derived(move |v| order::all(v, order::List::roots(1, g))).unwrap();
+    assert_eq!((group(&s, 0), group(&s, 3), group(&s, 6)), (vec![0], vec![3], vec![2, 1]));
+    assert_eq!(s.derived(|v| order::root_groups(v, 1)).unwrap(), vec![0, 3, 6]);
+    assert_eq!(s.derived(|v| sessions::followed(v, None, None, Fork::Root(1))).unwrap(), Some(1));
+    assert_eq!(s.derived(|v| sessions::newest_root_but(v, 1, 1)).unwrap(), Some(2));
+
+    s.commit_wait(vec![place(0, Some(2), false)]).unwrap();
+    assert_eq!((group(&s, 0), group(&s, 6)), (vec![], vec![2, 0, 1]), "after an opening is in its group");
+    assert_eq!(s.derived(|v| order::root_groups(v, 1)).unwrap(), vec![3, 6], "an empty group is gone");
+    for refused in [regroup(0, Some(3), false, 6), regroup(4, None, false, 2), place(0, Some(4), false)] {
+        assert!(matches!(s.commit_wait(vec![refused]), Err(StoreError::Refused(_))));
+    }
+    assert_eq!(s.derived(|v| chat::group_of(v, 0)).unwrap(), 6);
+
+    s.commit_wait(vec![rec("messageDelete", vec![Value::Id(3), Value::Absent, Value::Absent, Value::Time(NOW)])]).unwrap();
+    assert_eq!(s.derived(|v| order::root_groups(v, 1)).unwrap(), vec![6]);
+    assert_eq!(s.derived(|v| chat::group_of(v, 3)).unwrap(), 0);
+    drop(s);
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    assert_eq!(group(&s, 6), vec![2, 0, 1], "a reopen keeps the groups");
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }

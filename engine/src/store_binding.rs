@@ -2382,17 +2382,26 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
             Box::new(move |s| s.chat_read(|v| cr::messages(v, &ids)).map(JsTree))
         }
         "children" => {
-            let (parent, tree, after, from, limit) = (
+            let (parent, tree, group, after, from, limit) = (
                 opt_integer(a, "parent")?,
                 req_integer(a, "tree")?,
+                opt_integer(a, "group")?.unwrap_or(0),
                 opt_integer(a, "after")?,
                 opt_integer(a, "from")?,
                 limit(a)?,
             );
             Box::new(move |s| {
-                s.chat_read(|v| cr::children(v, parent, tree, after, from, limit))
+                s.chat_read(|v| cr::children(v, parent, tree, group, after, from, limit))
                     .map(JsTree)
             })
+        }
+        "rootGroups" => {
+            let tree = req_integer(a, "tree")?;
+            Box::new(move |s| s.chat_read(|v| cr::root_groups(v, tree)).map(JsTree))
+        }
+        "ungroupedTrees" => {
+            let (after, limit) = (opt_integer(a, "after")?, limit(a)?);
+            Box::new(move |s| s.chat_read(|v| cr::ungrouped_trees(v, after, limit)).map(JsTree))
         }
         "places" => {
             let ids = integers(a, "ids")?;

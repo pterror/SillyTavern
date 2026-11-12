@@ -71,9 +71,31 @@ pub fn opt_id(rec: &Record, i: usize) -> Option<u64> {
     }
 }
 
+pub const MESSAGE_GROUP: u64 = 305;
+
+/// The opening's greeting group: its greeting's id + 1, or 0.
+pub fn group_of(view: &View, m: u64) -> Result<u64, StoreError> {
+    Ok(match view.get(&key::id(MESSAGE_GROUP, m))? {
+        Some(b) => parse_varints::<1>(&b)?[0],
+        None => 0,
+    })
+}
+
+fn set_group(out: &mut Out, m: u64, group: u64) {
+    if group == 0 {
+        out.del(key::id(MESSAGE_GROUP, m));
+    } else {
+        out.put(key::id(MESSAGE_GROUP, m), varints(&[group]));
+    }
+}
+
 pub fn list_of(view: &View, m: u64) -> Result<List, StoreError> {
     let (_, r) = require_message(view, m)?;
-    Ok(List::of(parent_of(view, m, &r)?, id(&r, APPEND_OWNER)))
+    let owner = id(&r, APPEND_OWNER);
+    Ok(match parent_of(view, m, &r)? {
+        Some(p) => List::children(p),
+        None => List::roots(owner, group_of(view, m)?),
+    })
 }
 
 pub type MessageEntry = (Loc, Option<u64>);
@@ -490,7 +512,11 @@ impl Deriver for MessageAppend {
             sessions::chosen(view, out, s, u, f, m, at, false)?;
         }
         let mut w = Writes::new(view);
-        order::insert(&mut w, List::of(parent, owner), m, Where::Last)?;
+        let list = match parent {
+            Some(p) => List::children(p),
+            None => List::roots(owner, 0),
+        };
+        order::insert(&mut w, list, m, Where::Last)?;
         w.finish(out);
         if text_in_append(id(rec, APPEND_FLAGS)) {
             let text = bytes(rec, APPEND_TEXT);
@@ -613,7 +639,11 @@ pub(super) fn delete_message(
         dead(out, parse_loc(&v)?);
         out.del(key::id(key::MESSAGE_PARENT, m));
     }
-    let list = List::of(parent, owner);
+    let list = match parent {
+        Some(p) => List::children(p),
+        None => List::roots(owner, group_of(view, m)?),
+    };
+    out.del(key::id(MESSAGE_GROUP, m));
     if order::contains(view, list, m)? {
         let mut w = Writes::new(view);
         order::remove(&mut w, list, m)?;
@@ -677,7 +707,6 @@ impl Deriver for MessageParent {
                 )));
             }
         }
-        let old = parent_of(view, m, &append)?;
         let k = key::id(key::MESSAGE_PARENT, m);
         if let Some(v) = view.get(&k)? {
             dead(out, parse_loc(&v)?);
@@ -686,9 +715,14 @@ impl Deriver for MessageParent {
         let (l, _) = message_entry(view, m)?.expect("required above");
         out.put(key::id(key::MESSAGE, m), message_entry_bytes(l, new));
         let mut w = Writes::new(view);
-        order::remove(&mut w, List::of(old, owner), m)?;
-        order::insert(&mut w, List::of(new, owner), m, Where::Last)?;
+        order::remove(&mut w, list_of(view, m)?, m)?;
+        let to = match new {
+            Some(p) => List::children(p),
+            None => List::roots(owner, 0),
+        };
+        order::insert(&mut w, to, m, Where::Last)?;
         w.finish(out);
+        set_group(out, m, 0);
         sessions::reparented(view, out, m, owner, at.pos)?;
         if let Some(s) = s {
             sessions::activity(view, out, s, owner, at.pos)?;
@@ -720,17 +754,22 @@ impl Deriver for MessageParent {
 
 pub const PLACE_AFTER: usize = 1;
 pub const PLACE_FIRST: usize = 2;
+pub const PLACE_GROUP: usize = 3;
 
 pub struct MessagePlace;
 
 impl Deriver for MessagePlace {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let m = id(rec, 0);
-        let (s, u) = (opt_id(rec, 3), opt_id(rec, 4));
+        let (s, u) = (opt_id(rec, 4), opt_id(rec, 5));
         sessions::check_actor(view, s, u)?;
         let (_, append) = require_message(view, m)?;
         let owner = id(&append, APPEND_OWNER);
         super::prune::refuse_doomed(view, owner, m)?;
+        let group = match rec.values[PLACE_GROUP] {
+            Value::UInt(g) => Some(g),
+            _ => None,
+        };
         let to = match (opt_id(rec, PLACE_AFTER), &rec.values[PLACE_FIRST]) {
             (Some(a), _) if a == m => {
                 return Err(StoreError::Refused(format!("message {m} can't go after itself")));
@@ -742,11 +781,27 @@ impl Deriver for MessagePlace {
                 return Err(StoreError::Refused("a place is first or after a message, not both".into()));
             }
         };
-        let list = List::of(parent_of(view, m, &append)?, owner);
+        let from = list_of(view, m)?;
+        let into = match (parent_of(view, m, &append)?, to, group) {
+            (Some(_), _, Some(_)) => {
+                return Err(StoreError::Refused(format!("message {m} is a reply: it has no greeting group")));
+            }
+            (Some(_), _, None) => from,
+            (None, Where::After(a), g) => {
+                let theirs = list_of(view, a)?;
+                if theirs.group() != g.unwrap_or(theirs.group()) || theirs != List::roots(owner, theirs.group()) {
+                    return Err(StoreError::Refused(format!("message {a} isn't an opening of that group")));
+                }
+                theirs
+            }
+            (None, _, Some(g)) => List::roots(owner, g),
+            (None, _, None) => from,
+        };
         let mut w = Writes::new(view);
-        order::remove(&mut w, list, m)?;
-        order::insert(&mut w, list, m, to)?;
+        order::remove(&mut w, from, m)?;
+        order::insert(&mut w, into, m, to)?;
         w.finish(out);
+        set_group(out, m, into.group());
         dead(out, at);
         if let Some(s) = s {
             sessions::activity(view, out, s, owner, at.pos)?;
