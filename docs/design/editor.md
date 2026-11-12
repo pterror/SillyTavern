@@ -47,9 +47,39 @@ Changed:
 - A general markdown core; each user adds drawing for its own syntax (names in looks, macros), instead of one switch.
 - Inline HTML comes from the parser, not regexes.
 
-## Open
+## Stored text and the screen
 
-- Whether anything changes message text between storage and the screen; the reader must draw the stored text.
+Today the screen differs from the stored text at about 25 points (`messageFormatting`, `marked`, DOMPurify hooks,
+lore marks, fade-in), and opening, saving and streaming rewrite the stored text in six places. With text as the
+source of truth:
+
+Nothing rewrites stored text to draw or edit it.
+- The editor opens and saves the text exactly: no trimming, no greeting swap, no macros filled in. The prompt fills
+  macros in messages (`src/prompt/chat-prompt.js`), so a macro stays a macro. `{{bias}}` stays in the text as a macro
+  that sends nothing; the prompt reads it from there, not from `extra.bias`.
+- Reasoning is split from a reply once, when it arrives, never on an edit.
+- Streaming appends nothing; the incremental parse draws an unclosed mark as unclosed.
+
+The screen shows the stored text.
+- `display_text` and `reasoning_display_text` are not drawn. Only upstream extensions write them, and they aren't
+  supported. They stay in stored messages as read.
+- Hiding the reply prefix (`show_user_prompt_bias`) and the speaker name (`allow_name2_display`) goes: both hide text
+  the model receives.
+- Every macro in every text is drawn as its value (Editing and reading), not only in the first message.
+- Passes that exist only because HTML is edited as a string go: `align*` to `$$`, `&amp;` in code, removing every
+  U+200B, U+FFFE as a quote, trimming the result.
+
+Drawing is syntax in the one grammar and table, not passes over HTML: dialogue quotes, a single newline as a line
+break, emoji shortcodes, image sizes, lines kept out of markdown (`markdown_escape_strings`), reasoning markers in a
+body drawn as text. Inline HTML is a node with one policy: drawn or shown as text (`encode_tags`), classes prefixed,
+styles scoped to messages, external media, links opening a new tab, autoplay.
+
+Overlays are ranges over the source text, drawn the way the editor draws decorations: lore marks (activation reports
+ranges in the text it read, so nothing is rendered twice), search matches, code highlighting, fade-in of streamed text.
+
+Every surface that shows a message (the chat, streaming, the Alternatives list, the bias line, an edit's Done and
+Cancel) draws through the reader. `marked`, `messageFormatting` and the live editor's fragment rendering are replaced,
+not kept beside it.
 
 ## Where it lives
 
