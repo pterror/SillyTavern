@@ -5,7 +5,7 @@ import { drawerStackChanged } from './drawer-stack.js';
 import {
     moment,
 } from '../lib.js';
-import { chatOpEdit, closeMessageEditor, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
+import { chatOpEdit, closeMessageEditor, DEFAULT_SAVE_EDIT_TIMEOUT, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
 import { main_api } from './generation-params.js';
 import { chat } from './chat-state.js';
 import { event_types, eventSource } from './events.js';
@@ -22,7 +22,7 @@ import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandE
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { textgen_types, textgenerationwebui_settings } from './textgen-settings.js';
 import { showReasoningText } from './message-text.js';
-import { copyText, escapeRegex, isFalseBoolean, isTrueBoolean, setDatasetProperty, stringToRange, trimSpaces } from './utils.js';
+import { cancelDebounce, copyText, debounce, escapeRegex, isFalseBoolean, isTrueBoolean, setDatasetProperty, stringToRange, trimSpaces } from './utils.js';
 import { ReasoningType, reasoningOf, withReasoning } from './reasoning-block.js';
 
 export { ReasoningType };
@@ -1191,7 +1191,7 @@ function setReasoningEventHandlers() {
      */
     const reasoningEditorIn = (messageBlock) => {
         const holder = messageBlock.find('.reasoning_editor')[0];
-        return holder ? reasoningEditors.get(holder) : undefined;
+        return holder ? reasoningEditors.get(holder)?.editor : undefined;
     };
 
     /**
@@ -1201,7 +1201,11 @@ function setReasoningEventHandlers() {
     const stopReasoningEditor = (messageBlock) => {
         const holder = messageBlock.find('.reasoning_editor')[0];
         if (!holder) return;
-        reasoningEditors.get(holder)?.stop();
+        const open = reasoningEditors.get(holder);
+        if (open) {
+            cancelDebounce(open.autosave);
+            open.editor.stop();
+        }
         reasoningEditors.delete(holder);
         const reasoningElement = messageBlock.find('.mes_reasoning')[0];
         if (reasoningElement) editingIn(reasoningElement, null);
@@ -1279,8 +1283,7 @@ function setReasoningEventHandlers() {
             speaker,
             initial: reasoning,
             edited: () => {
-                if (!power_user.auto_save_msg_edits) return;
-                editor.save().catch(error => console.error('Could not save the edited reasoning:', error));
+                if (power_user.auto_save_msg_edits) autosave();
             },
             save: async (now) => {
                 const current = chat[messageId];
@@ -1291,7 +1294,10 @@ function setReasoningEventHandlers() {
             },
             label: t`Reasoning`,
         });
-        reasoningEditors.set(holder, editor);
+        const autosave = debounce(() => {
+            editor.save().catch(error => console.error('Could not save the edited reasoning:', error));
+        }, DEFAULT_SAVE_EDIT_TIMEOUT);
+        reasoningEditors.set(holder, { editor, autosave });
         editingIn(reasoningBlock[0], editor);
         drawerStackChanged();
         editor.view.dispatch({ selection: { anchor: Math.min(at ?? reasoning.length, reasoning.length) }, scrollIntoView: true });
@@ -1414,7 +1420,7 @@ function setReasoningEventHandlers() {
     });
 }
 
-/** @type {WeakMap<Element, import('./chat-text/editor.js').ChatEditor>} each open reasoning editor, by its element */
+/** @type {WeakMap<Element, { editor: import('./chat-text/editor.js').ChatEditor, autosave: () => void }>} each open reasoning editor, by its element, and its autosave, which waits for a pause in typing */
 const reasoningEditors = new WeakMap();
 
 /**

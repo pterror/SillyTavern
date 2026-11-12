@@ -156,6 +156,24 @@ test.describe('message edits in the live editor', () => {
         await expect.poll(async () => (await storedMessage(page, id)).extra?.reasoning).toBe('Thinking *hard*');
     });
 
+    test('with autosave on, typing in the reasoning editor saves once after a pause, not per keystroke', async ({ page }) => {
+        await setAutoSave(page, true);
+        const id = await chatWithUserMessage(page, 'Message');
+        const mes = page.locator(`#chat .mes[mesid="${id}"]`);
+        await mes.locator('.mes_edit').click();
+        await mes.locator('.mes_edit_add_reasoning').click();
+        const reasoningEditor = mes.locator('.reasoning_editor .cm-editor');
+        await expect(reasoningEditor).toBeVisible();
+        const edits = [];
+        page.on('request', request => { if (new URL(request.url()).pathname === '/api/chats/message/edit') edits.push(request.postDataJSON()); });
+        await reasoningEditor.locator('.cm-content').click();
+        await page.keyboard.type('Thinking');
+        await expect.poll(async () => (await storedMessage(page, id)).extra?.reasoning, { timeout: 5000 }).toBe('Thinking');
+        expect(edits).toHaveLength(1);
+        await mes.locator('.mes_edit_done').click();
+        await setAutoSave(page, false);
+    });
+
     test('typing a macro shows the editor\'s suggestions only, not the old list as well', async ({ page }) => {
         await setAutoSave(page, false);
         const id = await chatWithUserMessage(page, 'Macro');
