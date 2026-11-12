@@ -1,7 +1,7 @@
-//! Drafts: the text being written, kept with what it will be sent after. That is a stored message, a chat's root (its
-//! tree: the character or group), or a card greeting not yet stored (the card and the greeting's id). A draft is a
-//! value with edits, as a text field is, but it is no part of what it follows: writing it changes no message, card,
-//! version or feed.
+//! Drafts: the text being written in response to a message, kept with it. That is a stored message, a chat's root (its
+//! tree: the character or group), a card greeting not yet stored (the card and the greeting's id), or a reply being
+//! generated (what it follows, and the generation's id). A draft is a value with edits, as a text field is, but it is no
+//! part of what it follows: writing it changes no message, card, version or feed.
 
 use super::StoreError;
 use super::chat::{opt_id, require_message};
@@ -25,6 +25,8 @@ const EDIT_REMOVED: usize = 3;
 const EDIT_TEXT: usize = 4;
 const EDIT_SESSION: usize = 5;
 const EDIT_USER: usize = 6;
+const VALUE_GENERATION: usize = 5;
+const EDIT_GENERATION: usize = 7;
 
 /// What a draft will be sent after
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +36,26 @@ pub enum Owner {
     Root(u64),
     /// A greeting not yet stored: the card, and the greeting's id
     Greeting(u64, u64),
+    /// A reply being generated, not stored yet: what it follows (a message, or a tree at its root) and the
+    /// generation's id
+    Reply { message: bool, after: u64, generation: u128 },
+}
+
+/// A generation's id, a UUID as text, as a number
+pub fn generation_id(b: &[u8]) -> Result<u128, StoreError> {
+    let refused = || StoreError::Refused("a draft's generation is a UUID".into());
+    let hex: Vec<u8> = b.iter().copied().filter(|c| *c != b'-').collect();
+    if b.len() != 36 || hex.len() != 32 {
+        return Err(refused());
+    }
+    u128::from_str_radix(std::str::from_utf8(&hex).map_err(|_| refused())?, 16).map_err(|_| refused())
+}
+
+fn generation_of(v: &Value) -> Result<Option<u128>, StoreError> {
+    match v {
+        Value::Bytes(b) => generation_id(b).map(Some),
+        _ => Ok(None),
+    }
 }
 
 impl Owner {
@@ -42,6 +64,13 @@ impl Owner {
             Value::UInt(g) => Some(g),
             _ => None,
         };
+        let at = if rec.kind.name == "draftEdit" { EDIT_GENERATION } else { VALUE_GENERATION };
+        if let Some(generation) = generation_of(&rec.values[at])? {
+            return match (rec.values[AT].clone(), greeting) {
+                (Value::Sel(i, after), None) => Ok(Owner::Reply { message: i == 1, after, generation }),
+                _ => Err(StoreError::Refused("a draft after a reply being generated has no greeting".into())),
+            };
+        }
         match (rec.values[AT].clone(), greeting) {
             (Value::Sel(1, m), None) => Ok(Owner::Message(m)),
             (Value::Sel(1, m), Some(_)) => Err(StoreError::Refused(format!(
@@ -64,6 +93,13 @@ impl Owner {
                 put_u64(&mut k, 0);
                 put_u64(&mut k, t);
                 put_u64(&mut k, 0);
+            }
+            Owner::Reply { message, after, generation } => {
+                put_u64(&mut k, 2);
+                put_u64(&mut k, u64::from(message));
+                put_u64(&mut k, after);
+                put_u64(&mut k, (generation >> 64) as u64);
+                put_u64(&mut k, generation as u64);
             }
             Owner::Greeting(t, g) => {
                 put_u64(&mut k, 0);
@@ -90,7 +126,7 @@ impl Owner {
 
     fn partition(self) -> u64 {
         match self {
-            Owner::Message(x) | Owner::Root(x) | Owner::Greeting(x, _) => x,
+            Owner::Message(x) | Owner::Root(x) | Owner::Greeting(x, _) | Owner::Reply { after: x, .. } => x,
         }
     }
 }
@@ -164,11 +200,11 @@ fn drop_draft(view: &View, out: &mut Out, o: Owner) -> Result<(), StoreError> {
 
 fn check_owner(view: &View, o: Owner) -> Result<(), StoreError> {
     match o {
-        Owner::Message(m) => {
+        Owner::Message(m) | Owner::Reply { message: true, after: m, .. } => {
             let (_, append) = require_message(view, m)?;
             prune::refuse_doomed(view, id(&append, super::chat::APPEND_OWNER), m)
         }
-        Owner::Root(e) | Owner::Greeting(e, _) => {
+        Owner::Root(e) | Owner::Greeting(e, _) | Owner::Reply { message: false, after: e, .. } => {
             if library::entity_info(view, e)?.is_none() {
                 return Err(StoreError::Refused(format!(
                     "a draft after entity {e}, which isn't there"
@@ -179,13 +215,33 @@ fn check_owner(view: &View, o: Owner) -> Result<(), StoreError> {
     }
 }
 
-/// Drops the draft after a message going away
-pub fn message_gone(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError> {
-    drop_draft(view, out, Owner::Message(m))
+/// Drops the drafts after a reply being generated after what's going away
+fn replies_gone(view: &View, out: &mut Out, message: bool, after: u64) -> Result<(), StoreError> {
+    let mut p = key::of(DRAFT);
+    put_u64(&mut p, 2);
+    put_u64(&mut p, u64::from(message));
+    put_u64(&mut p, after);
+    let bad = || StoreError::Entry("a draft key doesn't decode".into());
+    for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        let mut at = p.len();
+        let hi = crate::keyspace::val::get_u64(&k, &mut at).ok_or_else(bad)?;
+        let lo = crate::keyspace::val::get_u64(&k, &mut at).ok_or_else(bad)?;
+        let generation = (u128::from(hi) << 64) | u128::from(lo);
+        drop_draft(view, out, Owner::Reply { message, after, generation })?;
+    }
+    Ok(())
 }
 
-/// Drops the drafts at a tree's root and after each of a card's greetings, for an entity going away
+/// Drops the draft after a message going away, and those after a reply being generated after it
+pub fn message_gone(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError> {
+    drop_draft(view, out, Owner::Message(m))?;
+    replies_gone(view, out, true, m)
+}
+
+/// Drops the drafts at a tree's root, after each of a card's greetings and after a reply being generated at its root,
+/// for an entity going away
 pub fn entity_gone(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError> {
+    replies_gone(view, out, false, e)?;
     let mut p = key::of(DRAFT);
     put_u64(&mut p, 0);
     put_u64(&mut p, e);
@@ -317,6 +373,7 @@ impl Deriver for DraftEdit {
                     Value::Text(new),
                     rec.values[EDIT_SESSION].clone(),
                     rec.values[EDIT_USER].clone(),
+                    rec.values[EDIT_GENERATION].clone(),
                 ],
             )
             .expect("a draftValue of a draftEdit's values"));

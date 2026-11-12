@@ -2504,11 +2504,20 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
         }
         "draft" => {
             use crate::store::drafts::Owner;
-            let owner = match (opt_integer(a, "message")?, opt_integer(a, "tree")?, opt_integer(a, "greeting")?) {
-                (Some(m), None, None) => Owner::Message(m),
-                (None, Some(t), None) => Owner::Root(t),
-                (None, Some(t), Some(g)) => Owner::Greeting(t, g),
-                _ => return Err(invalid("a draft is read by message, or by tree with or without greeting".into())),
+            let generation = match a.get::<Unknown>("generation")? {
+                Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => Some(
+                    crate::store::drafts::generation_id(&bytes_of(a, "generation")?)
+                        .map_err(|e| invalid(e.to_string()))?,
+                ),
+                _ => None,
+            };
+            let owner = match (opt_integer(a, "message")?, opt_integer(a, "tree")?, opt_integer(a, "greeting")?, generation) {
+                (Some(m), None, None, None) => Owner::Message(m),
+                (None, Some(t), None, None) => Owner::Root(t),
+                (None, Some(t), Some(g), None) => Owner::Greeting(t, g),
+                (Some(m), None, None, Some(g)) => Owner::Reply { message: true, after: m, generation: g },
+                (None, Some(t), None, Some(g)) => Owner::Reply { message: false, after: t, generation: g },
+                _ => return Err(invalid("a draft is read by message or tree, with a greeting or a generation".into())),
             };
             Box::new(move |s| s.chat_read(|v| cr::draft(v, owner)).map(JsTree))
         }

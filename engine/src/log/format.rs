@@ -398,12 +398,13 @@ pub static KINDS: &[Kind] = &[
             req("text", Ty::Text),
             opt("session", Ty::Id(Space::Position)),
             opt("user", Ty::Id(Space::User)),
+            opt("generation", Ty::Bytes),
         ],
         internal: false,
     },
     Kind {
         name: "draftEdit",
-        base: 1816,
+        base: 1840,
         slots: &[
             req("at", Ty::Sel(HANG)),
             opt("greeting", Ty::UInt),
@@ -412,6 +413,7 @@ pub static KINDS: &[Kind] = &[
             req("text", Ty::Text),
             opt("session", Ty::Id(Space::Position)),
             opt("user", Ty::Id(Space::User)),
+            opt("generation", Ty::Bytes),
         ],
         internal: false,
     },
