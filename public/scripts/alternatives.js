@@ -12,7 +12,8 @@ import { editPosition } from './live-editor/positions.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
-import { applyServerGreetings, deleteSwipe, ensureSwipes, isMessageSwipeable, isSwipingAllowed, swipe, syncMesToSwipe } from '/script.js';
+import { applyServerGreetings, deleteSwipe, ensureSwipes, isMessageSwipeable, isSwipingAllowed, swipe, syncMesToSwipe, updateSwipeCounter } from '/script.js';
+import { updateMessage } from './chat-store.js';
 import { chat } from '/scripts/chat-state.js';
 
 /**
@@ -86,6 +87,17 @@ export const alternativesOldPage = {
     async copy(text) {
         await copyText(text);
         toastr.info(t`Copied!`, '', { timeOut: 2000 });
+    },
+    reordered(messageId, current) {
+        const message = chat[messageId];
+        if (!message || !Array.isArray(message.swipes) || !Number.isInteger(current)) return;
+        const at = message.swipe_id ?? 0;
+        const swipes = new Array(message.swipes.length);
+        const swipeInfo = new Array(message.swipes.length).fill(null);
+        swipes[current] = message.swipes[at];
+        swipeInfo[current] = message.swipe_info?.[at] ?? null;
+        updateMessage(messageId, { swipes, swipe_info: swipeInfo, swipe_id: current });
+        void updateSwipeCounter(messageId);
     },
     greetingsChanged(card, answer) {
         void applyServerGreetings(card.avatar, card, /** @type {{ opening?: unknown } | undefined} */ (answer)?.opening ?? null);

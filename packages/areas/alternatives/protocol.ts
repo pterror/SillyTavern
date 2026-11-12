@@ -71,6 +71,11 @@ export const actions = {
         v.object({ op: v.literal('default'), position, hash }),
         v.object({ op: v.literal('undefault'), hash }),
     ]),
+    'alternatives.move': v.object({
+        nodeId: v.pipe(v.string(), v.minLength(1)),
+        side: v.picklist(['before', 'after']),
+        target: v.pipe(v.string(), v.minLength(1)),
+    }),
 } satisfies ActionSchemas;
 
 export type GreetingOp = v.InferOutput<(typeof actions)['alternatives.greeting']>;

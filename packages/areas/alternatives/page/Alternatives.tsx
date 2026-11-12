@@ -18,6 +18,7 @@ export type OldPage = {
     remove(mesId: number, index: number): Promise<void>;
     copy(text: string): Promise<void>;
     greetingsChanged(card: NonNullable<ListView['card']>, answer: unknown): void;
+    reordered(mesId: number, current: number): void;
     editAt(event: MouseEvent, rendered: HTMLElement, source: string): number | null;
 };
 
@@ -366,6 +367,8 @@ function Dialog(props: {
         else await props.old.go(mesId!, index);
     };
     const isCardRow = (item: Item) => item.card !== null && list()?.card != null;
+    const reorders = 'message' in props.look.target;
+    const canReorder = (item: Item) => isCardRow(item) || (reorders && item.nodeId !== null);
     const canRemove = (item: Item) => !greetingsList && item.nodeId !== null && total() > 1;
     const remove = async (index: number) => {
         await props.old.remove(mesId!, index);
@@ -432,7 +435,20 @@ function Dialog(props: {
         );
     };
     const move = (item: Item, target: Item, side: 'before' | 'after') => {
-        if (item.id === target.id || !item.card || !target.card) return;
+        if (item.id === target.id) return;
+        if (reorders) {
+            if (item.nodeId === null || target.nodeId === null) return;
+            void client
+                .send('alternatives.move', { nodeId: item.nodeId, side, target: target.nodeId })
+                .then((result) => {
+                    if (!result.ok) return setNotice(result.error);
+                    setNotice(null);
+                    const current = (result.answer as { current?: unknown } | undefined)?.current;
+                    if (typeof current === 'number' && mesId !== null) props.old.reordered(mesId, current);
+                });
+            return;
+        }
+        if (!item.card || !target.card) return;
         void greeting({
             op: 'move',
             position: item.card.position,
@@ -480,7 +496,7 @@ function Dialog(props: {
         handle.addEventListener('pointercancel', cancel);
     };
     const keyMove = (item: Item, event: KeyboardEvent) => {
-        const cards = items().filter((i) => i.card !== null);
+        const cards = items().filter((i) => canReorder(i));
         const at = cards.findIndex((i) => i.id === item.id);
         const to: Record<string, [number, 'before' | 'after']> = {
             ArrowUp: [at - 1, 'before'],
@@ -641,7 +657,7 @@ function Dialog(props: {
                                     }}
                                 >
                                     <div class="alternative-head">
-                                        <Show when={isCardRow(item)}>
+                                        <Show when={canReorder(item)}>
                                             <span
                                                 class="alternative-drag fa-solid fa-grip-vertical"
                                                 role="button"

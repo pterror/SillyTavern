@@ -1091,13 +1091,15 @@ export async function chatOpPatch(edits) {
 /**
  * @param {number} mesId
  * @param {string} text
+ * @param {{ next?: boolean }} [options] next: right after the alternative shown (an opening shown from the card goes
+ *     first, so it follows that greeting); otherwise last
  * @returns {Promise<string|null>}
  */
-export async function chatOpAddAlternative(mesId, text) {
+export async function chatOpAddAlternative(mesId, text, { next = false } = {}) {
     const msg = _chatAt(mesId);
     if (typeof text !== 'string' || !text.length) return null;
     if (mesId === 0 && msg && !isStoredNodeId(msg.node_id) && _currentOwner()) {
-        const created = await _chatOpPost('/api/chats/message/alternative', { opening: true, contents: [_messageContent(msg, text)] });
+        const created = await _chatOpPost('/api/chats/message/alternative', { opening: true, contents: [_messageContent(msg, text)], ...(next ? { place: { first: true } } : {}) });
         return created?.node_ids?.[0] ?? null;
     }
     if (!isStoredNodeId(msg?.node_id)) return null;
@@ -1105,6 +1107,7 @@ export async function chatOpAddAlternative(mesId, text) {
     const created = await _chatOpPost('/api/chats/message/alternative', {
         sibling_node_id: msg.node_id,
         contents: [_messageContent(msg, text)],
+        ...(next ? { place: { after: msg.node_id } } : {}),
     });
     return created?.node_ids?.[0] ?? null;
 }

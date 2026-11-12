@@ -37,6 +37,11 @@ export type Ports = {
         avatar: string,
         op: GreetingOp,
     ): Promise<{ ok: true; opening: unknown } | { ok: false; reason: string; same?: number }>;
+    move(
+        context: ActionContext,
+        nodeId: string,
+        place: { after: string } | { first: true },
+    ): Promise<{ ok: true } | { ok: false; reason: string }>;
 };
 
 function freshLook(target: Target, tokenizer: TokenizerState | null): Look {
@@ -333,6 +338,28 @@ export function alternativesArea(ports: Ports) {
                     };
                 }
                 return { ...all, answer: { opening: result.opening } };
+            },
+            'alternatives.move': async (context, { nodeId, side, target }) => {
+                const look = lookOf(context);
+                if (!look || !('message' in look.target)) return { refused: "Only a message's alternatives move." };
+                const at = look.items.findIndex((item) => item.nodeId === target);
+                if (at < 0 || nodeId === target) return { refused: "That alternative isn't in this list." };
+                const above = look.items
+                    .slice(0, at)
+                    .reverse()
+                    .find((item) => item.nodeId !== nodeId)?.nodeId;
+                const place =
+                    side === 'after'
+                        ? { after: target }
+                        : above === undefined || above === null
+                          ? ({ first: true } as const)
+                          : { after: above };
+                const shown = look.current === null ? null : (look.items[look.current]?.nodeId ?? null);
+                const result = await ports.move(context, nodeId, place);
+                if (!result.ok) return { refused: result.reason, changed: [...VIEWS] };
+                const order = look.items.map((item) => item.nodeId).filter((id) => id !== nodeId);
+                order.splice('first' in place ? 0 : order.indexOf(place.after) + 1, 0, nodeId);
+                return { ...all, answer: { current: shown === null ? null : order.indexOf(shown) } };
             },
         },
     });

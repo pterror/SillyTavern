@@ -10993,7 +10993,7 @@ jQuery(async function () {
 
         let createdId = null;
         try {
-            createdId = await chatOpAddAlternative(mesId, text);
+            createdId = await chatOpAddAlternative(mesId, text, { next: true });
         } catch (error) {
             console.warn('[duplicate] Could not create the alternative:', error);
         }
@@ -11011,12 +11011,12 @@ jQuery(async function () {
 
         let at = swipeInfo.findIndex(info => info?.node_id === createdId);
         if (at < 0) {
-            swipes.push(text);
-            swipeInfo.push({
+            at = (current.swipe_id ?? 0) + 1;
+            swipes.splice(at, 0, text);
+            swipeInfo.splice(at, 0, {
                 send_date: current.send_date, extra: current.extra ?? {},
                 name: current.name, is_user: !!current.is_user, node_id: createdId,
             });
-            at = swipes.length - 1;
         }
         updateMessage(mesId, { swipes, swipe_info: swipeInfo, mes: text });
 

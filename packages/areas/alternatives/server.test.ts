@@ -33,6 +33,7 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
         stored: { ...stored },
         counted: [] as string[][],
         ops: [] as GreetingOp[],
+        moves: [] as [string, { after: string } | { first: true }][],
         refuse: null as string | null,
         hold: null as Promise<void> | null,
     };
@@ -58,6 +59,11 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
             if (state.refuse !== null) return { ok: false, reason: state.refuse };
             state.ops.push(op);
             return { ok: true, opening: null };
+        },
+        move: async (_c, nodeId, place) => {
+            if (state.refuse !== null) return { ok: false, reason: state.refuse };
+            state.moves.push([nodeId, place]);
+            return { ok: true };
         },
     };
     const area = alternativesArea(ports);
@@ -423,4 +429,36 @@ test('itemsOf: a card greeting appears at its first position when the card has i
         hash,
     );
     expect(items[0]!.card).toEqual({ position: 1, hash: hash('Same') });
+});
+
+test("a message's alternative moves among them: before one is after the one above it, or first; the answer says where the current one is now", async () => {
+    const w = world(() => swipes(['one', 'two', 'three', 'four'], 1));
+    await w.act('alternatives.open', { target: { message: 'n1' }, tokenizer });
+    await w.list();
+    expect(await w.act('alternatives.move', { nodeId: 'n3', side: 'after', target: 'n0' })).toMatchObject({
+        answer: { current: 2 },
+    });
+    expect(await w.act('alternatives.move', { nodeId: 'n2', side: 'before', target: 'n1' })).toMatchObject({
+        answer: { current: 2 },
+    });
+    expect(await w.act('alternatives.move', { nodeId: 'n1', side: 'before', target: 'n0' })).toMatchObject({
+        answer: { current: 0 },
+    });
+    expect(w.state.moves).toEqual([
+        ['n3', { after: 'n0' }],
+        ['n2', { after: 'n0' }],
+        ['n1', { first: true }],
+    ]);
+    expect(await w.act('alternatives.move', { nodeId: 'n1', side: 'after', target: 'n9' })).toMatchObject({
+        refused: expect.any(String),
+    });
+});
+
+test("openings and greetings don't move this way: only a message's alternatives do", async () => {
+    const w = world(() => swipes(['one', 'two']));
+    await w.act('alternatives.open', { target: { opening: true }, tokenizer });
+    expect(await w.act('alternatives.move', { nodeId: 'n1', side: 'before', target: 'n0' })).toMatchObject({
+        refused: expect.any(String),
+    });
+    expect(w.state.moves).toEqual([]);
 });

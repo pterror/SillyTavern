@@ -400,6 +400,11 @@ const alternativesPorts = {
         if (result.ok) return { ok: true, opening };
         return { ok: false, reason: result.reason ?? 'The greetings changed.', ...(Number.isInteger(result.same) ? { same: result.same } : {}) };
     },
+    async move(context, nodeId, place) {
+        const chat = await chatOfTab(context);
+        if (!chat) return { ok: false, reason: 'No chat is open.' };
+        return chat.store.chats.placeMessage({ tree: chat.tree, node_id: nodeId, place, actor: chat.actor });
+    },
 };
 
 /**

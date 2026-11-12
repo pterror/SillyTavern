@@ -22,7 +22,8 @@ Targets:
 
 One component, the same controls on the same rows wherever it's opened: the card's operations (add, edit, reorder,
 default, delete from the card) on every card greeting, in either list; delete from the chat on every stored
-alternative.
+alternative; reorder on a message's alternatives (`alternatives.move`, a place in `ordered-lists.md`). A tree's
+openings reorder only as card greetings: the stored ones are grouped by greeting.
 
 An item's id is its node id. How a card greeting not stored in the chat is known is not decided; the code knows it by
 its text's hash (`hashGreetingText`, `public/script.js`).
