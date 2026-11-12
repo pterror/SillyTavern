@@ -1,6 +1,5 @@
 import { state as cmState, view as cmView, language as cmLanguage, langMarkdown } from '../../live-editor-lib.js';
 import { chatMarkdownExtensions } from './grammar.js';
-import { DOMPurify } from '../../lib.js';
 
 const { Facet, StateField } = cmState;
 const { EditorView, Decoration, WidgetType, ViewPlugin, BlockWrapper } = cmView;
@@ -20,35 +19,35 @@ export function chatMarkdownLanguage(options = {}) {
 
 /**
  * @typedef {object} RenderOptions
- * @property {(text: string) => string} render
+ * @property {(text: string) => HTMLElement} draw a part of the text drawn for reading
  * @property {Record<string, string>} [emojis]
  */
 
 const renderOptions = Facet.define({
-    combine: values => values[0] ?? { render: (/** @type {string} */ text) => text },
+    combine: values => values[0] ?? { draw: () => document.createElement('div') },
 });
 
-/** @type {WeakMap<Function, Map<string, string>>} */
-const renderCaches = new WeakMap();
+/** @type {WeakMap<Function, Map<string, HTMLElement>>} */
+const drawCaches = new WeakMap();
 
 /**
- * @param {(text: string) => string} render
- * @returns {(text: string) => string}
+ * @param {(text: string) => HTMLElement} draw
+ * @returns {(text: string) => HTMLElement} the same, drawing each text once and handing out copies
  */
-function cachedRenderFor(render) {
-    let cache = renderCaches.get(render);
+function cachedDrawFor(draw) {
+    let cache = drawCaches.get(draw);
     if (!cache) {
         cache = new Map();
-        renderCaches.set(render, cache);
+        drawCaches.set(draw, cache);
     }
     return (text) => {
-        let html = cache.get(text);
-        if (html === undefined) {
-            html = render(text);
+        let drawn = cache.get(text);
+        if (drawn === undefined) {
+            drawn = draw(text);
             if (cache.size >= 500) cache.clear();
-            cache.set(text, html);
+            cache.set(text, drawn);
         }
-        return html;
+        return /** @type {HTMLElement} */ (drawn.cloneNode(true));
     };
 }
 
@@ -72,42 +71,51 @@ class TextWidget extends WidgetType {
 }
 
 class ImageWidget extends WidgetType {
-    /** @param {string} html */
-    constructor(html) {
+    /**
+     * @param {string} source the image's text
+     * @param {(text: string) => HTMLElement} draw
+     */
+    constructor(source, draw) {
         super();
-        this.html = html;
+        this.source = source;
+        this.draw = draw;
     }
 
     /** @param {ImageWidget} other */
     eq(other) {
-        return other.html === this.html;
+        return other.source === this.source;
     }
 
     toDOM() {
         const span = document.createElement('span');
         span.className = 'live-image';
-        span.innerHTML = DOMPurify.sanitize(this.html.trim().replace(/^<p>([\s\S]*)<\/p>$/, '$1'));
+        const image = this.draw(this.source).querySelector('img');
+        if (image) span.append(image);
         return span;
     }
 }
 
 class HtmlBlockWidget extends WidgetType {
-    /** @param {string} html */
-    constructor(html) {
+    /**
+     * @param {string} source the block's text
+     * @param {(text: string) => HTMLElement} draw
+     */
+    constructor(source, draw) {
         super();
-        this.html = html;
+        this.source = source;
+        this.draw = draw;
     }
 
     /** @param {HtmlBlockWidget} other */
     eq(other) {
-        return other.html === this.html;
+        return other.source === this.source;
     }
 
     toDOM() {
         const div = document.createElement('div');
         div.className = 'live-html-render';
         div.contentEditable = 'false';
-        div.innerHTML = this.html;
+        div.append(this.draw(this.source));
         div.addEventListener('mousedown', event => event.preventDefault());
         return div;
     }
@@ -128,13 +136,11 @@ const INLINE_HTML = new Set(['span', 'font', 'b', 'i', 'u', 's', 'strike', 'del'
 /**
  * @param {string} tag
  * @param {string} name
- * @param {(text: string) => string} render
- * @returns {Record<string, string> | null}
+ * @param {(text: string) => HTMLElement} draw
+ * @returns {Record<string, string> | null} the attributes the tag's element is drawn with
  */
-function renderedAttributes(tag, name, render) {
-    const holder = document.createElement('template');
-    holder.innerHTML = DOMPurify.sanitize(render(`${tag}x</${name}>`));
-    const element = holder.content.querySelector(name);
+function renderedAttributes(tag, name, draw) {
+    const element = draw(`${tag}x</${name}>`).querySelector(name);
     if (!element) return null;
     return Object.fromEntries([...element.attributes].map(a => [a.name, a.value]));
 }
@@ -145,17 +151,17 @@ const attributeCaches = new WeakMap();
 /**
  * @param {string} tag
  * @param {string} name
- * @param {(text: string) => string} render
+ * @param {(text: string) => HTMLElement} draw
  */
-function cachedAttributes(tag, name, render) {
-    let cache = attributeCaches.get(render);
+function cachedAttributes(tag, name, draw) {
+    let cache = attributeCaches.get(draw);
     if (!cache) {
         cache = new Map();
-        attributeCaches.set(render, cache);
+        attributeCaches.set(draw, cache);
     }
     if (!cache.has(tag)) {
         if (cache.size >= 500) cache.clear();
-        cache.set(tag, renderedAttributes(tag, name, render));
+        cache.set(tag, renderedAttributes(tag, name, draw));
     }
     return /** @type {Record<string, string> | null} */ (cache.get(tag));
 }
@@ -183,7 +189,7 @@ const textStyle = ViewPlugin.fromClass(class {
         const tree = syntaxTree(state);
         const options = state.facet(renderOptions);
         const { emojis } = options;
-        const render = cachedRenderFor(options.render);
+        const draw = cachedDrawFor(options.draw);
         for (const { from, to } of view.visibleRanges) {
             /** @type {{ name: string, tag: string, to: number }[]} */
             const open = [];
@@ -210,7 +216,7 @@ const textStyle = ViewPlugin.fromClass(class {
                         const match = /^<(\/?)([a-z][a-z0-9]*)\b[^>]*?(\/?)>$/i.exec(tag);
                         const name = match?.[2].toLowerCase();
                         if (match && name === 'img' && !match[1]) {
-                            ranges.push(Decoration.widget({ widget: new ImageWidget(render(tag)), side: 1 }).range(node.to));
+                            ranges.push(Decoration.widget({ widget: new ImageWidget(tag, draw), side: 1 }).range(node.to));
                         }
                         if (match && name && INLINE_HTML.has(name) && !match[3]) {
                             if (!match[1]) {
@@ -219,7 +225,7 @@ const textStyle = ViewPlugin.fromClass(class {
                                 const at = open.findLastIndex(o => o.name === name);
                                 if (at >= 0) {
                                     const [opened] = open.splice(at);
-                                    const attributes = cachedAttributes(opened.tag, name, render);
+                                    const attributes = cachedAttributes(opened.tag, name, options.draw);
                                     if (attributes && opened.to < node.from) {
                                         ranges.push(Decoration.mark({ tagName: name, attributes }).range(opened.to, node.from));
                                     }
@@ -232,8 +238,7 @@ const textStyle = ViewPlugin.fromClass(class {
                         if (emoji) ranges.push(Decoration.widget({ widget: new TextWidget(emoji), side: 1 }).range(node.to));
                     }
                     if (node.name === 'Image') {
-                        const html = render(state.doc.sliceString(node.from, node.to));
-                        ranges.push(Decoration.widget({ widget: new ImageWidget(html), side: 1 }).range(node.to));
+                        ranges.push(Decoration.widget({ widget: new ImageWidget(state.doc.sliceString(node.from, node.to), draw), side: 1 }).range(node.to));
                     }
                 },
             });
@@ -248,14 +253,12 @@ const textStyle = ViewPlugin.fromClass(class {
  */
 function htmlBlockRenders(state) {
     const tree = ensureSyntaxTree(state, state.doc.length, 500) ?? syntaxTree(state);
-    const render = cachedRenderFor(state.facet(renderOptions).render);
+    const draw = cachedDrawFor(state.facet(renderOptions).draw);
     /** @type {import('@codemirror/state').Range<import('@codemirror/view').Decoration>[]} */
     const ranges = [];
     for (let node = tree.topNode.firstChild; node; node = node.nextSibling) {
         if (node.name !== 'HTMLBlock' && node.name !== 'CommentBlock') continue;
-        const html = DOMPurify.sanitize(render(state.doc.sliceString(node.from, node.to)));
-        if (html.trim() === '') continue;
-        ranges.push(Decoration.widget({ widget: new HtmlBlockWidget(html), block: true, side: 1 }).range(state.doc.lineAt(node.to).to));
+        ranges.push(Decoration.widget({ widget: new HtmlBlockWidget(state.doc.sliceString(node.from, node.to), draw), block: true, side: 1 }).range(state.doc.lineAt(node.to).to));
     }
     return Decoration.set(ranges, true);
 }

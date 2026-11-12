@@ -70,9 +70,6 @@ export async function initSystemMessages() {
         /** @type {ChatMessage} */
         welcome: systemMessage({
             mes: await renderTemplateAsync('welcome', { displayVersion }),
-            extra: {
-                uses_system_ui: true,
-            },
         }),
         /** @type {ChatMessage} */
         empty: systemMessage({
@@ -86,7 +83,6 @@ export async function initSystemMessages() {
         welcome_prompt: systemMessage({
             mes: await renderTemplateAsync('welcomePrompt'),
             extra: {
-                uses_system_ui: true,
                 isSmallSys: true,
             },
         }),
@@ -94,7 +90,6 @@ export async function initSystemMessages() {
         assistant_note: systemMessage({
             mes: await renderTemplateAsync('assistantNote'),
             extra: {
-                uses_system_ui: true,
                 isSmallSys: true,
             },
         }),

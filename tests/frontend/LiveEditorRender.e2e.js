@@ -8,7 +8,8 @@ import { testSetup } from './frontent-test-utils.js';
 async function mountRendered(page, value) {
     await page.evaluate(async (value) => {
         const registry = await import('/scripts/live-editor/registry.js');
-        const { renderMarkdown } = await import('/scripts/marked-processor.js');
+        const { drawnMessageText } = await import('/scripts/message-text.js');
+        const draw = (/** @type {string} */ text) => drawnMessageText(text, { name: 'Testchar', isUser: false });
         const host = document.createElement('div');
         host.id = 'liveEditorTestHost';
         host.style.cssText = 'position:fixed;top:60px;left:60px;width:500px;z-index:100000;background:#000;color:#fff';
@@ -21,9 +22,9 @@ async function mountRendered(page, value) {
         outside.textContent = 'outside';
         host.append(outside);
         document.body.append(host);
-        const editor = await registry.mountLiveEditor(textarea, { render: renderMarkdown, contentClass: 'mes_text' });
+        const editor = await registry.mountLiveEditor(textarea, { draw, contentClass: 'mes_text' });
         // @ts-ignore
-        window.liveEditorTest = { editor, textarea, renderMarkdown };
+        window.liveEditorTest = { editor, textarea };
     }, value);
 }
 
@@ -111,15 +112,15 @@ test.describe('live editor rendering', () => {
 
     test('HTML blocks in a row on one line are all drawn, and what follows a comment on its line', async ({ page }) => {
         await mountRendered(page, '<div>first</div><div>second</div>\n\n<!-- note --><div>third</div>');
-        await expect(page.locator('#liveEditorTestHost .live-html-render div')).toHaveText(['first', 'second', 'third']);
+        await expect(page.locator('#liveEditorTestHost .live-html-render .html-block > div')).toHaveText(['first', 'second', 'third']);
     });
 
     test('an HTML block is drawn under its source, takes no clicks, and moves nothing on focus', async ({ page }) => {
         await mountRendered(page, 'Before.\n\n<div style="color: rgb(0, 128, 0)">\nInside the block\n</div>\n\nAfter.');
         const drawn = page.locator('#liveEditorTestHost .live-html-render');
         await expect(drawn).toHaveCount(1);
-        await expect(drawn.locator('div')).toHaveText('Inside the block');
-        expect(await drawn.locator('div').evaluate(el => getComputedStyle(el).color)).toBe('rgb(0, 128, 0)');
+        await expect(drawn.locator('.html-block > div')).toHaveText('Inside the block');
+        expect(await drawn.locator('.html-block > div').evaluate(el => getComputedStyle(el).color)).toBe('rgb(0, 128, 0)');
         await expect(page.locator('#liveEditorTestHost .cm-line').filter({ hasText: '<div' })).toHaveCount(1);
         const tops = () => page.locator('#liveEditorTestHost .cm-line').evaluateAll(els => els.map(el => Math.round(el.getBoundingClientRect().top)));
         const before = await tops();

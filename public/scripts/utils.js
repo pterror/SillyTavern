@@ -688,27 +688,6 @@ export function formatTime(seconds) {
 }
 
 /**
- * Counts the number of occurrences of a character in a string.
- * @param {string} string The string to count occurrences in.
- * @param {string} character The character to count occurrences of.
- * @returns {number} The number of occurrences of the character in the string.
- * @example
- * countOccurrences('Hello, world!', 'l'); // 3
- * countOccurrences('Hello, world!', 'x'); // 0
- */
-export function countOccurrences(string, character) {
-    let count = 0;
-
-    for (let i = 0; i < string.length; i++) {
-        if (string.substring(i, i + character.length) === character) {
-            count++;
-        }
-    }
-
-    return count;
-}
-
-/**
  * Parses an array either as a comma-separated string or as a JSON array.
  * @param {string} value String to parse
  * @returns {string[]} The parsed array.
@@ -725,18 +704,6 @@ export function parseStringArray(value) {
     } catch (e) {
         return value.split(',').map(x => x.trim()).filter(x => x);
     }
-}
-
-/**
- * Checks if a number is odd.
- * @param {number} number The number to check.
- * @returns {boolean} True if the number is odd, false otherwise.
- * @example
- * isOdd(3); // true
- * isOdd(4); // false
- */
-export function isOdd(number) {
-    return number % 2 !== 0;
 }
 
 /**

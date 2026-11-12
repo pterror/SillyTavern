@@ -3,10 +3,10 @@ import { MacroValues } from './macro-values.js';
 import { macrosIn } from './safe-macros.js';
 import { getFocusedField, loadLiveEditor, mountLiveEditor } from './live-editor/registry.js';
 import { drawerStackChanged } from './drawer-stack.js';
+import { drawnMessageText } from './message-text.js';
 
 /**
  * @typedef {object} ChatEditorDeps
- * @property {(mes: string, chName: string, isSystem: boolean, isUser: boolean, messageId: number, sanitizerOverrides?: object, isReasoning?: boolean) => string} messageFormatting
  * @property {() => import('./macro-values.js').MacroScope} macroScope
  * @property {{ encode_tags?: boolean }} power_user
  * @property {(file: File) => Promise<string>} uploadImage
@@ -47,11 +47,11 @@ function chatEditorOptions(chatDeps, target) {
     const messageIdNow = () => (typeof target.messageId === 'function' ? target.messageId() : target.messageId);
     const isReasoning = Boolean(target.isReasoning);
     const isChatBox = Boolean(target.isChatBox);
-    const { messageFormatting, power_user, uploadImage, macroPerson } = chatDeps;
+    const { power_user, uploadImage, macroPerson } = chatDeps;
     const fillsMacros = () => isReasoning || isChatBox || (Number(messageIdNow()) === 0 && !isSystem && !isUser);
     const values = new MacroValues(() => (isUser ? chatDeps.macroScope() : { ...chatDeps.macroScope(), name2: nameNow() }));
     return {
-        render: text => messageFormatting(text, nameNow(), isSystem, isUser, messageIdNow(), {}, isReasoning),
+        draw: text => drawnMessageText(text, { name: nameNow(), isUser }),
         grammar: {
             emojis: EMOJIS,
             dialogueQuotes: !isSystem,

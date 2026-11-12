@@ -430,7 +430,6 @@
     "Tokenizer": "Tokeniseur",
     "Token Padding": "Remplissage de token",
     "Start Reply With": "Commencer la réponse avec",
-    "Show reply prefix in chat": "Afficher le préfixe de réponse dans la conversation",
     "Non-markdown strings": "Chaînes non Markdown",
     "Custom Stopping Strings": "Chaînes d'arrêt personnalisées",
     "JSON serialized array of strings": "Tableau de chaînes sérialisé JSON",

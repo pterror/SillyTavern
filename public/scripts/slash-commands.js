@@ -2,7 +2,6 @@ import { eventSource, event_types } from './events.js';
 import { registerVariableCommands } from './variables.js';
 import { registerActionLoaderSlashCommands } from './action-loader-slashcommands.js';
 import {
-    COMMENT_NAME_DEFAULT,
     executeSlashCommandsOnChatInput,
     executeSlashCommandsWithOptions,
     getSlashCommandsHelp,
@@ -30,7 +29,6 @@ export {
     getSlashCommandsHelp,
 };
 export {
-    COMMENT_NAME_DEFAULT,
     executeSlashCommandsOnChatInput,
     initSlashCommandAutoComplete,
     isExecutingCommandsFromChatInput,

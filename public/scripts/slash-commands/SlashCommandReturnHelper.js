@@ -1,5 +1,4 @@
-import { DOMPurify } from '../../lib.js';
-import { renderMarkdown } from '../marked-processor.js';
+import { drawnMessageText } from '../message-text.js';
 import { sendSystemMessage, system_message_types } from '../../script.js';
 import { callGenericPopup, POPUP_TYPE } from '../popup.js';
 import { addImageLightbox } from '../image-lightbox.js';
@@ -59,7 +58,7 @@ export const slashCommandReturnHelper = {
             case 'chat-html':
             case 'toast-text':
             case 'toast-html': {
-                const htmlOrNotHtml = shouldHtml ? DOMPurify.sanitize(renderMarkdown(stringValue)) : escapeHtml(stringValue);
+                const htmlOrNotHtml = shouldHtml ? drawnMessageText(stringValue, { name: '', isUser: true }).outerHTML : escapeHtml(stringValue);
 
                 if (type.startsWith('popup')) await callGenericPopup(htmlOrNotHtml, POPUP_TYPE.TEXT, '', { allowVerticalScrolling: true, wide: true, onOpen: popup => addImageLightbox(popup.content) });
                 if (type.startsWith('chat')) sendSystemMessage(system_message_types.GENERIC, htmlOrNotHtml);

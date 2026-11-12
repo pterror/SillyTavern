@@ -93,7 +93,6 @@
         "trim_sentences": false,
         "always_force_name2": true,
         "user_prompt_bias": "",
-        "show_user_prompt_bias": true,
         "markdown_escape_strings": "",
         "fast_ui_mode": true,
         "avatar_style": 0,

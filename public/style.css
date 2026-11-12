@@ -641,8 +641,29 @@ input[type='checkbox']:focus-visible {
     max-height: var(--doc-height);
 }
 
-.mes_reasoning_details[data-state="thinking"] .mes_reasoning .text_segment,
-.mes_text .text_segment {
+.chat-text {
+    white-space: pre-wrap;
+}
+
+.chat-text .html-block {
+    display: contents;
+    white-space: normal;
+}
+
+.chat-text img[data-unsized] {
+    width: min(100%, 24rem);
+    aspect-ratio: 4 / 3;
+    object-fit: contain;
+}
+
+.chat-text .macro-value-later,
+.chat-text .macro-value-empty,
+.chat-text .macro-value-unknown {
+    opacity: 0.7;
+    font-style: italic;
+}
+
+.chat-text .text-fade-in {
     animation-name: fade-in;
     animation-timing-function: ease-in-out;
     /* Not using variables for duration as they are zeroed when reduced motion is enabled */

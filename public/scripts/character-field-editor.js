@@ -1,11 +1,9 @@
-import { DOMPurify } from '../lib.js';
 import { EMOJIS } from './emojis.js';
-import { renderMarkdownLiteralTags } from './marked-processor.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
-import { withFilledAbout, withMacroPlaceholders } from './safe-macros.js';
 import { MacroValues } from './macro-values.js';
-import { insertMacroPills } from './macro-pill.js';
+import { cardTextSetup } from './message-text.js';
+import { drawnText, showText, stopText } from './chat-text/surface.js';
 import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
 import { editPosition } from './live-editor/positions.js';
 import { drawerStackChanged } from './drawer-stack.js';
@@ -13,8 +11,8 @@ import { drawerStackChanged } from './drawer-stack.js';
 /**
  * @typedef {object} CharacterFieldEditorDeps
  * @property {() => import('./macro-values.js').MacroScope} macroScope
- * @property {(mes: string, chName: string, isSystem: boolean, isUser: boolean, messageId: number) => string} messageFormatting
- * @property {(text: string, valueOf: import('./safe-macros.js').MacroValueOf, styleScope?: string) => string} formatCreatorNotes
+ * @property {(styleScope: string) => string} notesStyleScope the scope a card's creator's notes limit their styles to,
+ *   given the element they are previewed in
  * @property {{ auto_save_msg_edits: boolean, click_to_edit: boolean }} power_user
  * @property {(strings: TemplateStringsArray, ...values: any[]) => string} t
  * @property {(macroName: string) => import('./macro-pill.js').MacroPerson | null} macroPerson
@@ -38,49 +36,41 @@ import { drawerStackChanged } from './drawer-stack.js';
 /** @type {CharacterFieldEditorDeps} */
 let deps = null;
 
-/**
- * @param {string} text
- * @param {import('./safe-macros.js').MacroValueOf} valueOf
- * @returns {string}
- */
-function renderLiteralTagsPreview(text, valueOf) {
-    const { text: placeheld, macros } = withMacroPlaceholders(text, valueOf);
-    const html = DOMPurify.sanitize(renderMarkdownLiteralTags(placeheld));
-    return insertMacroPills(html, macros, deps.t, name => withFilledAbout(deps.macroPerson(name), name, valueOf));
-}
-
 const typedName = () => String($('#character_name_pole').val() ?? '');
-
-/**
- * @param {string} text
- * @param {import('./safe-macros.js').MacroValueOf} valueOf
- * @returns {string}
- */
-function renderGreetingPreview(text, valueOf) {
-    const name = typedName();
-    const { text: placeheld, macros } = withMacroPlaceholders(text, valueOf);
-    const html = deps.messageFormatting(placeheld, name, false, false, 0);
-    return insertMacroPills(html, macros, deps.t, name => withFilledAbout(deps.macroPerson(name), name, valueOf));
-}
 
 /**
  * @typedef {object} EditableField
  * @property {() => (value: string, options?: { confirmed?: boolean }) => Promise<boolean>} save
- * @property {(text: string, valueOf: import('./safe-macros.js').MacroValueOf) => string} render
+ * @property {'greeting' | 'notes' | 'literal'} kind how its text is drawn
+ * @property {string} [styleScope] where a notes field's styles apply
  */
 
 /** @type {Record<string, EditableField>} */
 const FIELDS = {
-    creator_notes_textarea: { save: () => deps.saveCreatorNotesField, render: (text, valueOf) => deps.formatCreatorNotes(text, valueOf) },
-    description_textarea: { save: () => deps.saveDescriptionField, render: (text, valueOf) => deps.formatCreatorNotes(text, valueOf, '#description_preview') },
-    greeting_field: { save: () => deps.saveGreetingField, render: renderGreetingPreview },
-    system_prompt_textarea: { save: () => deps.saveSystemPromptField, render: renderLiteralTagsPreview },
-    post_history_instructions_textarea: { save: () => deps.savePostHistoryInstructionsField, render: renderLiteralTagsPreview },
-    personality_textarea: { save: () => deps.savePersonalityField, render: renderLiteralTagsPreview },
-    scenario_pole: { save: () => deps.saveScenarioField, render: renderLiteralTagsPreview },
-    depth_prompt_prompt: { save: () => deps.saveCharacterNoteField, render: renderLiteralTagsPreview },
-    mes_example_textarea: { save: () => deps.saveExampleMessagesField, render: renderLiteralTagsPreview },
+    creator_notes_textarea: { save: () => deps.saveCreatorNotesField, kind: 'notes', styleScope: '#creator_notes_preview' },
+    description_textarea: { save: () => deps.saveDescriptionField, kind: 'notes', styleScope: '#description_preview' },
+    greeting_field: { save: () => deps.saveGreetingField, kind: 'greeting' },
+    system_prompt_textarea: { save: () => deps.saveSystemPromptField, kind: 'literal' },
+    post_history_instructions_textarea: { save: () => deps.savePostHistoryInstructionsField, kind: 'literal' },
+    personality_textarea: { save: () => deps.savePersonalityField, kind: 'literal' },
+    scenario_pole: { save: () => deps.saveScenarioField, kind: 'literal' },
+    depth_prompt_prompt: { save: () => deps.saveCharacterNoteField, kind: 'literal' },
+    mes_example_textarea: { save: () => deps.saveExampleMessagesField, kind: 'literal' },
 };
+
+/**
+ * @param {string} id
+ * @param {MacroValues} values
+ * @returns {import('./chat-text/surface.js').TextSetup}
+ */
+function fieldSetup(id, values) {
+    const field = FIELDS[id];
+    return cardTextSetup(field.kind, {
+        values,
+        person: name => deps.macroPerson(name),
+        styleScope: field.styleScope === undefined ? '' : deps.notesStyleScope(field.styleScope),
+    });
+}
 
 /** @type {{ id: string, original: string, userText: string, saving: boolean } | null} */
 let activeEdit = null;
@@ -187,6 +177,7 @@ function refreshFieldPreview(id, values = new MacroValues(() => macroScopeOf(id)
     const render = ++previewRenderCount;
     previewRenders.set(id, render);
     if (text === '') {
+        stopText(preview[0]);
         preview.addClass('field_preview_empty');
         preview.text(String(getTextarea(id).attr('placeholder') ?? ''));
         return;
@@ -194,7 +185,7 @@ function refreshFieldPreview(id, values = new MacroValues(() => macroScopeOf(id)
     void values.want(text).then(() => {
         if (previewRenders.get(id) !== render) return;
         preview.removeClass('field_preview_empty');
-        preview.html(field.render(text, values.valueOf));
+        showText(preview[0], text, fieldSetup(id, values));
     });
 }
 
@@ -271,7 +262,7 @@ async function mountFieldEditor(id) {
         await values.want(textarea.value);
         if (holder.ended) return;
         const editor = await mountLiveEditor(textarea, {
-            render: text => FIELDS[id].render(text, values.valueOf),
+            draw: text => drawnText(text, fieldSetup(id, values)),
             grammar: { emojis: EMOJIS, dialogueQuotes: isGreeting },
             contentClass: [...(preview?.classList ?? [])].filter(c => PREVIEW_TEXT_CLASSES.has(c)).join(' '),
             macros: {
@@ -731,7 +722,7 @@ function setMaximizeButton(panel, maximized) {
  */
 function beginEditAtClick(preview, event) {
     const id = String($(preview).attr('data-for'));
-    const at = editPosition(event, preview, String(getTextarea(id).val() ?? ''), deps.power_user.click_to_edit);
+    const at = editPosition(event, preview, deps.power_user.click_to_edit);
     if (at !== null) beginEdit(id, at);
 }
 

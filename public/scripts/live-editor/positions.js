@@ -1,38 +1,32 @@
+import { sourcePositionAt } from '../chat-text/surface.js';
+
 /**
- * @param {HTMLElement} dom
  * @param {MouseEvent} event
- * @returns {{ text: string, offset: number }}
+ * @returns {{ node: Node, offset: number } | null} the place in the page under the pointer
  */
-function renderedOffset(dom, event) {
-    const whole = document.createRange();
-    whole.selectNodeContents(dom);
-    const text = whole.toString();
-    /** @type {{ node: Node, offset: number } | null} */
-    let caret = null;
+function caretAt(event) {
     // @ts-ignore Firefox
     if (document.caretPositionFromPoint) {
         // @ts-ignore
         const position = document.caretPositionFromPoint(event.clientX, event.clientY);
-        if (position) caret = { node: position.offsetNode, offset: position.offset };
-    } else if (document.caretRangeFromPoint) {
-        const range = document.caretRangeFromPoint(event.clientX, event.clientY);
-        if (range) caret = { node: range.startContainer, offset: range.startOffset };
+        return position ? { node: position.offsetNode, offset: position.offset } : null;
     }
-    if (!caret || !dom.contains(caret.node)) return { text, offset: 0 };
-    const range = document.createRange();
-    range.setStart(dom, 0);
-    range.setEnd(caret.node, caret.offset);
-    return { text, offset: range.toString().length };
+    if (document.caretRangeFromPoint) {
+        const range = document.caretRangeFromPoint(event.clientX, event.clientY);
+        return range ? { node: range.startContainer, offset: range.startOffset } : null;
+    }
+    return null;
 }
 
 /**
+ * Where in its source a click or double-click on read text starts an edit: the source position the reader drew there.
+ * A click on a link or an image, or a click when click to edit is off or text is selected, starts none.
  * @param {MouseEvent} event
- * @param {HTMLElement} rendered
- * @param {string} source
+ * @param {HTMLElement} rendered the element the text is read in
  * @param {boolean} clickToEdit
  * @returns {number | null}
  */
-export function editPosition(event, rendered, source, clickToEdit) {
+export function editPosition(event, rendered, clickToEdit) {
     if (event.type === 'click' && (!clickToEdit || window.getSelection()?.toString())) return null;
     const target = event.target;
     if (target instanceof Element) {
@@ -40,28 +34,7 @@ export function editPosition(event, rendered, source, clickToEdit) {
         if (link && rendered.contains(link)) return null;
     }
     if (target instanceof HTMLImageElement) return null;
-    return source ? sourcePosition(source, renderedOffset(rendered, event)) : 0;
-}
-
-const WORD = /[\p{L}\p{N}_]+/gu;
-
-/**
- * @param {string} source
- * @param {{ text: string, offset: number }} rendered
- * @returns {number}
- */
-export function sourcePosition(source, { text, offset }) {
-    const shown = [...text.matchAll(WORD)];
-    const written = [...source.matchAll(WORD)];
-    let at = shown.findLastIndex(m => /** @type {number} */ (m.index) <= offset);
-    let within = at >= 0 ? Math.min(offset - /** @type {number} */ (shown[at].index), shown[at][0].length) : 0;
-    for (; at >= 0; at--, within = Infinity) {
-        const word = shown[at][0];
-        const nth = shown.slice(0, at).filter(m => m[0] === word).length;
-        const same = written.filter(m => m[0] === word);
-        if (same.length === 0) continue;
-        const match = same[Math.min(nth, same.length - 1)];
-        return /** @type {number} */ (match.index) + Math.min(within, word.length);
-    }
-    return 0;
+    const caret = caretAt(event);
+    if (!caret || !rendered.contains(caret.node)) return 0;
+    return sourcePositionAt(caret.node, caret.offset) ?? 0;
 }

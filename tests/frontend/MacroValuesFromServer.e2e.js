@@ -37,18 +37,18 @@ test('a field\'s preview shows the values the server fills in; a macro run only 
     await asked;
     const preview = page.locator('.field_preview[data-for="description_textarea"]');
     await expect(preview).toContainText('Feeling sunny, rolled');
-    await expect(preview.locator('.macro-pill[data-macro-name="roll"]')).toHaveCount(1);
+    await expect(preview.locator('.macro-value[data-macro-name="roll"]')).toHaveCount(1);
 });
 
 test('a character mention\'s card shows its creator\'s notes with their macros filled in, their inline markdown rendered', async ({ page }) => {
     await openWithDescription(page, 'I am **{{char}}**, not shown on the card.', 'I am **{{char}}**, feeling {{getglobalvar::mood}}. ![x](/img/ai4.png)');
-    const pill = page.locator('.field_preview[data-for="description_textarea"] .macro-pill[data-macro-name="char"]');
-    await expect(pill).toHaveCount(1);
-    const name = await pill.textContent();
+    const value = page.locator('.field_preview[data-for="description_textarea"] .macro-value[data-macro-name="char"]');
+    await expect(value).toHaveCount(1);
+    const name = await value.textContent();
     await page.locator('#charInfoTabs .tab-title', { has: page.locator('input[value="description"]') }).click();
-    await pill.hover();
+    await value.hover();
     const about = page.locator('.macro-tooltip:popover-open .macro-person-about');
-    await expect(about).toHaveText(`I am ${name}, feeling sunny.`);
+    await expect(about).toHaveText(`I am ${name}, feeling sunny. x`);
     await expect(about.locator('strong')).toHaveText(String(name));
     await expect(about.locator('img')).toHaveCount(0);
 });

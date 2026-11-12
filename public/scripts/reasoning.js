@@ -3,7 +3,7 @@ import { mountChatEditor, unmountChatEditor } from './chat-live-editor.js';
 import {
     moment,
 } from '../lib.js';
-import { chatOpEdit, closeMessageEditor, messageFormatting, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
+import { chatOpEdit, closeMessageEditor, saveSettingsDebounced, substituteParams, syncMesToSwipe, updateMessage, updateMessageBlock } from '../script.js';
 import { main_api } from './generation-params.js';
 import { chat } from './chat-state.js';
 import { event_types, eventSource } from './events.js';
@@ -19,7 +19,7 @@ import { commonEnumProviders, enumIcons } from './slash-commands/SlashCommandCom
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { textgen_types, textgenerationwebui_settings } from './textgen-settings.js';
-import { applyStreamFadeIn } from './util/stream-fadein.js';
+import { showReasoningText } from './message-text.js';
 import { copyText, escapeRegex, isFalseBoolean, isTrueBoolean, setDatasetProperty, stringToRange, trimSpaces } from './utils.js';
 import { ReasoningType, reasoningOf, withReasoning } from './reasoning-block.js';
 
@@ -299,8 +299,6 @@ export class ReasoningHandler {
         this.type = null;
         /** @type {string} The reasoning output */
         this.reasoning = '';
-        /** @type {string?} The reasoning output display in case of translate or other */
-        this.reasoningDisplayText = null;
         /** @type {Date} When the reasoning started */
         this.startTime = null;
         /** @type {Date} When the reasoning ended */
@@ -368,7 +366,6 @@ export class ReasoningHandler {
 
         this.type = extra?.reasoning_type;
         this.reasoning = reasoning ?? '';
-        this.reasoningDisplayText = extra?.reasoning_display_text ?? null;
 
         if (this.state !== ReasoningState.None) {
             this.initialTime = new Date(chat[messageId].gen_started);
@@ -383,7 +380,6 @@ export class ReasoningHandler {
             this.state = this.#isHiddenReasoningModel ? ReasoningState.Thinking : ReasoningState.None;
             this.type = null;
             this.reasoning = '';
-            this.reasoningDisplayText = null;
             this.initialTime = new Date();
             this.startTime = null;
             this.endTime = null;
@@ -578,19 +574,13 @@ export class ReasoningHandler {
         setDatasetProperty(this.messageReasoningDetailsDom, 'state', this.state);
         setDatasetProperty(this.messageReasoningDetailsDom, 'type', this.type);
 
-        const rawReasoning = this.reasoningDisplayText ?? this.reasoning;
-        const reasoning = trimSpaces(rawReasoning);
-        // Keep whitespace-only saved reasoning editable without showing it as visible content.
-        const hasStoredReasoning = Boolean(this.reasoningDisplayText || this.reasoning);
-        const hasReasoningContent = Boolean(String(rawReasoning ?? '').trim());
+        const reasoning = this.reasoning ?? '';
+        const hasStoredReasoning = Boolean(reasoning);
+        const hasReasoningContent = Boolean(reasoning.trim());
         setDatasetProperty(this.messageReasoningDetailsDom, 'hasContent', hasReasoningContent ? 'true' : null);
-        const displayReasoning = messageFormatting(reasoning, '', false, false, messageId, {}, true);
-
-        if (power_user.stream_fade_in) {
-            applyStreamFadeIn(this.messageReasoningContentDom, displayReasoning);
-        } else {
-            this.messageReasoningContentDom.innerHTML = displayReasoning;
-        }
+        showReasoningText(this.messageReasoningContentDom, chat[messageId], reasoning, {
+            fade: Boolean(power_user.stream_fade_in) && this.state === ReasoningState.Thinking,
+        });
 
         /** @type {HTMLElement} */
         const button = this.messageDom.querySelector('.mes_edit_add_reasoning');

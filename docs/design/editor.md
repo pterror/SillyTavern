@@ -64,8 +64,11 @@ The screen shows the stored text.
 - `display_text` and `reasoning_display_text` are not drawn. Only upstream extensions write them, and they aren't
   supported. They stay in stored messages as read.
 - Hiding the reply prefix (`show_user_prompt_bias`) and the speaker name (`allow_name2_display`) goes: both hide text
-  the model receives.
-- Every macro in every text is drawn as its value (Editing and reading), not only in the first message.
+  the model receives. `allow_name2_display` stays for what it also is: whether a reply keeps a leading `Name:` when
+  it arrives.
+- Every macro in every text is drawn as its value (Editing and reading), not only in the first message. The values
+  are the server's (`/api/macros/values`), learned for the messages being printed before they are drawn, so a text is
+  drawn whole.
 - Passes that exist only because HTML is edited as a string go: `align*` to `$$`, `&amp;` in code, removing every
   U+200B, U+FFFE as a quote, trimming the result.
 
@@ -76,10 +79,13 @@ styles scoped to messages, external media, links opening a new tab, autoplay.
 
 Overlays are ranges over the source text, drawn the way the editor draws decorations: lore marks (activation reports
 ranges in the text it read, so nothing is rendered twice), search matches, code highlighting, fade-in of streamed text.
+An overlay is asked with the text and its syntax tree, which code highlighting needs to find each block's language.
 
 Every surface that shows a message (the chat, streaming, the Alternatives list, the bias line, an edit's Done and
-Cancel) draws through the reader. `marked`, `messageFormatting` and the live editor's fragment rendering are replaced,
-not kept beside it.
+Cancel) draws through the reader, and so does every other place that drew markdown: card field previews, the creator's
+notes, a person's card, slash command output and the live editor's previews. `marked`, `messageFormatting` and the live
+editor's fragment rendering are replaced, not kept beside it. The app's own messages (help, the welcome screen: system
+messages from SillyTavern System) are the page's HTML, not chat text, and are shown as such.
 
 ## Where it lives
 

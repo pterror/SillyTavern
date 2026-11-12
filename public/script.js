@@ -1,7 +1,5 @@
 import {
     moment,
-    DOMPurify,
-    hljs,
     Handlebars,
     Popper,
 } from './lib.js';
@@ -127,8 +125,6 @@ import {
     debounce,
     delay,
     trimToEndSentence,
-    countOccurrences,
-    isOdd,
     timestampToMoment,
     download,
     isDataURL,
@@ -179,7 +175,6 @@ import {
     onEntityTagsChanged,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
-import { reloadMarkedProcessor } from './scripts/marked-processor.js';
 import { initAuthorsNote } from './scripts/authors-note.js';
 import { registerPromptManagerMigration } from './scripts/PromptManager.js';
 import { initLogprobs, saveLogprobsForActiveMessage } from './scripts/logprobs.js';
@@ -214,7 +209,7 @@ import { startNewUi, takeViews, chatClosed, newUi, newUiStarted } from './script
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
-import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
+import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
 import { initChatBoxEditor, initChatLiveEditor, mountChatEditor, unmountChatEditor } from './scripts/chat-live-editor.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, discardFieldEdit, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
@@ -258,13 +253,11 @@ import { active_character, active_group, name1, default_user_name, setActiveChar
 import { amount_gen, max_context, main_api, setAmountGen, setMaxContext, setMainApi } from './scripts/generation-params.js';
 export { getRequestHeaders, chat, chat_metadata, name1 };
 import { initAccessibility } from './scripts/a11y.js';
-import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder, pageMacroFacts } from './scripts/macros/engine/MacroEnvBuilder.js';
-import { messageFormatting } from './scripts/message-formatting.js';
-export { messageFormatting };
+import { initMessageText, learnMessageMacros, redrawMessageText, showBiasText, showMessageText } from './scripts/message-text.js';
 import {
     updateMessage,
     updateIn,
@@ -331,7 +324,7 @@ import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
 import { alternativesOldPage, canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/alternatives.js';
-import { activationsOldPage, chatMessageHtml, initLoreMarks, updateLoreMark } from './scripts/activations.js';
+import { activationsOldPage, initLoreMarks, loreMarks, updateLoreMark } from './scripts/activations.js';
 
 export {
     user_avatar,
@@ -993,10 +986,6 @@ async function getClientVersion() {
     }
 }
 
-export function reloadMarkdownProcessor() {
-    reloadMarkedProcessor(power_user.markdown_escape_strings, substituteParams);
-}
-
 export function getCurrentChatId() {
     const selection = getSelectionState();
     if (selection.type === 'group') {
@@ -1254,8 +1243,18 @@ async function firstLoadInit() {
     initDomHandlers();
     initStandaloneMode();
     addDOMPurifyHooks();
+    initMessageText({
+        settings: () => power_user,
+        macroScope: openChatMacroScope,
+        macroPerson,
+        substituteParams: text => substituteParams(text),
+        systemName: systemUserName,
+        loreMarks,
+        mediaAllowed: isExternalMediaAllowed,
+        mediaBlocked: warnExternalMediaBlocked,
+        t,
+    });
     initMessageMediaVolume();
-    reloadMarkdownProcessor();
     applyBrowserFixes();
 
     setStage('Loading client info');
@@ -1270,8 +1269,7 @@ async function firstLoadInit() {
     initChatUtilities();
     initCharacterFieldEditor({
         macroScope: () => (menu_type === 'create' ? {} : { ...openChatMacroScope(), avatar_url: getEditorCharacterAvatar() }),
-        messageFormatting,
-        formatCreatorNotes: (text, valueOf, styleScope) => formatCreatorNotes(text, menu_type === 'create' ? '' : getCurrentCharacter()?.avatar, { valueOf, styleScope }),
+        notesStyleScope: shownIn => creatorNotesStyleScope(menu_type === 'create' ? '' : getCurrentCharacter()?.avatar, shownIn),
         power_user,
         t,
         macroPerson: macroName => macroPerson(macroName, { avatar: menu_type === 'create' ? '' : getEditorCharacterAvatar(), name: String($('#character_name_pole').val() ?? '') }),
@@ -1292,7 +1290,6 @@ async function firstLoadInit() {
         editorKey: () => (menu_type === 'create' ? '' : getEditorCharacterAvatar()),
     });
     initChatLiveEditor({
-        messageFormatting,
         macroScope: openChatMacroScope,
         power_user,
         uploadImage: uploadEditorImage,
@@ -1393,8 +1390,6 @@ async function firstLoadInit() {
     initAccessibility();
     initSwipePicker();
     initLoreMarks({
-        rerender: messageId => updateMessageBlock(messageId, chat[messageId]),
-        editing: () => this_edit_mes_id,
         save: key => saveSettingsDebounced(key),
     });
     addDebugFunctions();
@@ -1634,6 +1629,7 @@ export async function showMoreMessages(messagesToLoad = null) {
 
     const firstId = clamp(messageId - count, 0, Infinity);
     const messageElements = [];
+    await learnMessageMacros(chat.slice(firstId, messageId));
     chat.slice(firstId, messageId).forEach((message, id) => {
         messageElements.push(updateMessageElement(message, { messageId: firstId + id }));
     });
@@ -1682,6 +1678,7 @@ export async function printMessages() {
  * @param {Boolean} [options.fade=true] When false, the swipe chevrons will not fade in.
  */
 export async function redisplayChat({ targetChat = chat, startIndex = 0, fade = true } = {}) {
+    await learnMessageMacros(targetChat.slice(startIndex));
     const messageElements = chatElement.find('.mes');
     messageElements.removeClass('last_mes');
 
@@ -2072,9 +2069,8 @@ function modelIconSvg(apiName) {
 export function updateMessageBlock(messageId, message, { rerenderMessage = true } = {}) {
     const messageElement = chatElement.find(`[mesid="${messageId}"]`);
     if (rerenderMessage) {
-        const text = message?.extra?.display_text ?? message.mes;
-        messageElement.find('.mes_text').html(chatMessageHtml(message, text,
-            shown => messageFormatting(shown, message.name, message.is_system, message.is_user, messageId, {}, false)));
+        const textElement = messageElement.find('.mes_text')[0];
+        if (textElement) redrawMessageText(textElement, message);
     }
 
     updateReasoningUI(messageElement);
@@ -2530,9 +2526,8 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
 }
 
 export function addCopyToCodeBlocks(messageElement) {
-    const codeBlocks = $(messageElement).find('pre code');
+    const codeBlocks = $(messageElement).find('pre code').filter((_, code) => !code.querySelector(':scope > .code-copy'));
     for (let i = 0; i < codeBlocks.length; i++) {
-        hljs.highlightElement(codeBlocks.get(i));
         const copyButton = document.createElement('i');
         copyButton.classList.add('fa-solid', 'fa-copy', 'code-copy', 'interactable');
         copyButton.title = 'Copy code';
@@ -2558,29 +2553,6 @@ export function addCopyToCodeBlocks(messageElement) {
  */
 export function updateMessageItemizedPromptButton(message, { messageId = chat.indexOf(message), messageElement = chatElement.find(`.mes[mesid="${messageId}"]`) }) {
     messageElement.find('.mes_prompt').toggle(!message.is_user && message.extra?.[ITEMIZED_PROMPT_FLAG] === true);
-}
-
-/**
- * Gets messageFormatting for a ChatMessage object.
- * @param {ChatMessage} message
- * @param {object} options Options
- * @param {number} [options.messageId] Message ID
- * @returns {string} Formatted message HTML
- */
-function getMessageTextHTML(message, { messageId = chat.indexOf(message) }) {
-    // if mes.extra.uses_system_ui is true, set an override on the sanitizer options
-    /** @type {Partial<DOMPurify.Config>} */
-    const sanitizerOverrides = message.extra?.uses_system_ui ? { MESSAGE_ALLOW_SYSTEM_UI: true } : {};
-
-    return chatMessageHtml(message, message.extra?.display_text || message.mes, shown => messageFormatting(
-        shown,
-        message.name,
-        message.is_system,
-        message.is_user,
-        messageId,
-        sanitizerOverrides,
-        false,
-    ));
 }
 
 /**
@@ -2729,7 +2701,6 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     }
     const momentDate = timestampToMoment(mes.send_date);
     const timestamp = momentDate.isValid() ? momentDate.format('LL LT') : '';
-    const messageHTML = getMessageTextHTML(mes, { messageId });
 
     messageElement.attr({
         'mesid': messageId,
@@ -2750,10 +2721,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     renderMessageCount(messageElement, mes);
     mes.title && messageElement.attr('title', mes.title);
 
-    if (mes.extra?.bias !== '') {
-        const bias = messageFormatting(mes.extra?.bias, '', false, false, -1, {}, false);
-        messageElement.find('.mes_bias').html(bias);
-    }
+    showBiasText(messageElement.find('.mes_bias')[0], String(mes.extra?.bias ?? ''));
 
     updateReasoningUI(messageElement);
 
@@ -2778,7 +2746,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     });
 
     appendMediaToMessage(mes, messageElement, adjustMediaScroll);
-    messageElement.find('.mes_text').html(messageHTML);
+    showMessageText(messageElement.find('.mes_text')[0], mes);
     addCopyToCodeBlocks(messageElement);
 
     updateSwipeCounter(messageId, { message: mes, messageElement });
@@ -3424,14 +3392,6 @@ export class StreamingProcessor {
             api: this.api,
         });
 
-        const charsToBalance = ['*', '"', '```', '~~~'];
-        for (const char of charsToBalance) {
-            if (!isFinal && isOdd(countOccurrences(processedText, char))) {
-                const separator = char.length > 1 ? '\n' : '';
-                processedText = processedText.trimEnd() + separator + char;
-            }
-        }
-
         if (isImpersonate) {
             this.sendTextarea.value = processedText;
             this.sendTextarea.dispatchEvent(new Event('input', { bubbles: true }));
@@ -3465,21 +3425,8 @@ export class StreamingProcessor {
                 updateMessage(messageId, { swipes: newSwipes, swipe_info: newSwipeInfo });
             }
 
-            const formattedText = messageFormatting(
-                processedText,
-                chat[messageId].name,
-                chat[messageId].is_system,
-                chat[messageId].is_user,
-                messageId,
-                {},
-                false,
-            );
             if (this.messageTextDom instanceof HTMLElement) {
-                if (power_user.stream_fade_in) {
-                    applyStreamFadeIn(this.messageTextDom, formattedText);
-                } else {
-                    this.messageTextDom.innerHTML = formattedText;
-                }
+                showMessageText(this.messageTextDom, chat[messageId], { fade: Boolean(power_user.stream_fade_in) });
             }
 
             const timePassed = formatGenerationTimer(this.timeStarted, currentTime, 0, this.reasoningHandler.getDuration(), this.timeToFirstToken);
@@ -5568,7 +5515,7 @@ function shownAvatar(mes) {
  * @param {{ avatar?: string, name?: string }} character
  * @returns {import('./scripts/macro-pill.js').MacroPerson | null}
  */
-export function macroPerson(macroName, { avatar, name } = {}) {
+function macroPerson(macroName, { avatar, name } = {}) {
     const which = macroName.toLowerCase();
     if (which === 'user') {
         return { name: name1, avatarUrl: personaThumbnail(user_avatar), about: getPersonaDescription() };
@@ -6539,20 +6486,8 @@ async function uploadEditorImage(file) {
 }
 
 function messageEditAuto(div) {
-    const { mesBlock, text, mes, bias } = applyMessageEdit(div);
-
-    mesBlock.find('.mes_text').val('');
-    mesBlock.find('.mes_text').val(messageFormatting(
-        text,
-        this_edit_mes_chname,
-        mes.is_system,
-        mes.is_user,
-        this_edit_mes_id,
-        {},
-        false,
-    ));
-    mesBlock.find('.mes_bias').empty();
-    mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
+    const { mesBlock, mes } = applyMessageEdit(div);
+    showBiasText(mesBlock.find('.mes_bias')[0], String(mes.extra?.bias ?? ''));
     messageEditAutoSaveDebounced(this_edit_mes_id);
 }
 
@@ -6661,7 +6596,6 @@ async function leaveComposedSlot(mesId) {
 async function messageEditCancel(messageId = this_edit_mes_id) {
     await leaveComposedSlot(messageId);
 
-    let text = chat[messageId].mes;
     let thisMesDiv;
     // If this is the button then select it's parent. Otherwise, select by messageId.
     if (this?.classList?.contains('mes_edit_cancel')) {
@@ -6675,16 +6609,7 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
     thisMesBlock.find('.mes_text').empty();
     thisMesDiv.find('.mes_edit_buttons').css('display', 'none');
     thisMesBlock.find('.mes_buttons').css('display', '');
-    thisMesBlock.find('.mes_text')
-        .append(chatMessageHtml(chat[messageId], text, shown => messageFormatting(
-            shown,
-            this_edit_mes_chname,
-            chat[messageId].is_system,
-            chat[messageId].is_user,
-            messageId,
-            {},
-            false,
-        )));
+    showMessageText(thisMesBlock.find('.mes_text')[0], chat[messageId]);
     appendMediaToMessage(chat[messageId], thisMesDiv);
     addCopyToCodeBlocks(thisMesDiv);
 
@@ -6715,31 +6640,20 @@ async function messageEditDone(div) {
     }
 
     const composed = isComposedSlot(chat[this_edit_mes_id]);
-    let { mesBlock, text, mes, bias } = applyMessageEdit(div);
+    let { mesBlock, mes } = applyMessageEdit(div);
     if (composed && !String(chat[this_edit_mes_id]?.mes ?? '').length) {
         await messageEditCancel(this_edit_mes_id);
         return;
     }
 
     await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
-    text = chat[this_edit_mes_id]?.mes ?? text;
+    mes = chat[this_edit_mes_id] ?? mes;
     unmountChatEditor(mesBlock.find('#curEditTextarea')[0]);
     mesBlock.find('.mes_text').empty();
     mesBlock.find('.mes_edit_buttons').css('display', 'none');
     mesBlock.find('.mes_buttons').css('display', '');
-    mesBlock.find('.mes_text').append(
-        chatMessageHtml(mes, text, shown => messageFormatting(
-            shown,
-            this_edit_mes_chname,
-            mes.is_system,
-            mes.is_user,
-            this_edit_mes_id,
-            {},
-            false,
-        )),
-    );
-    mesBlock.find('.mes_bias').empty();
-    mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
+    showMessageText(mesBlock.find('.mes_text')[0], mes);
+    showBiasText(mesBlock.find('.mes_bias')[0], String(mes.extra?.bias ?? ''));
     renderMessageCount(div.closest('.mes'), chat[this_edit_mes_id] ?? mes);
     appendMediaToMessage(mes, div.closest('.mes'));
     addCopyToCodeBlocks(div.closest('.mes'));

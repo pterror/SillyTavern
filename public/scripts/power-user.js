@@ -3,7 +3,6 @@ import { Fuse, Handlebars } from '../lib.js';
 import {
     saveSettingsDebounced,
     scrollChatToBottom,
-    reloadMarkdownProcessor,
     reloadCurrentChat,
     substituteParams,
     getCurrentChatId,
@@ -14,7 +13,6 @@ import {
     ANIMATION_DURATION_DEFAULT,
     doNewChat,
     online_status,
-    messageFormatting,
     extension_prompt_types,
     extension_prompt_roles,
     deleteMessage,
@@ -22,6 +20,7 @@ import {
 } from '../script.js';
 import { printCharactersDebounced, printCharacters, entitiesFilter, resetCharacterListPositionOnNextPrint } from './character-list.js';
 import { chat } from './chat-state.js';
+import { messageStyles } from './message-text.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId } from './character-store.js';
@@ -132,7 +131,6 @@ export const power_user = {
     trim_sentences: false,
     always_force_name2: false,
     user_prompt_bias: '',
-    show_user_prompt_bias: true,
     auto_continue: {
         enabled: false,
         allow_chat_completions: false,
@@ -1671,11 +1669,7 @@ export function applyStylePins() {
             return;
         }
 
-        const formattedMessage = messageFormatting(firstMessage.mes, firstMessage.name, firstMessage.is_system, firstMessage.is_user, 0, {}, false);
-        const htmlElement = document.createElement('div');
-        htmlElement.innerHTML = formattedMessage;
-
-        const styleTags = htmlElement.querySelectorAll('style');
+        const styleTags = messageStyles(firstMessage);
         if (styleTags.length === 0) {
             return;
         }
@@ -1854,7 +1848,6 @@ export async function loadPowerUserSettings(settings, data) {
     $('#forceMobileView').prop('checked', power_user.forceMobileView);
     $('#noShadowsmode').prop('checked', power_user.noShadows);
     $('#start_reply_with').text(power_user.user_prompt_bias);
-    $('#chat-show-reply-prefix-checkbox').prop('checked', power_user.show_user_prompt_bias);
     $('#auto_continue_enabled').prop('checked', power_user.auto_continue.enabled);
     $('#auto_continue_allow_chat_completions').prop('checked', power_user.auto_continue.allow_chat_completions);
     $('#auto_continue_target_length').val(power_user.auto_continue.target_length);
@@ -1955,7 +1948,6 @@ export async function loadPowerUserSettings(settings, data) {
     updateRandomSortRerollVisibility();
     switchReducedMotion();
     switchCompactInputArea();
-    reloadMarkdownProcessor();
     await loadInstructMode(data);
     await loadContextSettings();
     await loadSystemPrompts(data);
@@ -3213,18 +3205,11 @@ jQuery(() => {
     $('#markdown_escape_strings').on('input', function () {
         power_user.markdown_escape_strings = String($(this).val());
         saveSettingsDebounced('power_user.markdown_escape_strings');
-        reloadMarkdownProcessor();
     });
 
     $('#start_reply_with').on('input', function () {
         power_user.user_prompt_bias = String($(this).val());
         saveSettingsDebounced('power_user.user_prompt_bias');
-    });
-
-    $('#chat-show-reply-prefix-checkbox').on('change', function () {
-        power_user.show_user_prompt_bias = !!$(this).prop('checked');
-        reloadCurrentChat();
-        saveSettingsDebounced('power_user.show_user_prompt_bias');
     });
 
     $('#auto_continue_enabled').on('change', function () {
@@ -3571,7 +3556,6 @@ jQuery(() => {
 
     $('#allow_name2_display').on('input', function () {
         power_user.allow_name2_display = !!$(this).prop('checked');
-        reloadCurrentChat();
         saveSettingsDebounced('power_user.allow_name2_display');
     });
 

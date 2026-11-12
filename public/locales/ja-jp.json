@@ -476,7 +476,6 @@
     "Token Padding": "トークンのパディング",
     "Start Reply With": "返信の開始",
     "AI reply prefix": "AI応答のプレフィックス",
-    "Show reply prefix in chat": "チャットで返信の接頭辞を表示",
     "Non-markdown strings": "マークダウン以外の文字列",
     "separate with commas w/o space between": "間にスペースのないカンマで区切ります",
     "Custom Stopping Strings": "カスタム停止文字列",

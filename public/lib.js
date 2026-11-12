@@ -11,12 +11,13 @@ import css from '@adobe/css-tools';
 import Bowser from 'bowser';
 import DiffMatchPatch from 'diff-match-patch';
 import { isProbablyReaderable, Readability } from '@mozilla/readability';
-import { Marked } from 'marked';
+import { reader } from '@pterror/interact-editor/reader';
+import { markdownGrammar } from '@pterror/interact-markdown/grammar';
+import { markdownLook } from '@pterror/interact-markdown/look';
 import moment from 'moment';
 import seedrandom from 'seedrandom';
 import * as Popper from '@popperjs/core';
 import droll from 'droll';
-import morphdom from 'morphdom';
 import * as chevrotain from 'chevrotain';
 import { gzip } from 'fflate';
 import { sha256 } from 'js-sha256';
@@ -32,12 +33,13 @@ export {
     DiffMatchPatch,
     Readability,
     isProbablyReaderable,
-    Marked,
+    reader,
+    markdownGrammar,
+    markdownLook,
     moment,
     seedrandom,
     Popper,
     droll,
-    morphdom,
     chevrotain,
     gzip,
     sha256,

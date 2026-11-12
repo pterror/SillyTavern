@@ -9,7 +9,8 @@ import { awaitLoaderGone, testSetup, openInfoTab } from './frontent-test-utils.j
 async function mount(page, value, options = {}) {
     await page.evaluate(async ({ value, options }) => {
         const registry = await import('/scripts/live-editor/registry.js');
-        const { renderMarkdown } = await import('/scripts/marked-processor.js');
+        const { drawnMessageText } = await import('/scripts/message-text.js');
+        const draw = (/** @type {string} */ text) => drawnMessageText(text, { name: 'Testchar', isUser: false });
         const { MacroValues } = await import('/scripts/macro-values.js');
         const values = new MacroValues(() => ({ name2: 'Testchar' }));
         await values.want(value);
@@ -25,7 +26,7 @@ async function mount(page, value, options = {}) {
         host.append(textarea);
         document.body.append(host);
         const editor = await registry.mountLiveEditor(textarea, {
-            render: renderMarkdown,
+            draw,
             contentClass: options.contentClass ?? 'mes_text',
             macros: { values },
         });

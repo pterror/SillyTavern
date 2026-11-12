@@ -481,7 +481,6 @@
   "Token Padding": "การเพิ่มโทเค็น",
   "Start Reply With": "เริ่มตอบด้วย",
   "AI reply prefix": "คำนำหน้าการตอบของ AI",
-  "Show reply prefix in chat": "แสดงคำนำหน้าการตอบในแชท",
   "Non-markdown strings": "Non-markdown strings",
   "separate with commas w/o space between": "แยกด้วยเครื่องหมายจุลภาคโดยไม่มีช่องว่าง",
   "Custom Stopping Strings": "สตริงหยุดกำหนดเอง",

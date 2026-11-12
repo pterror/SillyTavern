@@ -4,7 +4,7 @@ import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { power_user } from './power-user.js';
 import { getTokenizerState } from './tokenizers.js';
 import { copyText, timestampToMoment } from './utils.js';
-import { messageFormatting } from './message-formatting.js';
+import { alternativeReader } from './message-text.js';
 import { isStoredNodeId } from './node-identity.js';
 import { selected_group } from './group-chats.js';
 import { newUi } from './new-ui-page.js';
@@ -64,11 +64,8 @@ async function go(messageId, index) {
 
 /** @type {import('/ui/entry.js').StartOptions['alternatives']} */
 export const alternativesOldPage = {
-    format(text, item, mesId) {
-        const html = messageFormatting(text, item.name, item.role === 'system', item.role === 'user', mesId ?? 0);
-        const template = document.createElement('template');
-        template.innerHTML = html;
-        return template.content;
+    reader(item) {
+        return alternativeReader({ name: item.name, isUser: item.role === 'user' });
     },
     date: value => timestampToMoment(value).format('lll'),
     tokenizer: () => getTokenizerState(),
@@ -102,8 +99,8 @@ export const alternativesOldPage = {
     greetingsChanged(card, answer) {
         void applyServerGreetings(card.avatar, card, /** @type {{ opening?: unknown } | undefined} */ (answer)?.opening ?? null);
     },
-    editAt(event, rendered, source) {
-        return editPosition(event, rendered, source, power_user.click_to_edit);
+    editAt(event, rendered) {
+        return editPosition(event, rendered, power_user.click_to_edit);
     },
 };
 

@@ -185,7 +185,7 @@ test.describe('the alternatives of a message', () => {
         await search.fill('red LIGHTHOUSE');
         await expect(shownRows(page)).toHaveCount(1);
         await expect(shownRows(page).first().locator('.alternative-number')).toHaveText('#31');
-        const marks = shownRows(page).first().locator('mark.match');
+        const marks = shownRows(page).first().locator('.match');
         await expect(marks).toHaveText(['red', 'Lighthouse']);
         await page.addStyleTag({ content: ':root { --match-color: rgb(1, 2, 3); }' });
         await expect(marks.first()).toHaveCSS('background-color', 'rgb(1, 2, 3)');
@@ -196,7 +196,7 @@ test.describe('the alternatives of a message', () => {
         await search.fill('');
         await expect(shownRows(page)).toHaveCount(60);
         await expect(rows(page).nth(54)).toBeInViewport();
-        await expect(list(page).locator('mark.match')).toHaveCount(0);
+        await expect(list(page).locator('.match')).toHaveCount(0);
     });
 
     test('opened on one near the end, the current one is centred on the first frame it is shown and never moves while the rest draws', async ({ page }) => {

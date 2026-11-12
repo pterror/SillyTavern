@@ -853,10 +853,10 @@ test.describe('character field edit mode', () => {
                 });
             });
 
-            test('a substituted macro is a pill holding its value', async ({ page }) => {
+            test('a substituted macro is drawn as its value', async ({ page }) => {
                 await withCharacter(page, field, 'Hello {{char}}!', async (_avatar, name) => {
                     await openInfoTab(page, field.tab);
-                    const pills = fieldLocators(page, field.id).preview.locator('span.macro-pill');
+                    const pills = fieldLocators(page, field.id).preview.locator('span.macro-value');
                     await expect(pills).toHaveCount(1);
                     await expect(pills).toHaveText(name);
                     await pills.hover();
@@ -1014,8 +1014,8 @@ test.describe('character field edit mode', () => {
                 await withCharacter(page, field, text, async (_avatar, name) => {
                     await openInfoTab(page, field.tab);
                     const preview = fieldLocators(page, field.id).preview;
-                    await expect(preview.locator('.macro-pill-mention')).toHaveText(name);
-                    expect(await preview.locator('.macro-pill-later').evaluateAll(els => els.map(el => el.getAttribute('data-macro-source')))).toEqual([
+                    await expect(preview.locator('.macro-value-mention')).toHaveText(name);
+                    expect(await preview.locator('.macro-value-later').evaluateAll(els => els.map(el => el.getAttribute('data-macro-source')))).toEqual([
                         `{{setvar::${key}::set}}`,
                         `{{incvar::${key}n}}`,
                         '{{random::aa::bb}}',
@@ -1079,8 +1079,8 @@ test.describe('character field edit mode', () => {
             await withCharacter(page, field, '[{{char}}] {{random::aa::bb}}', async (_avatar, name) => {
                 await openInfoTab(page, field.tab);
                 const preview = fieldLocators(page, field.id).preview;
-                await expect(preview.locator('.macro-pill-mention')).toHaveText(name);
-                await expect(preview.locator('.macro-pill-later')).toHaveText(['random · aa · bb']);
+                await expect(preview.locator('.macro-value-mention')).toHaveText(name);
+                await expect(preview.locator('.macro-value-later')).toHaveText(['random · aa · bb']);
             });
         });
     });

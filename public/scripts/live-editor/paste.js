@@ -1,6 +1,6 @@
 import { state as cmState, view as cmView, commands as cmCommands } from '../../live-editor-lib.js';
 import { DOMPurify } from '../../lib.js';
-import { renderMarkdown } from '../marked-processor.js';
+import { drawnMessageText } from '../message-text.js';
 import { t } from '../i18n.js';
 
 const { StateField, StateEffect, Transaction, Prec } = cmState;
@@ -382,7 +382,7 @@ export function livePaste() {
                 if (!html) return false;
                 let text;
                 try {
-                    text = pastedHtmlToText(html, renderMarkdown);
+                    text = pastedHtmlToText(html, markdown => drawnMessageText(markdown, { name: '', isUser: true }).innerHTML);
                 } catch (error) {
                     console.warn('Pasted HTML could not be read; pasting it as plain text', error);
                     return false;

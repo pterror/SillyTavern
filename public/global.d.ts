@@ -92,7 +92,6 @@ declare global {
         type?: string;
         gen_id?: number;
         bias?: string;
-        uses_system_ui?: boolean;
         memory?: string;
         display_text?: string;
         reasoning_display_text?: string;
@@ -230,10 +229,3 @@ declare global {
     type SwipeEvent = JQuery.TriggeredEvent<any, any, HTMLElement, HTMLElement>;
 }
 
-//Overrides for public/scripts/chats.js
-declare module 'dompurify' {
-    interface Config {
-        MESSAGE_SANITIZE?: boolean;
-        MESSAGE_ALLOW_SYSTEM_UI?: boolean;
-    }
-}

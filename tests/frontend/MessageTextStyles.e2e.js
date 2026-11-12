@@ -97,18 +97,18 @@ const EXPECTED_CHAT_STYLES = {
  */
 async function collectChatTextStyles(page) {
     return page.evaluate(async ({ messageText, reasoningText }) => {
-        const { messageFormatting } = await import('/scripts/message-formatting.js');
+        const { showMessageText, showReasoningText } = await import('/scripts/message-text.js');
         const template = document.querySelector('#message_template .mes');
         if (!template) throw new Error('Missing #message_template .mes');
         const mes = /** @type {HTMLElement} */ (template.cloneNode(true));
         mes.setAttribute('mesid', '0');
         document.getElementById('chat').append(mes);
-        mes.querySelector('.mes_text').innerHTML = messageFormatting(messageText, 'Test', false, false, 0);
+        showMessageText(mes.querySelector('.mes_text'), { mes: messageText, name: 'Test', is_user: false });
         const details = mes.querySelector('.mes_reasoning_details');
         details.setAttribute('data-has-content', 'true');
         details.setAttribute('open', '');
         mes.classList.add('reasoning');
-        mes.querySelector('.mes_reasoning').innerHTML = messageFormatting(reasoningText, 'Test', false, false, 0, {}, true);
+        showReasoningText(mes.querySelector('.mes_reasoning'), { name: 'Test', is_user: false }, reasoningText);
 
         const props = ['color', 'font-style', 'font-weight', 'text-decoration', 'quotes'];
         /** @param {Element} el */

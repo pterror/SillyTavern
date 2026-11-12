@@ -19,7 +19,7 @@ const shiftDelete = view => view.state.selection.ranges.every(range => range.emp
  * @typedef {object} LiveEditorOptions
  * @property {Element} [mountAfter]
  * @property {import('./grammar.js').GrammarOptions} [grammar]
- * @property {(text: string) => string} [render]
+ * @property {(text: string) => HTMLElement} [draw] a part of the text drawn for reading, for its previews
  * @property {import('./macros.js').MacroOptions} [macros]
  * @property {import('./formatting.js').FormattingOptions | false} [formatting]
  * @property {import('./search.js').SearchOptions | false} [search]
@@ -163,7 +163,7 @@ export function mountLiveEditor(textarea, options = {}) {
             selection: initialSelection(textarea),
             extensions: [
                 compartments.grammar.of(chatMarkdownLanguage(options.grammar)),
-                compartments.render.of(options.render ? liveRendering({ render: options.render, emojis: options.grammar?.emojis }) : []),
+                compartments.render.of(options.draw ? liveRendering({ draw: options.draw, emojis: options.grammar?.emojis }) : []),
                 compartments.macros.of(options.macros ? liveMacros(options.macros) : []),
                 compartments.toolbar.of(options.formatting === false ? [] : liveFormatting(options.formatting || {})),
                 compartments.paste.of(livePaste()),

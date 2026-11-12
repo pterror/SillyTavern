@@ -4,20 +4,14 @@ import { newUi } from './new-ui-page.js';
 import { openEmbeddedLoreEditor, openWorldInfoEntry } from './world-info.js';
 import { chat } from '/scripts/chat-state.js';
 import { power_user } from './power-user.js';
-import { getStringHash } from './hash-utils.js';
-import { renderMarked } from './lore-mark-render.js';
+import { loreMarkRanges } from './chat-text/lore-marks.js';
 import { addTooltipProvider } from './macro-tooltip.js';
 
 /** @type {string | null} */
 let panelReply = null;
 
-/** @type {Map<string, string>} */
-const drawn = new Map();
-
-/** @typedef {{ rerender: (messageId: number) => void, editing: () => number | undefined, save: (key: string) => void }} LoreMarksPage */
-
-/** @type {LoreMarksPage | null} */
-let page = null;
+/** @type {Map<() => void, Element>} each listener of a message's marks, and the element its text is shown in */
+const listeners = new Map();
 
 /** @type {import('/ui/entry.js').StartOptions['activations']} */
 export const activationsOldPage = {
@@ -55,59 +49,27 @@ function markingReply() {
 }
 
 /**
- * @param {Record<string, any> | null} reply
- * @param {string} nodeId
- * @param {string} text
- * @returns {import('./lore-mark-render.js').MarkSpan[]}
+ * The lore keys matched in a message's text, marked over it. It stops hearing changes once the element the text is
+ * shown in is taken off the page.
+ * @param {Element} shownIn where the message's text is shown
+ * @param {() => Record<string, any> | undefined} message the message the text is
+ * @returns {import('@pterror/interact-editor/reader').Overlay}
  */
-function spansFor(reply, nodeId, text) {
-    const entries = reply?.extra?.activations?.entries;
-    if (!Array.isArray(entries)) return [];
-    /** @type {Map<string, import('./lore-mark-render.js').MarkSpan>} */
-    const spans = new Map();
-    let hash = null;
-    entries.forEach((entry, index) => {
-        for (const key of Array.isArray(entry?.keys) ? entry.keys : []) {
-            for (const source of Array.isArray(key?.in) ? key.in : []) {
-                if (source?.node !== nodeId || !Array.isArray(source.spans)) continue;
-                hash ??= getStringHash(text);
-                if (source.of !== hash) continue;
-                for (const [from, to] of source.spans) {
-                    const at = `${from}:${to}`;
-                    const span = spans.get(at) ?? { from, to, entries: [] };
-                    if (!span.entries.includes(index)) span.entries.push(index);
-                    spans.set(at, span);
-                }
-            }
-        }
-    });
-    return [...spans.values()].sort((a, b) => a.from - b.from || a.to - b.to);
-}
-
-/**
- * @param {Record<string, any> | null} reply
- * @param {string} nodeId
- * @param {import('./lore-mark-render.js').MarkSpan[]} spans
- */
-const drawKey = (reply, nodeId, spans) => (spans.length ? `${reply?.node_id}|${nodeId}|${JSON.stringify(spans)}` : '');
-
-/**
- * @param {Record<string, any>} message
- * @param {string} text what is being shown
- * @param {(text: string) => string} render
- * @returns {string}
- */
-export function chatMessageHtml(message, text, render) {
-    const nodeId = message?.node_id;
-    if (typeof nodeId !== 'string' || !isStoredNodeId(nodeId)) return render(text);
-    const reply = text === message.mes ? markingReply() : null;
-    const spans = reply ? spansFor(reply, nodeId, text) : [];
-    const { html, drawn: count } = spans.length
-        ? renderMarked(text, spans, render, document, { 'data-lore-reply': String(reply?.node_id), tabindex: '0' })
-        : { html: render(text), drawn: 0 };
-    const key = count ? drawKey(reply, nodeId, spans) : '';
-    if (key) drawn.set(nodeId, key); else drawn.delete(nodeId);
-    return html;
+export function loreMarks(shownIn, message) {
+    return {
+        ranges(from, to, { read }) {
+            const shown = message();
+            const nodeId = shown?.node_id;
+            if (typeof nodeId !== 'string' || !isStoredNodeId(nodeId)) return [];
+            const text = read(from, to);
+            if (from !== 0 || text !== shown.mes) return [];
+            return loreMarkRanges(markingReply(), nodeId, text);
+        },
+        watch(listener) {
+            listeners.set(listener, shownIn);
+            return () => listeners.delete(listener);
+        },
+    };
 }
 
 let queued = false;
@@ -117,36 +79,12 @@ function syncLoreMarks() {
     queued = true;
     queueMicrotask(() => {
         queued = false;
-        redraw();
+        document.body.classList.toggle('lore-marks-hover', power_user.lore_marks === 'hover');
+        for (const [listener, shownIn] of listeners) {
+            if (shownIn.isConnected) listener();
+            else listeners.delete(listener);
+        }
     });
-}
-
-function redraw() {
-    document.body.classList.toggle('lore-marks-hover', power_user.lore_marks === 'hover');
-    if (!page) return;
-    const reply = markingReply();
-    /** @type {Set<string>} */
-    const nodes = new Set(drawn.keys());
-    for (const entry of Array.isArray(reply?.extra?.activations?.entries) ? reply.extra.activations.entries : []) {
-        for (const key of Array.isArray(entry?.keys) ? entry.keys : []) {
-            for (const source of Array.isArray(key?.in) ? key.in : []) {
-                if (typeof source?.node === 'string') nodes.add(source.node);
-            }
-        }
-    }
-    const editing = page.editing();
-    for (const nodeId of nodes) {
-        const index = chat.findLastIndex(message => message?.node_id === nodeId);
-        if (index === -1) {
-            drawn.delete(nodeId);
-            continue;
-        }
-        if (editing !== undefined && Number(editing) === index) continue;
-        const message = chat[index];
-        const shown = message.extra?.display_text || message.mes;
-        const want = shown === message.mes ? drawKey(reply, nodeId, spansFor(reply, nodeId, message.mes)) : '';
-        if ((drawn.get(nodeId) ?? '') !== want) page.rerender(index);
-    }
 }
 
 /**
@@ -257,10 +195,9 @@ async function openMarked(mark) {
 }
 
 /**
- * @param {LoreMarksPage} deps
+ * @param {{ save: (key: string) => void }} deps
  */
 export function initLoreMarks(deps) {
-    page = deps;
     /** @param {JQuery.TriggeredEvent} event */
     function onMark(event) {
         event.preventDefault();

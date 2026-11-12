@@ -1,4 +1,4 @@
-import { css, DOMPurify } from '../lib.js';
+import { DOMPurify } from '../lib.js';
 import {
     addCopyToCodeBlocks,
     appendMediaToMessage,
@@ -14,7 +14,6 @@ import {
     neutralCharacterName,
     updateChatMetadata,
     system_message_types,
-    substituteParams,
     openChatMacroScope,
     getSystemMessageByType,
     printMessages,
@@ -24,12 +23,10 @@ import {
     getMediaDisplay,
     chatElement,
     updateIn,
-    macroPerson,
 } from '../script.js';
-import { renderMarkdown } from './marked-processor.js';
-import { withFilledAbout, withMacroPlaceholders, withMacroValues } from './safe-macros.js';
+import { drawnText } from './chat-text/surface.js';
+import { cardTextSetup } from './message-text.js';
 import { fetchMacroValues, macroValuesOf } from './macro-values.js';
-import { insertMacroPills } from './macro-pill.js';
 import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
 import { openEditorLayer } from './editor-layer.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -416,102 +413,6 @@ function embedMessageFile(messageId, messageBlock) {
     }
 }
 
-/**
- * @param {string} text
- * @returns {string} Encoded message text
- * @copyright https://github.com/kwaroran/risuAI
- */
-export function encodeStyleTags(text) {
-    const styleRegex = /<style>(.+?)<\/style>/gims;
-    return text.replaceAll(styleRegex, (_, match) => {
-        return `<custom-style>${encodeURIComponent(match)}</custom-style>`;
-    });
-}
-
-/**
- * @param {string} text Message text
- * @param {object} options Options object
- * @param {string} options.prefix Prefix the selectors with this value
- * @returns {string} Sanitized message text
- * @copyright https://github.com/kwaroran/risuAI
- */
-export function decodeStyleTags(text, { prefix } = { prefix: '.mes_text ' }) {
-    const styleDecodeRegex = /<custom-style>(.+?)<\/custom-style>/gms;
-    const mediaAllowed = isExternalMediaAllowed();
-
-    function sanitizeRule(rule) {
-        if (Array.isArray(rule.selectors)) {
-            for (let i = 0; i < rule.selectors.length; i++) {
-                const selector = rule.selectors[i];
-                if (selector) {
-                    rule.selectors[i] = prefix + sanitizeSelector(selector);
-                }
-            }
-        }
-        if (!mediaAllowed && Array.isArray(rule.declarations) && rule.declarations.length > 0) {
-            rule.declarations = rule.declarations.filter(declaration => !declaration.value.includes('://'));
-        }
-    }
-
-    function sanitizeSelector(selector) {
-        // Handle pseudo-classes that can contain nested selectors
-        const pseudoClasses = ['has', 'not', 'where', 'is', 'matches', 'any'];
-        const pseudoRegex = new RegExp(`:(${pseudoClasses.join('|')})\\(([^)]+)\\)`, 'g');
-
-        // First, sanitize any nested selectors within pseudo-classes
-        selector = selector.replace(pseudoRegex, (match, pseudoClass, content) => {
-            // Recursively sanitize the content within the pseudo-class
-            const sanitizedContent = sanitizeSimpleSelector(content);
-            return `:${pseudoClass}(${sanitizedContent})`;
-        });
-
-        // Then sanitize the main selector parts
-        return sanitizeSimpleSelector(selector);
-    }
-
-    function sanitizeSimpleSelector(selector) {
-        // Split by spaces but preserve complex selectors
-        return selector.split(/\s+/).map((part) => {
-            // Handle class selectors, but preserve pseudo-classes and other complex parts
-            return part.replace(/\.([\w-]+)/g, (match, className) => {
-                // Don't modify if it's already prefixed with 'custom-'
-                if (className.startsWith('custom-')) {
-                    return match;
-                }
-                return `.custom-${className}`;
-            });
-        }).join(' ');
-    }
-
-    function sanitizeRuleSet(ruleSet) {
-        if (Array.isArray(ruleSet.selectors) || Array.isArray(ruleSet.declarations)) {
-            sanitizeRule(ruleSet);
-        }
-
-        if (Array.isArray(ruleSet.rules)) {
-            ruleSet.rules = ruleSet.rules.filter(rule => rule.type !== 'import');
-
-            for (const mediaRule of ruleSet.rules) {
-                sanitizeRuleSet(mediaRule);
-            }
-        }
-    }
-
-    return text.replaceAll(styleDecodeRegex, (_, style) => {
-        try {
-            let styleCleaned = decodeURIComponent(style).replaceAll(/<br\/>/g, '');
-            const ast = css.parse(styleCleaned);
-            const sheet = ast?.stylesheet;
-            if (sheet) {
-                sanitizeRuleSet(ast.stylesheet);
-            }
-            return `<style>${css.stringify(ast)}</style>`;
-        } catch (error) {
-            return `CSS ERROR: ${error}`;
-        }
-    });
-}
-
 class StylesPreference {
     /**
      * @param {string|null} avatarId - The avatar ID of the character
@@ -585,36 +486,14 @@ async function migrateAllowGlobalStylesToDb() {
 }
 
 /**
- * @param {string} text Raw Markdown text
- * @param {string} avatarId Avatar ID
- * @param {object} [options]
- * @param {import('./safe-macros.js').MacroValueOf} [options.valueOf] The macros' values (macro-values.js), each macro
- * shown as a pill holding its value; for the app's previews. Left out (an extension's call), every macro is filled in
- * here, as upstream does.
- * @param {string} [options.styleScope='#creator_notes_preview'] Selector of the element the HTML is shown in: unless
- * the character's styles are allowed everywhere, its `<style>` rules apply only inside it.
- * @returns {string} Formatted HTML text
+ * The scope a card's creator's notes limit their style rules to: the element they are shown in, unless the card's
+ * styles are allowed everywhere
+ * @param {string} avatarId
+ * @param {string} shownIn the selector of the element the notes are shown in
+ * @returns {string} the selector rules are prefixed with, '' for none
  */
-export function formatCreatorNotes(text, avatarId, { valueOf, styleScope = '#creator_notes_preview' } = {}) {
-    const preference = new StylesPreference(avatarId);
-    const sanitizeStyles = !preference.get();
-    const decodeStyleParam = { prefix: sanitizeStyles ? `${styleScope} ` : '' };
-    /** @type {DOMPurify.Config} */
-    const config = {
-        RETURN_DOM: false,
-        RETURN_DOM_FRAGMENT: false,
-        RETURN_TRUSTED_TYPE: false,
-        MESSAGE_SANITIZE: true,
-        ADD_TAGS: ['custom-style'],
-    };
-
-    const { text: placeheld, macros } = valueOf ? withMacroPlaceholders(text, valueOf) : { text: substituteParams(text), macros: [] };
-    let html = renderMarkdown(placeheld);
-    html = encodeStyleTags(html);
-    html = DOMPurify.sanitize(html, config);
-    html = decodeStyleTags(html, decodeStyleParam);
-
-    return insertMacroPills(html, macros, t, macroName => withFilledAbout(macroPerson(macroName, { avatar: avatarId }), macroName, valueOf ?? (() => undefined)));
+export function creatorNotesStyleScope(avatarId, shownIn) {
+    return new StylesPreference(avatarId).get() ? '' : `${shownIn} `;
 }
 
 async function openGlobalStylesPreferenceDialog() {
@@ -728,10 +607,8 @@ async function getStyleContentsFromMarkdown(text) {
     }
 
     const values = await macroValuesOf(text, openChatMacroScope());
-    const html = renderMarkdown(withMacroValues(text, values.valueOf));
-    const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
-    const styleElements = Array.from(parsedDocument.querySelectorAll('style'));
-    return styleElements
+    const drawn = drawnText(text, cardTextSetup('notes', { values, person: () => null }));
+    return Array.from(drawn.querySelectorAll('style'))
         .filter(s => s.textContent.trim().length > 0)
         .map(s => s.textContent.trim())
         .join('\n\n');
@@ -903,7 +780,7 @@ export function showMediaLightbox(url, title = '', isVideo = false) {
     if (title.trim().length > 0) {
         const mediaTitlePre = document.createElement('pre');
         const mediaTitleCode = document.createElement('code');
-        mediaTitleCode.classList.add('img_enlarged_title', 'txt');
+        mediaTitleCode.classList.add('img_enlarged_title', 'txt', 'hljs');
         mediaTitleCode.textContent = title;
         mediaTitlePre.append(mediaTitleCode);
         mediaTitleCode.addEventListener('click', event => {
@@ -1112,7 +989,7 @@ async function openFilePopup(attachment) {
     const fileText = attachment.text || (await getFileAttachment(attachment.url));
 
     const modalTemplate = $('<div><pre><code></code></pre></div>');
-    modalTemplate.find('code').addClass('txt').text(fileText);
+    modalTemplate.find('code').addClass('txt hljs').text(fileText);
     modalTemplate.addClass('file_modal').addClass('textarea_compact').addClass('fontsize90p');
     addCopyToCodeBlocks(modalTemplate);
 
@@ -1164,151 +1041,24 @@ export function addDOMPurifyHooks() {
             node.setAttribute('rel', 'noopener');
         }
     });
+}
 
-    DOMPurify.addHook('uponSanitizeAttribute', (node, data, config) => {
-        if (!config.MESSAGE_SANITIZE) {
-            return;
-        }
-
-        /* Retain the classes on UI elements of messages that interact with the main UI */
-        const permittedNodeTypes = ['BUTTON', 'DIV'];
-        if (config.MESSAGE_ALLOW_SYSTEM_UI && node.classList.contains('menu_button') && permittedNodeTypes.includes(node.nodeName)) {
-            return;
-        }
-
-        switch (data.attrName) {
-            case 'class': {
-                if (data.attrValue) {
-                    data.attrValue = data.attrValue.split(' ').map((v) => {
-                        if (v.startsWith('fa-') || v.startsWith('note-') || v === 'monospace') {
-                            return v;
-                        }
-
-                        return 'custom-' + v;
-                    }).join(' ');
-                }
-                break;
-            }
-        }
-    });
-
-    DOMPurify.addHook('uponSanitizeElement', (node, _, config) => {
-        if (!config.MESSAGE_SANITIZE) {
-            return;
-        }
-
-        if (node instanceof HTMLMediaElement && !power_user.media_autoplay) {
-            node.removeAttribute('autoplay');
-        }
-
-        if (node instanceof HTMLUnknownElement) {
-            node.innerHTML = node.innerHTML.trim();
-
-            /** @type {Text[]} */
-            const candidates = [];
-            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-            while (walker.nextNode()) {
-                const textNode = /** @type {Text} */ (walker.currentNode);
-                if (!textNode.data.includes('\n')) continue;
-
-                if (textNode.parentElement && textNode.parentElement.closest('pre')) continue;
-
-                candidates.push(textNode);
-            }
-
-            for (const textNode of candidates) {
-                const parts = textNode.data.split('\n');
-                const frag = document.createDocumentFragment();
-                parts.forEach((part, idx) => {
-                    if (part.length) {
-                        frag.appendChild(document.createTextNode(part));
-                    }
-                    if (idx < parts.length - 1) {
-                        frag.appendChild(document.createElement('br'));
-                    }
-                });
-                textNode.replaceWith(frag);
-            }
-        }
-
-        const isMediaAllowed = isExternalMediaAllowed();
-        if (isMediaAllowed) {
-            return;
-        }
-
-        if (!(node instanceof Element)) {
-            return;
-        }
-
-        let mediaBlocked = false;
-
-        switch (node.tagName) {
-            case 'AUDIO':
-            case 'VIDEO':
-            case 'SOURCE':
-            case 'TRACK':
-            case 'EMBED':
-            case 'OBJECT':
-            case 'IMG': {
-                const isExternalUrl = (url) => (url.indexOf('://') > 0 || url.indexOf('//') === 0) && !url.startsWith(window.location.origin);
-                const src = node.getAttribute('src');
-                const data = node.getAttribute('data');
-                const srcset = node.getAttribute('srcset');
-
-                if (srcset) {
-                    const srcsetUrls = srcset.split(',');
-
-                    for (const srcsetUrl of srcsetUrls) {
-                        const [url] = srcsetUrl.trim().split(' ');
-
-                        if (isExternalUrl(url)) {
-                            console.warn('External media blocked', url);
-                            node.remove();
-                            mediaBlocked = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (src && isExternalUrl(src)) {
-                    console.warn('External media blocked', src);
-                    mediaBlocked = true;
-                    node.remove();
-                }
-
-                if (data && isExternalUrl(data)) {
-                    console.warn('External media blocked', data);
-                    mediaBlocked = true;
-                    node.remove();
-                }
-
-                if (mediaBlocked && (node instanceof HTMLMediaElement)) {
-                    node.autoplay = false;
-                    node.pause();
-                }
-            }
-                break;
-        }
-
-        if (mediaBlocked) {
-            const entityId = getCurrentEntityId();
-            const warningShownKey = `mediaWarningShown:${entityId}`;
-
-            if (accountStorage.getItem(warningShownKey) === null) {
-                const warningToast = toastr.warning(
-                    t`Use the 'Ext. Media' button to allow it. Click on this message to dismiss.`,
-                    t`External media has been blocked`,
-                    {
-                        timeOut: 0,
-                        preventDuplicates: true,
-                        onclick: () => toastr.clear(warningToast),
-                    },
-                );
-
-                accountStorage.setItem(warningShownKey, 'true');
-            }
-        }
-    });
+/**
+ * Says once for the open character or group that media from other sites was hidden, and how to allow it
+ */
+export function warnExternalMediaBlocked() {
+    const warningShownKey = `mediaWarningShown:${getCurrentEntityId()}`;
+    if (accountStorage.getItem(warningShownKey) !== null) return;
+    const warningToast = toastr.warning(
+        t`Use the 'Ext. Media' button to allow it. Click on this message to dismiss.`,
+        t`External media has been blocked`,
+        {
+            timeOut: 0,
+            preventDuplicates: true,
+            onclick: () => toastr.clear(warningToast),
+        },
+    );
+    accountStorage.setItem(warningShownKey, 'true');
 }
 
 /**

@@ -2,7 +2,7 @@
     --match-color: color-mix(in srgb, var(--SmartThemeQuoteColor, #e69500) 45%, transparent);
 }
 
-mark.match {
+dialog.alternatives .match {
     background-color: var(--match-color);
     color: inherit;
     border-radius: 2px;

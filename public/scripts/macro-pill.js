@@ -1,6 +1,4 @@
-import { DOMPurify } from '../lib.js';
-import { insertMacroPlaceholders } from './safe-macros.js';
-import { renderMarkdown } from './marked-processor.js';
+import { drawnText, PLAIN_TEXT } from './chat-text/surface.js';
 
 /** @typedef {(strings: TemplateStringsArray, ...values: any[]) => string} Translate */
 
@@ -41,7 +39,6 @@ export function macroColorAttributes(name, category) {
 const SHOWN_LENGTH = 24;
 const TOOLTIP_VALUE_LENGTH = 200;
 const ABOUT_LENGTH = 600;
-const ABOUT_TAGS = ['p', 'br', 'em', 'strong', 'del', 's', 'code', 'q', 'b', 'i', 'u', 'sub', 'sup', 'mark', 'small', 'span'];
 
 const CATEGORY_ICONS = Object.freeze({
     names: 'fa-user',
@@ -86,7 +83,7 @@ function describe(source) {
  * @param {boolean} [compact]
  * @returns {{ kind: 'mention' | 'value' | 'empty' | 'later', label: string, icon: string | null, note: string }}
  */
-function macroPillContent({ source, name, category, value }, t, compact = false) {
+export function macroPillContent({ source, name, category, value }, t, compact = false) {
     const icon = CATEGORY_ICONS[/** @type {keyof typeof CATEGORY_ICONS} */ (category)] ?? DEFAULT_ICON;
     if (value === null) {
         return { kind: 'later', label: shorten(describe(source), SHOWN_LENGTH), icon, note: t`Filled in when sent` };
@@ -167,24 +164,9 @@ export function macroPersonCard(person, source) {
     if (person.about.trim()) {
         const about = document.createElement('div');
         about.className = 'macro-person-about';
-        about.innerHTML = DOMPurify.sanitize(renderMarkdown(person.about), { ALLOWED_TAGS: ABOUT_TAGS, ALLOWED_ATTR: [] });
+        about.append(drawnText(person.about, PLAIN_TEXT));
         text.append(about);
     }
     card.append(avatar, text);
     return card;
-}
-
-/**
- * @param {string} html
- * @param {MacroShown[]} macros
- * @param {Translate} t
- * @param {(macroName: string) => MacroPerson | null} [person]
- * @returns {string}
- */
-export function insertMacroPills(html, macros, t, person) {
-    return insertMacroPlaceholders(html, (index) => {
-        const macro = macros[index];
-        if (!macro) return '';
-        return macroPill(macro, { t, person: macro.name ? person?.(macro.name) : null }).outerHTML;
-    });
 }

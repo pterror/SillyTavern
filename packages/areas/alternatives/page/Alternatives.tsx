@@ -5,12 +5,18 @@ import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { COUNTS_VIEW, LIST_VIEW, MATCHES_VIEW } from '../protocol.ts';
 import type { CountsView, GreetingOp, Item, ListView, MatchesView, Target } from '../protocol.ts';
-import { markWords, matchedWords } from './marks.ts';
 import { createSeen } from './seen.ts';
 import type { Seen } from './seen.ts';
 
+/** An alternative's text drawn for reading, with the parts a search matched marked: pairs of positions in the text */
+export type ShownText = {
+    element: HTMLElement;
+    show(text: string, matches: readonly number[] | null): void;
+    stop(): void;
+};
+
 export type OldPage = {
-    format(text: string, item: { name: string; role: Item['role'] }, mesId: number | null): DocumentFragment;
+    reader(item: { name: string; role: Item['role'] }, mesId: number | null): ShownText;
     date(value: string | number): string;
     tokenizer(): Record<string, unknown> | null;
     cantGo(mesId: number): string | null;
@@ -19,7 +25,7 @@ export type OldPage = {
     copy(text: string): Promise<void>;
     greetingsChanged(card: NonNullable<ListView['card']>, answer: unknown): void;
     reordered(mesId: number, current: number): void;
-    editAt(event: MouseEvent, rendered: HTMLElement, source: string): number | null;
+    editAt(event: MouseEvent, rendered: HTMLElement): number | null;
 };
 
 export type Look = { target: Target; mesId: number | null; title: string; at?: number };
@@ -46,8 +52,7 @@ type RowState = {
     li: HTMLLIElement;
     body: HTMLElement;
     item: Item;
-    html: DocumentFragment | null;
-    htmlOf: string;
+    shown: ShownText | null;
     painted: string;
     visible: boolean;
 };
@@ -148,13 +153,10 @@ function Dialog(props: {
     const paint = (row: RowState) => {
         const spans = spansOf(row.item.id);
         const want = `${row.item.text}\u0000${spans?.join(',') ?? ''}`;
-        if (row.html === null || row.htmlOf !== row.item.text) {
-            row.html = props.old.format(row.item.text, row.item, mesId);
-            row.htmlOf = row.item.text;
-        }
         if (row.painted === want) return;
-        row.body.replaceChildren(row.html.cloneNode(true));
-        if (spans !== null) markWords(row.body, matchedWords(row.item.text, spans));
+        row.shown ??= props.old.reader(row.item, mesId);
+        row.shown.show(row.item.text, spans);
+        if (row.body.firstChild !== row.shown.element) row.body.replaceChildren(row.shown.element);
         row.painted = want;
     };
     const isPainted = (row: RowState) =>
@@ -196,19 +198,20 @@ function Dialog(props: {
     onCleanup(() => rows.clear());
 
     const register = (item: Item, li: HTMLLIElement, body: HTMLElement) => {
-        const row: RowState = { li, body, item, html: null, htmlOf: '', painted: '', visible: false };
+        const row: RowState = { li, body, item, shown: null, painted: '', visible: false };
         rows.set(item.id, row);
         body.textContent = item.text;
         observer.observe(li);
         onCleanup(() => {
             observer.unobserve(li);
+            row.shown?.stop();
             if (rows.get(item.id) === row) rows.delete(item.id);
         });
         createEffect(
             on(
                 () => item.text,
                 () => {
-                    if (row.painted !== '' && row.htmlOf !== item.text) {
+                    if (row.painted !== '' && !row.painted.startsWith(`${item.text}\u0000`)) {
                         if (row.visible) paint(row);
                         else paintRest();
                     }
@@ -422,7 +425,7 @@ function Dialog(props: {
     };
     const editAt = (item: Item, event: MouseEvent) => {
         if (!isCardRow(item) || editing()?.id === item.id) return;
-        const at = props.old.editAt(event, event.currentTarget as HTMLElement, item.text);
+        const at = props.old.editAt(event, event.currentTarget as HTMLElement);
         if (at !== null) setEditing({ id: item.id, at });
     };
     const setDefault = (item: Item) => {

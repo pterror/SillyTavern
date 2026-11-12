@@ -1,7 +1,3 @@
-const VALUE_START = '\ue000';
-const PLACEHOLDER_END = '\ue001';
-const VALUE_REGEX = new RegExp(`${VALUE_START}(\\d+)${PLACEHOLDER_END}`, 'g');
-
 export const TRIM_MACRO = /(?:\r?\n)*{{trim}}(?:\r?\n)*/gi;
 
 const SAFE_MACRO_NAMES = new Set([
@@ -116,26 +112,6 @@ export function macrosIn(text) {
 /**
  * @param {string} text
  * @param {MacroValueOf} valueOf
- * @returns {{ text: string, macros: MacroShown[] }}
- */
-export function withMacroPlaceholders(text, valueOf) {
-    const trimmed = text.replace(TRIM_MACRO, '');
-    /** @type {MacroShown[]} */
-    const macros = [];
-    let out = '';
-    let cursor = 0;
-    for (const { start, end } of topLevelMacroSpans(trimmed)) {
-        const source = trimmed.slice(start, end);
-        out += trimmed.slice(cursor, start) + `${VALUE_START}${macros.length}${PLACEHOLDER_END}`;
-        macros.push({ source, name: macroName(source.slice(2)) ?? undefined, value: valueOf(source) ?? null });
-        cursor = end;
-    }
-    return { text: out + trimmed.slice(cursor), macros };
-}
-
-/**
- * @param {string} text
- * @param {MacroValueOf} valueOf
  * @returns {string}
  */
 export function withMacroValues(text, valueOf) {
@@ -148,13 +124,4 @@ export function withMacroValues(text, valueOf) {
         cursor = end;
     }
     return out + trimmed.slice(cursor);
-}
-
-/**
- * @param {string} html
- * @param {(index: number) => string} render
- * @returns {string}
- */
-export function insertMacroPlaceholders(html, render) {
-    return html.replace(VALUE_REGEX, (_, index) => render(Number(index)));
 }

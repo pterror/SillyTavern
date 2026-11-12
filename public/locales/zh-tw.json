@@ -473,7 +473,6 @@
     "Token Padding": "符元填充",
     "Start Reply With": "開始回覆",
     "AI reply prefix": "AI 回覆前綴",
-    "Show reply prefix in chat": "在聊天中顯示回覆前綴",
     "Non-markdown strings": "非 Markdown 字串",
     "separate with commas w/o space between": "用逗號分隔，之間無空格",
     "Custom Stopping Strings": "自訂停止字串",

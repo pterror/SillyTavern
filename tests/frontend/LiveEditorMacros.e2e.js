@@ -8,7 +8,8 @@ import { testSetup } from './frontent-test-utils.js';
 async function mountWithMacros(page, value, { person = false } = {}) {
     await page.evaluate(async ({ value, person }) => {
         const registry = await import('/scripts/live-editor/registry.js');
-        const { renderMarkdown } = await import('/scripts/marked-processor.js');
+        const { drawnMessageText } = await import('/scripts/message-text.js');
+        const draw = (/** @type {string} */ text) => drawnMessageText(text, { name: 'Testchar', isUser: false });
         const { MacroValues } = await import('/scripts/macro-values.js');
         const values = new MacroValues(() => ({ name2: 'Testchar' }));
         await values.want(value);
@@ -21,7 +22,7 @@ async function mountWithMacros(page, value, { person = false } = {}) {
         host.append(textarea);
         document.body.append(host);
         const editor = await registry.mountLiveEditor(textarea, {
-            render: renderMarkdown,
+            draw,
             macros: {
                 values,
                 person: person ? (/** @type {string} */ name) => ({ name: `Person ${name}`, avatarUrl: '/img/ai4.png', about: `About ${name}.` }) : undefined,
@@ -114,20 +115,21 @@ test.describe('live editor macros', () => {
         expect(box.x + box.width).toBeLessThanOrEqual(640);
     });
 
-    test('a pill in rendered text and one in the editor show the same tooltip on hover, in the top layer', async ({ page }) => {
+    test('a macro in read text and its pill in the editor show the same tooltip on hover, in the top layer', async ({ page }) => {
         await mountWithMacros(page, 'In the editor {{char}} and {{random::x::y}}.', { person: true });
         await page.evaluate(async () => {
-            const { insertMacroPills } = await import('/scripts/macro-pill.js');
-            const { withFilledAbout, withMacroPlaceholders } = await import('/scripts/safe-macros.js');
+            const { cardTextSetup } = await import('/scripts/message-text.js');
+            const { drawnText } = await import('/scripts/chat-text/surface.js');
             const { macroValuesOf } = await import('/scripts/macro-values.js');
             const source = 'Rendered {{char}} and {{random::x::y}}.';
             const values = await macroValuesOf(source, { name2: 'Testchar' });
-            const { text, macros } = withMacroPlaceholders(source, values.valueOf);
             const preview = document.createElement('div');
             preview.id = 'renderedPillTest';
             preview.style.cssText = 'overflow:hidden;height:1.6em;margin-top:220px';
-            preview.innerHTML = insertMacroPills(text, macros, s => s.join(''),
-                name => withFilledAbout({ name: `Person ${name}`, avatarUrl: '/img/ai4.png', about: `About ${name}.` }, name, values.valueOf));
+            preview.append(drawnText(source, cardTextSetup('literal', {
+                values,
+                person: name => ({ name: `Person ${name}`, avatarUrl: '/img/ai4.png', about: `About ${name}.` }),
+            })));
             document.getElementById('liveEditorTestHost').append(preview);
         });
         const tooltip = page.locator('.macro-tooltip:popover-open');
@@ -143,7 +145,7 @@ test.describe('live editor macros', () => {
             return content;
         };
         const editor = page.locator('#liveEditorTestHost .cm-content .macro-pill');
-        const rendered = page.locator('#renderedPillTest .macro-pill');
+        const rendered = page.locator('#renderedPillTest .macro-value');
         expect(await shown(rendered.nth(0))).toEqual(await shown(editor.nth(0)));
         expect(await shown(rendered.nth(1))).toEqual(await shown(editor.nth(1)));
         await rendered.nth(1).hover();
@@ -212,7 +214,7 @@ test.describe('live editor macros', () => {
         expect(misses).toEqual([0, []]);
     });
 
-    test('each macro has its own color, as light as the text, the same in the editor and in a preview', async ({ page }) => {
+    test('each macro has its own color in the editor, as light as the text', async ({ page }) => {
         const macros = ['{{user}}', '{{char}}', '{{description}}', '{{lastMessageId}}', '{{time}}', '{{random::a::b}}', '{{getvar::x}}'];
         await mountWithMacros(page, macros.join(' '));
         const pills = page.locator('#liveEditorTestHost .cm-line .macro-pill');
@@ -231,22 +233,6 @@ test.describe('live editor macros', () => {
         const hue = (/** @type {string} */ color) => Number(color.match(/oklch\([\d.]+ [\d.]+ ([\d.]+)/)?.[1]);
         const apart = Math.abs(hue(colors[0]) - hue(colors[1]));
         expect(Math.min(apart, 360 - apart)).toBeGreaterThan(90);
-        const preview = await page.evaluate(async () => {
-            const { withMacroPlaceholders } = await import('/scripts/safe-macros.js');
-            const { macroValuesOf } = await import('/scripts/macro-values.js');
-            const { insertMacroPills } = await import('/scripts/macro-pill.js');
-            const { t } = await import('/scripts/i18n.js');
-            const source = '{{user}} {{description}} {{time}} {{getvar::x}} {{random::a::b}}';
-            const { text, macros } = withMacroPlaceholders(source, (await macroValuesOf(source, {})).valueOf);
-            const holder = document.createElement('div');
-            holder.className = 'macro_preview_content';
-            holder.innerHTML = insertMacroPills(text, macros, t);
-            document.body.append(holder);
-            const found = [...holder.querySelectorAll('.macro-pill')].map(el => getComputedStyle(el).color);
-            holder.remove();
-            return found;
-        });
-        expect(preview).toEqual([colors[0], colors[2], colors[4], colors[6], colors[5]]);
     });
 
     test('the macro colors editor sets the scheme, the chroma and a macro\'s own color, applied at once and saved', async ({ page }) => {
