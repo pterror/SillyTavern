@@ -1,6 +1,6 @@
 import { blockWhileFieldEditing } from './character-field-editor.js';
 import { loadChatEditor } from './chat-text/editors.js';
-import { messageEditorSetup } from './message-text.js';
+import { editingIn, messageEditorSetup } from './message-text.js';
 import { drawerStackChanged } from './drawer-stack.js';
 import {
     moment,
@@ -1203,6 +1203,8 @@ function setReasoningEventHandlers() {
         if (!holder) return;
         reasoningEditors.get(holder)?.stop();
         reasoningEditors.delete(holder);
+        const reasoningElement = messageBlock.find('.mes_reasoning')[0];
+        if (reasoningElement) editingIn(reasoningElement, null);
         holder.remove();
         drawerStackChanged();
     };
@@ -1290,6 +1292,7 @@ function setReasoningEventHandlers() {
             label: t`Reasoning`,
         });
         reasoningEditors.set(holder, editor);
+        editingIn(reasoningBlock[0], editor);
         drawerStackChanged();
         editor.view.dispatch({ selection: { anchor: Math.min(at ?? reasoning.length, reasoning.length) }, scrollIntoView: true });
         editor.view.focus();

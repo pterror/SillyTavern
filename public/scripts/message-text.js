@@ -130,11 +130,12 @@ export function showMessageText(element, message, { fade = false } = {}) {
     showText(element, text, chatSetup(speakerOf(message), 'message', valuesIn(element), element), { fade });
 }
 
-/** @type {WeakMap<Element, { redraw: () => void }>} the editor open in a message's text element */
+/** @type {WeakMap<Element, { redraw: () => void }>} the editor open on a message's text or reasoning element */
 const openEditors = new WeakMap();
 
 /**
- * Says an editor is open in a message's text element, so drawing it again draws the editor's macros again instead
+ * Says an editor is open on a message's text or reasoning element, so drawing it again draws the editor's macros
+ * again too
  * @param {Element} element
  * @param {{ redraw: () => void } | null} editor none when it closed
  */
@@ -159,13 +160,14 @@ export function redrawMessageText(element, message) {
 }
 
 /**
- * Shows a message's reasoning in its reasoning element
+ * Shows a message's reasoning in its reasoning element, and draws the macros of a reasoning editor open on it again
  * @param {Element} element the message's `.mes_reasoning`
  * @param {ChatMessage} message
  * @param {string} reasoning
  * @param {{ fade?: boolean }} [options] fade: the reasoning is being streamed
  */
 export function showReasoningText(element, message, reasoning, { fade = false } = {}) {
+    openEditors.get(element)?.redraw();
     showText(element, reasoning, chatSetup(speakerOf(message), 'reasoning', valuesIn(element)), { fade });
 }
 
