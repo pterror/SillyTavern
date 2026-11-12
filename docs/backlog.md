@@ -27,6 +27,7 @@
 - The editor is for every text field that goes into the prompt (`docs/design/editor.md`); today the live editor covers card fields, message, reasoning and chat box edits only.
 - Live editor: lists, code blocks, tables and rules aren't drawn as chat's elements; their elements bring layout (bullets, indentation, cells) that the written text already shows, so each needs a decision on what of chat's look the editor takes.
 - Live editor: the cursor sometimes goes onto the wrong line; Shift+Home sometimes selects to the start of the next line; the editor for messages sometimes scrolls; find and replace and its presets are bad.
+- A view of a text derived from it (any transform of a message or field, shown instead of or beside it) is derived from that exact text, so an edit means it no longer applies; the screen says what is shown and offers the text itself; changing what the model receives is an edit. Never a second stored copy, as upstream's `display_text` / `reasoning_display_text` are (read on import only).
 - Install as fast as possible without losing functionality; updating too.
 - Zero friction for everyone, including browsing cards.
 - Budget tracking, management, enforcement (money).
