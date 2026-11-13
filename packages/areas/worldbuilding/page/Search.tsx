@@ -5,6 +5,8 @@ import type { Chip, ResultsView } from '../protocol.ts';
 import { Cell } from './Cards.tsx';
 import type { CardActions } from './Cards.tsx';
 import { Icon } from './icons.tsx';
+import { EntryRows } from './Rows.tsx';
+import type { RowsContext } from './Rows.tsx';
 import { fill } from './words.ts';
 
 // What is typed in the search box and the region it is scoped to: the box's own input, sent whole with each change.
@@ -55,6 +57,7 @@ export function Results(props: {
     pageSize: number;
     actions: CardActions;
     onMore: (pages: number) => void;
+    rows: RowsContext | null;
 }) {
     const { t } = useUi();
     let end: HTMLDivElement | undefined;
@@ -71,15 +74,26 @@ export function Results(props: {
     });
     return (
         <>
-            <div class="wb-grid">
-                <For each={entries()}>
-                    {(cell) => (
-                        <div class="wb-top-cell" classList={{ 'wb-wide': cell.region.length > 0 }}>
-                            <Cell cell={cell} region={null} actions={props.actions} />
-                        </div>
-                    )}
-                </For>
-            </div>
+            <Show
+                when={props.rows}
+                fallback={
+                    <div class="wb-grid">
+                        <For each={entries()}>
+                            {(cell) => (
+                                <div class="wb-top-cell" classList={{ 'wb-wide': cell.region.length > 0 }}>
+                                    <Cell cell={cell} region={null} actions={props.actions} />
+                                </div>
+                            )}
+                        </For>
+                    </div>
+                }
+            >
+                {(rows) => (
+                    <div class="wb-trs">
+                        <For each={entries()}>{(cell) => <EntryRows cell={cell} depth={0} context={rows()} />}</For>
+                    </div>
+                )}
+            </Show>
             <Show when={entries().length === 0 && !more()}>
                 <p class="wb-quiet">{t('No entry matches.')}</p>
             </Show>

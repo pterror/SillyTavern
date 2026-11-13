@@ -193,6 +193,8 @@ const NAMES_OFFER_FIELD = `${EXTENSION_MARK}namesOffer`;
 const CARD_BOOK_BULK_REFUSAL = 'A character\'s own lorebook is changed one entry at a time.';
 // The world's picture: the id of an image in the user's image store. Not part of a world file.
 export const WORLD_PICTURE_FIELD = `${EXTENSION_MARK}picture`;
+// The reader's layer over the world's views: never part of a world file.
+export const READER_VIEWS_FIELD = `${EXTENSION_MARK}views`;
 const BULK_JOB_FIELD = `${EXTENSION_MARK}bulkJob:`;
 const BULK_JOB_CURSOR_FIELD = `${EXTENSION_MARK}bulkJobCursor:`;
 const isBulkJobField = (/** @type {unknown} */ field) => typeof field === 'string' && (field.startsWith(BULK_JOB_FIELD) || field.startsWith(BULK_JOB_CURSOR_FIELD));
@@ -478,7 +480,7 @@ function storedTargetsOf(stored) {
  */
 function withBookOwnFields(next, stored) {
     for (const value of stored?.values ?? []) {
-        if ((value.field === NAMES_OFFER_FIELD || value.field === WORLD_PICTURE_FIELD || isBulkJobField(value.field) || isFontField(value.field)) && value.text !== undefined) {
+        if ((value.field === NAMES_OFFER_FIELD || value.field === WORLD_PICTURE_FIELD || value.field === READER_VIEWS_FIELD || isBulkJobField(value.field) || isFontField(value.field)) && value.text !== undefined) {
             next.values.set(value.field, { text: value.text });
             continue;
         }
@@ -2422,7 +2424,7 @@ function assembleBook(s, world) {
             continue;
         }
         if (typeof v.field !== 'string') continue;
-        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD) || v.field === NAMES_OFFER_FIELD || v.field === WORLD_PICTURE_FIELD || isBulkJobField(v.field) || isFontField(v.field)) && v.text !== undefined) continue;
+        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD) || v.field === NAMES_OFFER_FIELD || v.field === WORLD_PICTURE_FIELD || v.field === READER_VIEWS_FIELD || isBulkJobField(v.field) || isFontField(v.field)) && v.text !== undefined) continue;
         if (v.field.startsWith(SHARED_LOOK_FIELD)) continue;
         found.set(v.field === LOOK_FIELD ? LOOK : ownKeyOfField(v.field), v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
     }

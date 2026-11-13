@@ -1,4 +1,5 @@
-import { For, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
+import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
+import type { JSX } from 'solid-js';
 import type { OverviewView } from '../protocol.ts';
 import { Cell } from './Cards.tsx';
 import type { CardActions } from './Cards.tsx';
@@ -15,25 +16,29 @@ export function TopLevel(props: {
     columns: number;
     actions: CardActions;
     onRange: (range: Range) => void;
+    // Draws each top-level entry, its region with it, in place of its card; one column of them.
+    rows?: (cell: OverviewView['entries'][number]) => JSX.Element;
+    rowHeight?: number;
 }) {
+    const columns = () => (props.rows ? 1 : props.columns);
+    const itemHeight = () => props.rowHeight ?? CARD_HEIGHT;
     let list: HTMLDivElement | undefined;
     const tops = new Map<number, number>();
     const rowStarts = new Set<number>();
     const [asked, setAsked] = createSignal<Range | null>(null);
     const averageRow = () => {
         const known = [...tops.values()];
-        if (known.length < 2) return CARD_HEIGHT;
-        return Math.max(CARD_HEIGHT / 2, (Math.max(...known) - Math.min(...known)) / Math.max(1, known.length - 1));
+        if (known.length < 2) return itemHeight();
+        return Math.max(itemHeight() / 2, (Math.max(...known) - Math.min(...known)) / Math.max(1, known.length - 1));
     };
     const estimatedTop = (rank: number): number => {
         const known = tops.get(rank);
         if (known !== undefined) return known;
-        return (rank / Math.max(1, props.columns)) * averageRow();
+        return (rank / Math.max(1, columns())) * averageRow();
     };
     const lastRank = () => props.view.firstRank + props.view.entries.length;
     const above = () => (props.view.firstRank === 0 ? 0 : estimatedTop(props.view.firstRank));
-    const below = () =>
-        Math.max(0, ((props.view.topLevelCount - lastRank()) / Math.max(1, props.columns)) * averageRow());
+    const below = () => Math.max(0, ((props.view.topLevelCount - lastRank()) / Math.max(1, columns())) * averageRow());
 
     const measure = () => {
         if (!list) return;
@@ -52,7 +57,7 @@ export function TopLevel(props: {
         let best = 0;
         for (const [rank, top] of tops) if (top <= y && rank > best) best = rank;
         if (tops.size === 0 || y > Math.max(...tops.values()) + 2 * averageRow())
-            return Math.min(props.view.topLevelCount, Math.floor((y / averageRow()) * Math.max(1, props.columns)));
+            return Math.min(props.view.topLevelCount, Math.floor((y / averageRow()) * Math.max(1, columns())));
         return best;
     };
 
@@ -97,20 +102,27 @@ export function TopLevel(props: {
 
     return (
         <div
-            class="wb-grid wb-top"
+            class={props.rows ? 'wb-trs' : 'wb-grid wb-top'}
             ref={(element) => (list = element)}
             style={{ 'padding-top': `${above()}px`, 'padding-bottom': `${below()}px` }}
         >
             <For each={props.view.entries}>
                 {(cell) => (
-                    <div
-                        class="wb-top-cell"
-                        data-rank={cell.topLevelRank}
-                        data-entry={cell.cell === 'entry' ? cell.entry : undefined}
-                        classList={{ 'wb-wide': cell.region.length > 0 }}
+                    <Show
+                        when={props.rows}
+                        fallback={
+                            <div
+                                class="wb-top-cell"
+                                data-rank={cell.topLevelRank}
+                                data-entry={cell.cell === 'entry' ? cell.entry : undefined}
+                                classList={{ 'wb-wide': cell.region.length > 0 }}
+                            >
+                                <Cell cell={cell} region={null} actions={props.actions} />
+                            </div>
+                        }
                     >
-                        <Cell cell={cell} region={null} actions={props.actions} />
-                    </div>
+                        {(draw) => <div data-rank={cell.topLevelRank}>{draw()(cell)}</div>}
+                    </Show>
                 )}
             </For>
         </div>

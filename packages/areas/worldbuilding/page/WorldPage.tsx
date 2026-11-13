@@ -10,6 +10,8 @@ import { Icon } from './icons.tsx';
 import { TopLevel } from './Overview.tsx';
 import type { Range } from './Overview.tsx';
 import { Results } from './Search.tsx';
+import { EntryRows, ROW_HEIGHT, RowsHead } from './Rows.tsx';
+import type { RowsContext } from './Rows.tsx';
 import { count, fill } from './words.ts';
 
 type Shown = Extract<WorldView, { id: string }>;
@@ -28,6 +30,9 @@ export function WorldPage(props: {
     onGroupBy: (kind: string | null) => void;
     onRange: (range: Range) => void;
     onMoreResults: (pages: number) => void;
+    // Set when the world has saved views: the bar under the tabs, not the header, chooses the grouping.
+    viewed: boolean;
+    rows: RowsContext | null;
 }) {
     const { t } = useUi();
     const wb = useWb();
@@ -41,77 +46,79 @@ export function WorldPage(props: {
     const marked = () => props.lastChange?.markedTitleKeys?.book === book() && props.world.namesOffer === null;
     return (
         <div class="wb-front">
-            <div class="wb-front-head">
-                <Show when={props.world.picture}>{(url) => <Picture url={url()} class="wb-front-pic" />}</Show>
-                <div class="wb-front-words">
-                    <Show when={!ownBook()} fallback={<h1 class="wb-front-name">{props.world.name}</h1>}>
-                        <Editable
-                            class="wb-front-name"
-                            label={t('The world’s name')}
-                            value={props.world.name}
-                            onSave={(name) => void wb.act('worldbuilding.renameWorld', { book: book(), name })}
-                        >
-                            <h1 class="wb-front-name">{props.world.name}</h1>
-                        </Editable>
-                    </Show>
-                    <div class="wb-front-meta">
-                        <span>
-                            {props.world.entries === 1
-                                ? t('1 entry')
-                                : fill(t('${0} entries'), count(props.world.entries))}
-                            <Show when={props.world.cameWith}>
-                                {(character) => (
-                                    <>
-                                        {' · '}
-                                        {t('came with the character')} <Name named={character()} />
-                                    </>
-                                )}
-                            </Show>
-                            <Show when={props.kinds.length > 0}>
-                                {' · '}
-                                {t('Grouped by')}{' '}
-                                <select
-                                    class="wb-select"
-                                    aria-label={t('Grouped by')}
-                                    value={groupBy() ?? ''}
-                                    onChange={(event) =>
-                                        props.onGroupBy(
-                                            event.currentTarget.value === '' ? null : event.currentTarget.value,
-                                        )
-                                    }
-                                >
-                                    <For each={props.kinds}>
-                                        {(kind) => <option value={kind.id}>{kind.name}</option>}
-                                    </For>
-                                    <option value="">{t('nothing')}</option>
-                                </select>
-                            </Show>
-                        </span>
-                        <Show when={props.world.usedInThisChat}>
-                            <span class="wb-used">
-                                <Icon name="check" size={14} />
-                                {t('Used in this chat')}
-                            </span>
+            <Show when={!props.rows}>
+                <div class="wb-front-head">
+                    <Show when={props.world.picture}>{(url) => <Picture url={url()} class="wb-front-pic" />}</Show>
+                    <div class="wb-front-words">
+                        <Show when={!ownBook()} fallback={<h1 class="wb-front-name">{props.world.name}</h1>}>
+                            <Editable
+                                class="wb-front-name"
+                                label={t('The world’s name')}
+                                value={props.world.name}
+                                onSave={(name) => void wb.act('worldbuilding.renameWorld', { book: book(), name })}
+                            >
+                                <h1 class="wb-front-name">{props.world.name}</h1>
+                            </Editable>
                         </Show>
+                        <div class="wb-front-meta">
+                            <span>
+                                {props.world.entries === 1
+                                    ? t('1 entry')
+                                    : fill(t('${0} entries'), count(props.world.entries))}
+                                <Show when={props.world.cameWith}>
+                                    {(character) => (
+                                        <>
+                                            {' · '}
+                                            {t('came with the character')} <Name named={character()} />
+                                        </>
+                                    )}
+                                </Show>
+                                <Show when={props.kinds.length > 0 && !props.viewed}>
+                                    {' · '}
+                                    {t('Grouped by')}{' '}
+                                    <select
+                                        class="wb-select"
+                                        aria-label={t('Grouped by')}
+                                        value={groupBy() ?? ''}
+                                        onChange={(event) =>
+                                            props.onGroupBy(
+                                                event.currentTarget.value === '' ? null : event.currentTarget.value,
+                                            )
+                                        }
+                                    >
+                                        <For each={props.kinds}>
+                                            {(kind) => <option value={kind.id}>{kind.name}</option>}
+                                        </For>
+                                        <option value="">{t('nothing')}</option>
+                                    </select>
+                                </Show>
+                            </span>
+                            <Show when={props.world.usedInThisChat}>
+                                <span class="wb-used">
+                                    <Icon name="check" size={14} />
+                                    {t('Used in this chat')}
+                                </span>
+                            </Show>
+                        </div>
                     </div>
                 </div>
-            </div>
-            <Editable
-                class="wb-front-desc"
-                multiline
-                label={t('The world’s description')}
-                value={props.world.description}
-                onSave={(description) =>
-                    void wb.act('worldbuilding.setWorldDescription', { book: book(), description })
-                }
-            >
-                <Show
-                    when={props.world.description.trim() !== ''}
-                    fallback={<span class="wb-ghost">{t('Add a description')}</span>}
+                <Editable
+                    class="wb-front-desc"
+                    multiline
+                    label={t('The world’s description')}
+                    value={props.world.description}
+                    onSave={(description) =>
+                        void wb.act('worldbuilding.setWorldDescription', { book: book(), description })
+                    }
                 >
-                    {props.world.description}
-                </Show>
-            </Editable>
+                    <Show
+                        when={props.world.description.trim() !== ''}
+                        fallback={<span class="wb-ghost">{t('Add a description')}</span>}
+                    >
+                        {props.world.description}
+                    </Show>
+                </Editable>
+            </Show>
             <Show when={props.world.namesOffer}>
                 {(offer) => (
                     <div class="wb-offer">
@@ -197,6 +204,9 @@ export function WorldPage(props: {
                     </div>
                 )}
             </Show>
+            <Show when={props.rows}>
+                {(rows) => <RowsHead fields={rows().fields} selection={rows().selection} book={book()} />}
+            </Show>
             <Show
                 when={props.results}
                 fallback={
@@ -209,6 +219,14 @@ export function WorldPage(props: {
                                 columns={props.columns}
                                 actions={props.actions}
                                 onRange={props.onRange}
+                                {...(props.rows
+                                    ? {
+                                          rows: (cell) => (
+                                              <EntryRows cell={cell} depth={0} context={props.rows as RowsContext} />
+                                          ),
+                                          rowHeight: ROW_HEIGHT,
+                                      }
+                                    : {})}
                             />
                         )}
                     </Show>
@@ -220,8 +238,22 @@ export function WorldPage(props: {
                         pageSize={props.resultsPageSize}
                         actions={props.actions}
                         onMore={props.onMoreResults}
+                        rows={props.rows}
                     />
                 )}
+            </Show>
+            <Show
+                when={
+                    props.rows &&
+                    !props.results &&
+                    props.overview &&
+                    props.overview.firstRank + props.overview.entries.length < props.overview.topLevelCount
+                }
+            >
+                <div class="wb-tr wb-loadrow">
+                    <span />
+                    <span class="wb-dim">{t('Loading as you scroll')}</span>
+                </div>
             </Show>
         </div>
     );

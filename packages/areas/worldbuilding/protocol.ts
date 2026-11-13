@@ -17,6 +17,7 @@ export const SELECTION_VIEW = 'worldbuilding.selection';
 export const BULK_JOBS_VIEW = 'worldbuilding.bulkJobs';
 export const KEY_SHARERS_VIEW = 'worldbuilding.keySharers';
 export const CARD_VIEW = 'worldbuilding.card';
+export const VIEWS_VIEW = 'worldbuilding.views';
 
 export const FOUND_PER_QUERY = 20;
 // One `/world` command's worlds, set used in every chat or not in one request.
@@ -145,6 +146,8 @@ export type EntryCell = {
     groupingKindRelationsTargetingThis: number;
     alreadyOpenAbove: boolean;
     region: RegionCell[];
+    // Present when the shown view is drawn as rows.
+    row?: RowFacts;
 };
 
 export type PlaceOfDeletedEntryCell = {
@@ -372,6 +375,53 @@ export type Depth = 'directly' | 'anyDepth';
 
 export type Chip = { kind: string; target: string; depth: Depth };
 
+// What a row shows besides the card's own fields: where the entry goes in the prompt, and its size.
+// `comesIn`: upstream's `constant` and `disable`; `chance` is null when it comes in every time.
+export type RowFacts = {
+    comesIn: 'always' | 'broughtUp' | 'never';
+    position: Placement['position'];
+    depth: number;
+    order: number;
+    chance: number | null;
+    tokens: number | null;
+};
+
+export const ROW_FIELDS = ['relations', 'keys', 'comesIn', 'goes', 'order', 'chance', 'tokens'] as const;
+export type RowField = (typeof ROW_FIELDS)[number];
+
+// One column or row of a board or grid: the entries with a relation of `kind` to a target, with any, or with none.
+export type AxisItem = { kind: string; is: { target: string; depth: Depth } | 'any' | 'none' };
+
+// A saved view. Targets are entity ids. The world file carries the author's views with targets as entries' keys (uids).
+export type SavedView = {
+    id: string;
+    name: string;
+    groupBy: string | null;
+    drawing: 'cards' | 'rows';
+    fields: RowField[];
+    query: string;
+    chips: Chip[];
+    columns: AxisItem[];
+    rows: AxisItem[];
+};
+
+export type ViewShape = 'cards' | 'rows' | 'board' | 'grid';
+
+export const shapeOf = (view: Pick<SavedView, 'drawing' | 'columns' | 'rows'>): ViewShape =>
+    view.columns.length > 0 && view.rows.length > 0
+        ? 'grid'
+        : view.columns.length > 0 || view.rows.length > 0
+          ? 'board'
+          : view.drawing;
+
+// `own`: the reader's own view; `changed`: the reader keeps a changed copy of the world's view.
+export type ViewTab = { id: string; name: string; shape: ViewShape; own: boolean; changed: boolean };
+
+// `shown`: the current view as the tab draws it, `unsaved` saying it differs from what is saved for the reader.
+export type ViewsView =
+    | { book: string; tabs: ViewTab[]; current: string | null; shown: SavedView | null; unsaved: boolean }
+    | { book: null };
+
 export type ShownChip = { kind: string; kindName: string | null; target: Named; targetDeleted: boolean; depth: Depth };
 
 export type ResultsPage = { cursor: string | null; entries: EntryCell[]; next: string | null };
@@ -479,6 +529,20 @@ const keyText = v.pipe(v.string(), v.trim(), v.minLength(1));
 const keyAs = v.picklist(['name', 'trigger']);
 const cursor = v.pipe(v.string(), v.minLength(1));
 const chip = v.object({ kind: kindId, target: entityId, depth: v.picklist(['directly', 'anyDepth']) });
+const rowField = v.picklist(ROW_FIELDS);
+const viewId = v.pipe(v.string(), v.regex(/^[a-z0-9-]{1,40}$/));
+const viewChangeFields = v.partial(
+    v.strictObject({
+        groupBy: v.nullable(kindId),
+        drawing: v.picklist(['cards', 'rows']),
+        fields: v.pipe(v.array(rowField), v.maxLength(ROW_FIELDS.length)),
+    }),
+);
+export type ViewChange = v.InferOutput<typeof viewChangeFields>;
+const viewChange = v.pipe(
+    viewChangeFields,
+    v.check((fields: ViewChange) => Object.keys(fields).length > 0, 'Name at least one setting.'),
+);
 const placementChange = v.pipe(
     v.partial(v.strictObject(placementFields)),
     v.check((fields: object) => Object.keys(fields).length > 0, 'Name at least one field.'),
@@ -624,4 +688,14 @@ export const actions = {
     'worldbuilding.selectAllMatching': v.object({ book: entityId }),
     'worldbuilding.selectNone': v.object({ book: entityId }),
     'worldbuilding.bulk': v.object({ book: entityId, action: bulkAction, loopCheckLimit }),
+    // Shows a saved view of the shown world (null: none, as a world with no views is shown).
+    'worldbuilding.showView': v.object({ book: entityId, view: v.nullable(viewId), overview: shownOverview }),
+    // Changes the shown view for this tab only, until it is saved or discarded.
+    'worldbuilding.changeView': v.object({ book: entityId, change: viewChange, overview: shownOverview }),
+    'worldbuilding.saveView': v.object({ book: entityId }),
+    'worldbuilding.discardView': v.object({ book: entityId, overview: shownOverview }),
+    // Drops the reader's changed copy of the world's view.
+    'worldbuilding.resetView': v.object({ book: entityId, overview: shownOverview }),
+    // A view of the reader's own, starting as the shown view is drawn.
+    'worldbuilding.addView': v.object({ book: entityId, overview: shownOverview }),
 } satisfies ActionSchemas;

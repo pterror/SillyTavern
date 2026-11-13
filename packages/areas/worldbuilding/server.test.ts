@@ -47,6 +47,7 @@ import {
     WORLDS_VIEW,
     CARD_ENTRIES_AT_MOST,
     CARD_VIEW,
+    VIEWS_VIEW,
 } from './protocol.ts';
 import type {
     KeySharersView,
@@ -86,9 +87,11 @@ import type {
     Ports,
     RelationChange,
     ResultsQuery,
+    ReaderViews,
+    StoredViews,
 } from './server.ts';
 import type { ActionContext, ActionResult, Upload, User } from '@st/server-ui';
-import type { CardView } from './protocol.ts';
+import type { CardView, SavedView, ViewsView } from './protocol.ts';
 
 const LOOK: ResolvedLook = {
     layers: { rest: [{ property: 'color', value: 'teal' }] },
@@ -387,7 +390,26 @@ function world(
                   { kind: '2', sources: 3 },
               ]
             : [];
+    const storedViews = new Map<string, StoredViews>();
+    const readerWrites: { book: string; reader: ReaderViews; session: string }[] = [];
     const ports: Ports = {
+        readViews: async (_u, book) =>
+            worlds.has(book) ? (storedViews.get(book) ?? { world: [], reader: { changed: {}, own: [] } }) : null,
+        writeReaderViews: async ({ session }, book, reader) => {
+            if (!worlds.has(book)) return 'missing';
+            readerWrites.push({ book, reader, session });
+            storedViews.set(book, { world: storedViews.get(book)?.world ?? [], reader });
+            return 'ok';
+        },
+        readRowFacts: async (_u, _book, entries) =>
+            entries.map((entry) => ({
+                comesIn: 'broughtUp',
+                position: 0,
+                depth: 4,
+                order: Number(entry),
+                chance: null,
+                tokens: 10,
+            })),
         looksOf: async (context, view, things) => {
             asked.looks.push({ view, session: context.session, things });
             return { styles: { s: LOOK }, things: Object.fromEntries(things.map((thing) => [thing, 's'])) };
@@ -737,11 +759,24 @@ function world(
     const chatView = <T>(key: string) =>
         withoutLooks<T>(area.views[key]!({ ...context, chat: { tree: '9' } }) as Promise<unknown>);
     const drawnView = (key: string) => area.views[key]!(context) as Promise<{ looks: Looks }>;
-    return { view, drawnView, chatView, act, other, otherView, asked, reads, views: Object.keys(area.views) };
+    return {
+        view,
+        drawnView,
+        chatView,
+        act,
+        other,
+        otherView,
+        asked,
+        reads,
+        views: Object.keys(area.views),
+        storedViews,
+        readerWrites,
+    };
 }
 
 const WORLD_VIEWS = [
     OVERVIEW_VIEW,
+    VIEWS_VIEW,
     RESULTS_VIEW,
     RELATION_KINDS_VIEW,
     LAST_CHANGE_VIEW,
@@ -784,7 +819,7 @@ test('opening a world opens its overview, its kinds and the last change in the s
     expect(await w.act('worldbuilding.openOverview', open)).toEqual({
         changed: [],
         opensViews: WORLD_VIEWS,
-        own: [OVERVIEW_VIEW, WORLD_VIEW],
+        own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW],
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toEqual({
         id: '1',
@@ -888,7 +923,7 @@ test('opening no world in particular opens the last one opened, else the first; 
     expect(await w.act('worldbuilding.openOverview', unopened)).toEqual({
         changed: [],
         opensViews: WORLD_VIEWS,
-        own: [OVERVIEW_VIEW, WORLD_VIEW],
+        own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW],
     });
     expect(w.asked.opened).toEqual(['2', null]);
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '2' });
@@ -900,6 +935,7 @@ test('opening no world in particular opens the last one opened, else the first; 
     expect(await none.act('worldbuilding.openOverview', unopened)).toEqual({
         changed: [
             OVERVIEW_VIEW,
+            VIEWS_VIEW,
             RESULTS_VIEW,
             RELATION_KINDS_VIEW,
             LAST_CHANGE_VIEW,
@@ -912,6 +948,7 @@ test('opening no world in particular opens the last one opened, else the first; 
         opensViews: [WORLD_VIEW, WORLDS_VIEW],
         own: [
             OVERVIEW_VIEW,
+            VIEWS_VIEW,
             RESULTS_VIEW,
             RELATION_KINDS_VIEW,
             LAST_CHANGE_VIEW,
@@ -953,7 +990,7 @@ test('making a world names it, opens it at the range asked for and answers the w
     expect(await w.act('worldbuilding.createWorld', { name: ' Saltmarrow ', overview: drawn })).toEqual({
         changed: [WORLDS_VIEW],
         opensViews: WORLD_VIEWS,
-        own: [OVERVIEW_VIEW, WORLD_VIEW, WORLDS_VIEW],
+        own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW, WORLDS_VIEW],
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toEqual({
         id: '10',
@@ -1025,7 +1062,7 @@ test('deleting the shown world opens the one the list orders after it, else befo
     expect(await w.act('worldbuilding.deleteWorld', { book: '2' })).toEqual({
         changed: [FOUND_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, WORLDS_VIEW],
         opensViews: WORLD_VIEWS,
-        own: [OVERVIEW_VIEW, WORLD_VIEW, WORLDS_VIEW],
+        own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW, WORLDS_VIEW],
     });
     expect(w.asked.opened.at(-1)).toBe('3');
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '3' });
@@ -1043,6 +1080,7 @@ test('deleting the shown world opens the one the list orders after it, else befo
             ENTRY_VIEW,
             POINTING_AT_VIEW,
             OVERVIEW_VIEW,
+            VIEWS_VIEW,
             RELATION_KINDS_VIEW,
             LAST_CHANGE_VIEW,
             LOOPS_LEFT_BY_JOBS_VIEW,
@@ -1052,6 +1090,7 @@ test('deleting the shown world opens the one the list orders after it, else befo
         opensViews: [WORLD_VIEW, WORLDS_VIEW],
         own: [
             OVERVIEW_VIEW,
+            VIEWS_VIEW,
             RESULTS_VIEW,
             RELATION_KINDS_VIEW,
             LAST_CHANGE_VIEW,
@@ -1649,13 +1688,13 @@ test("an open entry is always the shown world's: another world closes it, the sa
     expect(await w.act('worldbuilding.openOverview', { ...open, firstRank: 3, endRank: 9 })).toEqual({
         changed: [],
         opensViews: WORLD_VIEWS,
-        own: [OVERVIEW_VIEW, WORLD_VIEW],
+        own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW],
     });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ book: '1', entry: '7' });
     expect(await w.act('worldbuilding.openOverview', { ...open, book: '2', groupBy: null })).toEqual({
         changed: [ENTRY_VIEW, POINTING_AT_VIEW],
         opensViews: WORLD_VIEWS,
-        own: [OVERVIEW_VIEW, WORLD_VIEW, ENTRY_VIEW, POINTING_AT_VIEW],
+        own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW],
     });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
     expect(await w.view<PointingAtView>(POINTING_AT_VIEW)).toEqual({ book: null });
@@ -1986,7 +2025,7 @@ test('what changes cards answers the results; another world clears them, the sam
     expect(await w.act('worldbuilding.openOverview', { ...open, groupBy: null })).toEqual({
         changed: [],
         opensViews: WORLD_VIEWS,
-        own: [OVERVIEW_VIEW, WORLD_VIEW],
+        own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW],
     });
     expect(await w.view<ResultsView>(RESULTS_VIEW)).toMatchObject({ book: '1' });
     expect(w.asked.results.at(-1)).toMatchObject({ groupBy: null });
@@ -2405,7 +2444,7 @@ test('a world named by its name opens, with its entry by uid opened too; an unkn
     const w = world(1000);
     expect(
         await w.act('worldbuilding.openNamed', { world: 'World 1', uid: null, overview: shownWorld, pointingAt }),
-    ).toEqual({ changed: [], opensViews: WORLD_VIEWS, own: [OVERVIEW_VIEW, WORLD_VIEW] });
+    ).toEqual({ changed: [], opensViews: WORLD_VIEWS, own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW] });
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '1' });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
     expect(
@@ -2427,7 +2466,7 @@ test('a world named by its name opens, with its entry by uid opened too; an unkn
     ).toEqual({
         changed: [ENTRY_VIEW, POINTING_AT_VIEW],
         opensViews: WORLD_VIEWS,
-        own: [OVERVIEW_VIEW, WORLD_VIEW, ENTRY_VIEW, POINTING_AT_VIEW],
+        own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW],
     });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
 });
@@ -2437,7 +2476,7 @@ test("a character's own lorebook opens as a world that says which character it c
     expect(await w.act('worldbuilding.openCharacterBook', { character: '42', overview: shownWorld })).toEqual({
         changed: [],
         opensViews: WORLD_VIEWS,
-        own: [OVERVIEW_VIEW, WORLD_VIEW],
+        own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW],
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({
         id: '5',
@@ -2561,5 +2600,113 @@ test('a world opens by its id, with an entry of it opened too; an entry not in i
     expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ book: '1', entry: '7', deleted: false });
     expect(await w.act('worldbuilding.openAt', { book: '1', entry: '404', overview: shownWorld, pointingAt })).toEqual({
         refused: "That entry isn't in this world.",
+    });
+});
+
+const savedView = (id: string, name: string, change: Partial<SavedView> = {}): SavedView => ({
+    id,
+    name,
+    groupBy: '1',
+    drawing: 'cards',
+    fields: [],
+    query: '',
+    chips: [],
+    columns: [],
+    rows: [],
+    ...change,
+});
+
+const shownRange = { firstRank: 0, endRank: 20, layout: LAYOUT };
+
+test("a world's views are its tabs, the world's first, the reader's changed copies in their place, then the reader's own", async () => {
+    const w = world(1000);
+    w.storedViews.set('1', {
+        world: [savedView('places', 'Places'), savedView('debts', 'Debts', { groupBy: '2' })],
+        reader: {
+            changed: { debts: savedView('debts', 'Debts', { groupBy: '2', drawing: 'rows' }) },
+            own: [savedView('own-1', 'Mine')],
+        },
+    });
+    const { groupBy: _left, ...withoutGrouping } = open;
+    const answer = await w.act('worldbuilding.openOverview', withoutGrouping);
+    expect(answer).toMatchObject({ own: expect.arrayContaining([VIEWS_VIEW]) });
+    const views = await w.view<ViewsView>(VIEWS_VIEW);
+    expect(views).toMatchObject({
+        book: '1',
+        current: 'places',
+        unsaved: false,
+        tabs: [
+            { id: 'places', shape: 'cards', own: false, changed: false },
+            { id: 'debts', shape: 'rows', own: false, changed: true },
+            { id: 'own-1', shape: 'cards', own: true, changed: false },
+        ],
+    });
+    await w.act('worldbuilding.showView', { book: '1', view: 'debts', overview: shownRange });
+    expect((await w.view<OverviewView>(OVERVIEW_VIEW)).groupBy).toBe('2');
+    const rows = await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect(rows.entries[0]).toMatchObject({ row: { comesIn: 'broughtUp', tokens: 10 } });
+    expect(await w.act('worldbuilding.showView', { book: '1', view: 'gone', overview: shownRange })).toMatchObject({
+        refused: 'This world has no such view.',
+    });
+});
+
+test("a changed view is the tab's until saved for the reader, discarded, or reset to the world's", async () => {
+    const w = world(1000);
+    w.storedViews.set('1', { world: [savedView('places', 'Places')], reader: { changed: {}, own: [] } });
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: undefined });
+    await w.act('worldbuilding.changeView', { book: '1', change: { groupBy: null }, overview: shownRange });
+    expect(await w.view<ViewsView>(VIEWS_VIEW)).toMatchObject({ unsaved: true, shown: { groupBy: null } });
+    expect((await w.view<OverviewView>(OVERVIEW_VIEW)).groupBy).toBe(null);
+    await w.act('worldbuilding.discardView', { book: '1', overview: shownRange });
+    expect(await w.view<ViewsView>(VIEWS_VIEW)).toMatchObject({ unsaved: false, shown: { groupBy: '1' } });
+    expect((await w.view<OverviewView>(OVERVIEW_VIEW)).groupBy).toBe('1');
+    await w.act('worldbuilding.changeView', { book: '1', change: { drawing: 'rows' }, overview: shownRange });
+    await w.act('worldbuilding.saveView', { book: '1' });
+    expect(w.readerWrites.at(-1)).toMatchObject({
+        book: '1',
+        session: 's',
+        reader: { changed: { places: { drawing: 'rows' } } },
+    });
+    expect(await w.view<ViewsView>(VIEWS_VIEW)).toMatchObject({
+        unsaved: false,
+        tabs: [{ changed: true, shape: 'rows' }],
+    });
+    expect(w.storedViews.get('1')?.world[0]?.drawing).toBe('cards');
+    await w.act('worldbuilding.resetView', { book: '1', overview: shownRange });
+    expect(await w.view<ViewsView>(VIEWS_VIEW)).toMatchObject({ tabs: [{ changed: false, shape: 'cards' }] });
+});
+
+test("a reader's new view starts as the shown one and is the reader's own; resetting it is refused", async () => {
+    const w = world(1000);
+    w.storedViews.set('1', {
+        world: [savedView('places', 'Places', { groupBy: null })],
+        reader: { changed: {}, own: [] },
+    });
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: undefined });
+    await w.act('worldbuilding.addView', { book: '1', overview: shownRange });
+    const views = await w.view<ViewsView>(VIEWS_VIEW);
+    expect(views).toMatchObject({
+        current: 'own-1',
+        tabs: [{ id: 'places' }, { id: 'own-1', name: 'New view', own: true }],
+    });
+    expect(await w.act('worldbuilding.resetView', { book: '1', overview: shownRange })).toMatchObject({
+        refused: expect.stringContaining('your own'),
+    });
+});
+
+test("a world with no views shows none, and its grouping is the tab's own", async () => {
+    const w = world(1000);
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.view<ViewsView>(VIEWS_VIEW)).toEqual({
+        book: '1',
+        tabs: [],
+        current: null,
+        shown: null,
+        unsaved: false,
+    });
+    expect(
+        await w.act('worldbuilding.changeView', { book: '1', change: { groupBy: null }, overview: shownRange }),
+    ).toMatchObject({
+        refused: 'No view is shown.',
     });
 });

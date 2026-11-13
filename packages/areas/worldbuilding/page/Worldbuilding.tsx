@@ -9,6 +9,8 @@ import {
     POINTING_AT_VIEW,
     RELATION_KINDS_VIEW,
     RESULTS_VIEW,
+    SELECTION_VIEW,
+    VIEWS_VIEW,
     WORLD_VIEW,
 } from '../protocol.ts';
 import type {
@@ -19,6 +21,8 @@ import type {
     PointingAtView,
     RelationKindsView,
     ResultsView,
+    SelectionView,
+    ViewsView,
     WorldView,
 } from '../protocol.ts';
 import type { CardActions } from './Cards.tsx';
@@ -36,6 +40,9 @@ import type { Typed } from './Search.tsx';
 import { Switcher } from './Switcher.tsx';
 import { shownView } from './views.ts';
 import { WorldPage } from './WorldPage.tsx';
+import { ViewBar, ViewTabs, viewActions as viewActionsOf, viewsOf } from './Views.tsx';
+import { BulkBar, hasSelection, rowPicking } from './Rows.tsx';
+import type { RowsContext } from './Rows.tsx';
 
 const POINTING_AT_SHOWN = 12;
 
@@ -59,6 +66,8 @@ function Page(props: Props) {
     const pointingAt = shownView<PointingAtView>(client, POINTING_AT_VIEW);
     const results = shownView<ResultsView>(client, RESULTS_VIEW);
     const lastChange = shownView<LastChangeView>(client, LAST_CHANGE_VIEW);
+    const views = shownView<ViewsView>(client, VIEWS_VIEW);
+    const selection = shownView<SelectionView>(client, SELECTION_VIEW);
 
     const [pane, setPane] = createSignal<HTMLElement>();
     const [width, setWidth] = createSignal(0);
@@ -116,6 +125,32 @@ function Page(props: Props) {
     };
     const drag = dragControl(act);
     const wb: Wb = { act, layout: () => layout().overview, firstRead, pointingAt: pointingAtShown, open, say, drag };
+    const shownViews = () => viewsOf(views(), shownWorld()?.id ?? null);
+    const viewActions = viewActionsOf(wb, () => shownWorld()?.id ?? null);
+    const shownSelection = () => {
+        const shown = selection();
+        return shown && shown.book !== null && shown.book === shownWorld()?.id ? shown : null;
+    };
+    const picking = rowPicking(
+        wb,
+        () => shownWorld()?.id ?? '',
+        shownSelection,
+        () => pane(),
+    );
+    const rows = (): RowsContext | null => {
+        const shown = shownViews()?.shown;
+        const book = shownWorld()?.id;
+        if (!shown || shown.drawing !== 'rows' || book === undefined) return null;
+        return {
+            book,
+            fields: shown.fields,
+            selection: shownSelection(),
+            isSelected: picking.isSelected,
+            press: picking.press,
+            enter: picking.enter,
+            open,
+        };
+    };
 
     const [typed, setTyped] = createSignal<Typed>(NOTHING_TYPED);
     const type = (next: Typed) => {
@@ -241,6 +276,21 @@ function Page(props: Props) {
                         {t('New entry')}
                     </button>
                 </div>
+                <Show when={!shownEntry() && shownViews()}>
+                    {(shown) => (
+                        <>
+                            <ViewTabs views={shown()} onShow={viewActions.show} onAdd={viewActions.add} />
+                            <ViewBar
+                                views={shown()}
+                                kinds={shownKinds()}
+                                onChange={viewActions.change}
+                                onSave={viewActions.save}
+                                onDiscard={viewActions.discard}
+                                onReset={viewActions.reset}
+                            />
+                        </>
+                    )}
+                </Show>
                 <main class="wb-pane" ref={setPane}>
                     <Show when={pane() && shownWorld()} fallback={<NoWorld shown={client.version(WORLD_VIEW) > 0} />}>
                         {(shown) => (
@@ -259,6 +309,8 @@ function Page(props: Props) {
                                         resultsPageSize={resultsPageSize()}
                                         actions={actions}
                                         onGroupBy={(groupBy) => void openWorld(shown().id, groupBy)}
+                                        viewed={(shownViews()?.tabs.length ?? 0) > 0}
+                                        rows={rows()}
                                         onRange={(range: Range) => void act('worldbuilding.showRange', range)}
                                         onMoreResults={(pages) =>
                                             void act('worldbuilding.showResults', {
@@ -285,6 +337,13 @@ function Page(props: Props) {
                     </Show>
                 </main>
                 <DragLayer control={drag} />
+                <Show when={rows() && !shownEntry() && hasSelection(shownSelection())}>
+                    <BulkBar
+                        selection={shownSelection() as NonNullable<ReturnType<typeof shownSelection>>}
+                        kinds={shownKinds()}
+                        groupBy={shownOverview()?.groupBy ?? null}
+                    />
+                </Show>
                 <Show when={said()}>
                     <div class="wb-said" role="status">
                         {said()}

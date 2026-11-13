@@ -24,6 +24,7 @@ import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
 import { withPictureUrls } from './world-info/worldbuilding-pictures.js';
 import { worldbuildingSearchPorts } from './world-info/worldbuilding-search.js';
 import { worldbuildingBulkPorts } from './world-info/worldbuilding-bulk.js';
+import { worldbuildingViewPorts } from './world-info/worldbuilding-views.js';
 import { keysThatBroughtUp } from './world-info/activation-record.js';
 import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
@@ -639,6 +640,7 @@ const worldbuildingPorts = {
     }),
     ...worldbuildingSearchPorts({ libOf }),
     ...worldbuildingBulkPorts({ libOf }),
+    ...worldbuildingViewPorts({ libOf }),
     async chatReadsWorld(context, book) {
         if (!context.chat) return false;
         const store = await userStore(directoriesOf(context.user), context.user.handle);

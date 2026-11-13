@@ -27,6 +27,8 @@ import {
     WALK_STEPS_PER_READ,
     WORLD_VIEW,
     WORLDS_VIEW,
+    VIEWS_VIEW,
+    shapeOf,
     ENTRIES_NAMED_PER_LOOP,
     LOOPS_SHOWN,
 } from './protocol.ts';
@@ -67,6 +69,10 @@ import type {
     StepLanding,
     EntryAt,
     UnreachedLoop,
+    RegionCell,
+    RowFacts,
+    SavedView,
+    ViewsView,
 } from './protocol.ts';
 import { defineArea } from '@st/server-ui';
 import type { ActionContext, ActionResult, Upload, User, ViewContext } from '@st/server-ui';
@@ -173,7 +179,16 @@ export type HeldSelection = {
 
 export type SelectionRead = Omit<Extract<SelectionView, { base: unknown }>, 'book' | 'base'>;
 
+// The reader's layer over a world's views: changed copies of the world's, by id, and views of the reader's own.
+export type ReaderViews = { changed: Record<string, SavedView>; own: SavedView[] };
+
+export type StoredViews = { world: SavedView[]; reader: ReaderViews };
+
 export type Ports = {
+    readViews(user: User, book: string): Promise<StoredViews | null>;
+    writeReaderViews(who: Who, book: string, reader: ReaderViews): Promise<'ok' | 'missing'>;
+    // What rows show of each entry, in the order asked; null for one that isn't a live entry of the world.
+    readRowFacts(user: User, book: string, entries: string[]): Promise<(RowFacts | null)[]>;
     // The looks of the things a view draws, as the view is read: the session's views' things are what a look's edit
     // answers looks for.
     looksOf(context: ViewContext, view: string, things: string[]): Promise<Looks>;
@@ -341,6 +356,7 @@ const NO_BULK_JOBS: BulkJobsView = { book: null };
 
 const VIEWS_OF_A_WORLD = [
     OVERVIEW_VIEW,
+    VIEWS_VIEW,
     RESULTS_VIEW,
     RELATION_KINDS_VIEW,
     LAST_CHANGE_VIEW,
@@ -398,7 +414,11 @@ export type ShownFilter = {
 
 export type ShownWorldState = { overview: ShownOverview; entry: OpenEntry | null };
 
+// The view a tab shows of a world: `id` null when the world has no views; `draft` the tab's unsaved change of it.
+type ShownViewState = { book: string; id: string | null; draft: SavedView | null };
+
 type SessionState = {
+    view: ShownViewState | null;
     world: ShownWorldState | null;
     card: CardAsked | null;
     kindsOfBook: string | null;
@@ -409,6 +429,7 @@ type SessionState = {
 };
 
 const NO_SESSION_STATE: SessionState = {
+    view: null,
     world: null,
     card: null,
     kindsOfBook: null,
@@ -477,6 +498,31 @@ export function thingsDrawn(view: string, value: unknown): string[] {
     if (view === WORLD_VIEW && typeof value['id'] === 'string') found.add(value['id']);
     return [...found];
 }
+
+// The tabs of a world's views: the world's, each as the reader changed it, then the reader's own.
+export const tabsOf = (stored: StoredViews): SavedView[] => [
+    ...stored.world.map((view) => stored.reader.changed[view.id] ?? view),
+    ...stored.reader.own,
+];
+
+const sameView = (one: SavedView, other: SavedView): boolean => JSON.stringify(one) === JSON.stringify(other);
+
+const NO_VIEWS: ViewsView = { book: null };
+const NO_VIEW_SHOWN = 'No view is shown.';
+const NO_SUCH_VIEW = 'This world has no such view.';
+const NOT_THE_WORLDS_VIEW = 'This view is your own, so there is nothing of the world’s to go back to.';
+const NEW_VIEW_NAME = 'New view';
+const RESULTS_PAGE_SIZE = 40;
+
+// Every entry cell of a read, regions included, for what rows add to them.
+const entryCellsOf = (cells: readonly RegionCell[]): EntryCell[] =>
+    cells.flatMap((cell) =>
+        cell.cell === 'entry'
+            ? [cell, ...entryCellsOf(cell.region)]
+            : cell.cell === 'placeOfDeletedEntry'
+              ? entryCellsOf(cell.region)
+              : [],
+    );
 
 export function worldbuildingArea(ports: Ports) {
     const bySession = new Map<string, SessionState>();
@@ -554,6 +600,97 @@ export function worldbuildingArea(ports: Ports) {
         };
 
     const who = (context: ActionContext): Who => ({ user: context.user, session: context.session });
+
+    // The view the tab shows of its world, as saved for the reader and as the tab changed it.
+    const viewShown = async (user: User, session: string) => {
+        const state = stateOf(session).view;
+        if (!state || state.id === null) return null;
+        const stored = await ports.readViews(user, state.book);
+        if (!stored) return null;
+        const saved = tabsOf(stored).find((tab) => tab.id === state.id);
+        if (!saved) return null;
+        return { state, stored, saved, shown: state.draft ?? saved };
+    };
+
+    const drawsRows = async (user: User, session: string): Promise<boolean> =>
+        (await viewShown(user, session))?.shown.drawing === 'rows';
+
+    const withRowFacts = async (user: User, book: string, cells: EntryCell[]): Promise<void> => {
+        if (cells.length === 0) return;
+        const facts = await ports.readRowFacts(
+            user,
+            book,
+            cells.map((cell) => cell.entry),
+        );
+        cells.forEach((cell, at) => {
+            const fact = facts[at];
+            if (fact) cell.row = fact;
+        });
+    };
+
+    // Shows `view` (null: the world's without views) as the tab's, its grouping, and its filter.
+    const showViewOf = async (
+        context: ActionContext,
+        book: string,
+        id: string | null,
+        draft: SavedView | null,
+        view: SavedView | null,
+        overview: Omit<ShownWorld, 'groupBy' | 'around'>,
+    ): Promise<ActionResult> => {
+        remember(context.session, { view: { book, id, draft } });
+        const shown = await showWorld(context, book, {
+            ...overview,
+            groupBy: view ? view.groupBy : (overviewOf(context.session)?.groupBy ?? null),
+            around: null,
+        });
+        remember(context.session, { view: { book, id, draft } });
+        const filterChanged = await setFilterOf(context, book, view?.query ?? '', view?.chips ?? [], null);
+        if ('refused' in filterChanged) return filterChanged;
+        return {
+            changed: [...shown.changed, ...filterChanged.changed, VIEWS_VIEW],
+            opensViews: [...shown.opensViews, ...(filterChanged.opensViews ?? [])],
+            own: [...new Set([...shown.own, VIEWS_VIEW])],
+        };
+    };
+
+    // Sets the tab's filter; `pageSize` null keeps the one it has.
+    const setFilterOf = async (
+        context: ActionContext,
+        book: string,
+        query: string,
+        chips: Chip[],
+        pageSize: number | null,
+    ): Promise<{ changed: string[]; opensViews?: string[] } | { refused: string }> => {
+        const { selection, filter } = stateOf(context.session);
+        const dropsSelection = selection?.base === 'matching';
+        const selectionChange = dropsSelection ? { selection: null } : {};
+        const selectionChanged = dropsSelection ? [SELECTION_VIEW] : [];
+        if (query.trim() === '' && chips.length === 0) {
+            remember(context.session, { filter: null, ...selectionChange });
+            return { changed: [RESULTS_VIEW, ...selectionChanged] };
+        }
+        const labels = await ports.labelEntries(
+            context.user,
+            book,
+            chips.map((chip) => chip.target),
+        );
+        const held: HeldChip[] = [];
+        for (const [at, chip] of chips.entries()) {
+            const label = labels[at];
+            if (!label) return { refused: NO_SUCH_ENTRY };
+            held.push({ ...chip, label });
+        }
+        const closes = entryOf(context.session) !== null;
+        const size = pageSize ?? filter?.pageSize ?? RESULTS_PAGE_SIZE;
+        rememberEntry(context.session, null, {
+            filter: { book, query, chips: held, pageSize: size, generation: ++filtersSet, run: FIRST_PAGE },
+            ...selectionChange,
+        });
+        return {
+            changed: [...(closes ? [ENTRY_VIEW, POINTING_AT_VIEW] : []), ...selectionChanged],
+            opensViews: [RESULTS_VIEW],
+        };
+    };
 
     const relationChanged = async (
         context: ActionContext,
@@ -662,6 +799,12 @@ export function worldbuildingArea(ports: Ports) {
             };
         });
         const shownCursor = tagged(shown.generation);
+        if (await drawsRows(context.user, context.session))
+            await withRowFacts(
+                context.user,
+                shown.book,
+                read.pages.flatMap((page) => entryCellsOf(page.entries)),
+            );
         const pages = read.pages.map((page) => ({
             cursor: shownCursor(page.cursor),
             entries: page.entries,
@@ -745,6 +888,7 @@ export function worldbuildingArea(ports: Ports) {
         const opened = await ports.openWorld(who(context), book);
         if (opened === null) {
             remember(context.session, {
+                view: null,
                 world: null,
                 kindsOfBook: null,
                 lastChange: NOTHING_CHANGED,
@@ -753,6 +897,7 @@ export function worldbuildingArea(ports: Ports) {
             });
             const changed = [
                 OVERVIEW_VIEW,
+                VIEWS_VIEW,
                 RESULTS_VIEW,
                 RELATION_KINDS_VIEW,
                 LAST_CHANGE_VIEW,
@@ -765,11 +910,27 @@ export function worldbuildingArea(ports: Ports) {
             const opensViews = [WORLD_VIEW, WORLDS_VIEW];
             return { changed, opensViews, own: [...changed, ...opensViews] };
         }
+        const held = stateOf(context.session).view;
+        const views = await ports.readViews(context.user, opened);
+        const tabs = views ? tabsOf(views) : [];
+        const viewId =
+            held?.book === opened && (held.id === null ? tabs.length === 0 : tabs.some((tab) => tab.id === held.id))
+                ? held.id
+                : (tabs[0]?.id ?? null);
+        const draft = held?.book === opened && held.id === viewId ? held.draft : null;
+        const view = draft ?? tabs.find((tab) => tab.id === viewId) ?? null;
         const grouping =
             groupBy !== undefined
                 ? groupBy
-                : ((await ports.readRelationKinds(context.user, opened))?.find((kind) => kind.mergingInto === null)
-                      ?.id ?? null);
+                : view
+                  ? view.groupBy
+                  : ((await ports.readRelationKinds(context.user, opened))?.find((kind) => kind.mergingInto === null)
+                        ?.id ?? null);
+        const viewState: ShownViewState = {
+            book: opened,
+            id: viewId,
+            draft: view && groupBy !== undefined && groupBy !== view.groupBy ? { ...view, groupBy } : draft,
+        };
         let overview: ShownOverview = {
             book: opened,
             groupBy: grouping,
@@ -798,6 +959,7 @@ export function worldbuildingArea(ports: Ports) {
         const filterStays = filter?.book === opened;
         const entry = keepsEntry && world?.overview.book === opened ? world.entry : null;
         remember(context.session, {
+            view: viewState,
             world: { overview, entry },
             kindsOfBook: opened,
             lastChange: NOTHING_CHANGED,
@@ -805,7 +967,11 @@ export function worldbuildingArea(ports: Ports) {
             ...(selection?.book === opened ? {} : { selection: null }),
         });
         const closes = world?.entry && !entry ? [ENTRY_VIEW, POINTING_AT_VIEW] : [];
-        return { changed: closes, opensViews: VIEWS_OF_A_WORLD, own: [OVERVIEW_VIEW, WORLD_VIEW, ...closes] };
+        return {
+            changed: closes,
+            opensViews: VIEWS_OF_A_WORLD,
+            own: [OVERVIEW_VIEW, WORLD_VIEW, VIEWS_VIEW, ...closes],
+        };
     };
 
     // Shows `book` and, when one is named, opens `entry` in it, keeping the grouping the tab shows that world by.
@@ -913,8 +1079,36 @@ export function worldbuildingArea(ports: Ports) {
             [OVERVIEW_VIEW]: async (context: ViewContext): Promise<OverviewView> => {
                 const overview = overviewOf(context.session);
                 if (!overview) return NO_OVERVIEW;
-                const read = await ports.readOverview(context.user, overview);
-                return read ? { book: overview.book, groupBy: overview.groupBy, ...read } : NO_OVERVIEW;
+                const [read, rows] = await Promise.all([
+                    ports.readOverview(context.user, overview),
+                    drawsRows(context.user, context.session),
+                ]);
+                if (!read) return NO_OVERVIEW;
+                if (rows) await withRowFacts(context.user, overview.book, entryCellsOf(read.entries));
+                return { book: overview.book, groupBy: overview.groupBy, ...read };
+            },
+            [VIEWS_VIEW]: async (context: ViewContext): Promise<ViewsView> => {
+                const state = stateOf(context.session).view;
+                if (!state) return NO_VIEWS;
+                const stored = await ports.readViews(context.user, state.book);
+                if (!stored) return NO_VIEWS;
+                const ownIds = new Set(stored.reader.own.map((view) => view.id));
+                const tabs = tabsOf(stored).map((view) => ({
+                    id: view.id,
+                    name: view.name,
+                    shape: shapeOf(view.id === state.id && state.draft ? state.draft : view),
+                    own: ownIds.has(view.id),
+                    changed: stored.reader.changed[view.id] !== undefined,
+                }));
+                const saved = tabsOf(stored).find((view) => view.id === state.id) ?? null;
+                const shown = state.draft ?? saved;
+                return {
+                    book: state.book,
+                    tabs,
+                    current: saved ? state.id : null,
+                    shown,
+                    unsaved: saved !== null && state.draft !== null && !sameView(state.draft, saved),
+                };
             },
             [RELATION_KINDS_VIEW]: async (context: ViewContext): Promise<RelationKindsView> => {
                 const book = stateOf(context.session).kindsOfBook;
@@ -1270,34 +1464,7 @@ export function worldbuildingArea(ports: Ports) {
                 namesOfferChanged(context, ports.undoMarkTitleKeysAsNames(who(context), book), NOTHING_CHANGED),
             'worldbuilding.setFilter': withOverview(async (context, overview, { book, query, chips, pageSize }) => {
                 if (overview.book !== book) return { refused: NOT_SHOWN };
-                const selection = stateOf(context.session).selection;
-                const dropsSelection = selection?.base === 'matching';
-                const selectionChange = dropsSelection ? { selection: null } : {};
-                const selectionChanged = dropsSelection ? [SELECTION_VIEW] : [];
-                if (query.trim() === '' && chips.length === 0) {
-                    remember(context.session, { filter: null, ...selectionChange });
-                    return { changed: [RESULTS_VIEW, ...selectionChanged] };
-                }
-                const labels = await ports.labelEntries(
-                    context.user,
-                    book,
-                    chips.map((chip) => chip.target),
-                );
-                const held: HeldChip[] = [];
-                for (const [at, chip] of chips.entries()) {
-                    const label = labels[at];
-                    if (!label) return { refused: NO_SUCH_ENTRY };
-                    held.push({ ...chip, label });
-                }
-                const closes = entryOf(context.session) !== null;
-                rememberEntry(context.session, null, {
-                    filter: { book, query, chips: held, pageSize, generation: ++filtersSet, run: FIRST_PAGE },
-                    ...selectionChange,
-                });
-                return {
-                    changed: [...(closes ? [ENTRY_VIEW, POINTING_AT_VIEW] : []), ...selectionChanged],
-                    opensViews: [RESULTS_VIEW],
-                };
+                return setFilterOf(context, book, query, chips, pageSize);
             }),
             'worldbuilding.showResults': async (context, { from, pages }) => {
                 const shown = stateOf(context.session).filter;
@@ -1339,6 +1506,82 @@ export function worldbuildingArea(ports: Ports) {
                 if (overview.book !== book) return { refused: NOT_SHOWN };
                 return selected(context, null);
             }),
+            'worldbuilding.showView': async (context, { book, view, overview }) => {
+                const stored = await ports.readViews(context.user, book);
+                if (!stored) return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                const tabs = tabsOf(stored);
+                const chosen = view === null ? null : tabs.find((tab) => tab.id === view);
+                if (chosen === undefined) return { refused: NO_SUCH_VIEW, changed: [VIEWS_VIEW] };
+                if (chosen === null && tabs.length > 0) return { refused: NO_SUCH_VIEW, changed: [VIEWS_VIEW] };
+                return showViewOf(context, book, view, null, chosen, overview);
+            },
+            'worldbuilding.changeView': async (context, { book, change, overview }) => {
+                const shown = await viewShown(context.user, context.session);
+                if (!shown || shown.state.book !== book) return { refused: NO_VIEW_SHOWN, changed: [VIEWS_VIEW] };
+                const draft: SavedView = {
+                    ...shown.shown,
+                    ...(change.groupBy === undefined ? {} : { groupBy: change.groupBy }),
+                    ...(change.drawing === undefined ? {} : { drawing: change.drawing }),
+                    ...(change.fields === undefined ? {} : { fields: change.fields }),
+                };
+                if (change.groupBy === undefined) {
+                    remember(context.session, { view: { ...shown.state, draft } });
+                    return { changed: [VIEWS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW] };
+                }
+                return showViewOf(context, book, shown.state.id, draft, draft, overview);
+            },
+            'worldbuilding.saveView': async (context, { book }) => {
+                const shown = await viewShown(context.user, context.session);
+                if (!shown || shown.state.book !== book) return { refused: NO_VIEW_SHOWN, changed: [VIEWS_VIEW] };
+                if (!shown.state.draft) return { changed: [VIEWS_VIEW] };
+                const { reader } = shown.stored;
+                const own = reader.own.some((view) => view.id === shown.state.id);
+                const next = own
+                    ? { ...reader, own: reader.own.map((view) => (view.id === shown.state.id ? shown.shown : view)) }
+                    : { ...reader, changed: { ...reader.changed, [shown.saved.id]: shown.shown } };
+                const done = await ports.writeReaderViews(who(context), book, next);
+                if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                remember(context.session, { view: { ...shown.state, draft: null } });
+                return { changed: [VIEWS_VIEW] };
+            },
+            'worldbuilding.discardView': async (context, { book, overview }) => {
+                const shown = await viewShown(context.user, context.session);
+                if (!shown || shown.state.book !== book) return { refused: NO_VIEW_SHOWN, changed: [VIEWS_VIEW] };
+                return showViewOf(context, book, shown.state.id, null, shown.saved, overview);
+            },
+            'worldbuilding.resetView': async (context, { book, overview }) => {
+                const shown = await viewShown(context.user, context.session);
+                if (!shown || shown.state.book !== book) return { refused: NO_VIEW_SHOWN, changed: [VIEWS_VIEW] };
+                const { reader, world } = shown.stored;
+                const worlds = world.find((view) => view.id === shown.state.id);
+                if (!worlds) return { refused: NOT_THE_WORLDS_VIEW };
+                const { [shown.saved.id]: _dropped, ...changed } = reader.changed;
+                const done = await ports.writeReaderViews(who(context), book, { ...reader, changed });
+                if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                return showViewOf(context, book, shown.state.id, null, worlds, overview);
+            },
+            'worldbuilding.addView': async (context, { book, overview }) => {
+                const stored = await ports.readViews(context.user, book);
+                if (!stored) return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                const shown = await viewShown(context.user, context.session);
+                const ids = new Set(tabsOf(stored).map((view) => view.id));
+                let n = stored.reader.own.length + 1;
+                while (ids.has(`own-${n}`)) n++;
+                const groupBy = overviewOf(context.session)?.groupBy ?? null;
+                const made: SavedView = {
+                    ...(shown?.state.book === book
+                        ? shown.shown
+                        : { groupBy, drawing: 'cards', fields: [], query: '', chips: [], columns: [], rows: [] }),
+                    id: `own-${n}`,
+                    name: NEW_VIEW_NAME,
+                };
+                const done = await ports.writeReaderViews(who(context), book, {
+                    ...stored.reader,
+                    own: [...stored.reader.own, made],
+                });
+                if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                return showViewOf(context, book, made.id, null, made, overview);
+            },
             'worldbuilding.bulk': withOverview(async (context, overview, { book, action, loopCheckLimit }) => {
                 if (overview.book !== book) return { refused: NOT_SHOWN };
                 const selection = shownSelection(context.session);

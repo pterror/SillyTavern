@@ -1291,6 +1291,7 @@
 }
 
 .wb .wb-key .name-box::after,
+.wb .wb-nmc .name-box::after,
 .wb .wb-card .name-box::after,
 .wb .wb-region-head .name-box::after {
     content: none;
@@ -1632,4 +1633,356 @@
 
 .wb .wb-gone .wb-card-more {
     opacity: 0;
+}
+
+/* Views: the tabs across the world's page and the bar of the shown one (the Front and Table boards). */
+
+.wb-vtabs {
+    flex: none;
+    display: flex;
+    gap: 2px;
+    padding: 8px 16px 0;
+    border-bottom: 1px solid var(--wb-line-soft);
+    background: var(--wb-bg);
+}
+
+.wb .wb-vt {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 12px;
+    border-radius: 8px 8px 0 0;
+    border-bottom: 2px solid transparent;
+    color: var(--wb-ink-mid);
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.wb .wb-vt:hover {
+    color: var(--wb-ink);
+}
+
+.wb .wb-vt.wb-vt-cur {
+    color: #f0eee8;
+    border-bottom-color: #8fb8e0;
+}
+
+.wb .wb-vt.wb-vt-add {
+    color: var(--wb-ink-dim);
+}
+
+.wb-vdot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #e3b46b;
+}
+
+.wb-vbar {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--wb-line-soft);
+    font-size: 13.5px;
+    color: var(--wb-ink-mid);
+}
+
+.wb .wb-vctl {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid #33333a;
+    background: #1b1b1f;
+    color: var(--wb-ink);
+    font-size: 13.5px;
+    white-space: nowrap;
+}
+
+.wb .wb-vctl b {
+    font-weight: 400;
+    color: var(--wb-ink-dim);
+}
+
+.wb .wb-vctl:disabled {
+    cursor: default;
+}
+
+.wb .wb-vctl select {
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    border: 0;
+    padding: 0 14px 0 0;
+    margin: 0;
+    height: auto;
+    width: auto;
+    min-width: 0;
+    color: var(--wb-ink);
+    font: inherit;
+    cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+        linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position:
+        calc(100% - 6px) 55%,
+        calc(100% - 2px) 55%;
+    background-size: 4px 4px;
+    background-repeat: no-repeat;
+}
+
+.wb .wb-vctl select option {
+    background: var(--wb-raised);
+}
+
+.wb-vseg {
+    display: inline-flex;
+    border: 1px solid #33333a;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.wb .wb-vseg button {
+    padding: 4px 10px;
+    color: var(--wb-ink-mid);
+    line-height: 20px;
+}
+
+.wb .wb-vseg button.wb-on {
+    background: #2a2a31;
+    color: #f0eee8;
+}
+
+.wb-vchg {
+    margin-left: auto;
+    display: inline-flex;
+    gap: 6px;
+}
+
+.wb .wb-vbtn {
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 8px;
+    border: 1px solid #3d5c7a;
+    background: #2b4258;
+    color: #eaf3fb;
+}
+
+.wb .wb-vbtn.wb-quietbtn {
+    border-color: #33333a;
+    background: #1b1b1f;
+    color: var(--wb-ink-soft);
+}
+
+.wb-fields,
+.wb-bulk-slot {
+    position: relative;
+}
+
+.wb-fields-menu {
+    top: calc(100% + 6px);
+    left: 0;
+    width: 220px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+}
+
+.wb .wb-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    color: var(--wb-ink);
+    cursor: pointer;
+}
+
+.wb .wb-check:hover {
+    background: #26262c;
+}
+
+/* Rows (the Table board): a column per field the view picked. */
+
+.wb-front:has(> .wb-th) {
+    padding: 0 0 60px;
+}
+
+.wb-front:has(> .wb-th) > :not(.wb-th, .wb-trs, .wb-loadrow) {
+    margin-left: 40px;
+    margin-right: 40px;
+}
+
+.wb-tr {
+    display: grid;
+    align-items: center;
+    height: 40px;
+    padding: 0 16px;
+    border-bottom: 1px solid #222227;
+    white-space: nowrap;
+    font-size: 15px;
+}
+
+.wb-tr > * {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-right: 10px;
+}
+
+.wb-tr.wb-th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    height: 34px;
+    color: var(--wb-ink-dim);
+    font-size: 12.5px;
+    background: #17171a;
+}
+
+.wb-tr.wb-tr-sel,
+.wb-tr.wb-tr-run {
+    background: #1a2430;
+}
+
+.wb-tr.wb-loadrow {
+    height: 34px;
+    border: 0;
+    grid-template-columns: 40px 1fr;
+}
+
+.wb-tr.wb-tr-more {
+    grid-template-columns: 40px 1fr;
+}
+
+.wb .wb-nmc {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.wb .wb-nmc > :last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.wb .wb-pk {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    flex: none;
+    background: var(--wb-raised) center / cover no-repeat;
+}
+
+.wb-dim {
+    color: var(--wb-ink-dim);
+}
+
+.wb .wb-num,
+.wb-tr > .wb-num {
+    text-align: right;
+}
+
+.wb .wb-cb {
+    display: inline-grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: 1px solid #4a4a52;
+    font-size: 11px;
+    line-height: 1;
+    text-align: center;
+    touch-action: none;
+}
+
+.wb .wb-cb.wb-on {
+    background: #3d5c7a;
+    border-color: #5f84a8;
+    color: #fff;
+}
+
+.wb .wb-cell {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wb .wb-cell.wb-num {
+    width: 100%;
+}
+
+.wb .wb-cell-edit {
+    display: inline-block;
+    max-width: 100%;
+    height: 26px;
+    padding: 0 6px;
+    border-radius: 6px;
+    border: 1px solid #5f84a8;
+    background: #1f2a34;
+    color: var(--wb-ink);
+    font-size: 14px;
+}
+
+.wb input.wb-cell-edit {
+    width: 100%;
+}
+
+
+.wb .wb-cell-edit option {
+    background: var(--wb-raised);
+}
+
+/* The bulk bar under a selection of rows. */
+
+.wb-bulk {
+    position: absolute;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    z-index: 7;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: min(760px, calc(100% - 32px));
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: var(--wb-raised);
+    border: 1px solid var(--wb-line-strong);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    font-size: 13.5px;
+}
+
+.wb-bulk-menu,
+.wb-bulk-pick {
+    bottom: calc(100% + 8px);
+    left: 0;
+    top: auto;
+}
+
+.wb-bulk-menu {
+    width: 280px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    max-height: 60vh;
+    overflow: auto;
+}
+
+.wb .wb-bulk-pick {
+    position: absolute;
+}
+
+.wb .wb-bulk-clear {
+    color: var(--wb-ink-dim);
 }
