@@ -2,6 +2,7 @@ import { jsonHash } from '../public/scripts/hash-utils.js';
 import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from './entity-values.js';
 import { LINKS, storedLinks } from './character-links.js';
 import { LOOK_FIELD, TYPE } from './library-codes.js';
+import { cardEntryAsWorld, cardEntryWritten, newCardEntry } from './world-info/card-book-entries.js';
 import { bookKey } from './world-info-keys.js';
 import { LOOP_CHECK_VISITS_PER_WRITE, RELATION_CHANGES_PER_STEP, WALK_STEPS_PER_READ } from '@st/worldbuilding/protocol';
 import { WorldbuildingJobs } from './world-info/worldbuilding-jobs.js';
@@ -101,6 +102,18 @@ const selectedArgs = (selected, except) => ({
 
 export const SLOT = Object.freeze({ characterBook: 'c', originalData: 'o' });
 
+/** @typedef {'world' | 'card'} BookForm */
+
+/**
+ * The character whose own book `book` is, else null.
+ * @param {{ type: number, key: string }} book
+ * @returns {bigint | null}
+ */
+export function characterOfBook(book) {
+    if (book.type !== TYPE.ownedBook || !book.key.endsWith(`:${SLOT.characterBook}`)) return null;
+    return BigInt(book.key.slice(0, -SLOT.characterBook.length - 1));
+}
+
 const isPlainObject = (/** @type {unknown} */ v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /**
@@ -177,6 +190,9 @@ const RELATION_KIND_FIELD = `${EXTENSION_MARK}relationKind:`;
 const RELATION_KIND_MERGE_FIELD = `${EXTENSION_MARK}relationKindMergingInto:`;
 const NAMES_FIELD = `${EXTENSION_MARK}names`;
 const NAMES_OFFER_FIELD = `${EXTENSION_MARK}namesOffer`;
+const CARD_BOOK_BULK_REFUSAL = 'A character\'s own lorebook is changed one entry at a time.';
+// The world's picture: the id of an image in the user's image store. Not part of a world file.
+export const WORLD_PICTURE_FIELD = `${EXTENSION_MARK}picture`;
 const BULK_JOB_FIELD = `${EXTENSION_MARK}bulkJob:`;
 const BULK_JOB_CURSOR_FIELD = `${EXTENSION_MARK}bulkJobCursor:`;
 const isBulkJobField = (/** @type {unknown} */ field) => typeof field === 'string' && (field.startsWith(BULK_JOB_FIELD) || field.startsWith(BULK_JOB_CURSOR_FIELD));
@@ -462,7 +478,7 @@ function storedTargetsOf(stored) {
  */
 function withBookOwnFields(next, stored) {
     for (const value of stored?.values ?? []) {
-        if ((value.field === NAMES_OFFER_FIELD || isBulkJobField(value.field) || isFontField(value.field)) && value.text !== undefined) {
+        if ((value.field === NAMES_OFFER_FIELD || value.field === WORLD_PICTURE_FIELD || isBulkJobField(value.field) || isFontField(value.field)) && value.text !== undefined) {
             next.values.set(value.field, { text: value.text });
             continue;
         }
@@ -563,6 +579,41 @@ export function entryValues(entry, key, owned, relationsFrom) {
 export function entryObject(e, owned, keyOfEntity) {
     const object = storedEntryObject(e, owned);
     return keyOfEntity ? relationsForFile(object, keyOfEntity) : object;
+}
+
+/**
+ * The entry as a world's entry: a character's own book's entry is read from its card fields.
+ * @param {import('./entity-values.js').StoredEntity} e
+ * @param {BookForm} form
+ * @returns {Record<string, any>}
+ */
+export function entryAsWorld(e, form) {
+    if (form === 'world') return /** @type {Record<string, any>} */ (entryObject(e, false));
+    const own = Number(e.key.slice(e.key.indexOf(':') + 1));
+    return cardEntryAsWorld(/** @type {Record<string, any>} */ (entryObject(e, true)), own);
+}
+
+/**
+ * What to store for the entry `e` changed from `current`, `entryAsWorld`'s reading of it, to `next`.
+ * @param {import('./entity-values.js').StoredEntity} e
+ * @param {BookForm} form
+ * @param {Record<string, any>} current
+ * @param {Record<string, any>} next
+ * @returns {Record<string, any> | { refused: string }}
+ */
+function entryToStore(e, form, current, next) {
+    if (form === 'world') return { ...next, uid: current.uid };
+    return cardEntryWritten(/** @type {Record<string, any>} */ (entryObject(e, true)), current, next);
+}
+
+/**
+ * @param {Record<string, any>} written
+ * @param {BookForm} form
+ * @returns {number | undefined}
+ */
+function displayIndexOf(written, form) {
+    const index = form === 'card' ? (isPlainObject(written.extensions) ? written.extensions.display_index : undefined) : written.displayIndex;
+    return index != null ? Number(index) : undefined;
 }
 
 /**
@@ -1412,12 +1463,26 @@ export class WorldInfoEngine {
      * @returns {Promise<'ok' | 'missing' | 'no entry' | { refused: string }>}
      */
     editEntryById(book, entry, edit, actor = null) {
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async form => {
             const e = await this.entryIn(book, entry);
             if (!e) return 'no entry';
-            const next = edit(/** @type {Record<string, unknown>} */ (entryObject(e, false)));
+            const current = entryAsWorld(e, form);
+            const next = edit(current);
             if (typeof next.refused === 'string') return { refused: next.refused };
-            await this.writeEntry(book, e, next, actor);
+            if (form === 'world') {
+                await this.writeEntry(book, e, next, actor);
+                return 'ok';
+            }
+            const written = entryToStore(e, form, current, next);
+            if (typeof written.refused === 'string') return { refused: written.refused };
+            const k = e.key.slice(e.key.indexOf(':') + 1);
+            const targets = await this.relationTargets(book, [written], [e], new Map([[k, e.id]]), new Set());
+            /** @type {object[]} */
+            const keyed = [];
+            const records = valueRecords(e.id, e, entryValues(written, k, true, { targets, stored: e }), historyWrites(await this.stamper(actor, keyed)));
+            const index = displayIndexOf(written, form);
+            if (!Object.is(index, e.entryIndex)) records.push({ kind: 'entryIndex', entry: e.id, book, ...(index === undefined ? {} : { index }) });
+            if (records.length > 0) await this.store.commit([...keyed, ...records]);
             return 'ok';
         });
     }
@@ -1432,7 +1497,7 @@ export class WorldInfoEngine {
      * @returns {Promise<{ entry: bigint, uid: string, unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing'>}
      */
     createEntryIn(book, { after, entry, relation }, loopCheckLimit, actor = null) {
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async form => {
             const numbers = await this.store.worldRead('numbers', { book });
             if (numbers.freeKey >= MAX_UID) return { refused: 'This world has no free entry number left.' };
             /** @type {{ refused: string } | { displayIndex: number, moved: { entry: bigint, displayIndex: number }[] }} */
@@ -1449,31 +1514,38 @@ export class WorldInfoEngine {
             const k = String(numbers.freeKey);
             const id = this.lib.nextId++;
             const extensions = isPlainObject(entry.extensions) ? /** @type {Record<string, unknown>} */ (entry.extensions) : {};
-            const written = {
+            const asked = {
                 ...entry,
                 uid: numbers.freeKey,
                 displayIndex: placed.displayIndex,
                 ...(relations.length > 0 ? { extensions: { ...extensions, relations } } : {}),
             };
+            const written = form === 'card' ? newCardEntry(numbers.freeKey, asked) : asked;
+            if (typeof written.refused === 'string') return { refused: written.refused };
             const liveAfter = new Set([String(id), ...(relation ? [String(relation.target)] : [])]);
             /** @type {object[]} */
             const records = [];
             const stamp = await this.stamper(actor, records);
             records.push(
-                ...valueRecords(id, null, entryValues(written, k, false, { targets: { entityOfKey: new Map([[k, id]]), liveAfter }, stored: null }), historyWrites(stamp)),
+                ...valueRecords(id, null, entryValues(written, k, form === 'card', { targets: { entityOfKey: new Map([[k, id]]), liveAfter }, stored: null }), historyWrites(stamp)),
                 { kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 },
                 { kind: 'itemPlace', entity: book, list: 0, item: id, position: (numbers.lastPosition ?? 0) + POSITION_GAP },
                 { kind: 'entryIndex', entry: id, book, index: placed.displayIndex },
             );
             const moving = await this.lib.entities(placed.moved.map(m => m.entry));
             const stored = moving.flatMap(e => (e ? [e] : []));
-            const nexts = placed.moved.map((m, i) => ({ ...(/** @type {Record<string, unknown>} */ (moving[i] ? entryObject(moving[i], false) : {})), displayIndex: m.displayIndex }));
+            const nexts = placed.moved.map((m, i) => {
+                const e = moving[i];
+                if (!e) return {};
+                const current = entryAsWorld(e, form);
+                return /** @type {Record<string, unknown>} */ (entryToStore(e, form, current, { ...current, displayIndex: m.displayIndex }));
+            });
             const targets = await this.relationTargets(book, nexts, stored, new Map(stored.map(e => [e.key.slice(e.key.indexOf(':') + 1), e.id])), new Set());
             placed.moved.forEach((m, i) => {
                 const e = moving[i];
                 if (!e) return;
                 const movedKey = e.key.slice(e.key.indexOf(':') + 1);
-                pushAll(records, valueRecords(e.id, e, entryValues(nexts[i], movedKey, false, { targets, stored: e }), historyWrites(stamp)));
+                pushAll(records, valueRecords(e.id, e, entryValues(nexts[i], movedKey, form === 'card', { targets, stored: e }), historyWrites(stamp)));
                 records.push({ kind: 'entryIndex', entry: e.id, book, index: m.displayIndex });
             });
             await this.store.commit(records);
@@ -1490,6 +1562,20 @@ export class WorldInfoEngine {
      */
     async deleteEntryById(book, entry, actor = null) {
         const [bookEntity] = await this.lib.entities([book]);
+        if (bookEntity && characterOfBook(bookEntity) !== null) {
+            return this.inWorld(book, async () => {
+                const e = await this.entryIn(book, entry);
+                if (!e) return 'no entry';
+                /** @type {object[]} */
+                const records = [];
+                const stamp = await this.stamper(actor, records);
+                records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
+                const sources = await this.store.worldRead('worldbuildingSourcesTargeting', { book, entities: [e.id], limit: RELATION_CHANGES_PER_STEP });
+                await this.store.commit(records);
+                this.jobs.start(book);
+                return { unreachedLoops: await this.unreachedLoops(book, records, sources) };
+            });
+        }
         if (!bookEntity || bookEntity.type !== TYPE.book) return 'missing';
         for (let tries = 0; tries < 3; tries++) {
             const e = await this.entryIn(book, entry);
@@ -1689,16 +1775,25 @@ export class WorldInfoEngine {
      * @param {Actor | null} [actor]
      * @returns {Promise<{ uid: string, entry: object, unreachedLoops: UnreachedLoop[] } | 'missing' | 'no entry' | 'full'>}
      */
-    restore(name, id, actor = null) {
-        return this.lane([bookKey(name)], async () => {
-            const found = await this.find(name);
-            if (!found?.defined) return 'missing';
-            const page = await this.store.worldRead('deleted', { book: found.id, after: id - 1n, limit: 1 });
+    async restore(name, id, actor = null) {
+        const found = await this.find(name);
+        return found?.defined ? this.restoreIn(found.id, id, actor) : 'missing';
+    }
+
+    /**
+     * @param {bigint} book
+     * @param {bigint} id
+     * @param {Actor | null} [actor]
+     * @returns {Promise<{ uid: string, entry: object, unreachedLoops: UnreachedLoop[] } | 'missing' | 'no entry' | 'full'>}
+     */
+    restoreIn(book, id, actor = null) {
+        return this.inWorld(book, async form => {
+            const page = await this.store.worldRead('deleted', { book, after: id - 1n, limit: 1 });
             const d = page.entries[0];
             if (!d || d.id !== id) return 'no entry';
             let uid = /** @type {string} */ (d.key);
-            const numbers = await this.store.worldRead('numbers', { book: found.id });
-            const [taken] = await this.lib.ids(TYPE.entry, [`${found.id}:${uid}`]);
+            const numbers = await this.store.worldRead('numbers', { book });
+            const [taken] = await this.lib.ids(TYPE.entry, [`${book}:${uid}`]);
             if (taken !== null) {
                 if (numbers.freeKey >= MAX_UID) return 'full';
                 uid = String(numbers.freeKey);
@@ -1706,23 +1801,23 @@ export class WorldInfoEngine {
             /** @type {number | null} */
             let position = d.position;
             if (position !== null) {
-                const there = await this.store.worldRead('entries', { book: found.id, ...(position > 0 ? { after: position - 1 } : {}), limit: 1 });
+                const there = await this.store.worldRead('entries', { book, ...(position > 0 ? { after: position - 1 } : {}), limit: 1 });
                 if (there.entries[0]?.position === position) position = null;
             }
             /** @type {object[]} */
             const records = [];
             const stamp = await this.stamper(actor, records);
-            const kept = await this.store.worldRead('worldbuildingRelationsKept', { book: found.id, entity: id });
+            const kept = await this.store.worldRead('worldbuildingRelationsKept', { book, entity: id });
             records.push(
-                { kind: 'histRestore', entity: id, type: TYPE.entry, key: `${found.id}:${uid}`, added: 0, ...stamp() },
+                { kind: 'histRestore', entity: id, type: TYPE.entry, key: `${book}:${uid}`, added: 0, ...stamp() },
                 ...(kept === null ? [] : historyWrites(stamp).json(id, RELATIONS_FIELD, kept.json, kept.before)),
-                { kind: 'itemPlace', entity: found.id, list: 0, item: id, position: position ?? (numbers.lastPosition ?? 0) + POSITION_GAP },
-                ...(d.index === null ? [] : [{ kind: 'entryIndex', entry: id, book: found.id, index: d.index }]),
+                { kind: 'itemPlace', entity: book, list: 0, item: id, position: position ?? (numbers.lastPosition ?? 0) + POSITION_GAP },
+                ...(d.index === null ? [] : [{ kind: 'entryIndex', entry: id, book, index: d.index }]),
             );
             await this.store.commit(records);
-            this.jobs.start(found.id);
+            this.jobs.start(book);
             const [e] = await this.lib.entities([id]);
-            return { uid, entry: entryObject(/** @type {import('./entity-values.js').StoredEntity} */ (e), false), unreachedLoops: await this.unreachedLoops(found.id, records, [id]) };
+            return { uid, entry: entryAsWorld(/** @type {import('./entity-values.js').StoredEntity} */ (e), form), unreachedLoops: await this.unreachedLoops(book, records, [id]) };
         });
     }
 
@@ -1885,18 +1980,45 @@ export class WorldInfoEngine {
     }
 
     /**
+     * Runs `write` in the book's lane: a world's, or for a character's own book its character's, after which the
+     * character's figures that cover its book (its identity hash and data size) are written again.
      * @param {bigint} book
-     * @param {(key: string) => Promise<T>} write
+     * @param {(form: BookForm) => Promise<T>} write
      * @returns {Promise<T | 'missing'>}
      * @template T
      */
     async inWorld(book, write) {
         const [bookEntity] = await this.lib.entities([book]);
+        const owner = bookEntity ? characterOfBook(bookEntity) : null;
+        if (owner !== null) {
+            const [character] = await this.lib.entities([owner]);
+            if (!character || character.type !== TYPE.character) return 'missing';
+            return this.lib.serialized(TYPE.character, character.key, async () => {
+                const [still] = await this.lib.entities([book]);
+                if (!still || still.key !== bookEntity?.key || still.type !== TYPE.ownedBook) return 'missing';
+                const done = await write('card');
+                await this.lib.commitCardFigures(owner);
+                return done;
+            });
+        }
         if (!bookEntity || bookEntity.type !== TYPE.book) return 'missing';
         return this.lane([bookEntity.key], async () => {
             const found = await this.find(bookEntity.key);
-            return found?.defined && found.id === book ? write(bookEntity.key) : 'missing';
+            return found?.defined && found.id === book ? write('world') : 'missing';
         });
+    }
+
+    /**
+     * Whether `book` is a world or a character's own book, and the character that owns it.
+     * @param {bigint} book
+     * @returns {Promise<{ form: BookForm, character: bigint | null } | null>}
+     */
+    async bookForm(book) {
+        const [bookEntity] = await this.lib.entities([book]);
+        if (!bookEntity) return null;
+        const character = characterOfBook(bookEntity);
+        if (character !== null) return { form: 'card', character };
+        return bookEntity.type === TYPE.book ? { form: 'world', character: null } : null;
     }
 
     /**
@@ -2060,7 +2182,8 @@ export class WorldInfoEngine {
      * @returns {Promise<{ unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing'>}
      */
     startBulk(book, { selected, except }, action, loopCheckLimit, actor = null) {
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async form => {
+            if (form === 'card') return { refused: CARD_BOOK_BULK_REFUSAL };
             const [bookEntity] = await this.lib.entities([book]);
             const job = 1 + Math.max(0, ...bulkJobFields(bookEntity?.values ?? []).map(field => field.job));
             const step = await this.bulkChunk(book, job, { action, selected, except, actor }, { cursor: null, done: 0 }, false);
@@ -2309,7 +2432,7 @@ function assembleBook(s, world) {
             continue;
         }
         if (typeof v.field !== 'string') continue;
-        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD) || v.field === NAMES_OFFER_FIELD || isBulkJobField(v.field) || isFontField(v.field)) && v.text !== undefined) continue;
+        if ((v.field.startsWith(RELATION_KIND_FIELD) || v.field.startsWith(RELATION_KIND_MERGE_FIELD) || v.field === NAMES_OFFER_FIELD || v.field === WORLD_PICTURE_FIELD || isBulkJobField(v.field) || isFontField(v.field)) && v.text !== undefined) continue;
         if (v.field.startsWith(SHARED_LOOK_FIELD)) continue;
         found.set(v.field === LOOK_FIELD ? LOOK : ownKeyOfField(v.field), v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
     }

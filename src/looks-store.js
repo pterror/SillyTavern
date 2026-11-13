@@ -104,6 +104,20 @@ async function putByHash(dir, bytes, format) {
 }
 
 /**
+ * Keeps an uploaded image in the user's image store, by its content's hash.
+ * @param {string} root the user's folder
+ * @param {import('@st/server-ui').Upload} file
+ * @returns {Promise<{ id: string } | { refused: string }>}
+ */
+export async function storeImage(root, file) {
+    if (file.size > IMAGE_BYTES_AT_MOST) return { refused: `An image is at most ${IMAGE_BYTES_AT_MOST / 1024 / 1024} MB.` };
+    const bytes = await fs.promises.readFile(file.path);
+    const format = imageFormatOf(bytes);
+    if (format === null) return { refused: 'That file is no image: send a PNG, JPEG, WebP or GIF.' };
+    return { id: await putByHash(lookImagesDirectory(root), bytes, format) };
+}
+
+/**
  * @param {StoredEntity | null} book
  * @returns {{ id: string, name: string }[]}
  */
@@ -396,11 +410,7 @@ export function looksPorts({ libOf }) {
             return null;
         },
         async storeImage(who, file) {
-            if (file.size > IMAGE_BYTES_AT_MOST) return { refused: `An image is at most ${IMAGE_BYTES_AT_MOST / 1024 / 1024} MB.` };
-            const bytes = await fs.promises.readFile(file.path);
-            const format = imageFormatOf(bytes);
-            if (format === null) return { refused: 'That file is no image: send a PNG, JPEG, WebP or GIF.' };
-            return { id: await putByHash(lookImagesDirectory(who.user.directories.root), bytes, format) };
+            return storeImage(who.user.directories.root, file);
         },
         async readTheme(user) {
             const { entity } = await lookEntity(await libOf(user), USER_LOOKS, [THEME_FIELD, MARK_FIELD]);

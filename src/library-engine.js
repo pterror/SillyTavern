@@ -1183,6 +1183,24 @@ export class LibraryEngine {
     }
 
     /**
+     * Writes the character's identity hash and data size again from the card as stored, its own book included. Runs
+     * in the character's lane, after a write of its book.
+     * @param {bigint} id
+     */
+    async commitCardFigures(id) {
+        const [e] = await this.entities([id]);
+        if (!e || e.type !== TYPE.character) return;
+        const card = await this.assembled(e);
+        const records = [];
+        const hex = computeContentIdentityHash(card);
+        if (e.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') !== hex) records.push({ kind: 'cardHash', entity: e.id, which: HASH.identity, hash: Buffer.from(hex, 'hex') });
+        const { getCharaCardV2 } = await import('./character-card-normalize.js');
+        const size = calculateDataSize(getCharaCardV2(card, false).data ?? {});
+        if (e.dataSize !== size) records.push({ kind: 'dataSize', entity: e.id, size });
+        if (records.length > 0) await this.store.commit(records);
+    }
+
+    /**
      * @param {StoredEntity} e
      * @returns {Promise<object | null>}
      */

@@ -1,6 +1,7 @@
 import { MENTIONS_PER_PAGE } from '@st/worldbuilding/protocol';
 import { TYPE } from '../library-codes.js';
-import { entryObject, keysOfEntry } from '../world-info-engine.js';
+import { entryAsWorld, keysOfEntry } from '../world-info-engine.js';
+import { lookImageUrl } from '@st/looks/look';
 import { newWorldInfoEntryDefinition, newWorldInfoEntryTemplate } from '../../public/scripts/world-info-entry-defaults.js';
 
 export const SENTENCE_SIDE_CHARACTERS = 200;
@@ -123,6 +124,7 @@ function withKeyAs(entry, keys, key, as) {
 }
 
 const NO_SUCH_KEY = 'That entry has no such key.';
+export const CARD_ENTRY_STAYS = 'An entry doesn\'t move into or out of a character\'s own lorebook.';
 
 /**
  * @param {Record<string, unknown>} current
@@ -224,12 +226,13 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             const read = await lib.store.worldRead('worldbuildingEntry', { book: b, entry: e });
             if (read === null) return null;
             if (read.deleted) return { deleted: true };
-            const stored = await lib.books.entryIn(b, e);
-            const { placement, differs } = placementOf(stored ? /** @type {Record<string, unknown>} */ (entryObject(stored, false)) : {});
+            const [stored, form] = await Promise.all([lib.books.entryIn(b, e), lib.books.bookForm(b)]);
+            const { placement, differs } = placementOf(stored && form ? entryAsWorld(stored, form.form) : {});
             const counts = await countTokens(user, [read.text]);
             const found = (await (await referencesOf(user)).links(b, e, read.text, { readsAtMost: textLinkReads })) ?? { links: [], complete: true };
             return {
                 ...read,
+                picture: read.picture === null ? null : lookImageUrl(read.picture),
                 links: found.links.map(link => ({ ...link, entry: String(link.entry) })),
                 linksComplete: found.complete,
                 placement: /** @type {import('@st/worldbuilding/protocol').Placement} */ (placement),
@@ -260,7 +263,7 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
         async deleteEntry(who, book, entry) {
             const lib = await libOf(who.user);
             const [b, e] = [BigInt(book), BigInt(entry)];
-            if ((await worldKey(lib, b)) === null) return 'missing';
+            if ((await lib.books.bookForm(b)) === null) return 'missing';
             /** @type {(import('@st/worldbuilding/protocol').Named | null)[]} */
             const [label] = await lib.store.worldRead('worldbuildingLabels', { book: b, entities: [e] });
             if (!label) return 'no entry';
@@ -270,9 +273,7 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
         },
         async restoreEntry(who, book, entry) {
             const lib = await libOf(who.user);
-            const key = await worldKey(lib, BigInt(book));
-            if (key === null) return 'missing';
-            const done = await lib.books.restore(key, BigInt(entry), actorOf(who));
+            const done = await lib.books.restoreIn(BigInt(book), BigInt(entry), actorOf(who));
             if (done === 'full') return { refused: 'This world has no free entry number left.' };
             if (typeof done === 'string') return done;
             return { unreachedLoops: done.unreachedLoops };
@@ -280,8 +281,8 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
         async moveEntryToWorld(who, book, entry, toBook) {
             const lib = await libOf(who.user);
             const [from, to] = [await worldKey(lib, BigInt(book)), await worldKey(lib, BigInt(toBook))];
-            if (from === null) return 'missing';
-            if (to === null) return { refused: 'The world to move it to no longer exists.' };
+            if (from === null) return (await lib.books.bookForm(BigInt(book))) === null ? 'missing' : { refused: CARD_ENTRY_STAYS };
+            if (to === null) return (await lib.books.bookForm(BigInt(toBook))) === null ? { refused: 'The world to move it to no longer exists.' } : { refused: CARD_ENTRY_STAYS };
             const e = await lib.books.entryIn(BigInt(book), BigInt(entry));
             if (!e) return 'no entry';
             const moved = await lib.books.transplant({ source: from, target: to, uid: e.key.slice(e.key.indexOf(':') + 1), deleteOriginal: true }, actorOf(who));

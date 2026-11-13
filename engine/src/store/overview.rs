@@ -567,6 +567,7 @@ fn card(
         ("entry", Js::Text(drawn.entity.to_string().into_bytes())),
         ("entryKey", drawn.own_key.as_ref().map_or(Js::Null, |own_key| Js::Text(own_key.text()))),
         ("label", label.js()),
+        ("picture", entry_label::picture(view, drawn.entity)?),
         ("title", title.map_or(Js::Null, Js::Text)),
         ("text", Js::Text(text)),
         ("textCut", Js::Bool(text_cut)),

@@ -9,6 +9,7 @@ import { readSettingsFor } from './settings-reads.js';
 import { onUserStoreOpened, userStore } from './user-stores.js';
 import { getCharacterWorldLink } from './world-info-files.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
+import { characterOfBook } from './world-info-engine.js';
 import { References, linksAmong } from './world-info/references.js';
 
 const WORLD_INFO_METADATA_KEY = 'world_info';
@@ -35,13 +36,10 @@ const HELD_SESSIONS_AT_MOST = 256;
  * @returns {Promise<bigint[]>}
  */
 export async function chatWorlds(directories, store, tree, metadata) {
-    const [owner] = await store.lib.store.libraryKeys([tree]);
-    if (!owner) return [];
-    const group = owner.type === TYPE.group ? owner.key : null;
-    const members = group === null
-        ? [owner.key]
-        : (await store.lib.groups([group]))[0]?.members?.filter((/** @type {unknown} */ m) => typeof m === 'string') ?? [];
-    const settings = readSettingsFor(directories, { avatar: group === null ? owner.key : null, groupId: group, tree: String(tree), nodeId: null }, ['power_user', 'world_info_settings', 'user_avatar']);
+    const taking = await chatMembers(store, tree);
+    if (!taking) return [];
+    const { group, members } = taking;
+    const settings = readSettingsFor(directories, { avatar: group === null ? members[0] : null, groupId: group, tree: String(tree), nodeId: null }, ['power_user', 'world_info_settings', 'user_avatar']);
     const persona = settings.power_user?.persona_data?.[settings.user_avatar]?.lorebook;
     /** @type {Set<string>} */
     const names = new Set(settings.world_info_settings?.world_info?.globalSelect ?? []);
@@ -63,6 +61,45 @@ export async function chatWorlds(directories, store, tree, metadata) {
         if (found?.defined && !books.includes(found.id)) books.push(found.id);
     }
     return books;
+}
+
+/**
+ * The characters taking part in the chat (their avatars) and its group's id, null for a character's chat; null when the
+ * chat has no owner.
+ * @param {import('./user-stores.js').UserStore} store
+ * @param {bigint} tree
+ * @returns {Promise<{ group: string | null, members: string[] } | null>}
+ */
+async function chatMembers(store, tree) {
+    const [owner] = await store.lib.store.libraryKeys([tree]);
+    if (!owner) return null;
+    const group = owner.type === TYPE.group ? owner.key : null;
+    const members = group === null
+        ? [owner.key]
+        : (await store.lib.groups([group]))[0]?.members?.filter((/** @type {unknown} */ m) => typeof m === 'string') ?? [];
+    return { group, members };
+}
+
+/**
+ * Whether a reply in the chat reads `book`: one of `chatWorlds`, or the own book of a character taking part in it whose
+ * card names no world that stands in for it (`getCharacterLore`).
+ * @param {import('./users.js').UserDirectoryList} directories
+ * @param {import('./user-stores.js').UserStore} store
+ * @param {bigint} tree
+ * @param {{ user: string, session: string | null }} actor whose place in the chat it is read at
+ * @param {bigint} book
+ * @returns {Promise<boolean>}
+ */
+export async function chatReadsBook(directories, store, tree, actor, book) {
+    const [entity] = await store.lib.entities([book]);
+    const character = entity ? characterOfBook(entity) : null;
+    if (character !== null) {
+        const [owner] = await store.lib.entities([character]);
+        if (!owner || !((await chatMembers(store, tree))?.members.includes(owner.key) ?? false)) return false;
+        const [card] = await store.lib.cards([owner.key]);
+        return getCharacterWorldLink(directories, card) !== character_world_link.FILE;
+    }
+    return (await chatWorlds(directories, store, tree, await landingMetadata(store, tree, actor))).includes(book);
 }
 
 /**

@@ -1,6 +1,9 @@
 import {
     actions,
     BULK_JOBS_VIEW,
+    CARD_RELATIONS_SHOWN,
+    CARD_TEXT_CHARACTERS,
+    CARD_VIEW,
     ENTRY_VIEW,
     FOUND_PER_QUERY,
     FOUND_VIEW,
@@ -31,6 +34,7 @@ import type {
     BulkAction,
     BulkJob,
     BulkJobsView,
+    CardView,
     Chip,
     EntryCell,
     FoundView,
@@ -44,7 +48,6 @@ import type {
     LastChangeView,
     LoopsLeftByJobsView,
     MentionedIn,
-    NamesOffer,
     Named,
     OpenEntryView,
     Placement,
@@ -59,6 +62,7 @@ import type {
     ShownLoop,
     ShownLoops,
     StepLanding,
+    EntryAt,
     UnreachedLoop,
 } from './protocol.ts';
 import { defineArea } from '@st/server-ui';
@@ -167,16 +171,37 @@ export type Ports = {
     // answers looks for.
     looksOf(context: ViewContext, view: string, things: string[]): Promise<Looks>;
     readWorlds(user: User): Promise<World[]>;
-    readWorld(user: User, book: string): Promise<(World & { namesOffer: NamesOffer | null }) | null>;
+    readWorld(user: User, book: string): Promise<Omit<Extract<WorldView, { id: string }>, 'usedInThisChat'> | null>;
+    // Whether a reply in the tab's chat reads the world; false with no chat.
+    chatReadsWorld(context: ViewContext, book: string): Promise<boolean>;
+    // The character's own lorebook, null when it has none.
+    characterBook(user: User, character: string): Promise<string | null>;
+    worldNamed(user: User, name: string): Promise<string | null>;
+    entryOfUid(user: User, book: string, uid: number): Promise<string | null>;
+    setWorldDescription(who: Who, book: string, description: string): Promise<'ok' | 'missing'>;
+    // `entry` null: the world's own picture; `file` null removes it.
+    setPicture(
+        who: Who,
+        book: string,
+        entry: string | null,
+        file: Upload | null,
+    ): Promise<'ok' | 'missing' | 'no entry' | { refused: string }>;
+    // At most `relations` of its relations and the first `textCharacters` characters of its text.
+    readCard(
+        user: User,
+        book: string,
+        entry: string,
+        shown: { relations: number; textCharacters: number },
+    ): Promise<Omit<Extract<CardView, { book: string }>, 'book' | 'entry'> | null>;
     openWorld(who: Who, book: string | null): Promise<string | null>;
     createWorld(who: Who, name: string): Promise<NewWorld>;
     renameWorld(who: Who, book: string, name: string): Promise<'ok' | 'missing' | { refused: string }>;
     duplicateWorld(who: Who, book: string): Promise<NewWorld | 'missing'>;
     // `next`: the world the worlds list orders after it, else before it; null when it was the only one.
-    deleteWorld(who: Who, book: string): Promise<{ next: string | null } | 'missing'>;
+    deleteWorld(who: Who, book: string): Promise<{ next: string | null } | 'missing' | { refused: string }>;
     importWorld(who: Who, file: Upload): Promise<NewWorld>;
-    exportWorld(user: User, book: string): Promise<ExportedWorld | null>;
-    setUsedInEveryChat(who: Who, book: string, used: boolean): Promise<'ok' | 'missing'>;
+    exportWorld(user: User, book: string): Promise<ExportedWorld | null | { refused: string }>;
+    setUsedInEveryChat(who: Who, book: string, used: boolean): Promise<'ok' | 'missing' | { refused: string }>;
     markTitleKeysAsNames(who: Who, book: string): Promise<NamesOfferChange>;
     declineNamesOffer(who: Who, book: string): Promise<NamesOfferChange>;
     undoMarkTitleKeysAsNames(who: Who, book: string): Promise<NamesOfferChange>;
@@ -293,6 +318,8 @@ const NOTHING_FOUND: FoundView = { book: null };
 
 const NO_WORLD: WorldView = { id: null };
 
+const NO_CARD: CardView = { book: null };
+
 const NOTHING_SELECTED: SelectionView = { book: null };
 
 const NO_BULK_JOBS: BulkJobsView = { book: null };
@@ -314,6 +341,7 @@ const NO_SUCH_KIND = 'This world has no such relation kind.';
 const BEING_MERGED = 'That kind is being merged, or another kind is being merged into it.';
 const NO_SUCH_ENTRY = "That entry isn't in this world.";
 const NO_ENTRY_OPEN = 'No entry is open.';
+const NO_CHARACTER_BOOK = 'This character has no lorebook of its own.';
 const NO_FILTER = 'Nothing is searched for.';
 const RESULTS_GONE = 'Those results are no longer shown.';
 const MENTIONS_GONE = 'Those mentions are no longer shown.';
@@ -357,6 +385,7 @@ export type ShownWorldState = { overview: ShownOverview; entry: OpenEntry | null
 
 type SessionState = {
     world: ShownWorldState | null;
+    card: EntryAt | null;
     kindsOfBook: string | null;
     lastChange: LastChange;
     filter: ShownFilter | null;
@@ -366,6 +395,7 @@ type SessionState = {
 
 const NO_SESSION_STATE: SessionState = {
     world: null,
+    card: null,
     kindsOfBook: null,
     lastChange: NOTHING_CHANGED,
     filter: null,
@@ -764,9 +794,10 @@ export function worldbuildingArea(ports: Ports) {
     const forgetWorld = (book: string) => {
         for (const [session, state] of bySession) {
             const shown = state.world?.overview.book;
-            if (![shown, state.kindsOfBook, state.finding?.book].includes(book)) continue;
+            if (![shown, state.kindsOfBook, state.finding?.book, state.card?.book].includes(book)) continue;
             bySession.set(session, {
                 ...state,
+                card: state.card?.book === book ? null : state.card,
                 world: shown === book ? null : state.world,
                 kindsOfBook: state.kindsOfBook === book ? null : state.kindsOfBook,
                 filter: shown === book ? null : state.filter,
@@ -774,6 +805,18 @@ export function worldbuildingArea(ports: Ports) {
                 selection: state.selection?.book === book ? null : state.selection,
             });
         }
+    };
+
+    const pictureChanged = (
+        done: 'ok' | 'missing' | 'no entry' | { refused: string },
+        entry: string | null,
+    ): ActionResult => {
+        if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+        if (done === 'no entry') return refusedWrite(done);
+        if (done !== 'ok') return { refused: done.refused };
+        return entry === null
+            ? { changed: [WORLD_VIEW, WORLDS_VIEW], own: [WORLD_VIEW] }
+            : { changed: [...VIEWS_OF_CARDS, CARD_VIEW], own: [ENTRY_VIEW] };
     };
 
     const drawn = (views: Record<string, (context: ViewContext) => Promise<object>>) =>
@@ -795,7 +838,22 @@ export function worldbuildingArea(ports: Ports) {
             }),
             [WORLD_VIEW]: async (context: ViewContext): Promise<WorldView> => {
                 const book = overviewOf(context.session)?.book;
-                return (book === undefined ? null : await ports.readWorld(context.user, book)) ?? NO_WORLD;
+                const [world, usedInThisChat] =
+                    book === undefined
+                        ? [null, false]
+                        : await Promise.all([ports.readWorld(context.user, book), ports.chatReadsWorld(context, book)]);
+                return world ? { ...world, usedInThisChat } : NO_WORLD;
+            },
+            [CARD_VIEW]: async (context: ViewContext): Promise<CardView> => {
+                const card = stateOf(context.session).card;
+                const read =
+                    card === null
+                        ? null
+                        : await ports.readCard(context.user, card.book, card.entry, {
+                              relations: CARD_RELATIONS_SHOWN,
+                              textCharacters: CARD_TEXT_CHARACTERS,
+                          });
+                return card && read ? { ...card, ...read } : NO_CARD;
             },
             [OVERVIEW_VIEW]: async (context: ViewContext): Promise<OverviewView> => {
                 const overview = overviewOf(context.session);
@@ -836,6 +894,7 @@ export function worldbuildingArea(ports: Ports) {
                 return { book, ...(await shownLoops(context.user, book, loops)) };
             },
         }),
+        followChat: [WORLD_VIEW],
         gone: (session) => {
             bySession.delete(session);
         },
@@ -1046,6 +1105,45 @@ export function worldbuildingArea(ports: Ports) {
                 };
             },
             'worldbuilding.openWorlds': async () => ({ changed: [], opensViews: [WORLDS_VIEW] }),
+            'worldbuilding.openNamed': async (context, { world, uid, overview, pointingAt }) => {
+                const book = await ports.worldNamed(context.user, world);
+                if (book === null) return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                const entry = uid === null ? null : await ports.entryOfUid(context.user, book, uid);
+                if (uid !== null && entry === null) return { refused: NO_SUCH_ENTRY };
+                const held = overviewOf(context.session);
+                const groupBy = held?.book === book ? held.groupBy : null;
+                const shown = await showWorld(context, book, { ...overview, groupBy, around: entry });
+                if (entry === null) return shown;
+                rememberEntry(context.session, openedNow(entry, pointingAt));
+                const entryViews = [ENTRY_VIEW, POINTING_AT_VIEW];
+                return {
+                    changed: shown.changed.filter((view) => !entryViews.includes(view)),
+                    opensViews: [...shown.opensViews, ...entryViews],
+                    own: [WORLD_VIEW, ENTRY_VIEW],
+                };
+            },
+            'worldbuilding.openCharacterBook': async (context, { character, overview }) => {
+                const book = await ports.characterBook(context.user, character);
+                if (book === null) return { refused: NO_CHARACTER_BOOK };
+                const held = overviewOf(context.session);
+                const groupBy = held?.book === book ? held.groupBy : null;
+                return showWorld(context, book, { ...overview, groupBy, around: null });
+            },
+            'worldbuilding.showCard': async (context, { book, entry }) => {
+                remember(context.session, { card: { book, entry } });
+                return { changed: [], opensViews: [CARD_VIEW] };
+            },
+            'worldbuilding.setWorldDescription': async (context, { book, description }) => {
+                const done = await ports.setWorldDescription(who(context), book, description);
+                if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                return { changed: [WORLD_VIEW] };
+            },
+            'worldbuilding.setPicture': async (context, { book, entry }) => {
+                if (!context.upload) return { refused: 'Choose a picture.' };
+                return pictureChanged(await ports.setPicture(who(context), book, entry, context.upload), entry);
+            },
+            'worldbuilding.removePicture': async (context, { book, entry }) =>
+                pictureChanged(await ports.setPicture(who(context), book, entry, null), entry),
             'worldbuilding.createWorld': async (context, { name, overview }) =>
                 newWorldShown(context, await ports.createWorld(who(context), name), overview),
             'worldbuilding.renameWorld': async (context, { book, name }) => {
@@ -1060,6 +1158,7 @@ export function worldbuildingArea(ports: Ports) {
                 const shown = overviewOf(context.session);
                 const done = await ports.deleteWorld(who(context), book);
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                if ('refused' in done) return { refused: done.refused };
                 forgetWorld(book);
                 if (shown?.book === book) {
                     const { layout, firstRank, endRank } = shown;
@@ -1103,11 +1202,13 @@ export function worldbuildingArea(ports: Ports) {
             'worldbuilding.exportWorld': async (context, { book }) => {
                 const exported = await ports.exportWorld(context.user, book);
                 if (!exported) return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                if ('refused' in exported) return { refused: exported.refused };
                 return { changed: [], answer: exported };
             },
             'worldbuilding.setUsedInEveryChat': async (context, { book, used }) => {
                 const done = await ports.setUsedInEveryChat(who(context), book, used);
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                if (done !== 'ok') return { refused: done.refused };
                 return { changed: [WORLDS_VIEW, WORLD_VIEW] };
             },
             'worldbuilding.markTitleKeysAsNames': (context, { book }) =>

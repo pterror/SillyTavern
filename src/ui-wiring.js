@@ -9,17 +9,19 @@ import { alternativesArea } from '@st/alternatives/server';
 import { activationsArea } from '@st/activations/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
 import { looksArea } from '@st/looks/server';
+import { lookImageUrl } from '@st/looks/look';
 import { usageStatsArea } from '@st/usage-stats/server';
 import { VIEW as USAGE_STATS_VIEW } from '@st/usage-stats/protocol';
 import { STATS_BACKUP_FILE } from './old-stats-file.js';
 import { helpArea } from '@st/help/server';
 import { HOTKEYS_VIEW } from '@st/help/protocol';
 import { looksPorts } from './looks-store.js';
-import { resolveChatLinkLooks } from './chat-links.js';
+import { chatReadsBook, resolveChatLinkLooks } from './chat-links.js';
 import { sessionHeaderOf } from './request-session.js';
 import { References } from './world-info/references.js';
 import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
 import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
+import { withPictureUrls } from './world-info/worldbuilding-pictures.js';
 import { worldbuildingSearchPorts } from './world-info/worldbuilding-search.js';
 import { worldbuildingBulkPorts } from './world-info/worldbuilding-bulk.js';
 import { countWithConnection } from './connection-counts.js';
@@ -557,6 +559,8 @@ const regionLayout = layout => ({
     regionRows: layout.regionsByNestingLevel.map(region => region.rows),
 });
 const optionalId = (/** @type {string | null} */ id) => (id === null ? null : BigInt(id));
+// The chat's own world, in its metadata.
+const CHAT_WORLD_KEY = 'world_info';
 
 onUserStoreOpened(({ events, root, handle }) => {
     /** @type {import('@st/server-ui').User} */
@@ -568,6 +572,10 @@ onUserStoreOpened(({ events, root, handle }) => {
             entries: ['worldbuilding.world', 'worldbuilding.worlds', 'worldbuilding.entry', 'worldbuilding.found', 'worldbuilding.bulkJobs'],
         }[touched];
         ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview', 'worldbuilding.results', 'worldbuilding.pointingAt', 'worldbuilding.selection', ...also]).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
+    });
+    events.on('commit', (/** @type {any[]} */ records) => {
+        if (!records.some(r => r?.kind === 'bookChoose' || (r?.kind === 'stateChange' && r.key === CHAT_WORLD_KEY))) return;
+        ui.changed(user, ['worldbuilding.world']).catch(error => console.error('Pushing which worlds a chat reads failed.', error));
     });
     let statsQueued = false;
     events.on('commit', () => {
@@ -627,12 +635,31 @@ const worldbuildingPorts = {
     }),
     ...worldbuildingSearchPorts({ libOf }),
     ...worldbuildingBulkPorts({ libOf }),
+    async chatReadsWorld(context, book) {
+        if (!context.chat) return false;
+        const store = await userStore(directoriesOf(context.user), context.user.handle);
+        return chatReadsBook(directoriesOf(context.user), store, BigInt(context.chat.tree), { user: context.user.handle, session: context.session }, BigInt(book));
+    },
+    async readCard(user, book, entry, shown) {
+        const lib = await libOf(user);
+        const read = await lib.store.worldRead('worldbuildingEntry', { book: BigInt(book), entry: BigInt(entry) });
+        if (read === null || read.deleted) return null;
+        const text = Array.from(/** @type {string} */ (read.text));
+        return {
+            label: read.label,
+            picture: read.picture === null ? null : lookImageUrl(read.picture),
+            relations: read.relations.slice(0, shown.relations),
+            moreRelations: Math.max(0, read.relations.length - shown.relations),
+            text: text.slice(0, shown.textCharacters).join(''),
+            textCut: text.length > shown.textCharacters,
+        };
+    },
     async readLoopsLeftByJobs(user, book) {
         return (await libOf(user)).books.jobs.loopsLeft(BigInt(book));
     },
     async readOverview(user, { book, groupBy, firstRank, endRank, layout, stepLandedOn }) {
         const lib = await libOf(user);
-        return lib.store.worldRead('worldbuildingOverview', {
+        return withPictureUrls(await lib.store.worldRead('worldbuildingOverview', {
             book: BigInt(book),
             groupBy: groupBy === null ? null : Number(groupBy),
             firstRank,
@@ -640,7 +667,7 @@ const worldbuildingPorts = {
             stepLandedOn,
             cardTextCharacters: layout.cardTextCharacters,
             ...regionLayout(layout),
-        });
+        }));
     },
     async stepOverview(user, { book, groupBy, layout, ...step }) {
         const lib = await libOf(user);
@@ -657,7 +684,7 @@ const worldbuildingPorts = {
             cardTextCharacters: layout.cardTextCharacters,
             ...regionLayout(layout),
         });
-        return read === null ? null : read.sections;
+        return read === null ? null : withPictureUrls(read.sections);
     },
     async stepPointingAt(user, { book, entry, kind, layout, ...step }) {
         const lib = await libOf(user);

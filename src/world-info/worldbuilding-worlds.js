@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { TYPE } from '../library-codes.js';
-import { compareBookKeys, namesOfferShown } from '../world-info-engine.js';
+import { lookImageUrl } from '@st/looks/look';
+import { FIELD, TYPE } from '../library-codes.js';
+import { SLOT, WORLD_PICTURE_FIELD, characterOfBook, compareBookKeys, namesOfferShown } from '../world-info-engine.js';
 import { bookKey } from '../world-info-keys.js';
 import { CHOICE, chooseRecord } from '../settings-model/book-choices.js';
 import { EMBEDDED_WORLD_NAME } from './candidate-resolution.js';
 import { worldFromFile } from './world-files.js';
-import { fontRecords, fontsOfBook, putFontsOfFile, worldFontsForFile } from '../looks-store.js';
+import { fontRecords, fontsOfBook, putFontsOfFile, storeImage, worldFontsForFile } from '../looks-store.js';
 
 const PAGE = 1000;
 
@@ -16,6 +17,9 @@ export const LENGTH_REFUSAL = 'A world\'s name can be at most 250 bytes long.';
 const MAX_NAME_BYTES = 250;
 export const EMBEDDED_NAME_REFUSAL = `"${EMBEDDED_WORLD_NAME}" is kept for the lorebooks embedded in characters.`;
 const CARD_COPY_REFUSAL = 'This is a copy of a character\'s embedded lorebook; the character keeps its own.';
+export const CARD_BOOK_REFUSAL = 'A character\'s own lorebook stays with its character: it isn\'t renamed, copied, deleted, exported or used in every chat.';
+// The world's description: a field of the book, carried by a world file and by a card's book as `description`.
+const DESCRIPTION_FIELD = 'description';
 
 /**
  * @param {string} name
@@ -66,6 +70,62 @@ async function worldKey(lib, book) {
     const [found] = await lib.store.worldRead('resolved', { ids: [book] });
     return found && found.id === book && found.defined && typeof found.key === 'string' ? found.key : null;
 }
+
+/**
+ * The character whose own book `book` is, with its name and the book's, else null.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {import('../entity-values.js').StoredEntity | null} entity the book
+ * @returns {Promise<{ character: bigint, characterName: string, bookName: string } | null>}
+ */
+async function cardBookOf(lib, entity) {
+    const character = entity ? characterOfBook(entity) : null;
+    if (!entity || character === null) return null;
+    const [owner] = await lib.entities([character]);
+    if (!owner || owner.type !== TYPE.character) return null;
+    const characterName = owner.values.find(v => v.field === FIELD.name)?.text ?? owner.key;
+    const bookName = entity.values.find(v => v.field === 'name')?.text ?? '';
+    return { character, characterName, bookName };
+}
+
+/**
+ * @param {import('../entity-values.js').StoredEntity | null | undefined} book
+ * @returns {string | null}
+ */
+function pictureOf(book) {
+    const id = book?.values.find(v => v.field === WORLD_PICTURE_FIELD)?.text;
+    return id ? lookImageUrl(id) : null;
+}
+
+/**
+ * @param {import('../entity-values.js').StoredEntity | null | undefined} book
+ * @returns {string}
+ */
+function descriptionOf(book) {
+    return book?.values.find(v => v.field === DESCRIPTION_FIELD)?.text ?? '';
+}
+
+/**
+ * A world file's entries without their pictures: an image's id names it only in this user's image store.
+ * @param {Record<string, unknown>} world
+ * @returns {Record<string, unknown>}
+ */
+function withoutPictures(world) {
+    const entries = world.entries;
+    if (typeof entries !== 'object' || entries === null) return world;
+    const out = Array.isArray(entries) ? [] : {};
+    for (const [key, entry] of Object.entries(entries)) {
+        const extensions = /** @type {any} */ (entry)?.extensions;
+        if (typeof extensions === 'object' && extensions !== null && !Array.isArray(extensions) && 'picture' in extensions) {
+            const rest = { ...extensions };
+            delete rest.picture;
+            /** @type {any} */ (out)[key] = { ...entry, extensions: rest };
+        } else {
+            /** @type {any} */ (out)[key] = entry;
+        }
+    }
+    return { ...world, entries: out };
+}
+
 
 /**
  * @param {import('../library-engine.js').LibraryEngine} lib
@@ -136,7 +196,7 @@ async function withFonts(lib, book, fonts) {
 /**
  * The world actions and the worlds views of the worldbuilding area, over the store.
  * @param {WorldPortsWiring} wiring
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readWorlds' | 'readWorld' | 'openWorld' | 'createWorld' | 'renameWorld' | 'duplicateWorld' | 'deleteWorld' | 'importWorld' | 'exportWorld' | 'setUsedInEveryChat' | 'markTitleKeysAsNames' | 'declineNamesOffer' | 'undoMarkTitleKeysAsNames'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readWorlds' | 'readWorld' | 'characterBook' | 'worldNamed' | 'entryOfUid' | 'setWorldDescription' | 'setPicture' | 'openWorld' | 'createWorld' | 'renameWorld' | 'duplicateWorld' | 'deleteWorld' | 'importWorld' | 'exportWorld' | 'setUsedInEveryChat' | 'markTitleKeysAsNames' | 'declineNamesOffer' | 'undoMarkTitleKeysAsNames'>}
  */
 export function worldbuildingWorldPorts({ libOf, booksChanged }) {
     const actorOf = (/** @type {import('@st/worldbuilding/server').Who} */ who) => ({ user: who.user.handle, session: who.session });
@@ -173,17 +233,73 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
             const lib = await libOf(user);
             const used = new Set((await chosen(lib, await holderOf(lib, user.handle), CHOICE.selected)).map(b => b.id));
             const worlds = await worldsOf(lib);
-            return Promise.all(worlds.map(async ({ id, key }) => ({ id: String(id), name: key, entries: await entryCount(lib, id), usedInEveryChat: used.has(id) })));
+            const entities = await lib.entities(worlds.map(({ id }) => id));
+            return Promise.all(worlds.map(async ({ id, key }, at) => ({ id: String(id), name: key, entries: await entryCount(lib, id), usedInEveryChat: used.has(id), picture: pictureOf(entities[at]) })));
         },
         async readWorld(user, book) {
             const lib = await libOf(user);
             const id = BigInt(book);
+            const [entity] = await lib.entities([id]);
+            const card = await cardBookOf(lib, entity);
+            const shown = { picture: pictureOf(entity), description: descriptionOf(entity) };
+            if (card !== null) {
+                const cameWith = { thing: String(card.character), text: card.characterName, shownAs: /** @type {const} */ ('name') };
+                return { id: book, name: card.bookName || card.characterName, entries: await entryCount(lib, id), usedInEveryChat: false, namesOffer: namesOfferOf(await lib.books.namesOffer(id)), ...shown, cameWith };
+            }
             const key = await worldKey(lib, id);
             if (key === null) return null;
-            return { id: book, name: key, entries: await entryCount(lib, id), usedInEveryChat: await usedInEveryChat(user, id), namesOffer: namesOfferOf(await lib.books.namesOffer(id)) };
+            return { id: book, name: key, entries: await entryCount(lib, id), usedInEveryChat: await usedInEveryChat(user, id), namesOffer: namesOfferOf(await lib.books.namesOffer(id)), ...shown, cameWith: null };
+        },
+        async characterBook(user, character) {
+            const lib = await libOf(user);
+            const [book] = await lib.ids(TYPE.ownedBook, [`${character}:${SLOT.characterBook}`]);
+            if (book === null) return null;
+            const [entity] = await lib.entities([book]);
+            return (await cardBookOf(lib, entity)) !== null ? String(book) : null;
+        },
+        async worldNamed(user, name) {
+            const found = await (await libOf(user)).books.find(name);
+            return found?.defined ? String(found.id) : null;
+        },
+        async entryOfUid(user, book, uid) {
+            const lib = await libOf(user);
+            const [id] = await lib.ids(TYPE.entry, [`${book}:${uid}`]);
+            return id === null || !(await lib.books.entryIn(BigInt(book), id)) ? null : String(id);
+        },
+        async setWorldDescription({ user }, book, description) {
+            const lib = await libOf(user);
+            const id = BigInt(book);
+            const done = await lib.books.inWorld(id, () => lib.store.commit([description === ''
+                ? { kind: 'valueDelete', entity: id, field: DESCRIPTION_FIELD }
+                : { kind: 'textValue', entity: id, field: DESCRIPTION_FIELD, text: description }]));
+            return done === 'missing' ? 'missing' : 'ok';
+        },
+        async setPicture(who, book, entry, file) {
+            const lib = await libOf(who.user);
+            const id = BigInt(book);
+            /** @type {string | null} */
+            let picture = null;
+            if (file !== null) {
+                const stored = await storeImage(who.user.directories.root, file);
+                if ('refused' in stored) return stored;
+                picture = stored.id;
+            }
+            if (entry === null) {
+                const done = await lib.books.inWorld(id, () => lib.store.commit([picture === null
+                    ? { kind: 'valueDelete', entity: id, field: WORLD_PICTURE_FIELD }
+                    : { kind: 'textValue', entity: id, field: WORLD_PICTURE_FIELD, text: picture }]));
+                return done === 'missing' ? 'missing' : 'ok';
+            }
+            return lib.books.editEntryById(id, BigInt(entry), current => {
+                const extensions = { ...(typeof current.extensions === 'object' && current.extensions !== null ? /** @type {Record<string, unknown>} */ (current.extensions) : {}) };
+                if (picture === null) delete extensions.picture;
+                else extensions.picture = picture;
+                return { ...current, extensions };
+            }, actorOf(who));
         },
         async openWorld({ user }, book) {
             const lib = await libOf(user);
+            if (book !== null && (await lib.books.bookForm(BigInt(book)))?.form === 'card') return book;
             const holder = await holderOf(lib, user.handle);
             const [last] = await chosen(lib, holder, CHOICE.lastOpened);
             /** @type {{ id: bigint, key: string } | null} */
@@ -211,6 +327,7 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
             if (refusal) return { refused: refusal };
             const lib = await libOf(who.user);
             const id = BigInt(book);
+            if ((await lib.books.bookForm(id))?.form === 'card') return { refused: CARD_BOOK_REFUSAL };
             const key = await worldKey(lib, id);
             if (key === null) return 'missing';
             const { renamed } = await booksChanged(who.user, async () => {
@@ -222,15 +339,23 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
         },
         async duplicateWorld(who, book) {
             const lib = await libOf(who.user);
+            if ((await lib.books.bookForm(BigInt(book)))?.form === 'card') return { refused: CARD_BOOK_REFUSAL };
             const key = await worldKey(lib, BigInt(book));
             const data = key === null ? null : await lib.books.read(key);
             if (key === null || data === null) return 'missing';
             const made = await writeNew(who, key, data);
-            if ('book' in made) await withFonts(lib, BigInt(made.book), fontsOfBook((await lib.entities([BigInt(book)]))[0]));
+            if ('book' in made) {
+                const [original] = await lib.entities([BigInt(book)]);
+                const copy = BigInt(made.book);
+                await withFonts(lib, copy, fontsOfBook(original));
+                const picture = original?.values.find(v => v.field === WORLD_PICTURE_FIELD)?.text;
+                if (picture) await lib.books.inWorld(copy, () => lib.store.commit([{ kind: 'textValue', entity: copy, field: WORLD_PICTURE_FIELD, text: picture }]));
+            }
             return made;
         },
         async deleteWorld({ user }, book) {
             const lib = await libOf(user);
+            if ((await lib.books.bookForm(BigInt(book)))?.form === 'card') return { refused: CARD_BOOK_REFUSAL };
             const key = await worldKey(lib, BigInt(book));
             if (key === null) return 'missing';
             const worlds = await worldsOf(lib);
@@ -247,7 +372,7 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
             if ('refused' in read) return read;
             const name = path.parse(file.name).name.trim();
             if (name === '') return { refused: 'The file needs a name for the world to take.' };
-            const { fonts, ...world } = read.world;
+            const { fonts, ...world } = withoutPictures(read.world);
             const kept = await putFontsOfFile(who.user.directories.root, fonts);
             const made = await writeNew(who, name, world);
             if ('book' in made) await withFonts(await libOf(who.user), BigInt(made.book), kept);
@@ -255,9 +380,11 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
         },
         async exportWorld(user, book) {
             const lib = await libOf(user);
+            if ((await lib.books.bookForm(BigInt(book)))?.form === 'card') return { refused: CARD_BOOK_REFUSAL };
             const key = await worldKey(lib, BigInt(book));
-            const data = key === null ? null : await lib.books.read(key);
-            if (key === null || data === null) return null;
+            const read = key === null ? null : await lib.books.read(key);
+            if (key === null || read === null) return null;
+            const data = withoutPictures(read);
             const fonts = await worldFontsForFile(lib, user.directories.root, BigInt(book));
             return { fileName: `${key}.json`, json: JSON.stringify(fonts.length > 0 ? { ...data, fonts } : data) };
         },
@@ -273,6 +400,7 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
         async setUsedInEveryChat({ user }, book, used) {
             const lib = await libOf(user);
             const id = BigInt(book);
+            if ((await lib.books.bookForm(id))?.form === 'card') return { refused: CARD_BOOK_REFUSAL };
             const key = await worldKey(lib, id);
             const holder = await holderOf(lib, user.handle);
             if (key === null) return 'missing';

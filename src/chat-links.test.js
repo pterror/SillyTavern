@@ -14,7 +14,7 @@ setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
 const { router: chatsRouter } = await import('./endpoints/chats.js');
 const { newSessionKey } = await import('./chat-engine.js');
-const { chatWorlds, linksOfTexts, CHAT_LINKS_EVENT } = await import('./chat-links.js');
+const { chatReadsBook, chatWorlds, linksOfTexts, CHAT_LINKS_EVENT } = await import('./chat-links.js');
 const { References } = await import('./world-info/references.js');
 const { writeAllSettings } = await import('./settings-store.js');
 const { getStringHash } = await import('../public/scripts/hash-utils.js');
@@ -135,4 +135,25 @@ test('a renamed name is linked as it is now, and the tab holding the chat\'s lin
     assert.deepEqual(links.messages[first].links[0], [0, 4, ilse]);
     const { links: answered } = await post('/api/chats/message/edit', { avatar_url: 'alice.png', node_id: first, content: { mes: texts[0] } });
     assert.deepEqual(answered.messages[first].links[0], [0, 4, ilse]);
+});
+
+test('a chat reads a world when its replies do, and a character\'s own book when the character takes part and names no world in its place', async () => {
+    const actor = { user: 'u', session: tab };
+    assert.equal(await chatReadsBook(directories, store, tree, actor, harbour), true);
+    assert.equal(await chatReadsBook(directories, store, tree, actor, elsewhere), false);
+
+    const own = { name: 'Notes', entries: [{ id: 0, keys: ['Mira'], content: 'Mira.' }] };
+    for (const [avatar, world] of [['bob.png', ''], ['cara.png', 'Harbour']]) {
+        const cardJson = JSON.stringify({ name: avatar, spec: 'chara_card_v2', data: { name: avatar, extensions: { world }, character_book: own } });
+        await writeLibraryCard(user, avatar, cardJson, writeCard(baseImage, cardJson));
+    }
+    const bookOf = async (/** @type {string} */ avatar) => {
+        const [character] = await lib.ids(0, [avatar]);
+        return /** @type {bigint} */ ((await lib.ids(4, [`${character}:c`]))[0]);
+    };
+    const [bobBook, caraBook] = [await bookOf('bob.png'), await bookOf('cara.png')];
+    assert.equal(await chatReadsBook(directories, store, tree, actor, bobBook), false, 'not taking part');
+    for (const avatar of ['bob.png', 'cara.png']) await seedMessages(store, { avatar }, null, [{ name: 'User', is_user: true, is_system: false, mes: 'Hi.', send_date: 'x', extra: {} }], { session: tab });
+    assert.equal(await chatReadsBook(directories, store, await treeOf(store, { avatar: 'bob.png' }), actor, bobBook), true);
+    assert.equal(await chatReadsBook(directories, store, await treeOf(store, { avatar: 'cara.png' }), actor, caraBook), false, 'its world stands in for it');
 });

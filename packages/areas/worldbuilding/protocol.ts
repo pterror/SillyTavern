@@ -16,12 +16,16 @@ export const FOUND_VIEW = 'worldbuilding.found';
 export const SELECTION_VIEW = 'worldbuilding.selection';
 export const BULK_JOBS_VIEW = 'worldbuilding.bulkJobs';
 export const KEY_SHARERS_VIEW = 'worldbuilding.keySharers';
+export const CARD_VIEW = 'worldbuilding.card';
 
 export const FOUND_PER_QUERY = 20;
 export const MENTIONS_PER_PAGE = 20;
 export const KEY_SHARERS_SHOWN = 20;
 export const SELECTION_COUNTED_UP_TO = 1000;
 export const LOOPS_SHOWN = 3;
+// The hover card's relations and the characters of its text's opening.
+export const CARD_RELATIONS_SHOWN = 6;
+export const CARD_TEXT_CHARACTERS = 300;
 export const ENTRIES_NAMED_PER_LOOP = 3;
 
 // One part of an answer: 200 ms at an assumed 8 µs a read (docs/design/worldbuilding-store.md, One request's budget).
@@ -121,6 +125,8 @@ export type EntryCell = {
     entry: string;
     entryKey: string;
     label: Named;
+    // The URL of the entry's picture.
+    picture: string | null;
     title: string | null;
     text: string;
     textCut: boolean;
@@ -275,6 +281,7 @@ export type OpenEntryView = EntryAt & {
     deleted: false;
     entryKey: string;
     label: Named;
+    picture: string | null;
     title: string | null;
     keys: KeyOfEntry[];
     text: string;
@@ -307,7 +314,8 @@ export type EntryView = OpenEntryView | DeletedEntryView | { book: null };
 // The other entries of the open entry's world that have `key` among their keys, the first KEY_SHARERS_SHOWN of them.
 export type KeySharersView = (EntryAt & { key: string; entries: Named[]; more: boolean }) | { book: null };
 
-export type World = { id: string; name: string; entries: number; usedInEveryChat: boolean };
+// `picture`: the URL of the world's picture.
+export type World = { id: string; name: string; entries: number; usedInEveryChat: boolean; picture: string | null };
 
 export type WorldsView = { worlds: World[] };
 
@@ -320,7 +328,29 @@ export type NamesOffer = {
     marked: number;
 };
 
-export type WorldView = (World & { namesOffer: NamesOffer | null }) | { id: null };
+// `usedInThisChat`: a reply in the tab's chat reads the world. `cameWith`: the character whose own lorebook the world is
+// (its card carries it); such a world is not among the worlds listed and is opened by its character.
+export type WorldView =
+    | (World & {
+          namesOffer: NamesOffer | null;
+          description: string;
+          usedInThisChat: boolean;
+          cameWith: Named | null;
+      })
+    | { id: null };
+
+// What pointing at an entry's name shows: the first CARD_RELATIONS_SHOWN of its relations, and its text's first
+// CARD_TEXT_CHARACTERS characters.
+export type CardView =
+    | (EntryAt & {
+          label: Named;
+          picture: string | null;
+          relations: RelationOnCard[];
+          moreRelations: number;
+          text: string;
+          textCut: boolean;
+      })
+    | { book: null };
 
 export type ExportedWorld = { fileName: string; json: string };
 
@@ -517,6 +547,19 @@ export const actions = {
     'worldbuilding.restoreEntry': v.object(entryNamed),
     'worldbuilding.moveEntryToWorld': v.object({ ...entryNamed, toBook: entityId }),
     'worldbuilding.openWorlds': v.object({}),
+    // A world by its name, and in it the entry with upstream's `uid` when one is named.
+    'worldbuilding.openNamed': v.object({
+        world: v.pipe(v.string(), v.minLength(1)),
+        uid: v.nullable(v.pipe(wholeNumber, v.minValue(0))),
+        overview: shownOverview,
+        pointingAt: pointingAtShown,
+    }),
+    'worldbuilding.openCharacterBook': v.object({ character: entityId, ...opensWorld }),
+    'worldbuilding.showCard': v.object(entryNamed),
+    'worldbuilding.setWorldDescription': v.object({ book: entityId, description: v.string() }),
+    // The upload is the picture; `entry` null: the world's own.
+    'worldbuilding.setPicture': v.object({ book: entityId, entry: v.nullable(entityId) }),
+    'worldbuilding.removePicture': v.object({ book: entityId, entry: v.nullable(entityId) }),
     'worldbuilding.createWorld': v.object({ name: worldName, ...opensWorld }),
     'worldbuilding.renameWorld': v.object({ book: entityId, name: worldName }),
     'worldbuilding.duplicateWorld': v.object({ book: entityId, ...opensWorld }),

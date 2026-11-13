@@ -1,4 +1,5 @@
 import { WORLD_FIELD, WORLD_LABELS, searchClauses } from '../search-clauses.js';
+import { withPictureUrls } from './worldbuilding-pictures.js';
 
 const FOUND_BY = [WORLD_FIELD.key, WORLD_FIELD.title];
 
@@ -21,7 +22,7 @@ export function worldbuildingSearchPorts({ libOf }) {
         },
         async readResults(user, { book, groupBy, layout, query, chips, pageSize, from, pages, walkSteps }) {
             const lib = await libOf(user);
-            return lib.store.worldRead('worldbuildingResults', {
+            return withPictureUrls(await lib.store.worldRead('worldbuildingResults', {
                 book: BigInt(book),
                 groupBy: groupBy === null ? null : Number(groupBy),
                 cardTextCharacters: layout.cardTextCharacters,
@@ -31,7 +32,7 @@ export function worldbuildingSearchPorts({ libOf }) {
                 pages,
                 limit: pageSize,
                 walkSteps,
-            });
+            }));
         },
         async findEntries(user, { book, query, limit }) {
             const lib = await libOf(user);

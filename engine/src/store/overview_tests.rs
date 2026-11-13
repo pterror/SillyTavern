@@ -466,6 +466,18 @@ fn every_card_is_labelled_by_its_title_else_its_first_name_else_its_opening() {
     records.push(set_json(204, entry_label::names_field(), r#"{"third":"party"}"#));
     records.push(set_code_text(204, 104, &format!("\n  {}  \nsecond line", "é".repeat(130))));
     records.push(set_code_text(205, 103, "   "));
+    for (entity, picture) in [(201, "abc.png"), (202, "")] {
+        records.push(rec(
+            "textValue",
+            vec![
+                Value::Sel(0, entity),
+                Value::Field(FieldRef::Key(entry_label::PICTURE_FIELD.to_vec())),
+                text(picture),
+                Value::Absent,
+                Value::Absent,
+            ],
+        ));
+    }
     store.commit_wait(records).unwrap();
     let overview_read = read(&store, |view| {
         overview::read_overview(
@@ -491,6 +503,9 @@ fn every_card_is_labelled_by_its_title_else_its_first_name_else_its_opening() {
     assert!(names(&cards[3]).is_empty());
     assert_eq!(field_of(&cards[3], "label"), &named("204", &"é".repeat(120), "opening"));
     assert_eq!(field_of(&cards[4], "label"), &named("205", "", "opening"));
+    assert_eq!(field_of(&cards[0], "picture"), &Js::Text(b"abc.png".to_vec()));
+    assert_eq!(field_of(&cards[1], "picture"), &Js::Null, "an empty picture is none");
+    assert_eq!(field_of(&cards[3], "picture"), &Js::Null);
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }

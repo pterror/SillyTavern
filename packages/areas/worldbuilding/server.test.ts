@@ -44,6 +44,7 @@ import {
     WALK_STEPS_PER_READ,
     WORLD_VIEW,
     WORLDS_VIEW,
+    CARD_VIEW,
 } from './protocol.ts';
 import type {
     KeySharersView,
@@ -85,6 +86,7 @@ import type {
     ResultsQuery,
 } from './server.ts';
 import type { ActionContext, ActionResult, Upload, User } from '@st/server-ui';
+import type { CardView } from './protocol.ts';
 
 const LOOK: ResolvedLook = {
     layers: { rest: [{ property: 'color', value: 'teal' }] },
@@ -164,6 +166,7 @@ const card = (occurrence: string, topLevelRank: number): EntryCell & { topLevelR
     entry: occurrence,
     entryKey: occurrence,
     label: { thing: occurrence, text: '', shownAs: 'opening' },
+    picture: null,
     title: null,
     text: '',
     textCut: false,
@@ -267,6 +270,7 @@ function world(
         selections: HeldSelection[];
         bulk: { selection: HeldSelection; action: BulkAction; loopCheckLimit: number; session: string }[];
         looks: { view: string; session: string; things: string[] }[];
+        pictures: { book: string; entry: string | null; file: string | null }[];
     } = {
         looks: [],
         overview: [],
@@ -288,6 +292,7 @@ function world(
         namesOffer: [],
         selections: [],
         bulk: [],
+        pictures: [],
     };
     const bulkJobs: BulkJob[] = [];
     const offers = new Map<string, NamesOffer | null>([
@@ -309,7 +314,10 @@ function world(
         return 'ok' as const;
     };
     const worlds = new Map<string, World>(
-        listed.map((id) => [id, { id, name: `World ${id}`, entries: id === '1' ? 2 : 0, usedInEveryChat: false }]),
+        listed.map((id) => [
+            id,
+            { id, name: `World ${id}`, entries: id === '1' ? 2 : 0, usedInEveryChat: false, picture: null },
+        ]),
     );
     let lastOpened: string | null = null;
     let nextWorld = 10;
@@ -317,13 +325,16 @@ function world(
         if ([...worlds.values()].some((w) => w.name === name))
             return { refused: `A world named "${name}" already exists.` };
         const id = String(nextWorld++);
-        worlds.set(id, { id, name, entries: 0, usedInEveryChat: false });
+        worlds.set(id, { id, name, entries: 0, usedInEveryChat: false, picture: null });
         return { book: id };
     };
-    const entries = new Map<string, { text: string; deleted: boolean }>([
-        ['7', { text: 'Ilse keeps the lamp.', deleted: false }],
-        ['8', { text: 'The Lantern House', deleted: false }],
+    const entries = new Map<string, { text: string; deleted: boolean; picture: string | null }>([
+        ['7', { text: 'Ilse keeps the lamp.', deleted: false, picture: null }],
+        ['8', { text: 'The Lantern House', deleted: false, picture: null }],
     ]);
+    const descriptions = new Map<string, string>();
+    // The own lorebook of the character `42`, which isn't among the worlds listed.
+    const cardBook = { id: '5', name: "Rhea's notes", entries: 240, usedInEveryChat: false, picture: null };
     let nextEntry = 50;
     // What mentions an entry: three pages, `p0` (read at null), `p1` and `p2`, each naming the entry `m<page>`.
     const mentionsPage = (at: number) => ({
@@ -341,6 +352,7 @@ function world(
             deleted: false,
             entryKey: entry,
             label: named(entry, `name ${entry}`),
+            picture: found.picture,
             title: null,
             keys: [{ text: `name ${entry}`, isName: true, alsoBringsUp: 0 }],
             text: found.text,
@@ -374,8 +386,51 @@ function world(
         },
         readWorlds: async () => [...worlds.values()].sort((a, b) => a.name.localeCompare(b.name)),
         readWorld: async (_u, book) => {
-            const found = worlds.get(book);
-            return found ? { ...found, namesOffer: offers.get(book) ?? null } : null;
+            const found = book === cardBook.id ? cardBook : worlds.get(book);
+            if (!found) return null;
+            return {
+                ...found,
+                namesOffer: offers.get(book) ?? null,
+                description: descriptions.get(book) ?? '',
+                cameWith: book === cardBook.id ? named('42', 'Rhea') : null,
+            };
+        },
+        chatReadsWorld: async (context, book) => context.chat?.tree === '9' && book === '1',
+        characterBook: async (_u, character) => (character === '42' ? cardBook.id : null),
+        worldNamed: async (_u, name) => [...worlds.values()].find((w) => w.name === name)?.id ?? null,
+        entryOfUid: async (_u, book, uid) => (book === '1' && uid === 7 ? '7' : null),
+        setWorldDescription: async (_w, book, description) => {
+            if (!worlds.has(book)) return 'missing';
+            descriptions.set(book, description);
+            return 'ok';
+        },
+        setPicture: async (_w, book, entry, file) => {
+            asked.pictures.push({ book, entry, file: file?.name ?? null });
+            const world = worlds.get(book);
+            if (!world) return 'missing';
+            if (file?.name.endsWith('.txt') === true)
+                return { refused: 'That file is no image: send a PNG, JPEG, WebP or GIF.' };
+            const url = file === null ? null : `/look-images/${file.name}`;
+            if (entry === null) {
+                world.picture = url;
+                return 'ok';
+            }
+            const found = entries.get(entry);
+            if (!found || found.deleted) return 'no entry';
+            found.picture = url;
+            return 'ok';
+        },
+        readCard: async (_u, book, entry) => {
+            const found = entries.get(entry);
+            if (book !== '1' || !found || found.deleted) return null;
+            return {
+                label: named(entry, `name ${entry}`),
+                picture: found.picture,
+                relations: [],
+                moreRelations: 0,
+                text: found.text,
+                textCut: false,
+            };
         },
         markTitleKeysAsNames: async (_w, book) =>
             changeOffer(book, 'mark', (offer) =>
@@ -393,6 +448,7 @@ function world(
             ),
         openWorld: async (_w, book) => {
             asked.opened.push(book);
+            if (book === cardBook.id) return book;
             const opened =
                 book ??
                 (lastOpened !== null && worlds.has(lastOpened) ? lastOpened : null) ??
@@ -599,7 +655,7 @@ function world(
             if (book !== '1') return 'missing';
             if (creation.relation?.target === '999') return { refused: "The target isn't an entry of this world." };
             const entry = String(nextEntry++);
-            entries.set(entry, { text: '', deleted: false });
+            entries.set(entry, { text: '', deleted: false, picture: null });
             return {
                 entry,
                 unreachedLoops: creation.relation ? [{ entry, kind: creation.relation.kind, entries: [entry] }] : [],
@@ -662,8 +718,10 @@ function world(
         area.actions[type]!({ ...context, session: 't' }, parsed(type, payload));
     const otherView = <T>(key: string) =>
         withoutLooks<T>(area.views[key]!({ ...context, session: 't' }) as Promise<unknown>);
+    const chatView = <T>(key: string) =>
+        withoutLooks<T>(area.views[key]!({ ...context, chat: { tree: '9' } }) as Promise<unknown>);
     const drawnView = (key: string) => area.views[key]!(context) as Promise<{ looks: Looks }>;
-    return { view, drawnView, act, other, otherView, asked, reads, views: Object.keys(area.views) };
+    return { view, drawnView, chatView, act, other, otherView, asked, reads, views: Object.keys(area.views) };
 }
 
 const WORLD_VIEWS = [
@@ -717,12 +775,16 @@ test('opening a world opens its overview, its kinds and the last change in the s
         name: 'World 1',
         entries: 2,
         usedInEveryChat: false,
+        picture: null,
         namesOffer: {
             entries: 212,
             example: { thing: '7', text: 'Gerold Venn', shownAs: 'title' },
             running: null,
             marked: 0,
         },
+        description: '',
+        usedInThisChat: false,
+        cameWith: null,
     });
     expect(await w.view<LoopsLeftByJobsView>(LOOPS_LEFT_BY_JOBS_VIEW)).toEqual({
         book: '1',
@@ -845,8 +907,8 @@ test('the worlds list opens by its own action and lists every world in name orde
     expect(await w.act('worldbuilding.openWorlds', {})).toEqual({ changed: [], opensViews: [WORLDS_VIEW] });
     expect(await w.view<WorldsView>(WORLDS_VIEW)).toEqual({
         worlds: [
-            { id: '1', name: 'World 1', entries: 2, usedInEveryChat: false },
-            { id: '2', name: 'World 2', entries: 0, usedInEveryChat: false },
+            { id: '1', name: 'World 1', entries: 2, usedInEveryChat: false, picture: null },
+            { id: '2', name: 'World 2', entries: 0, usedInEveryChat: false, picture: null },
         ],
     });
     expect(await w.act('worldbuilding.setUsedInEveryChat', { book: '2', used: true })).toEqual({
@@ -871,7 +933,11 @@ test('making a world names it, opens it at the range asked for and answers the w
         name: 'Saltmarrow',
         entries: 0,
         usedInEveryChat: false,
+        picture: null,
         namesOffer: null,
+        description: '',
+        usedInThisChat: false,
+        cameWith: null,
     });
     expect(await w.view<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null });
     expect(w.asked.overview.at(-1)).toMatchObject({ book: '10', groupBy: null, firstRank: 0, endRank: 20 });
@@ -2303,4 +2369,118 @@ test("a part holds one action's work and one view's bounded reads, besides the c
     );
     expect(READS_OF_TEXT_LINKS + MENTION_CHECKS_PER_READ * READS_PER_MENTION_CHECK).toBeLessThanOrEqual(READS_PER_VIEW);
     expect(PICKED_AT_MOST + SELECTION_WALK_STEPS).toBeLessThanOrEqual(READS_PER_VIEW);
+});
+
+const upload = (name: string): Upload => ({ path: `/tmp/${name}`, name, type: 'image/png', size: 10 });
+const shownWorld = { firstRank: 0, endRank: 20, layout: LAYOUT };
+
+test('a world named by its name opens, with its entry by uid opened too; an unknown name or uid is refused', async () => {
+    const w = world(1000);
+    expect(
+        await w.act('worldbuilding.openNamed', { world: 'World 1', uid: null, overview: shownWorld, pointingAt }),
+    ).toEqual({ changed: [], opensViews: WORLD_VIEWS, own: [OVERVIEW_VIEW, WORLD_VIEW] });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '1' });
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
+    expect(
+        await w.act('worldbuilding.openNamed', { world: 'World 1', uid: 7, overview: shownWorld, pointingAt }),
+    ).toEqual({
+        changed: [],
+        opensViews: [...WORLD_VIEWS, ENTRY_VIEW, POINTING_AT_VIEW],
+        own: [WORLD_VIEW, ENTRY_VIEW],
+    });
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ book: '1', entry: '7', deleted: false });
+    expect(
+        await w.act('worldbuilding.openNamed', { world: 'Nowhere', uid: null, overview: shownWorld, pointingAt }),
+    ).toEqual({ refused: 'That world no longer exists.', changed: [WORLDS_VIEW] });
+    expect(
+        await w.act('worldbuilding.openNamed', { world: 'World 1', uid: 3, overview: shownWorld, pointingAt }),
+    ).toEqual({ refused: "That entry isn't in this world." });
+});
+
+test("a character's own lorebook opens as a world that says which character it came with", async () => {
+    const w = world(1000);
+    expect(await w.act('worldbuilding.openCharacterBook', { character: '42', overview: shownWorld })).toEqual({
+        changed: [],
+        opensViews: WORLD_VIEWS,
+        own: [OVERVIEW_VIEW, WORLD_VIEW],
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({
+        id: '5',
+        name: "Rhea's notes",
+        entries: 240,
+        cameWith: named('42', 'Rhea'),
+    });
+    expect(await w.act('worldbuilding.openCharacterBook', { character: '43', overview: shownWorld })).toEqual({
+        refused: 'This character has no lorebook of its own.',
+    });
+});
+
+test("the world says whether the tab's chat reads it", async () => {
+    const w = world(1000);
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ usedInThisChat: false });
+    expect(await w.chatView<WorldView>(WORLD_VIEW)).toMatchObject({ usedInThisChat: true });
+});
+
+test("the world's description is set by one action that answers the world", async () => {
+    const w = world(1000);
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.act('worldbuilding.setWorldDescription', { book: '1', description: 'A drowned delta.' })).toEqual({
+        changed: [WORLD_VIEW],
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ description: 'A drowned delta.' });
+    expect(await w.act('worldbuilding.setWorldDescription', { book: '3', description: '' })).toEqual({
+        refused: 'That world no longer exists.',
+        changed: [WORLDS_VIEW],
+    });
+});
+
+test("a picture is chosen from the upload and removed, the world's or an entry's, and answers what draws it", async () => {
+    const w = world(1000);
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.act('worldbuilding.setPicture', { book: '1', entry: null })).toEqual({
+        refused: 'Choose a picture.',
+    });
+    expect(await w.act('worldbuilding.setPicture', { book: '1', entry: null }, upload('coast.png'))).toEqual({
+        changed: [WORLD_VIEW, WORLDS_VIEW],
+        own: [WORLD_VIEW],
+    });
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ picture: '/look-images/coast.png' });
+    expect((await w.view<WorldsView>(WORLDS_VIEW)).worlds[0]).toMatchObject({ picture: '/look-images/coast.png' });
+    expect(await w.act('worldbuilding.setPicture', { book: '1', entry: '7' }, upload('ilse.png'))).toEqual({
+        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, CARD_VIEW],
+        own: [ENTRY_VIEW],
+    });
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
+    expect(await w.view<OpenEntryView>(ENTRY_VIEW)).toMatchObject({ picture: '/look-images/ilse.png' });
+    expect(await w.act('worldbuilding.setPicture', { book: '1', entry: '7' }, upload('notes.txt'))).toEqual({
+        refused: 'That file is no image: send a PNG, JPEG, WebP or GIF.',
+    });
+    await w.act('worldbuilding.removePicture', { book: '1', entry: '7' });
+    expect(await w.view<OpenEntryView>(ENTRY_VIEW)).toMatchObject({ picture: null });
+    expect(await w.act('worldbuilding.removePicture', { book: '1', entry: '404' })).toMatchObject({
+        refused: "That entry isn't in this world.",
+    });
+    expect(w.asked.pictures.at(-2)).toEqual({ book: '1', entry: '7', file: null });
+});
+
+test("pointing at a name shows its entry's card, from one action", async () => {
+    const w = world(1000);
+    expect(await w.view<CardView>(CARD_VIEW)).toEqual({ book: null });
+    expect(await w.act('worldbuilding.showCard', { book: '1', entry: '7' })).toEqual({
+        changed: [],
+        opensViews: [CARD_VIEW],
+    });
+    expect(await w.view<CardView>(CARD_VIEW)).toEqual({
+        book: '1',
+        entry: '7',
+        label: named('7', 'name 7'),
+        picture: null,
+        relations: [],
+        moreRelations: 0,
+        text: 'Ilse keeps the lamp.',
+        textCut: false,
+    });
+    await w.act('worldbuilding.showCard', { book: '1', entry: '404' });
+    expect(await w.view<CardView>(CARD_VIEW)).toEqual({ book: null });
 });

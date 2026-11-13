@@ -16,6 +16,15 @@ pub fn names_field() -> FieldRef {
     FieldRef::Key(NAMES_FIELD.to_vec())
 }
 
+// The entry's picture: the id of an image in the user's image store, as text.
+pub const PICTURE_FIELD: &[u8] = b"\x01picture";
+
+pub fn picture(view: &View, entity: u64) -> Result<Js, StoreError> {
+    Ok(text_value(view, entity, &FieldRef::Key(PICTURE_FIELD.to_vec()))?
+        .filter(|id| !id.is_empty())
+        .map_or(Js::Null, Js::Text))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShownAs {
     Name,
