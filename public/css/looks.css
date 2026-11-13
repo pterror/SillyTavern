@@ -1,0 +1,845 @@
+/* The Look screen: a full-width pane under the top bar, over whatever opened it. Values follow the approved mockup. */
+
+.look-screen {
+    --look-name: #9cc3f0;
+
+    position: fixed;
+    top: var(--topBarBlockSize);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3050;
+    display: flex;
+    flex-direction: column;
+    background: #141416;
+    color: #e4e2dc;
+    font-family: 'Noto Sans', system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    text-align: left;
+    text-shadow: none;
+}
+
+.look-screen *,
+.look-screen *::before,
+.look-screen *::after {
+    box-sizing: border-box;
+}
+
+.look-screen button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    text-align: left;
+    filter: none;
+    box-shadow: none;
+}
+
+.look-screen input,
+.look-screen select,
+.look-screen textarea {
+    font: inherit;
+    color: inherit;
+    margin: 0;
+    box-shadow: none;
+}
+
+.look-screen :where(.named-name, .named-title, .named-opening) {
+    color: var(--look-name);
+}
+
+.look-ic {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.look-hd {
+    height: 56px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    border-bottom: 1px solid #26262c;
+    background: #17171a;
+}
+
+.look-screen .look-back {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 600;
+    padding: 6px 8px;
+    border-radius: 8px;
+}
+
+.look-screen .look-back:hover {
+    background: #222227;
+}
+
+.look-hdt {
+    flex: 1;
+    text-align: center;
+    color: #a3a29c;
+    margin-right: 120px;
+}
+
+.look-body {
+    flex: 1;
+    overflow: auto;
+    padding: 18px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.look-stage1 {
+    display: flex;
+    justify-content: center;
+}
+
+.look-rd {
+    position: relative;
+    border: 1px solid #26262c;
+    border-radius: 14px;
+    background: #111113;
+    display: grid;
+    place-items: center;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+.look-big1 {
+    width: 720px;
+    max-width: 100%;
+    height: 170px;
+    flex: none;
+    font-size: 44px;
+    cursor: default;
+}
+
+.look-big {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* The preview draws the note as a field above the name and the pictures as slots beside it. */
+.look-big .name-box::after,
+.look-big .name-picture {
+    display: none !important;
+}
+
+.look-screen .look-notein {
+    width: 220px;
+    background: transparent;
+    border: 0;
+    outline: none;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 400;
+    color: #bdbbb4;
+    padding: 1px 4px;
+    border-radius: 6px;
+}
+
+.look-screen .look-notein::placeholder {
+    color: transparent;
+}
+
+.look-screen .look-notein:hover::placeholder,
+.look-screen .look-notein:focus::placeholder {
+    color: #55555d;
+}
+
+.look-screen .look-notein:hover,
+.look-screen .look-notein:focus {
+    background: #1a1a1e;
+}
+
+.look-nline {
+    display: flex;
+    align-items: center;
+    gap: 0.18em;
+}
+
+.look-screen .look-slot {
+    width: 0.95em;
+    height: 0.95em;
+    border-radius: 50%;
+    flex: none;
+    background: transparent;
+}
+
+.look-slp {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background-color: #2c2c33;
+    background-size: cover;
+    background-position: center;
+    opacity: 0;
+    transition: opacity 0.12s;
+}
+
+.look-slot:hover .look-slp {
+    opacity: 0.35;
+}
+
+.look-slot.look-on .look-slp {
+    opacity: 1;
+}
+
+.look-still-frame {
+    position: absolute;
+    right: 12px;
+    bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 16px;
+    color: #8c8b86;
+}
+
+.look-still .named {
+    animation: none !important;
+}
+
+.look-hpop {
+    position: absolute;
+    left: 12px;
+    top: calc(100% - 18px);
+    z-index: 8;
+    display: flex;
+    gap: 12px;
+    padding: 10px;
+    background: #1f1f24;
+    border: 1px solid #3a3a41;
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.4;
+}
+
+.look-hbig {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    border-radius: 10px;
+    overflow: hidden;
+    flex: none;
+    background: #1f1f24 center / cover no-repeat;
+}
+
+.look-hframe {
+    position: absolute;
+    border: 2px solid #f0eee8;
+    border-radius: 50%;
+    box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.55);
+    cursor: move;
+    touch-action: none;
+}
+
+.look-hopts {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 170px;
+}
+
+.look-screen .look-hopts button {
+    padding: 6px 10px;
+    border-radius: 8px;
+}
+
+.look-screen .look-hopts button:hover {
+    background: #26262c;
+}
+
+.look-screen .look-hopts button.look-on {
+    background: #1f2a34;
+    color: #eaf3fb;
+}
+
+.look-screen .look-hopts .look-danger {
+    color: #e79a8f;
+}
+
+.look-states {
+    align-self: center;
+    display: flex;
+    gap: 8px;
+}
+
+.look-screen .look-sth {
+    position: relative;
+    width: 150px;
+    height: 54px;
+    border-radius: 10px;
+    border: 1px solid #2a2a30;
+    background: #141416;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+}
+
+.look-screen .look-sth:hover {
+    border-color: #45454d;
+}
+
+.look-screen .look-sth.look-sel {
+    border-color: #5f84a8;
+    box-shadow: 0 0 0 1px #5f84a8;
+}
+
+.look-stl {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 4px 6px;
+    border-radius: 7px;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.look-stw {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.look-stl .name-box::after,
+.look-stl .name-picture {
+    display: none !important;
+}
+
+.look-std {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #2c2c33;
+    flex: none;
+}
+
+.look-stx {
+    flex: 1;
+    min-width: 12px;
+    height: 5px;
+    border-radius: 3px;
+    background: #2c2c33;
+}
+
+.look-cur {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    fill: #f0eee8;
+    stroke: #141416;
+    stroke-width: 1;
+    display: none;
+}
+
+.look-sth-messagePointed .look-stl,
+.look-sth-wordPointed .look-stl {
+    background: #1c1c21;
+}
+
+.look-sth-messagePointed .look-cur {
+    display: block;
+    right: 16px;
+    bottom: 9px;
+}
+
+.look-sth-wordPointed .look-cur {
+    display: block;
+    left: 58px;
+    bottom: 6px;
+}
+
+.look-sth-selected .look-stw {
+    background: #2f4f73;
+    border-radius: 3px;
+    box-shadow: 0 0 0 2px #2f4f73;
+}
+
+.look-uses {
+    position: relative;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13.5px;
+    margin-bottom: -6px;
+}
+
+.look-ul {
+    color: #8c8b86;
+}
+
+.look-uchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px 2px 11px;
+    border-radius: 999px;
+    border: 1px solid #33333a;
+    background: #1c1c21;
+}
+
+.look-screen .look-ux {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    color: #8c8b86;
+    text-align: center;
+}
+
+.look-screen .look-ux:hover {
+    background: #2a2a31;
+    color: #e4e2dc;
+}
+
+.look-screen .look-uadd {
+    color: #8c8b86;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px dashed #3a3a41;
+}
+
+.look-screen .look-uadd:hover {
+    color: #e4e2dc;
+}
+
+.look-upop {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 40px;
+    z-index: 8;
+    display: flex;
+    flex-direction: column;
+    min-width: 220px;
+    padding: 6px;
+    background: #1f1f24;
+    border: 1px solid #3a3a41;
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.look-screen .look-upop button {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 7px 10px;
+    border-radius: 8px;
+}
+
+.look-screen .look-upop button:hover {
+    background: #26262c;
+}
+
+.look-screen .look-upop .look-unew {
+    color: #a3a29c;
+}
+
+.look-uat {
+    margin-left: 8px;
+    font-size: 11.5px;
+    color: #8c8b86;
+}
+
+.look-tbar {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px;
+    border: 1px solid #2a2a30;
+    border-radius: 12px;
+    background: #17171a;
+    align-self: center;
+}
+
+.look-screen .look-tool {
+    width: 46px;
+    height: 42px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    font-size: 22px;
+    font-weight: 600;
+    line-height: 1;
+    opacity: 0.38;
+}
+
+.look-screen .look-tool:hover {
+    opacity: 0.8;
+    background: #222227;
+}
+
+.look-screen .look-tool.look-on {
+    opacity: 1;
+}
+
+.look-screen .look-tool.look-open {
+    background: #1f2a34;
+    box-shadow: inset 0 0 0 1px #5f84a8;
+}
+
+.look-screen .look-csst {
+    opacity: 0.7;
+}
+
+.look-glyph {
+    position: relative;
+}
+
+.look-edw {
+    align-self: center;
+    width: 600px;
+    max-width: 100%;
+}
+
+.look-fx {
+    border: 1px solid #2c2c33;
+    border-radius: 12px;
+    background: #1b1b1f;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.look-fxh {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.look-fst {
+    font-weight: 400;
+    color: #a3a29c;
+}
+
+.look-screen .look-fxh select.look-scope {
+    margin-left: auto;
+    margin-right: 8px;
+    max-width: 250px;
+    width: 235px;
+    height: 28px;
+    border-radius: 7px;
+    border: 1px solid #33333a;
+    background-color: #1b1b1f;
+    color: #cfcdc6;
+    font-size: 12.5px;
+    font-weight: 400;
+    padding: 0 22px 0 6px;
+}
+
+.look-fixed {
+    white-space: nowrap;
+    margin-left: auto;
+    margin-right: 8px;
+    font-weight: 400;
+    font-size: 12.5px;
+    color: #a3a29c;
+}
+
+.look-screen .look-rs2 {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 8px;
+    border: 1px solid #33333a;
+    color: #cfcdc6;
+}
+
+.look-screen .look-rs2:hover {
+    background: #26262c;
+}
+
+.look-ctl {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: #a3a29c;
+}
+
+.look-ctl label {
+    width: 70px;
+    flex: none;
+}
+
+.look-screen .look-ctl input[type='range'] {
+    flex: 1;
+    -webkit-appearance: auto;
+    appearance: auto;
+    height: auto;
+    background: none;
+    box-shadow: none;
+    filter: none;
+    cursor: pointer;
+    accent-color: #9cc3f0;
+    margin: 0;
+}
+
+.look-screen .look-ctl input[type='color'] {
+    width: 40px;
+    height: 28px;
+    border: 1px solid #3a3a41;
+    border-radius: 7px;
+    background: none;
+    padding: 2px;
+}
+
+.look-seg {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.look-screen .look-seg button {
+    padding: 4px 12px;
+    border-radius: 8px;
+    border: 1px solid #33333a;
+    font-size: 13.5px;
+}
+
+.look-screen .look-seg button.look-on {
+    border-color: #5f84a8;
+    background: #1f2a34;
+}
+
+.look-fgrp {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.look-fgl {
+    font-size: 12px;
+    color: #8c8b86;
+}
+
+.look-screen .look-seg .look-addf {
+    border: 1px dashed #3a3a41;
+    color: #a3a29c;
+}
+
+.look-tiles {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.look-screen .look-tile {
+    height: 66px;
+    border: 1px solid #33333a;
+    border-radius: 9px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    overflow: hidden;
+}
+
+.look-screen .look-tile.look-on {
+    border-color: #5f84a8;
+    background: #1f2a34;
+}
+
+.look-tv {
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--look-name);
+    white-space: nowrap;
+}
+
+.look-motion-sample {
+    position: relative;
+    display: inline-block;
+}
+
+.look-tn {
+    font-size: 12px;
+    color: #a3a29c;
+}
+
+.look-cssfx {
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: #141416;
+    color: #7d7c78;
+    font: 12.5px/1.6 ui-monospace, monospace;
+    white-space: pre-wrap;
+    min-height: 1.6em;
+}
+
+.look-screen .look-cssta {
+    width: 100%;
+    min-height: 64px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid #3a3a41;
+    background: #141416;
+    color: #e4e2dc;
+    font: 12.5px/1.6 ui-monospace, monospace;
+    resize: vertical;
+    outline: none;
+}
+
+.look-mark-sample {
+    padding-bottom: 1px;
+}
+
+.look-mark-dotted {
+    border-bottom: 2px dotted currentColor;
+}
+
+.look-mark-dashed {
+    border-bottom: 2px dashed currentColor;
+}
+
+.look-mark-large-dots {
+    border-bottom: 4px dotted currentColor;
+}
+
+.look-ctx {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.look-cx {
+    border: 1px solid #26262c;
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: #17171a;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 96px;
+}
+
+.look-cxl {
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #8c8b86;
+}
+
+.look-chatl {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    font-size: 15px;
+    padding-top: 6px;
+}
+
+.look-av {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    flex: none;
+    background: #2c2c33;
+}
+
+.look-screen .look-tm {
+    padding-bottom: 1px;
+}
+
+.look-screen .look-mkbtn {
+    padding: 0;
+    border-radius: 3px;
+}
+
+.look-screen .look-mkbtn:hover,
+.look-screen .look-mkbtn.look-open {
+    background: #1f2a34;
+}
+
+.look-mline {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-weight: 600;
+    font-size: 16px;
+    padding-top: 14px;
+}
+
+.look-when {
+    font-size: 12px;
+    font-weight: 400;
+    color: #8c8b86;
+}
+
+.look-orow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: #26262d;
+    font-size: 14.5px;
+    margin-top: 4px;
+}
+
+.look-orow .name-box::after {
+    display: none;
+}
+
+.look-rpic {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    flex: none;
+    background: #1f1f24 center / cover no-repeat;
+}
+
+.look-card {
+    display: flex;
+    gap: 12px;
+    padding: 10px;
+    border-radius: 10px;
+    background: #1f1f24;
+    border: 1px solid #34343b;
+}
+
+.look-cpic {
+    width: 54px;
+    height: 54px;
+    border-radius: 9px;
+    flex: none;
+    background: #1f1f24 center / cover no-repeat;
+}
+
+.look-ct {
+    font-size: 17px;
+    font-weight: 600;
+    padding-top: 8px;
+    line-height: 1.4;
+}
+
+.look-cp {
+    font-size: 12px;
+    color: #8c8b86;
+}

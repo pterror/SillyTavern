@@ -4,6 +4,7 @@ const PATHS = {
     chevron: 'M6 9l6 6 6-6',
     check: 'M5 12l4 4 10-10',
     prompt: 'M5 4h10l4 4v12H5zM9 11h6M9 15h6',
+    pencil: 'M14 4l6 6-8.5 8.5H5.5v-6zM12 6l6 6',
     more: 'M5 12h.01M12 12h.01M19 12h.01',
 } as const;
 

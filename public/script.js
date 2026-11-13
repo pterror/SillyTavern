@@ -10325,11 +10325,26 @@ jQuery(async function () {
     }
 
     const nameHeading = document.querySelector('#rm_button_selected_ch h2');
-    const showRenameButton = () => $('#character_rename_inline').toggle(getSelectionState().type === 'character' && Boolean(nameHeading?.textContent));
+    const currentThing = () => {
+        const avatar = getCurrentCharacter()?.avatar;
+        return avatar ? charactersStore.get(avatar)?.thing : undefined;
+    };
+    const showRenameButton = () => {
+        const shown = getSelectionState().type === 'character' && Boolean(nameHeading?.textContent);
+        $('#character_rename_inline').toggle(shown);
+        $('#character_look_inline').toggle(shown && Boolean(currentThing()));
+    };
     // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
     if (nameHeading) new MutationObserver(showRenameButton).observe(nameHeading, { childList: true, characterData: true, subtree: true });
     eventSource.on(event_types.CHAT_CHANGED, showRenameButton);
     $(document).on('click', '#character_rename_inline', () => beginInlineCharacterRename());
+    $(document).on('click keydown', '#character_look_inline', async (event) => {
+        if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+        const thing = currentThing();
+        if (!thing) return;
+        const refused = await newUi().looks.open(thing);
+        if (refused) toastr.error(refused);
+    });
 
     $(document).on('click', '.renameChatButton', async function (e) {
         e.stopPropagation();
@@ -11011,6 +11026,7 @@ jQuery(async function () {
             '#shadow_popup',
             '.popup',
             '.editorLayer',
+            '.look-screen',
             '.view_pill_popover',
             '.ui-widget',
             '.text_pole',

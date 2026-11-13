@@ -331,6 +331,13 @@ test('a small picture is a crop of the thing\'s own picture or another image, st
     await act('looks.useOwnPicture', { thing: a });
     assert.deepEqual((await drawn([a]))[a].picture, { before: true, after: false, crop: null, image: null });
 
+    assert.equal('ok', await worlds.setPicture(who, book, a, upload('own.png', image)));
+    await act('looks.open', { thing: a });
+    assert.equal((await looks.area.views['looks.look'](context)).picture.own, `/look-images/${id}`);
+    assert.equal('ok', await worlds.setPicture(who, book, null, upload('world.png', image)));
+    await act('looks.open', { thing: book });
+    assert.equal((await looks.area.views['looks.look'](context)).picture.own, `/look-images/${id}`);
+
     const wrenCard = JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name: 'Wren', data: { name: 'Wren', first_mes: 'Hi.', alternate_greetings: [], extensions: {} } });
     await writeCardWithImage(user, 'pictured.png', wrenCard, writeCard(image, wrenCard));
     const wren = String((await lib.ids(TYPE.character, ['pictured.png']))[0]);

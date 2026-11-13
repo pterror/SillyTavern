@@ -78,6 +78,17 @@ export function EntryPage(props: {
                                 </Match>
                             </Switch>
                         </Editable>
+                        <Show when={props.entry.keys.some((key) => key.isName)}>
+                            <button
+                                type="button"
+                                class="wb-icon-button"
+                                aria-label={t('How this entry’s names look')}
+                                title={t('How this entry’s names look')}
+                                onClick={() => void wb.act('looks.open', { thing: props.entry.entry })}
+                            >
+                                <Icon name="pencil" />
+                            </button>
+                        </Show>
                         <button
                             ref={(element) => (placeButton = element)}
                             type="button"
@@ -285,6 +296,14 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
     return (
         <div class="wb-menu wb-entry-menu" role="menu" ref={(element) => (box = element)}>
             <Show when={!moving()} fallback={<MoveTo entry={props.entry} onDone={props.onClose} />}>
+                <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => run(() => wb.act('looks.open', { thing: props.entry.entry }))}
+                >
+                    {t('How its names look')}
+                </button>
+                <hr />
                 <button type="button" role="menuitem" onClick={() => setMoving(true)}>
                     {t('Move to another world…')}
                 </button>

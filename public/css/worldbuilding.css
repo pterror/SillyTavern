@@ -323,6 +323,12 @@
     background: #26262c;
 }
 
+.wb .wb-menu > hr {
+    border: 0;
+    border-top: 1px solid #2e2e34;
+    margin: 4px 0;
+}
+
 .wb .wb-menu .wb-danger {
     color: #e79a8f;
 }

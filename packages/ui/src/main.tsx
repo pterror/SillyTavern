@@ -33,6 +33,7 @@ import type { Look as ActivationsLook, OldPage as ActivationsOldPage } from '@st
 import { UsageStats } from '@st/usage-stats/page';
 import type { Buttons as UsageStatsButtons, OldPage as UsageStatsOldPage } from '@st/usage-stats/page';
 import { Help, Hotkeys, helpCompat } from '@st/help/page';
+import { LookScreen, looksCompat } from '@st/looks/page';
 import { Worldbuilding, worldbuildingCompat } from '@st/worldbuilding/page';
 import type { OldPage as HelpOldPage } from '@st/help/page';
 import type { OldPage as WorldbuildingOldPage } from '@st/worldbuilding/page';
@@ -132,6 +133,10 @@ export function start(options: StartOptions) {
         />
     ));
 
+    const lookHost = document.createElement('div');
+    document.body.append(lookHost);
+    mount(lookHost, () => <LookScreen />);
+
     const help = helpCompat(client);
     const helpHost = document.createElement('div');
     document.body.append(helpHost);
@@ -169,6 +174,7 @@ export function start(options: StartOptions) {
             drop: looks.drop,
         },
         looks: {
+            ...looksCompat(client),
             setDeclarations: async (
                 level: { theme: true } | { thing: string },
                 state: LookState,

@@ -7,6 +7,7 @@
         "@st/alternatives": "workspace:*",
         "@st/backgrounds": "workspace:*",
         "@st/help": "workspace:*",
+        "@st/looks": "workspace:*",
         "@st/occlusion": "workspace:*",
         "@st/page": "workspace:*",
         "@st/protocol": "workspace:*",

@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { FONT_BYTES_AT_MOST, IMAGE_BYTES_AT_MOST } from '@st/looks/protocol';
-import { isEmptyLook, storedLook } from '@st/looks/look';
+import { isEmptyLook, lookImageUrl, storedLook } from '@st/looks/look';
 import { FIELD, LOOK_FIELD, TYPE } from './library-codes.js';
 import { thumbnailsOf } from './thumbnail-urls.js';
 import { historyWrites } from './entity-values.js';
 import { BOOKMARK_LOOK } from './bookmark-looks.js';
-import { FONT_FIELD, SHARED_LOOK_FIELD } from './world-info-engine.js';
+import { FONT_FIELD, SHARED_LOOK_FIELD, WORLD_PICTURE_FIELD } from './world-info-engine.js';
 
 export const FONTS_DIRECTORY = 'fonts';
 export const LOOK_IMAGES_DIRECTORY = 'look-images';
@@ -386,11 +386,15 @@ export function looksPorts({ libOf }) {
             if (entity.type === TYPE.entry) {
                 const book = BigInt(entity.key.slice(0, entity.key.indexOf(':')));
                 const [label] = await lib.store.worldRead('worldbuildingLabels', { book, entities: [entity.id] });
-                return label ? { named: label, picture: null } : null;
+                if (!label) return null;
+                /** @type {(string | null)[]} */
+                const [picture] = await lib.store.worldRead('worldbuildingPictures', { book, entities: [entity.id] });
+                return { named: label, picture: picture ? lookImageUrl(picture) : null };
             }
             if (entity.type === TYPE.book) {
                 const name = entity.values.find(v => v.field === 'name')?.text;
-                return { named: named(typeof name === 'string' && name ? name : entity.key), picture: null };
+                const picture = entity.values.find(v => v.field === WORLD_PICTURE_FIELD)?.text;
+                return { named: named(typeof name === 'string' && name ? name : entity.key), picture: picture ? lookImageUrl(picture) : null };
             }
             /** @param {StoredEntity | null | undefined} holder */
             const pictureOf = holder => {
