@@ -15,6 +15,7 @@ import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-i
 import { writeChatBox } from './chat-box.js';
 import { isFailedSend, keepFailedSend, wasSendStored } from './failed-sends.js';
 import { updateMessage, setStoreRef, storeRefOf, adoptStored, deepFreeze, claimPushedCounts, takeMessageMacros } from './chat-store.js';
+import { takeChatLinks } from './chat-links.js';
 import { hasPendingFileAttachment } from './chats.js';
 import { inject_ids, SWIPE_DIRECTION, SWIPE_SOURCE } from './constants.js';
 import { eventSource, event_types } from './events.js';
@@ -907,6 +908,7 @@ async function generateOnce(type, options = {}, pendingSends = []) {
             } else {
                 ({ type, getMessage } = await saveReply({ type: 'appendFinal', getMessage, title, swipes, reasoning, reasoningSignature, storedReply, storedNodeId }));
             }
+            takeChatLinks(data.assistant_links ?? storedReply?.links);
 
             parseAndSaveLogprobs(data, '', connection);
             if (isStoredNodeId(data.assistant_node_id)) {

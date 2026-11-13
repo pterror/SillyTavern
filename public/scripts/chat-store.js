@@ -13,6 +13,7 @@ import { askToDrop, confirmOf, hasDrops, warnDropped } from './edit-drops.js';
 import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 import { countedTextHash } from './counted-text.js';
 import { arriveChatBox, chatBoxFollowCut, chatBoxLeft, leavingChatBox } from './chat-box.js';
+import { takeChatLinks } from './chat-links.js';
 
 /**
  * @param {number} i
@@ -505,6 +506,7 @@ export async function ensureOpeningRow(mesId = 0) {
             });
             const answer = response.ok ? await response.json().catch(() => null) : null;
             adoptStored(answer?.stored);
+            takeChatLinks(answer?.links);
             if (!inGroup) await takeOpenings(getCurrentCharacter()?.avatar, answer);
         })().finally(() => _openingRowInFlight.delete(provisional));
         _openingRowInFlight.set(provisional, pending);
@@ -681,6 +683,7 @@ async function _chatOpPost(path, body, silent = false) {
     adoptStored(answer?.stored);
     takeMessageCounts(answer?.message_counts);
     takeMessageMacros(answer?.message_macros);
+    takeChatLinks(answer?.links);
     if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
     return answer;
 }
@@ -717,6 +720,7 @@ async function _chatOpPostAnswering(path, body, answered) {
     adoptStored(answer?.stored);
     takeMessageCounts(answer?.message_counts);
     takeMessageMacros(answer?.message_macros);
+    takeChatLinks(answer?.links);
     if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
     return answer;
 }

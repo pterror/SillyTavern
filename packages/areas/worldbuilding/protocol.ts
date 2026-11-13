@@ -28,6 +28,8 @@ export const LOOPS_SHOWN = 3;
 // The hover card's relations and the characters of its text's opening.
 export const CARD_RELATIONS_SHOWN = 6;
 export const CARD_TEXT_CHARACTERS = 300;
+// The entries one hover card shows: a word can bring up several.
+export const CARD_ENTRIES_AT_MOST = 8;
 export const ENTRIES_NAMED_PER_LOOP = 3;
 
 // One part of an answer: 200 ms at an assumed 8 µs a read (docs/design/worldbuilding-store.md, One request's budget).
@@ -345,17 +347,22 @@ export type WorldView =
     | { id: null };
 
 // What pointing at an entry's name shows: the first CARD_RELATIONS_SHOWN of its relations, and its text's first
-// CARD_TEXT_CHARACTERS characters.
-export type CardView =
-    | (EntryAt & {
-          label: Named;
-          picture: string | null;
-          relations: RelationOnCard[];
-          moreRelations: number;
-          text: string;
-          textCut: boolean;
-      })
-    | { book: null };
+// CARD_TEXT_CHARACTERS characters. `broughtUpBy`: the keys that brought it into the reply the card was asked about, in
+// the order activation found them; null when no reply was named or the entry didn't come up for it.
+export type HoverCard = EntryAt & {
+    label: Named;
+    picture: string | null;
+    relations: RelationOnCard[];
+    moreRelations: number;
+    text: string;
+    textCut: boolean;
+    broughtUpBy: string[] | null;
+};
+
+export type CardAsked = { entries: EntryAt[]; reply: string | null };
+
+// The cards of the entries `asked` names that are still there, in its order; `asked` null: none was asked for.
+export type CardView = { asked: CardAsked | null; cards: HoverCard[] };
 
 export type ExportedWorld = { fileName: string; json: string };
 
@@ -560,8 +567,19 @@ export const actions = {
         overview: shownOverview,
         pointingAt: pointingAtShown,
     }),
+    // A world by its id, and in it that entry when one is named.
+    'worldbuilding.openAt': v.object({
+        book: entityId,
+        entry: v.nullable(entityId),
+        overview: shownOverview,
+        pointingAt: pointingAtShown,
+    }),
     'worldbuilding.openCharacterBook': v.object({ character: entityId, ...opensWorld }),
-    'worldbuilding.showCard': v.object(entryNamed),
+    // `reply`: the stored reply of the tab's chat whose activation says what brought each entry up.
+    'worldbuilding.showCard': v.object({
+        entries: v.pipe(v.array(v.object(entryNamed)), v.minLength(1), v.maxLength(CARD_ENTRIES_AT_MOST)),
+        reply: v.nullable(v.pipe(v.string(), v.minLength(1), v.maxLength(64))),
+    }),
     'worldbuilding.setWorldDescription': v.object({ book: entityId, description: v.string() }),
     // The upload is the picture; `entry` null: the world's own.
     'worldbuilding.setPicture': v.object({ book: entityId, entry: v.nullable(entityId) }),

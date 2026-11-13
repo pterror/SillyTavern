@@ -62,6 +62,9 @@ export const NAME_PICTURE_CLASS = 'name-picture';
 // The custom property a place sets on a small picture's box to the thing's own picture.
 export const NAME_PICTURE_PROPERTY = '--name-picture';
 export const namePictureClass = (side: 'before' | 'after'): string => `${NAME_PICTURE_CLASS}-${side}`;
+// A name box drawn around text already there (a link in a message), which can't hold picture elements: its small
+// pictures are the box's ::before and the name's ::after.
+export const NAME_INLINE_CLASS = 'name-inline';
 
 export const nameClass = (named: Pick<Named, 'thing' | 'shownAs'>): string =>
     `named named-${named.shownAs} ${lookClass(named.thing)}`;
@@ -106,15 +109,24 @@ export function cropCss(crop: PictureCrop): string {
 // The picture's sides, what it shows, and the note, which sit around the name's span and never inside it.
 export function lookPlacementCss(thing: string, look: ResolvedLook): string {
     const box = `.${lookBoxClass(thing)}`;
+    const inline = {
+        before: `${box}.${NAME_INLINE_CLASS}::before`,
+        after: `${box}.${NAME_INLINE_CLASS} > .named::after`,
+    };
     const rules: string[] = [];
     for (const side of ['before', 'after'] as const) {
-        if (look.picture[side]) rules.push(`${box} > .${namePictureClass(side)} { display: inline-block; }`);
+        if (look.picture[side]) {
+            rules.push(`${box} > .${namePictureClass(side)} { display: inline-block; }`);
+            rules.push(`${inline[side]} { display: inline-block; }`);
+        }
     }
     const shows = [
         ...(look.picture.image === null ? [] : [`background-image: url("${look.picture.image}");`]),
         ...(look.picture.crop === null ? [] : [cropCss(look.picture.crop)]),
     ];
-    if (shows.length > 0) rules.push(`${box} > .${NAME_PICTURE_CLASS} { ${shows.join(' ')} }`);
+    if (shows.length > 0) {
+        rules.push(`${box} > .${NAME_PICTURE_CLASS}, ${inline.before}, ${inline.after} { ${shows.join(' ')} }`);
+    }
     if (look.note !== null) rules.push(`${box}::after { content: ${cssString(look.note)}; }`);
     return rules.join('\n');
 }

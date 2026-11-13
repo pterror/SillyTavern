@@ -1,22 +1,82 @@
 import { For, Show, createSignal } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { CARD_VIEW } from '../protocol.ts';
-import type { CardView } from '../protocol.ts';
+import type { CardAsked, CardView, EntryAt, HoverCard } from '../protocol.ts';
 import { Label, Picture } from './Cards.tsx';
 import { useWb } from './context.ts';
 import { shownView } from './views.ts';
+import { fill } from './words.ts';
 
 const CARD_WIDTH = 360;
 const CARD_HEIGHT_GUESS = 160;
 
-type Pointed = { book: string; entry: string; word: HTMLElement; left: number; top: number; above: boolean };
+const sameAsked = (one: CardAsked | null, other: CardAsked): boolean =>
+    one !== null &&
+    one.reply === other.reply &&
+    one.entries.length === other.entries.length &&
+    one.entries.every((at, i) => {
+        const theirs = other.entries[i];
+        return theirs !== undefined && at.book === theirs.book && at.entry === theirs.entry;
+    });
+
+// The cards the view holds for `asked`, or null while it holds another request's.
+export const cardsFor = (view: CardView | undefined, asked: CardAsked): HoverCard[] | null =>
+    view !== undefined && sameAsked(view.asked, asked) ? view.cards : null;
+
+// “Ilse”, “Ilse” and “ledger”, “a”, “b” and “c”.
+export function quotedList(keys: string[], and: string): string {
+    const quoted = keys.map((key) => `“${key}”`);
+    if (quoted.length < 2) return quoted.join('');
+    return `${quoted.slice(0, -1).join(', ')} ${and} ${quoted.at(-1) ?? ''}`;
+}
+
+// One entry's part of a card: its picture, its name in its look, its relations, its text's opening, and, when the card
+// was asked about a reply, what brought it into that reply.
+export function HoverItem(props: { card: HoverCard; reply: 'latest' | 'other' }) {
+    const { t } = useUi();
+    const why = () => {
+        const keys = props.card.broughtUpBy;
+        if (keys === null || keys.length === 0) return null;
+        const sentence =
+            props.reply === 'latest'
+                ? t('Brought up for the last reply by ${0}')
+                : t('Brought up for that reply by ${0}');
+        return fill(sentence, quotedList(keys, t('and')));
+    };
+    return (
+        <>
+            <Show when={props.card.picture}>{(url) => <Picture url={url()} class="wb-hover-pic" />}</Show>
+            <span class="wb-hover-words">
+                <span class="wb-hover-name">
+                    <Label named={props.card.label} />
+                </span>
+                <Show when={props.card.relations.length > 0}>
+                    <span class="wb-hover-path">
+                        <For each={props.card.relations}>
+                            {(relation, at) => (
+                                <>
+                                    {at() > 0 ? ' · ' : ''}
+                                    {relation.kindName ?? ''}: {relation.target?.text ?? ''}
+                                </>
+                            )}
+                        </For>
+                    </span>
+                </Show>
+                <span class="wb-hover-text">{props.card.text}</span>
+                <Show when={why()}>{(said) => <span class="wb-hover-why">{said()}</span>}</Show>
+            </span>
+        </>
+    );
+}
+
+type Pointed = { asked: CardAsked; word: HTMLElement; left: number; top: number; above: boolean };
 
 // The card of a linked name, shown while the name or the card is pointed at; each name pointed at asks for its card.
 // The card's box reaches the name, so moving the pointer from one to the other never leaves both.
 export function hoverCards() {
     const { client } = useUi();
     const wb = useWb();
-    const card = shownView<CardView>(client, CARD_VIEW);
+    const view = shownView<CardView>(client, CARD_VIEW);
     const [pointed, setPointed] = createSignal<Pointed | null>(null);
     let box: HTMLElement | undefined;
     const enter = (book: string, entry: string, word: HTMLElement) => {
@@ -30,8 +90,9 @@ export function hoverCards() {
         const left = Math.max(16, Math.min(at.left - frame.left - 12, frame.width - CARD_WIDTH - 16));
         const above = at.bottom + CARD_HEIGHT_GUESS > seen.bottom;
         const top = above ? at.top - frame.top : at.bottom - frame.top;
-        setPointed({ book, entry, word, left, top, above });
-        void wb.act('worldbuilding.showCard', { book, entry });
+        const asked: CardAsked = { entries: [{ book, entry } satisfies EntryAt], reply: null };
+        setPointed({ asked, word, left, top, above });
+        void wb.act('worldbuilding.showCard', asked);
     };
     const leave = (event: MouseEvent) => {
         const to = event.relatedTarget;
@@ -40,9 +101,8 @@ export function hoverCards() {
     };
     const shown = () => {
         const at = pointed();
-        const read = card();
-        if (!at || !read || read.book === null || read.entry !== at.entry) return null;
-        return { at, read };
+        const card = at ? cardsFor(view(), at.asked)?.[0] : undefined;
+        return at && card ? { at, card } : null;
     };
     const Drawn = () => (
         <Show when={shown()}>
@@ -59,28 +119,10 @@ export function hoverCards() {
                         class="wb-hover"
                         onClick={() => {
                             setPointed(null);
-                            wb.open(both().read.entry);
+                            wb.open(both().card.entry);
                         }}
                     >
-                        <Show when={both().read.picture}>{(url) => <Picture url={url()} class="wb-hover-pic" />}</Show>
-                        <span class="wb-hover-words">
-                            <span class="wb-hover-name">
-                                <Label named={both().read.label} />
-                            </span>
-                            <Show when={both().read.relations.length > 0}>
-                                <span class="wb-hover-path">
-                                    <For each={both().read.relations}>
-                                        {(relation, at) => (
-                                            <>
-                                                {at() > 0 ? ' · ' : ''}
-                                                {relation.kindName ?? ''}: {relation.target?.text ?? ''}
-                                            </>
-                                        )}
-                                    </For>
-                                </span>
-                            </Show>
-                            <span class="wb-hover-text">{both().read.text}</span>
-                        </span>
+                        <HoverItem card={both().card} reply="other" />
                     </button>
                 </div>
             )}

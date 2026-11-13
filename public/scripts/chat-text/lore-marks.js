@@ -1,4 +1,5 @@
 import { getStringHash } from '../hash-utils.js';
+import { TRIGGER_MARK_CLASS } from '/ui/entry.js';
 
 /**
  * @typedef {import('@pterror/interact-editor/reader').Range} Range
@@ -44,7 +45,7 @@ export function loreMarkRanges(reply, nodeId, text) {
             ranges.push({
                 from,
                 to,
-                class: 'lore-mark',
+                class: `lore-mark ${TRIGGER_MARK_CLASS}`,
                 attributes: { 'data-lore': here.join(' '), 'data-lore-reply': String(reply?.node_id), tabindex: '0' },
             });
         }

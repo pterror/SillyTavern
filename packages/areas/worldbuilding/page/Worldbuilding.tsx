@@ -160,6 +160,12 @@ function Page(props: Props) {
                 if ('import' in target) void act('worldbuilding.importWorld', { overview: firstRead() }, target.import);
                 else if ('character' in target)
                     void act('worldbuilding.openCharacterBook', { character: target.character, overview: firstRead() });
+                else if ('at' in target)
+                    void act('worldbuilding.openAt', {
+                        ...target.at,
+                        overview: firstRead(),
+                        pointingAt: pointingAtShown(),
+                    });
                 else
                     void act('worldbuilding.openNamed', {
                         world: target.world,

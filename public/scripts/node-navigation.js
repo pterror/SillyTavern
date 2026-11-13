@@ -8,6 +8,7 @@ import { updateMessage, _setCurrentTarget, rememberCardOpening } from './chat-st
 import { isProvisionalNodeId } from './node-identity.js';
 import { _snapshotMessages } from './generation.js';
 import { arriveChatBox, chatBoxLeft, leavingChatBox } from './chat-box.js';
+import { takeChatLinks } from './chat-links.js';
 
 /**
  * @param {{ chat_metadata?: ChatMetadata } | null | undefined} answer
@@ -49,6 +50,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
             }
             payload = await response.json();
             chatBoxLeft(/** @type {any} */ (payload).left);
+            takeChatLinks(/** @type {any} */ (payload).links);
             if (avatar != null) {
                 _setCurrentTarget(getCurrentChatId() ?? '', null);
             }
@@ -98,6 +100,7 @@ async function _persistNodeSelection(targetNodeId) {
             _setCurrentTarget(getCurrentChatId() ?? '', null);
             const answer = await response.json();
             chatBoxLeft(answer.left);
+            takeChatLinks(answer.links);
             await takeStateFrom(answer);
             arriveChatBox({ avatar_url: avatar }, answer.draft);
         }
@@ -142,6 +145,7 @@ export async function switchToNode(targetNodeId) {
         chatBoxLeft(answer?.left);
         ancestry = answer?.ancestry;
         below = answer?.messages ?? [];
+        takeChatLinks(answer?.links, { replace: true });
         _setCurrentTarget(getCurrentChatId() ?? '', null);
         await takeStateFrom(answer);
         arriveChatBox({ avatar_url: avatar }, answer?.draft);

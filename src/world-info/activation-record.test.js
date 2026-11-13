@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { activate as activateWorldInfoEntries } from './test-globals.js';
-import { buildActivationRecord, mergeRecords, withSentMessage } from './activation-record.js';
+import { buildActivationRecord, keysThatBroughtUp, mergeRecords, withSentMessage } from './activation-record.js';
 import { findKeySpans } from './key-matching.js';
 import { LOOSE } from './test-globals.js';
 import { EMBEDDED_WORLD_NAME } from './candidate-resolution.js';
@@ -127,4 +127,18 @@ const books = {
     assert.equal(merged.entries[0].why, 'always', 'the continuation\'s reason wins');
     assert.deepEqual(merged.entries[1].via, [0], 'a reference to an entry the continuation replaced points at its replacement');
     assert.deepEqual(merged.cut.map(c => c.ref.entry), ['3']);
+}
+
+// The keys that brought each entry into a reply are its own, once each, and none for an entry that did not come up.
+{
+    const record = {
+        entries: [
+            { ref: { book: '1', entry: '7' }, keys: [{ key: 'Ilse', in: [] }, { key: 'ledger', in: [] }, { key: 'Ilse', in: [] }] },
+            { ref: { card: '3' }, keys: [{ key: 'ledger', in: [] }] },
+            { ref: { book: '1', entry: '9' }, keys: [] },
+        ],
+        cut: [],
+    };
+    assert.deepEqual(keysThatBroughtUp(record, [{ book: '1', entry: '7' }, { book: '1', entry: '8' }, { book: '1', entry: '9' }]), [['Ilse', 'ledger'], null, []]);
+    assert.deepEqual(keysThatBroughtUp(null, [{ book: '1', entry: '7' }]), [null]);
 }

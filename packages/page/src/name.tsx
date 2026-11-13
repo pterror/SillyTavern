@@ -2,6 +2,7 @@ import { Show } from 'solid-js';
 import {
     LOOK_SELECTED_ATTRIBUTE,
     NAME_BOX_CLASS,
+    NAME_INLINE_CLASS,
     NAME_PICTURE_CLASS,
     NAME_PICTURE_PROPERTY,
     lookBoxClass,
@@ -61,4 +62,16 @@ export function nameElement(named: Named, options: NameOptions = {}, document = 
         box.append(picture('before'), name, picture('after'));
     else box.append(name);
     return box;
+}
+
+export type Wrap = { class: string; attributes: Record<string, string> };
+
+// The two spans a name written in a text is wrapped in, outermost first, for a reader that draws ranges of the text it
+// already holds: the box (its small pictures and note) and the name's own span. `picture`: the thing's own picture.
+export function inlineName(thing: string, picture: string | null): [Wrap, Wrap] {
+    const box = {
+        class: `${boxClass(thing)} ${NAME_INLINE_CLASS}`,
+        attributes: picture === null ? {} : { style: pictureStyle(picture) },
+    };
+    return [box, { class: nameClass({ thing, shownAs: 'name' }), attributes: { 'data-thing': thing } }];
 }

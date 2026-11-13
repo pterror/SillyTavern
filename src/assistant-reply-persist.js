@@ -232,10 +232,11 @@ async function withReplyMacros(pending, reply) {
  * @returns {Promise<StoredReply>}
  */
 async function withReplyLinks(pending, reply) {
-    if (!pending.directories) return reply;
+    const directories = pending.directories ?? pending.chat.directories;
+    if (!directories) return reply;
     try {
         const { storedChatLinks } = await import('./chat-links.js');
-        const links = await storedChatLinks(pending.directories, pending.chat, [...(typeof pending.sentNodeId === 'string' ? [pending.sentNodeId] : []), reply.node_id]);
+        const links = await storedChatLinks(directories, pending.chat, [...(typeof pending.sentNodeId === 'string' ? [pending.sentNodeId] : []), reply.node_id]);
         return links ? { ...reply, links } : reply;
     } catch (error) {
         console.warn('Could not link the stored reply:', error);

@@ -1,10 +1,11 @@
 import { createEffect, createMemo, createRoot, createSignal, on } from 'solid-js';
 import type { Client } from '@st/page/client';
 import { WORLDS_VIEW } from '../protocol.ts';
-import type { World, WorldsView } from '../protocol.ts';
+import type { EntryAt, World, WorldsView } from '../protocol.ts';
+import { chatCards } from './ChatCard.tsx';
 
 // What the old page asks the worldbuilding page to show. `character` is the character's entity id.
-export type Target = { world: string; uid: number | null } | { character: string } | { import: File };
+export type Target = { world: string; uid: number | null } | { at: EntryAt } | { character: string } | { import: File };
 
 export type OldPage = { showPane(): void };
 
@@ -18,6 +19,7 @@ export function worldbuildingCompat(client: Client, old: OldPage) {
         setTarget(next);
         old.showPane();
     };
+    const cards = chatCards(client, (at) => go({ at }));
     return {
         shown,
         everShown,
@@ -33,6 +35,13 @@ export function worldbuildingCompat(client: Client, old: OldPage) {
         openEntry: (world: string, uid: number) => {
             go({ world, uid });
         },
+        // An entry by its world's and its own ids.
+        openEntryAt: (book: string, entry: string) => {
+            go({ at: { book, entry } });
+        },
+        peek: cards.peek,
+        unpeek: cards.unpeek,
+        ChatCard: cards.Drawn,
         openCharacterBook: (character: string) => {
             go({ character });
         },

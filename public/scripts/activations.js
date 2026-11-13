@@ -4,9 +4,8 @@ import { newUi } from './new-ui-page.js';
 import { openCharacterBook, openWorldEntry } from './world-links.js';
 import { charactersStore } from './character-store.js';
 import { chat } from '/scripts/chat-state.js';
-import { power_user } from './power-user.js';
 import { loreMarkRanges } from './chat-text/lore-marks.js';
-import { addTooltipProvider } from './macro-tooltip.js';
+import { linkedEntry } from './chat-links.js';
 
 /** @type {string | null} */
 let panelReply = null;
@@ -37,7 +36,6 @@ export const activationsOldPage = {
  * @returns {Record<string, any> | null}
  */
 function markingReply() {
-    if (power_user.lore_marks === 'off') return null;
     if (panelReply !== null) {
         const shown = chat.findLast(message => message?.node_id === panelReply);
         if (shown?.extra?.activations) return shown;
@@ -81,7 +79,6 @@ function syncLoreMarks() {
     queued = true;
     queueMicrotask(() => {
         queued = false;
-        document.body.classList.toggle('lore-marks-hover', power_user.lore_marks === 'hover');
         for (const [listener, shownIn] of listeners) {
             if (shownIn.isConnected) listener();
             else listeners.delete(listener);
@@ -112,47 +109,58 @@ const markOf = mark => ({
 });
 
 /**
- * @param {Element} el
- * @param {() => void} refresh
- * @returns {Node[]}
+ * The entries a marked word brought into its reply, as its reply's activation names them.
+ * @param {Element} mark
+ * @returns {{ book: string, entry: string }[]}
  */
-function loreTooltip(el, refresh) {
-    const { reply, entries } = markOf(el);
-    const held = peeked.get(reply);
-    if (!held) {
-        void peek(reply).then(refresh);
-        const wait = document.createElement('div');
-        wait.textContent = t`Loading…`;
-        return [wait];
+function broughtUp(mark) {
+    const { reply, entries } = markOf(mark);
+    const record = chat.findLast(message => message?.node_id === reply)?.extra?.activations;
+    if (!Array.isArray(record?.entries)) return [];
+    /** @type {Map<string, { book: string, entry: string }>} */
+    const found = new Map();
+    for (const i of entries) {
+        const ref = record.entries[i]?.ref;
+        if (ref && typeof ref.book === 'string' && typeof ref.entry === 'string') found.set(`${ref.book}:${ref.entry}`, { book: ref.book, entry: ref.entry });
     }
-    return entries.flatMap(i => {
-        const entry = held.entries[i];
-        if (!entry) return [];
-        const box = document.createElement('div');
-        box.className = 'lore-tip';
-        const head = document.createElement('div');
-        const title = document.createElement('strong');
-        title.append(labelled(entry.label));
-        const book = document.createElement('span');
-        book.className = 'lore-tip-book';
-        book.append(labelled(entry.world));
-        head.append(title, ' ', book);
-        box.append(head);
-        if (entry.start) {
-            const start = document.createElement('div');
-            start.className = 'lore-tip-start';
-            start.textContent = entry.start;
-            box.append(start);
-        }
-        return [box];
-    });
+    return [...found.values()];
 }
 
 /**
- * @param {import('@st/activations/protocol').Label} label
- * @returns {Node}
+ * The reply the chat's marks are of, and whether it is the last.
+ * @returns {{ reply: string | null, latest: boolean }}
  */
-const labelled = label => (label.thing === null ? document.createTextNode(label.text) : newUi().names.element(label));
+function markedReply() {
+    const reply = markingReply();
+    const nodeId = typeof reply?.node_id === 'string' && isStoredNodeId(reply.node_id) ? reply.node_id : null;
+    const last = chat.findLast(message => message && !message.is_user && !message.is_system);
+    return { reply: nodeId, latest: nodeId !== null && last?.node_id === nodeId };
+}
+
+/**
+ * Shows the card of what a word in a message names, or of what it brought into the marked reply.
+ * @param {HTMLElement} word a name's box or a marked word
+ */
+function peekAt(word) {
+    const { reply, latest } = markedReply();
+    if (word.matches('.chat-name')) {
+        const thing = word.querySelector('[data-thing]')?.getAttribute('data-thing');
+        const world = thing ? linkedEntry(thing)?.world : null;
+        if (thing && world) newUi().worldbuilding.peek(word, { entries: [{ book: world, entry: thing }], reply, latest });
+        return;
+    }
+    newUi().worldbuilding.peek(word, { entries: broughtUp(word), reply: markOf(word).reply, latest: markOf(word).reply === reply && latest });
+}
+
+/**
+ * Opens the entry a name in a message names.
+ * @param {Element} name its box
+ */
+function openNamed(name) {
+    const thing = name.querySelector('[data-thing]')?.getAttribute('data-thing');
+    const world = thing ? linkedEntry(thing)?.world : null;
+    if (thing && world) newUi().worldbuilding.openEntryAt(world, thing);
+}
 
 /** @type {Map<string, import('@st/activations/protocol').PanelView>} */
 const peeked = new Map();
@@ -196,10 +204,7 @@ async function openMarked(mark) {
     else activationsOldPage.openEntry(opener.book, opener.uid);
 }
 
-/**
- * @param {{ save: (key: string) => void }} deps
- */
-export function initLoreMarks(deps) {
+export function initLoreMarks() {
     /** @param {JQuery.TriggeredEvent} event */
     function onMark(event) {
         event.preventDefault();
@@ -226,11 +231,22 @@ export function initLoreMarks(deps) {
         event.preventDefault();
         void openMarked(this);
     });
-    addTooltipProvider('.mes_text .lore-mark', loreTooltip);
 
-    $('#lore_marks').on('input', function () {
-        power_user.lore_marks = String($(this).val());
-        deps.save('power_user.lore_marks');
-        syncLoreMarks();
+    $(document).on('click', '.mes_text .chat-name', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        openNamed(this);
+    });
+    $(document).on('keydown', '.mes_text .chat-name', function (event) {
+        if (event.key !== ' ' && event.key !== 'Enter') return;
+        event.preventDefault();
+        openNamed(this);
+    });
+    $(document).on('mouseover', '.mes_text .chat-name, .mes_text .lore-mark', function (event) {
+        const inner = event.target instanceof Element ? event.target.closest('.chat-name, .lore-mark') : null;
+        if (inner === this) peekAt(this);
+    });
+    $(document).on('mouseout', '.mes_text .chat-name, .mes_text .lore-mark', function (event) {
+        newUi().worldbuilding.unpeek(event.relatedTarget ?? null);
     });
 }

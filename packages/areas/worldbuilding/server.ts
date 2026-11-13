@@ -34,9 +34,11 @@ import type {
     BulkAction,
     BulkJob,
     BulkJobsView,
+    CardAsked,
     CardView,
     Chip,
     EntryCell,
+    HoverCard,
     FoundView,
     ResultsView,
     EntryView,
@@ -196,7 +198,11 @@ export type Ports = {
         book: string,
         entry: string,
         shown: { relations: number; textCharacters: number },
-    ): Promise<Omit<Extract<CardView, { book: string }>, 'book' | 'entry'> | null>;
+    ): Promise<Omit<HoverCard, 'book' | 'entry' | 'broughtUpBy'> | null>;
+    // For each entry, the keys that brought it into `reply`, a stored reply of the tab's chat; null where it didn't come
+    // up for it, or the reply isn't one.
+    broughtUpBy(context: ViewContext, reply: string, entries: EntryAt[]): Promise<(string[] | null)[]>;
+    entryIn(user: User, book: string, entry: string): Promise<boolean>;
     openWorld(who: Who, book: string | null): Promise<string | null>;
     createWorld(who: Who, name: string): Promise<NewWorld>;
     renameWorld(who: Who, book: string, name: string): Promise<'ok' | 'missing' | { refused: string }>;
@@ -326,7 +332,7 @@ const NOTHING_FOUND: FoundView = { book: null };
 
 const NO_WORLD: WorldView = { id: null };
 
-const NO_CARD: CardView = { book: null };
+const NO_CARD: CardView = { asked: null, cards: [] };
 
 const NOTHING_SELECTED: SelectionView = { book: null };
 
@@ -393,7 +399,7 @@ export type ShownWorldState = { overview: ShownOverview; entry: OpenEntry | null
 
 type SessionState = {
     world: ShownWorldState | null;
-    card: EntryAt | null;
+    card: CardAsked | null;
     kindsOfBook: string | null;
     lastChange: LastChange;
     filter: ShownFilter | null;
@@ -801,6 +807,27 @@ export function worldbuildingArea(ports: Ports) {
         return { changed: closes, opensViews: VIEWS_OF_A_WORLD, own: [OVERVIEW_VIEW, WORLD_VIEW, ...closes] };
     };
 
+    // Shows `book` and, when one is named, opens `entry` in it, keeping the grouping the tab shows that world by.
+    const openAt = async (
+        context: ActionContext,
+        book: string,
+        entry: string | null,
+        overview: Omit<ShownWorld, 'groupBy' | 'around'>,
+        pointingAt: PointingAtShown,
+    ): Promise<ActionResult> => {
+        const held = overviewOf(context.session);
+        const groupBy = held?.book === book ? held.groupBy : undefined;
+        const shown = await showWorld(context, book, { ...overview, groupBy, around: entry }, false);
+        if (entry === null) return shown;
+        rememberEntry(context.session, openedNow(entry, pointingAt));
+        const entryViews = [ENTRY_VIEW, POINTING_AT_VIEW];
+        return {
+            changed: shown.changed.filter((view) => !entryViews.includes(view)),
+            opensViews: [...shown.opensViews, ...entryViews],
+            own: [WORLD_VIEW, ENTRY_VIEW],
+        };
+    };
+
     const newWorldShown = async (
         context: ActionContext,
         made: NewWorld | 'missing',
@@ -815,10 +842,11 @@ export function worldbuildingArea(ports: Ports) {
     const forgetWorld = (book: string) => {
         for (const [session, state] of bySession) {
             const shown = state.world?.overview.book;
-            if (![shown, state.kindsOfBook, state.finding?.book, state.card?.book].includes(book)) continue;
+            const cardShows = state.card?.entries.some((at) => at.book === book) === true;
+            if (![shown, state.kindsOfBook, state.finding?.book].includes(book) && !cardShows) continue;
             bySession.set(session, {
                 ...state,
-                card: state.card?.book === book ? null : state.card,
+                card: cardShows ? null : state.card,
                 world: shown === book ? null : state.world,
                 kindsOfBook: state.kindsOfBook === book ? null : state.kindsOfBook,
                 filter: shown === book ? null : state.filter,
@@ -866,15 +894,20 @@ export function worldbuildingArea(ports: Ports) {
                 return world ? { ...world, usedInThisChat } : NO_WORLD;
             },
             [CARD_VIEW]: async (context: ViewContext): Promise<CardView> => {
-                const card = stateOf(context.session).card;
-                const read =
-                    card === null
-                        ? null
-                        : await ports.readCard(context.user, card.book, card.entry, {
-                              relations: CARD_RELATIONS_SHOWN,
-                              textCharacters: CARD_TEXT_CHARACTERS,
-                          });
-                return card && read ? { ...card, ...read } : NO_CARD;
+                const asked = stateOf(context.session).card;
+                if (asked === null) return NO_CARD;
+                const shown = { relations: CARD_RELATIONS_SHOWN, textCharacters: CARD_TEXT_CHARACTERS };
+                const [reads, why] = await Promise.all([
+                    Promise.all(asked.entries.map((at) => ports.readCard(context.user, at.book, at.entry, shown))),
+                    asked.reply === null
+                        ? asked.entries.map(() => null)
+                        : ports.broughtUpBy(context, asked.reply, asked.entries),
+                ]);
+                const cards = asked.entries.flatMap((at, i): HoverCard[] => {
+                    const read = reads[i];
+                    return read ? [{ ...at, ...read, broughtUpBy: why[i] ?? null }] : [];
+                });
+                return { asked, cards };
             },
             [OVERVIEW_VIEW]: async (context: ViewContext): Promise<OverviewView> => {
                 const overview = overviewOf(context.session);
@@ -1130,17 +1163,12 @@ export function worldbuildingArea(ports: Ports) {
                 if (book === null) return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 const entry = uid === null ? null : await ports.entryOfUid(context.user, book, uid);
                 if (uid !== null && entry === null) return { refused: NO_SUCH_ENTRY };
-                const held = overviewOf(context.session);
-                const groupBy = held?.book === book ? held.groupBy : undefined;
-                const shown = await showWorld(context, book, { ...overview, groupBy, around: entry }, false);
-                if (entry === null) return shown;
-                rememberEntry(context.session, openedNow(entry, pointingAt));
-                const entryViews = [ENTRY_VIEW, POINTING_AT_VIEW];
-                return {
-                    changed: shown.changed.filter((view) => !entryViews.includes(view)),
-                    opensViews: [...shown.opensViews, ...entryViews],
-                    own: [WORLD_VIEW, ENTRY_VIEW],
-                };
+                return openAt(context, book, entry, overview, pointingAt);
+            },
+            'worldbuilding.openAt': async (context, { book, entry, overview, pointingAt }) => {
+                if (entry !== null && !(await ports.entryIn(context.user, book, entry)))
+                    return { refused: NO_SUCH_ENTRY };
+                return openAt(context, book, entry, overview, pointingAt);
             },
             'worldbuilding.openCharacterBook': async (context, { character, overview }) => {
                 const book = await ports.characterBook(context.user, character);
@@ -1149,8 +1177,8 @@ export function worldbuildingArea(ports: Ports) {
                 const groupBy = held?.book === book ? held.groupBy : undefined;
                 return showWorld(context, book, { ...overview, groupBy, around: null }, false);
             },
-            'worldbuilding.showCard': async (context, { book, entry }) => {
-                remember(context.session, { card: { book, entry } });
+            'worldbuilding.showCard': async (context, { entries, reply }) => {
+                remember(context.session, { card: { entries, reply } });
                 return { changed: [], opensViews: [CARD_VIEW] };
             },
             'worldbuilding.setWorldDescription': async (context, { book, description }) => {

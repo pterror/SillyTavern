@@ -261,7 +261,8 @@ test("a small picture shows a crop of the thing's own picture, or another image,
     });
     expect(lookPlacementCss('7', resolved).split('\n')).toEqual([
         '.look-box-7 > .name-picture-before { display: inline-block; }',
-        `.look-box-7 > .name-picture { background-image: url("/look-images/${image}"); background-size: 200% 200%; background-position: 100% 100%; }`,
+        '.look-box-7.name-inline::before { display: inline-block; }',
+        `.look-box-7 > .name-picture, .look-box-7.name-inline::before, .look-box-7.name-inline > .named::after { background-image: url("/look-images/${image}"); background-size: 200% 200%; background-position: 100% 100%; }`,
     ]);
 });
 

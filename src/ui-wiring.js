@@ -24,6 +24,7 @@ import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
 import { withPictureUrls } from './world-info/worldbuilding-pictures.js';
 import { worldbuildingSearchPorts } from './world-info/worldbuilding-search.js';
 import { worldbuildingBulkPorts } from './world-info/worldbuilding-bulk.js';
+import { keysThatBroughtUp } from './world-info/activation-record.js';
 import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
 import { WORLD_INFO_GLOBAL_DEFAULTS, worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
@@ -642,6 +643,15 @@ const worldbuildingPorts = {
         if (!context.chat) return false;
         const store = await userStore(directoriesOf(context.user), context.user.handle);
         return chatReadsBook(directoriesOf(context.user), store, BigInt(context.chat.tree), { user: context.user.handle, session: context.session }, BigInt(book));
+    },
+    async broughtUpBy(context, reply, entries) {
+        if (!context.chat) return entries.map(() => null);
+        const store = await userStore(directoriesOf(context.user), context.user.handle);
+        const shown = await store.chats.shownMessage(BigInt(context.chat.tree), reply);
+        return keysThatBroughtUp(shown?.extra?.activations, entries);
+    },
+    async entryIn(user, book, entry) {
+        return (await (await libOf(user)).books.entryIn(BigInt(book), BigInt(entry))) !== null;
     },
     async readCard(user, book, entry, shown) {
         const lib = await libOf(user);

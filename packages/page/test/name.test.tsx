@@ -2,7 +2,7 @@ import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import { expect, test } from 'vite-plus/test';
 import type { Named } from '@st/protocol/looks';
-import { Name, nameElement } from '../src/name.tsx';
+import { Name, inlineName, nameElement } from '../src/name.tsx';
 
 const ilse: Named = { thing: '42', text: 'Ilse Varro', shownAs: 'name' };
 
@@ -63,4 +63,15 @@ test('the plain-DOM form draws the same markup as the component', () => {
         expect(shape(nameElement(ilse, options))).toEqual(shape(host.firstElementChild as Element));
         dispose();
     }
+});
+
+test("a name written in a text is wrapped in its look's box, which carries its picture, around the name's own span", () => {
+    expect(inlineName('42', '/look-images/a.png')).toEqual([
+        {
+            class: 'name-box look-box-42 name-inline',
+            attributes: { style: '--name-picture: url("/look-images/a.png")' },
+        },
+        { class: 'named named-name look-42', attributes: { 'data-thing': '42' } },
+    ]);
+    expect(inlineName('42', null)[0].attributes).toEqual({});
 });

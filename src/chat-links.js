@@ -1,4 +1,5 @@
 import { CHAT_TEXT_LINK_READS_PER_ANSWER } from '@st/worldbuilding/protocol';
+import { lookImageUrl } from '@st/looks/look';
 
 import { getStringHash } from '../public/scripts/hash-utils.js';
 import { character_world_link } from '../public/scripts/character-world-link.js';
@@ -19,7 +20,8 @@ const HELD_SESSIONS_AT_MOST = 256;
 
 /**
  * @typedef {{ of: number, links: [number, number, string][], complete: boolean }} MessageLinks
- * @typedef {{ messages: Record<string, MessageLinks>, entries: Record<string, { book: string, uid: number }>, looks: import('@st/protocol/looks').Looks }} ChatLinks
+ * @typedef {{ world: string, picture: string | null }} LinkedEntry
+ * @typedef {{ messages: Record<string, MessageLinks>, entries: Record<string, LinkedEntry>, looks: import('@st/protocol/looks').Looks }} ChatLinks
  * @typedef {{ nodeId: string, text: string }} LinkedText
  * @typedef {{ directories: import('./users.js').UserDirectoryList, handle: string, tree: bigint, held: string[] }} HeldLinks
  */
@@ -198,23 +200,35 @@ async function linksFor(directories, store, chat, texts, { adding, handle }) {
     const kept = adding && before?.tree === chat.tree ? before.held.filter(id => !answered.includes(id)) : [];
     hold(chat.session, { directories, handle, tree: chat.tree, held: [...answered, ...kept].slice(0, HELD_MESSAGES_AT_MOST) });
     const drawn = await looksOf({ user: { handle, directories: /** @type {any} */ (directories) }, session: chat.session, chat: null }, CHAT_LINKS_LOOKS, found.things, { adding });
-    return { messages: found.messages, entries: await openersOf(store, found.things), looks: drawn };
+    return { messages: found.messages, entries: await linkedEntries(store, found.things), looks: drawn };
 }
 
 /**
- * Where each linked entry opens on the worldbuilding page: its world's name and its uid.
+ * Each linked entry's world, where it opens, and its own picture, which its look may place beside its name.
  * @param {import('./user-stores.js').UserStore} store
  * @param {string[]} things
- * @returns {Promise<Record<string, { book: string, uid: number }>>}
+ * @returns {Promise<Record<string, LinkedEntry>>}
  */
-async function openersOf(store, things) {
+async function linkedEntries(store, things) {
     if (!things.length) return {};
     const described = await store.lib.books.describeEntries(things.map(BigInt));
-    return Object.fromEntries(things.flatMap((thing, i) => {
-        const entry = described[i];
-        const uid = Number(entry?.uid);
-        return entry && Number.isFinite(uid) ? [[thing, { book: entry.book, uid }]] : [];
-    }));
+    /** @type {Map<string, string[]>} */
+    const byWorld = new Map();
+    things.forEach((thing, i) => {
+        const world = described[i]?.world;
+        if (world) byWorld.set(world, [...(byWorld.get(world) ?? []), thing]);
+    });
+    /** @type {Record<string, LinkedEntry>} */
+    const linked = {};
+    for (const [world, inWorld] of byWorld) {
+        /** @type {(string | null)[]} */
+        const pictures = await store.lib.store.worldRead('worldbuildingPictures', { book: BigInt(world), entities: inWorld.map(BigInt) });
+        inWorld.forEach((thing, i) => {
+            const picture = pictures[i];
+            linked[thing] = { world, picture: picture ? lookImageUrl(picture) : null };
+        });
+    }
+    return linked;
 }
 
 /**

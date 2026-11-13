@@ -106,7 +106,7 @@ test('a message is linked where it writes a name of an entry of the chat\'s worl
     const [ilse, lantern, vale] = [await entityOf(harbour, 1), await entityOf(harbour, 2), await entityOf(everywhere, 1)];
     assert.deepEqual(links.messages[first], { of: getStringHash(texts[0]), links: [[0, 10, ilse], [15, 26, lantern]], complete: true });
     assert.deepEqual(links.messages[second], { of: getStringHash(texts[1]), links: [[18, 22, vale]], complete: true }, 'a trigger and a world the chat doesn\'t read link nothing');
-    assert.deepEqual(links.entries[ilse], { book: 'Harbour', uid: 1 });
+    assert.deepEqual(links.entries[ilse], { world: String(harbour), picture: null });
     assert.deepEqual(new Set(Object.keys(links.looks.things)), new Set([ilse, lantern, vale]));
 });
 

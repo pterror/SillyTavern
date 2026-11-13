@@ -1,5 +1,6 @@
 import {
     NAME_BOX_CLASS,
+    NAME_INLINE_CLASS,
     NAME_PICTURE_CLASS,
     NAME_PICTURE_PROPERTY,
     fontFaceCss,
@@ -31,7 +32,8 @@ export const NAME_BASE_CSS = [
     `.${NAME_BOX_CLASS} { position: relative; }`,
     '.named { position: relative; }',
     `.${NAME_BOX_CLASS}::after { position: absolute; left: 50%; bottom: calc(100% - 0.3em); transform: translateX(-50%); font-size: 0.6em; line-height: 1; white-space: nowrap; font-weight: 400; font-style: normal; letter-spacing: normal; opacity: 0.75; pointer-events: none; }`,
-    `.${NAME_PICTURE_CLASS} { display: none; width: 1.05em; height: 1.05em; border-radius: 50%; vertical-align: -0.16em; margin: 0 0.2em; background: var(${NAME_PICTURE_PROPERTY}) center / cover no-repeat; }`,
+    `.${NAME_PICTURE_CLASS}, .${NAME_INLINE_CLASS}::before, .${NAME_INLINE_CLASS} > .named::after { display: none; width: 1.05em; height: 1.05em; border-radius: 50%; vertical-align: -0.16em; margin: 0 0.2em; background: var(${NAME_PICTURE_PROPERTY}) center / cover no-repeat; }`,
+    `.${NAME_INLINE_CLASS}::before, .${NAME_INLINE_CLASS} > .named::after { content: ''; }`,
     ...MOTIONS_CSS,
 ].join('\n');
 

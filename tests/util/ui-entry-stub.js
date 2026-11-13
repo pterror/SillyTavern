@@ -5,3 +5,5 @@ export function start() {
 export const SERVER_OWNED = new Set();
 
 export * from '../../packages/occlusion/src/index.ts';
+
+export { TRIGGER_MARK_CLASS } from '../../packages/protocol/src/looks.ts';

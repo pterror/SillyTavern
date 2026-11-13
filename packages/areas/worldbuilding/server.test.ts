@@ -44,6 +44,7 @@ import {
     WALK_STEPS_PER_READ,
     WORLD_VIEW,
     WORLDS_VIEW,
+    CARD_ENTRIES_AT_MOST,
     CARD_VIEW,
 } from './protocol.ts';
 import type {
@@ -405,6 +406,11 @@ function world(
         characterBook: async (_u, character) => (character === '42' ? cardBook.id : null),
         worldNamed: async (_u, name) => [...worlds.values()].find((w) => w.name === name)?.id ?? null,
         entryOfUid: async (_u, book, uid) => (book === '1' && uid === 7 ? '7' : null),
+        entryIn: async (_u, book, entry) => book === '1' && entries.get(entry)?.deleted === false,
+        broughtUpBy: async (context, reply, asked) =>
+            asked.map(({ entry }) =>
+                context.chat?.tree === '9' && reply === 'r1' && entry === '7' ? ['Ilse', 'ledger'] : null,
+            ),
         setWorldDescription: async (_w, book, description) => {
             if (!worlds.has(book)) return 'missing';
             descriptions.set(book, description);
@@ -2491,21 +2497,65 @@ test("a picture is chosen from the upload and removed, the world's or an entry's
 
 test("pointing at a name shows its entry's card, from one action", async () => {
     const w = world(1000);
-    expect(await w.view<CardView>(CARD_VIEW)).toEqual({ book: null });
-    expect(await w.act('worldbuilding.showCard', { book: '1', entry: '7' })).toEqual({
-        changed: [],
-        opensViews: [CARD_VIEW],
-    });
+    expect(await w.view<CardView>(CARD_VIEW)).toEqual({ asked: null, cards: [] });
+    const asked = { entries: [{ book: '1', entry: '7' }], reply: null };
+    expect(await w.act('worldbuilding.showCard', asked)).toEqual({ changed: [], opensViews: [CARD_VIEW] });
     expect(await w.view<CardView>(CARD_VIEW)).toEqual({
-        book: '1',
-        entry: '7',
-        label: named('7', 'name 7'),
-        picture: null,
-        relations: [],
-        moreRelations: 0,
-        text: 'Ilse keeps the lamp.',
-        textCut: false,
+        asked,
+        cards: [
+            {
+                book: '1',
+                entry: '7',
+                label: named('7', 'name 7'),
+                picture: null,
+                relations: [],
+                moreRelations: 0,
+                text: 'Ilse keeps the lamp.',
+                textCut: false,
+                broughtUpBy: null,
+            },
+        ],
     });
-    await w.act('worldbuilding.showCard', { book: '1', entry: '404' });
-    expect(await w.view<CardView>(CARD_VIEW)).toEqual({ book: null });
+    const gone = { entries: [{ book: '1', entry: '404' }], reply: null };
+    await w.act('worldbuilding.showCard', gone);
+    expect(await w.view<CardView>(CARD_VIEW)).toEqual({ asked: gone, cards: [] });
+});
+
+test("a word's card shows every entry it brought up, each with what brought it into the reply asked about", async () => {
+    const w = world(1000);
+    const asked = {
+        entries: [
+            { book: '1', entry: '7' },
+            { book: '1', entry: '404' },
+            { book: '1', entry: '8' },
+        ],
+        reply: 'r1',
+    };
+    await w.act('worldbuilding.showCard', asked);
+    const shown = await w.chatView<CardView>(CARD_VIEW);
+    expect(shown.cards.map(({ entry, broughtUpBy }) => [entry, broughtUpBy])).toEqual([
+        ['7', ['Ilse', 'ledger']],
+        ['8', null],
+    ]);
+    const noReply = { ...asked, reply: null };
+    await w.act('worldbuilding.showCard', noReply);
+    expect((await w.view<CardView>(CARD_VIEW)).cards.every(({ broughtUpBy }) => broughtUpBy === null)).toBe(true);
+    const tooMany = {
+        entries: Array.from({ length: CARD_ENTRIES_AT_MOST + 1 }, () => ({ book: '1', entry: '7' })),
+        reply: null,
+    };
+    expect(v.safeParse(actions['worldbuilding.showCard'], tooMany).success).toBe(false);
+});
+
+test('a world opens by its id, with an entry of it opened too; an entry not in it is refused', async () => {
+    const w = world(1000);
+    expect(await w.act('worldbuilding.openAt', { book: '1', entry: '7', overview: shownWorld, pointingAt })).toEqual({
+        changed: [],
+        opensViews: [...WORLD_VIEWS, ENTRY_VIEW, POINTING_AT_VIEW],
+        own: [WORLD_VIEW, ENTRY_VIEW],
+    });
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ book: '1', entry: '7', deleted: false });
+    expect(await w.act('worldbuilding.openAt', { book: '1', entry: '404', overview: shownWorld, pointingAt })).toEqual({
+        refused: "That entry isn't in this world.",
+    });
 });

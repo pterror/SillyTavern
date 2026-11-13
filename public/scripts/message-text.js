@@ -18,6 +18,7 @@ import { macrosIn, withFilledAbout } from './safe-macros.js';
  * @property {(text: string) => string} substituteParams for settings that hold macros
  * @property {string} systemName the name the app's own messages are from
  * @property {(shownIn: Element, message: () => ChatMessage | undefined) => import('@pterror/interact-editor/reader').Overlay} loreMarks
+ * @property {(shownIn: Element, message: () => ChatMessage | undefined) => import('@pterror/interact-editor/reader').Overlay} chatLinks
  * @property {() => boolean} mediaAllowed whether media from other sites is loaded
  * @property {() => void} mediaBlocked hears that media from another site was hidden
  * @property {import('./macro-pill.js').Translate} t
@@ -72,7 +73,8 @@ function grammarOptions(dialogueQuotes) {
  * @param {string} kind
  * @param {() => Record<string, string | null> | undefined} valuesOf the values of the text's macros, as the server sent
  *   them with it
- * @param {Element | null} [loreIn] the message's text element, for its lore marks; none for text without them
+ * @param {Element | null} [loreIn] the message's text element, for its lore marks and the names it writes; none for
+ *   text without them
  * @returns {TextSetup}
  */
 function chatSetup(speaker, kind, valuesOf, loreIn = null) {
@@ -84,7 +86,7 @@ function chatSetup(speaker, kind, valuesOf, loreIn = null) {
         grammar,
         html: MESSAGE_POLICY,
         macro: macroValuePieces(values, name => withFilledAbout(page.macroPerson(name, { name: speaker ?? '' }), name, values.get), page.t),
-        ...(loreIn ? { overlays: () => [page.loreMarks(loreIn, () => messageShownIn(loreIn))] } : {}),
+        ...(loreIn ? { overlays: () => [page.loreMarks(loreIn, () => messageShownIn(loreIn)), page.chatLinks(loreIn, () => messageShownIn(loreIn))] } : {}),
     };
 }
 

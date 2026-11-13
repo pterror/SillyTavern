@@ -1295,3 +1295,70 @@
 .wb .wb-region-head .name-box::after {
     content: none;
 }
+
+.wb-hover-why {
+    font-size: 12px;
+    color: var(--wb-ink-mid);
+    margin-top: 4px;
+}
+
+/* The card of a word in the chat, over the page. */
+.wb-chat-card-at {
+    position: fixed;
+    z-index: 10000;
+    padding-top: 8px;
+}
+
+.wb-chat-card {
+    --wb-ink: #e4e2dc;
+    --wb-ink-soft: #cfcdc6;
+    --wb-ink-mid: #a3a29c;
+    --wb-ink-dim: #8c8b86;
+    --wb-name: #9cc3f0;
+
+    width: 360px;
+    background: #1f1f24;
+    border: 1px solid #34343b;
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-family: 'Noto Sans', system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--wb-ink);
+    cursor: pointer;
+}
+
+.wb-chat-card:hover {
+    border-color: #45454d;
+}
+
+.wb-chat-card .wb-chat-card-item {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.wb-chat-card-sep {
+    height: 1px;
+    background: #2e2e34;
+}
+
+.wb-chat-card .wb-opening {
+    font-weight: 400;
+}
+
+:where(.wb-chat-card .named-name, .mes_text .chat-name > .named-name) {
+    color: var(--wb-name, #9cc3f0);
+}

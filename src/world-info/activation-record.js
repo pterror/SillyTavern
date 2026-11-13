@@ -137,3 +137,19 @@ export function mergeRecords(before, after) {
     const cut = [...after.cut, ...(before.cut ?? []).filter(c => !used.has(key(c.ref)) && !after.cut.some(a => key(a.ref) === key(c.ref)))];
     return { entries, cut };
 }
+
+/**
+ * For each entry, the keys that brought it into the reply `record` belongs to, once each in the order activation found
+ * them; null where it didn't come up for it.
+ * @param {unknown} record a stored reply's `extra.activations`
+ * @param {{ book: string, entry: string }[]} entries
+ * @returns {(string[] | null)[]}
+ */
+export function keysThatBroughtUp(record, entries) {
+    const found = Array.isArray(/** @type {any} */ (record)?.entries) ? /** @type {RecordEntry[]} */ (/** @type {any} */ (record).entries) : [];
+    return entries.map(({ book, entry }) => {
+        const came = found.find(e => e?.ref && 'book' in e.ref && e.ref.book === book && e.ref.entry === entry);
+        if (!came) return null;
+        return [...new Set((Array.isArray(came.keys) ? came.keys : []).map(k => k?.key).filter(k => typeof k === 'string' && k !== ''))];
+    });
+}

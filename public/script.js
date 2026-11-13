@@ -324,6 +324,7 @@ import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
 import { alternativesOldPage, canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/alternatives.js';
 import { activationsOldPage, initLoreMarks, loreMarks, updateLoreMark } from './scripts/activations.js';
+import { chatLinkOverlay, takeChatLinks } from './scripts/chat-links.js';
 
 export {
     user_avatar,
@@ -931,6 +932,10 @@ function setupCharacterChangeStream() {
                 takePushedMessageCounts(message.counts);
                 return;
             }
+            if (message?.type === 'chat-links') {
+                takeChatLinks(message.links, { replace: true });
+                return;
+            }
             if (message !== null && typeof message === 'object' && message.type === undefined) onCharacterChangeMessage();
         },
         open: () => {
@@ -1239,6 +1244,7 @@ async function firstLoadInit() {
         substituteParams: text => substituteParams(text),
         systemName: systemUserName,
         loreMarks,
+        chatLinks: chatLinkOverlay,
         mediaAllowed: isExternalMediaAllowed,
         mediaBlocked: warnExternalMediaBlocked,
         t,
@@ -1396,9 +1402,7 @@ async function firstLoadInit() {
     initItemizedPrompts();
     initAccessibility();
     initSwipePicker();
-    initLoreMarks({
-        save: key => saveSettingsDebounced(key),
-    });
+    initLoreMarks();
     addDebugFunctions();
 
     stageTimings.push({ stage: currentStageLabel, ms: performance.now() - stageStart });
@@ -5553,6 +5557,7 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
  * @property {import('./scripts/chat-box.js').Draft} [draft] the draft of the message the chat ends on
  * @property {unknown} [left] what became of the drafts the request carried (`chatBoxLeft`)
  * @property {import('@st/protocol/looks').Looks} [looks] The looks of the chat's speakers' names.
+ * @property {import('./scripts/chat-links.js').ChatLinks} [links] Where its messages write names of entries.
  */
 
 /**
@@ -5601,6 +5606,7 @@ export function takeChatOpenAnswer(body, answer) {
     takeChatOpenParts(answer.chat, answer.parts);
     takeViews(answer.ui_views);
     if (answer.looks) holdLooks(CHAT_LOOKS, answer.looks);
+    takeChatLinks(answer.links, { replace: true });
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
     setActiveGroup(answer.active_group);

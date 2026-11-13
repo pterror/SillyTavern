@@ -3,10 +3,12 @@ import type { ChatOwner, ViewPush } from '@st/protocol';
 
 export type { ViewFrame } from '@st/protocol';
 export { SERVER_OWNED } from '@st/settings/page';
+export { TRIGGER_MARK_CLASS } from '@st/protocol/looks';
 export * from '@st/occlusion';
 import { createClient } from '@st/page/client';
 import { documentLookSheet } from '@st/page/looks';
-import { nameElement } from '@st/page/name';
+import { inlineName, nameElement } from '@st/page/name';
+import { DRAWN_VIEW } from '@st/protocol/looks';
 import type { Declaration, LookState } from '@st/protocol/looks';
 import { UiProvider } from '@st/page/context';
 import type { Ui } from '@st/page/context';
@@ -72,6 +74,8 @@ export type StartOptions = {
 export function start(options: StartOptions) {
     const looks = documentLookSheet(document);
     const client = createClient({ headers: options.headers, looks });
+    // Brings the trigger mark's rules, which every chat draws.
+    client.view(DRAWN_VIEW);
     const ui: Ui = { client, t: options.t };
     const mount = (container: HTMLElement, surface: () => JSX.Element) =>
         render(() => <UiProvider value={ui}>{surface()}</UiProvider>, container);
@@ -133,6 +137,10 @@ export function start(options: StartOptions) {
         />
     ));
 
+    const chatCardHost = document.createElement('div');
+    document.body.append(chatCardHost);
+    mount(chatCardHost, () => <worldbuilding.ChatCard />);
+
     const lookHost = document.createElement('div');
     document.body.append(lookHost);
     mount(lookHost, () => <LookScreen />);
@@ -169,6 +177,7 @@ export function start(options: StartOptions) {
         },
         names: {
             element: nameElement,
+            inline: inlineName,
             hold: looks.hold,
             add: looks.add,
             drop: looks.drop,

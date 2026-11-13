@@ -13,13 +13,13 @@ const SERVER_KEEPALIVE_INTERVAL_MS = 12 * 1000;
 
 const STREAM_STALL_TIMEOUT_MS = 3 * SERVER_KEEPALIVE_INTERVAL_MS;
 
-/** @typedef {{mes: string, extra: Record<string, any>, macros?: Record<string, Record<string, string | null>>}} StoredReply macros: the values of the sent message's macros, by its node */
+/** @typedef {{mes: string, extra: Record<string, any>, macros?: Record<string, Record<string, string | null>>, links?: import('./chat-links.js').ChatLinks}} StoredReply macros: the values of the sent message's macros, by its node; links: where it and the sent message write names of entries */
 
 /** @type {Map<string, StoredReply>} */
 const storedReplies = new Map();
 const STORED_REPLIES_MAX = 16;
 
-/** @param {{node_id: string, mes: string, extra?: Record<string, any>, macros?: Record<string, Record<string, string | null>>}} reply */
+/** @param {{node_id: string, mes: string, extra?: Record<string, any>, macros?: Record<string, Record<string, string | null>>, links?: import('./chat-links.js').ChatLinks}} reply */
 function rememberStoredReply(reply) {
     if (typeof reply.mes !== 'string') return;
     storedReplies.delete(reply.node_id);
@@ -27,6 +27,7 @@ function rememberStoredReply(reply) {
         mes: reply.mes,
         extra: reply.extra && typeof reply.extra === 'object' ? reply.extra : {},
         ...(reply.macros && typeof reply.macros === 'object' ? { macros: reply.macros } : {}),
+        ...(reply.links && typeof reply.links === 'object' ? { links: reply.links } : {}),
     });
     for (const oldest of storedReplies.keys()) {
         if (storedReplies.size <= STORED_REPLIES_MAX) break;
