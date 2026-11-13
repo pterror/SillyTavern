@@ -14,17 +14,29 @@ export const REGION_ATTRIBUTES = (entry: string, name: string, kind: string | nu
     'data-kind': kind ?? '',
 });
 
+export type Slot = { after: string | null; before: string | null };
+
+export type CellAt = { column: number | null; row: number | null };
+
+// A card of a board's or grid's cell: what a drop into another cell is said as (null: that cell takes no drop), and
+// the drop.
+export type CellsDrag = {
+    from: CellAt;
+    label(from: CellAt, to: CellAt, alt: boolean): { kind: string; change: string; keepBoth: boolean } | null;
+    drop(entry: string, from: CellAt, to: CellAt, keepBoth: boolean, slot: Slot): void;
+};
+
 export type Dragged = {
     entry: string;
     name: string;
-    grouping: Grouping;
+    // Null for a card of a cell, which `cells` moves.
+    grouping: Grouping | null;
     region: Membership;
     element: HTMLElement;
+    cells?: CellsDrag;
 };
 
-export type Slot = { after: string | null; before: string | null };
-
-type Over = { entry: string; name: string; element: HTMLElement; slot: Slot };
+type Over = { entry: string; name: string; element: HTMLElement; slot: Slot; cell: CellAt | null };
 
 type Held = {
     dragged: Dragged;
@@ -55,6 +67,7 @@ const cellsOf = (region: HTMLElement) =>
 
 export type DragControl = {
     press(event: PointerEvent, dragged: Dragged): void;
+    moves(holding: Pick<Held, 'dragged' | 'over'>): boolean;
     clickIsDrop(): boolean;
     held: Accessor<Held | null>;
 };
@@ -65,8 +78,27 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
     // The card's click that follows a drop's release isn't an open.
     let dropped = false;
 
+    const cellOver = (under: Element | null, x: number, y: number, dragged: Dragged, cells: CellsDrag): Over | null => {
+        const element = under?.closest<HTMLElement>('[data-cell]');
+        if (!element) return null;
+        const [column = '', row = ''] = (element.dataset['cell'] ?? '').split(':');
+        const cell = { column: column === '' ? null : Number(column), row: row === '' ? null : Number(row) };
+        const moved = cell.column !== cells.from.column || cell.row !== cells.from.row;
+        if (moved && !cells.label(cells.from, cell, false)) return null;
+        const grid = element.querySelector<HTMLElement>(':scope .wb-cell-cards');
+        const shown = grid
+            ? [...grid.querySelectorAll<HTMLElement>(':scope > [data-entry]')].map((card) => ({
+                  entry: card.dataset['entry'] ?? '',
+                  rect: card.getBoundingClientRect(),
+              }))
+            : [];
+        return { entry: '', name: '', element, slot: slotAt(shown, x, y, dragged.entry), cell };
+    };
+
     const overAt = (x: number, y: number, dragged: Dragged): Over | null => {
         const under = document.elementFromPoint(x, y);
+        if (dragged.cells) return cellOver(under, x, y, dragged, dragged.cells);
+        if (!dragged.grouping) return null;
         const region = under instanceof Element ? under.closest<HTMLElement>('[data-region]') : null;
         if (!region || dragged.element.contains(region)) return null;
         if (region.dataset['kind'] !== dragged.grouping.kind) return null;
@@ -77,14 +109,23 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
             name: region.dataset['regionName'] ?? '',
             element: region,
             slot: slotAt(cellsOf(region), x, y, dragged.entry),
+            cell: null,
         };
+    };
+
+    const moves = (holding: Pick<Held, 'dragged' | 'over'>): boolean => {
+        const { over, dragged } = holding;
+        if (!over) return false;
+        if (over.cell && dragged.cells)
+            return over.cell.column !== dragged.cells.from.column || over.cell.row !== dragged.cells.from.row;
+        return over.entry !== dragged.region?.entry;
     };
 
     const show = (next: Held | null) => {
         const before = held();
         if (before?.over && before.over.element !== next?.over?.element)
             before.over.element.classList.remove('wb-drop');
-        if (next?.over && !(next.over.entry === next.dragged.region?.entry)) next.over.element.classList.add('wb-drop');
+        if (next?.over && moves(next)) next.over.element.classList.add('wb-drop');
         setHeld(next);
     };
 
@@ -149,8 +190,14 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
         const over = holding.over;
         if (!over) return;
         const { dragged } = holding;
+        const keeps = event.altKey || holding.alt;
+        if (over.cell && dragged.cells) {
+            dragged.cells.drop(dragged.entry, dragged.cells.from, over.cell, keeps, over.slot);
+            return;
+        }
+        if (!dragged.grouping) return;
         const relation = { book: dragged.grouping.book, entry: dragged.entry, kind: dragged.grouping.kind };
-        const keepBoth = event.altKey || holding.alt;
+        const keepBoth = keeps;
         if (dragged.region !== null && !(keepBoth && over.entry !== dragged.region.entry))
             void act('worldbuilding.moveRelation', {
                 ...relation,
@@ -171,6 +218,7 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
 
     return {
         held,
+        moves,
         clickIsDrop() {
             const was = dropped;
             dropped = false;
@@ -201,9 +249,10 @@ export function DragLayer(props: { control: DragControl }) {
     return (
         <Show when={props.control.held()}>
             {(holding) => {
-                const moving = () => {
-                    const over = holding().over;
-                    return over && over.entry !== holding().dragged.region?.entry ? over : null;
+                const moving = () => (props.control.moves(holding()) ? holding().over : null);
+                const cellSaid = () => {
+                    const { over, dragged, alt } = holding();
+                    return over?.cell && dragged.cells ? dragged.cells.label(dragged.cells.from, over.cell, alt) : null;
                 };
                 return (
                     <div
@@ -216,10 +265,21 @@ export function DragLayer(props: { control: DragControl }) {
                         aria-hidden="true"
                     >
                         <div class="wb-dragged-card" ref={(element) => element.append(holding().ghost)} />
-                        <Show when={moving()}>
+                        <Show when={moving() && cellSaid()}>
+                            {(said) => (
+                                <div class="wb-intent">
+                                    <span class="wb-intent-kind">{said().kind}</span>
+                                    <b>{said().change}</b>
+                                    <Show when={said().keepBoth}>
+                                        <span>{t('Alt: keep both')}</span>
+                                    </Show>
+                                </div>
+                            )}
+                        </Show>
+                        <Show when={!holding().over?.cell && moving()}>
                             {(over) => (
                                 <div class="wb-intent">
-                                    <span class="wb-intent-kind">{holding().dragged.grouping.kindName}</span>
+                                    <span class="wb-intent-kind">{holding().dragged.grouping?.kindName ?? ''}</span>
                                     <b>
                                         {holding().alt
                                             ? fill(t('Also put in ${0}'), over().name)

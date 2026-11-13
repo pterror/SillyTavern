@@ -27,7 +27,7 @@ fn chip_walk_visits() -> usize {
     }
     CHIP_WALK_VISITS
 }
-const SCANNED_AT_ONCE: usize = 64;
+pub(super) const SCANNED_AT_ONCE: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Depth {
@@ -63,7 +63,7 @@ fn refused(why: &str) -> StoreError {
 }
 
 #[derive(Default)]
-struct Reach {
+pub(super) struct Reach {
     reached: HashSet<u64>,
     unreached: HashSet<u64>,
 }
@@ -76,7 +76,7 @@ impl Reach {
     }
 }
 
-fn reaches(view: &View, kind: u64, target: u64, from: u64, memo: &mut Reach) -> Result<bool, StoreError> {
+pub(super) fn reaches(view: &View, kind: u64, target: u64, from: u64, memo: &mut Reach) -> Result<bool, StoreError> {
     if from == target || memo.unreached.contains(&from) {
         return Ok(false);
     }
@@ -219,7 +219,7 @@ pub struct Page {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn relevance_page(
+pub(super) fn relevance_page(
     view: &View,
     cache: &StatsCache,
     scope: Scope,

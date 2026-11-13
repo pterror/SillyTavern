@@ -18,6 +18,7 @@ export const BULK_JOBS_VIEW = 'worldbuilding.bulkJobs';
 export const KEY_SHARERS_VIEW = 'worldbuilding.keySharers';
 export const CARD_VIEW = 'worldbuilding.card';
 export const VIEWS_VIEW = 'worldbuilding.views';
+export const AXES_VIEW = 'worldbuilding.axes';
 
 export const FOUND_PER_QUERY = 20;
 // One `/world` command's worlds, set used in every chat or not in one request.
@@ -25,6 +26,13 @@ export const WORLDS_CHANGED_AT_MOST = 1000;
 export const MENTIONS_PER_PAGE = 20;
 export const KEY_SHARERS_SHOWN = 20;
 export const SELECTION_COUNTED_UP_TO = 1000;
+// A board's or grid's columns and rows each, and the cards a cell draws first and adds each time more are asked for.
+export const AXIS_ITEMS_AT_MOST = 6;
+export const CELL_CARDS_PER_PAGE = 6;
+export const CELL_COUNTED_UP_TO = 1000;
+// The region heads a cell draws above each entry in it (engine/src/store/world_cells.rs, HEADS_ABOVE): a cell draws at
+// most this many cards more than its entries for each of them.
+export const CELL_HEADS_ABOVE = 2;
 export const LOOPS_SHOWN = 3;
 // The hover card's relations and the characters of its text's opening.
 export const CARD_RELATIONS_SHOWN = 6;
@@ -414,6 +422,34 @@ export const shapeOf = (view: Pick<SavedView, 'drawing' | 'columns' | 'rows'>): 
           ? 'board'
           : view.drawing;
 
+// A card in a board's or grid's cell, in the regions of the grouping relation's targets: a head drawn only for
+// where its members are is not `inCell`.
+export type CellCard = Omit<EntryCell, 'region'> & { inCell: boolean; region: CellCard[] };
+
+// `count` stops at CELL_COUNTED_UP_TO, or where one request's reads end; `capped` says there may be more. `drops`: the
+// item is a relation to one entry, so a card dropped in its column or row gets that relation.
+export type AxisHeader = {
+    item: AxisItem;
+    kindName: string | null;
+    target: Named | null;
+    targetDeleted: boolean;
+    count: number;
+    capped: boolean;
+    drops: boolean;
+};
+
+// `column` and `row` index the view's columns and rows, null when the view has none on that axis.
+export type AxisCell = {
+    column: number | null;
+    row: number | null;
+    entries: CellCard[];
+    count: number;
+    capped: boolean;
+    more: boolean;
+};
+
+export type AxesView = { book: string; columns: AxisHeader[]; rows: AxisHeader[]; cells: AxisCell[] } | { book: null };
+
 // `own`: the reader's own view; `changed`: the reader keeps a changed copy of the world's view.
 export type ViewTab = { id: string; name: string; shape: ViewShape; own: boolean; changed: boolean };
 
@@ -530,12 +566,26 @@ const keyAs = v.picklist(['name', 'trigger']);
 const cursor = v.pipe(v.string(), v.minLength(1));
 const chip = v.object({ kind: kindId, target: entityId, depth: v.picklist(['directly', 'anyDepth']) });
 const rowField = v.picklist(ROW_FIELDS);
+const axisItem = v.object({
+    kind: kindId,
+    is: v.union([
+        v.object({ target: entityId, depth: v.picklist(['directly', 'anyDepth']) }),
+        v.picklist(['any', 'none']),
+    ]),
+});
+const axis = v.pipe(v.array(axisItem), v.maxLength(AXIS_ITEMS_AT_MOST));
+const cellAt = v.object({
+    column: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(0))),
+    row: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(0))),
+});
 const viewId = v.pipe(v.string(), v.regex(/^[a-z0-9-]{1,40}$/));
 const viewChangeFields = v.partial(
     v.strictObject({
         groupBy: v.nullable(kindId),
         drawing: v.picklist(['cards', 'rows']),
         fields: v.pipe(v.array(rowField), v.maxLength(ROW_FIELDS.length)),
+        columns: axis,
+        rows: axis,
     }),
 );
 export type ViewChange = v.InferOutput<typeof viewChangeFields>;
@@ -698,4 +748,15 @@ export const actions = {
     'worldbuilding.resetView': v.object({ book: entityId, overview: shownOverview }),
     // A view of the reader's own, starting as the shown view is drawn.
     'worldbuilding.addView': v.object({ book: entityId, overview: shownOverview }),
+    'worldbuilding.showMoreInCell': v.object({ book: entityId, ...cellAt.entries }),
+    // A card dropped from one cell of a board or grid into another: the relations of the axes it crossed change.
+    'worldbuilding.moveBetweenCells': v.object({
+        book: entityId,
+        entry: entityId,
+        from: cellAt,
+        to: cellAt,
+        keepBoth: v.boolean(),
+        ...betweenMembers,
+        loopCheckLimit,
+    }),
 } satisfies ActionSchemas;

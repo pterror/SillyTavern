@@ -1,6 +1,7 @@
 import { Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { useUi } from '@st/page/context';
 import {
+    AXES_VIEW,
     ENTRY_VIEW,
     LAST_CHANGE_VIEW,
     LOOP_CHECK_VISITS_PER_WRITE,
@@ -14,6 +15,7 @@ import {
     WORLD_VIEW,
 } from '../protocol.ts';
 import type {
+    AxesView,
     EntryView,
     LastChangeView,
     OverviewView,
@@ -68,6 +70,7 @@ function Page(props: Props) {
     const lastChange = shownView<LastChangeView>(client, LAST_CHANGE_VIEW);
     const views = shownView<ViewsView>(client, VIEWS_VIEW);
     const selection = shownView<SelectionView>(client, SELECTION_VIEW);
+    const axes = shownView<AxesView>(client, AXES_VIEW);
 
     const [pane, setPane] = createSignal<HTMLElement>();
     const [width, setWidth] = createSignal(0);
@@ -137,10 +140,23 @@ function Page(props: Props) {
         shownSelection,
         () => pane(),
     );
+    const shownAxes = () => {
+        const shown = axes();
+        const view = shownViews()?.shown;
+        const drawsAxes = view !== null && view !== undefined && (view.columns.length > 0 || view.rows.length > 0);
+        return drawsAxes && shown && shown.book !== null && shown.book === shownWorld()?.id ? shown : null;
+    };
     const rows = (): RowsContext | null => {
         const shown = shownViews()?.shown;
         const book = shownWorld()?.id;
-        if (!shown || shown.drawing !== 'rows' || book === undefined) return null;
+        if (
+            !shown ||
+            shown.drawing !== 'rows' ||
+            shown.columns.length > 0 ||
+            shown.rows.length > 0 ||
+            book === undefined
+        )
+            return null;
         return {
             book,
             fields: shown.fields,
@@ -283,6 +299,7 @@ function Page(props: Props) {
                             <ViewBar
                                 views={shown()}
                                 kinds={shownKinds()}
+                                axes={shownAxes()}
                                 onChange={viewActions.change}
                                 onSave={viewActions.save}
                                 onDiscard={viewActions.discard}
@@ -311,6 +328,8 @@ function Page(props: Props) {
                                         onGroupBy={(groupBy) => void openWorld(shown().id, groupBy)}
                                         viewed={(shownViews()?.tabs.length ?? 0) > 0}
                                         rows={rows()}
+                                        axes={shownAxes()}
+                                        onAxes={viewActions.change}
                                         onRange={(range: Range) => void act('worldbuilding.showRange', range)}
                                         onMoreResults={(pages) =>
                                             void act('worldbuilding.showResults', {

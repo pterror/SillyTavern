@@ -31,6 +31,7 @@ pub mod stats;
 pub mod tags;
 pub mod token_cache;
 pub mod world_bulk;
+pub mod world_cells;
 pub mod world_order_tree;
 pub mod world_search;
 
@@ -647,6 +648,12 @@ impl Store {
     pub fn world_results(&self, read: &world_search::ResultsRead) -> StoreResult<chat_read::Js> {
         let (found, tighten) =
             self.derived(|v| world_search::read_results(v, &self.inner.search_stats, read))?;
+        self.inner.tighten(&tighten);
+        Ok(found)
+    }
+
+    pub fn world_cells(&self, read: &world_cells::CellsRead) -> StoreResult<chat_read::Js> {
+        let (found, tighten) = self.derived(|v| world_cells::read_cells(v, &self.inner.search_stats, read))?;
         self.inner.tighten(&tighten);
         Ok(found)
     }
@@ -2083,5 +2090,7 @@ mod tests;
 mod token_cache_tests;
 #[cfg(test)]
 mod world_bulk_tests;
+#[cfg(test)]
+mod world_cells_tests;
 #[cfg(test)]
 mod world_search_tests;

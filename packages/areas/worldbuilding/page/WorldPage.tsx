@@ -1,7 +1,9 @@
 import { For, Show } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
-import type { LastChangeView, OverviewView, RelationKind, ResultsView, WorldView } from '../protocol.ts';
+import type { AxesView, LastChangeView, OverviewView, RelationKind, ResultsView, WorldView } from '../protocol.ts';
+import { Axes } from './Axes.tsx';
+import type { AxesChange } from './Axes.tsx';
 import { Picture } from './Cards.tsx';
 import type { CardActions } from './Cards.tsx';
 import { useWb } from './context.ts';
@@ -33,6 +35,9 @@ export function WorldPage(props: {
     // Set when the world has saved views: the bar under the tabs, not the header, chooses the grouping.
     viewed: boolean;
     rows: RowsContext | null;
+    // Set when the view draws a board or grid, which stands in for the world's header and its list.
+    axes: Extract<AxesView, { book: string }> | null;
+    onAxes: AxesChange;
 }) {
     const { t } = useUi();
     const wb = useWb();
@@ -46,7 +51,7 @@ export function WorldPage(props: {
     const marked = () => props.lastChange?.markedTitleKeys?.book === book() && props.world.namesOffer === null;
     return (
         <div class="wb-front">
-            <Show when={!props.rows}>
+            <Show when={!props.rows && !props.axes}>
                 <div class="wb-front-head">
                     <Show when={props.world.picture}>{(url) => <Picture url={url()} class="wb-front-pic" />}</Show>
                     <div class="wb-front-words">
@@ -208,39 +213,52 @@ export function WorldPage(props: {
                 {(rows) => <RowsHead fields={rows().fields} selection={rows().selection} book={book()} />}
             </Show>
             <Show
-                when={props.results}
+                when={props.axes}
                 fallback={
-                    <Show when={props.overview}>
-                        {(overview) => (
-                            <TopLevel
-                                view={overview()}
-                                pane={props.pane}
-                                shown={props.shown}
-                                columns={props.columns}
-                                actions={props.actions}
-                                onRange={props.onRange}
-                                {...(props.rows
-                                    ? {
-                                          rows: (cell) => (
-                                              <EntryRows cell={cell} depth={0} context={props.rows as RowsContext} />
-                                          ),
-                                          rowHeight: ROW_HEIGHT,
-                                      }
-                                    : {})}
-                            />
-                        )}
-                    </Show>
+                    <>
+                        <Show
+                            when={props.results}
+                            fallback={
+                                <Show when={props.overview}>
+                                    {(overview) => (
+                                        <TopLevel
+                                            view={overview()}
+                                            pane={props.pane}
+                                            shown={props.shown}
+                                            columns={props.columns}
+                                            actions={props.actions}
+                                            onRange={props.onRange}
+                                            {...(props.rows
+                                                ? {
+                                                      rows: (cell) => (
+                                                          <EntryRows
+                                                              cell={cell}
+                                                              depth={0}
+                                                              context={props.rows as RowsContext}
+                                                          />
+                                                      ),
+                                                      rowHeight: ROW_HEIGHT,
+                                                  }
+                                                : {})}
+                                        />
+                                    )}
+                                </Show>
+                            }
+                        >
+                            {(results) => (
+                                <Results
+                                    view={results()}
+                                    pageSize={props.resultsPageSize}
+                                    actions={props.actions}
+                                    onMore={props.onMoreResults}
+                                    rows={props.rows}
+                                />
+                            )}
+                        </Show>
+                    </>
                 }
             >
-                {(results) => (
-                    <Results
-                        view={results()}
-                        pageSize={props.resultsPageSize}
-                        actions={props.actions}
-                        onMore={props.onMoreResults}
-                        rows={props.rows}
-                    />
-                )}
+                {(axes) => <Axes axes={axes()} onChange={props.onAxes} />}
             </Show>
             <Show
                 when={

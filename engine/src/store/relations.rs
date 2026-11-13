@@ -512,7 +512,7 @@ fn targets_in_use_of_kind_where(
     Ok(out)
 }
 
-fn strong_targets_in_use_of_kind(view: &View, source: u64, kind: u64) -> Result<Vec<u64>, StoreError> {
+pub fn strong_targets_in_use_of_kind(view: &View, source: u64, kind: u64) -> Result<Vec<u64>, StoreError> {
     targets_in_use_of_kind_where(view, source, kind, |stored| !stored.relation.weak)
 }
 

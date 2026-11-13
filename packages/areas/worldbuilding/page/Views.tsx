@@ -2,7 +2,8 @@ import { For, Show, createSignal } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ROW_FIELDS } from '../protocol.ts';
-import type { RelationKind, RowField, SavedView, ViewShape, ViewsView } from '../protocol.ts';
+import type { AxesView, RelationKind, RowField, SavedView, ViewShape, ViewsView } from '../protocol.ts';
+import { AxisControl } from './Axes.tsx';
 import type { Wb } from './context.ts';
 import { dismissOn } from './dismiss.ts';
 
@@ -76,7 +77,8 @@ function Control(props: { label: string; children: JSX.Element }) {
 export function ViewBar(props: {
     views: Shown;
     kinds: RelationKind[];
-    onChange: (change: Partial<Pick<SavedView, 'groupBy' | 'drawing' | 'fields'>>) => void;
+    axes: Extract<AxesView, { book: string }> | null;
+    onChange: (change: Partial<Pick<SavedView, 'groupBy' | 'drawing' | 'fields' | 'columns' | 'rows'>>) => void;
     onSave: () => void;
     onDiscard: () => void;
     onReset: () => void;
@@ -88,12 +90,26 @@ export function ViewBar(props: {
         <Show when={shown()}>
             {(view) => (
                 <div class="wb-vbar">
-                    <button type="button" class="wb-vctl" title={t('Columns come with boards and grids.')} disabled>
-                        <b>{t('Columns')}</b>+
-                    </button>
-                    <button type="button" class="wb-vctl" title={t('Rows come with boards and grids.')} disabled>
-                        <b>{t('Rows')}</b>+
-                    </button>
+                    <AxisControl
+                        label={t('Columns')}
+                        axis="columns"
+                        items={view().columns}
+                        headers={props.axes?.columns ?? null}
+                        kinds={props.kinds}
+                        book={props.views.book}
+                        onChange={props.onChange}
+                    />
+                    <Show when={view().columns.length === 0 || view().rows.length > 0}>
+                        <AxisControl
+                            label={t('Rows')}
+                            axis="rows"
+                            items={view().rows}
+                            headers={props.axes?.rows ?? null}
+                            kinds={props.kinds}
+                            book={props.views.book}
+                            onChange={props.onChange}
+                        />
+                    </Show>
                     <Control label={t('Inside, grouped by')}>
                         <select
                             aria-label={t('Inside, grouped by')}

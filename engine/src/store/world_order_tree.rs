@@ -474,6 +474,8 @@ pub fn add_held(
 pub enum Counted {
     Every,
     TopLevel(Option<u64>),
+    // The entries with a strong relation of the kind.
+    Held(u64),
 }
 
 fn counted_under(
@@ -482,6 +484,11 @@ fn counted_under(
     node_prefix: &[u8],
     counted: Counted,
 ) -> Result<Vec<(u8, u64)>, StoreError> {
+    if let Counted::Held(kind) = counted {
+        let mut held = digit_counts(reader, &held_key(tree, node_prefix, CountedSlot::HeldByKind(kind))?)?;
+        held.retain(|(_, amount)| *amount > 0);
+        return Ok(held);
+    }
     let mut not_held = digit_counts(reader, &count_key(tree, node_prefix))?;
     let Counted::TopLevel(kind) = counted else {
         return Ok(not_held);

@@ -28,11 +28,20 @@ import {
     WORLD_VIEW,
     WORLDS_VIEW,
     VIEWS_VIEW,
+    AXES_VIEW,
+    CELL_CARDS_PER_PAGE,
+    CELL_COUNTED_UP_TO,
+    CELL_HEADS_ABOVE,
     shapeOf,
     ENTRIES_NAMED_PER_LOOP,
     LOOPS_SHOWN,
 } from './protocol.ts';
 import type {
+    AxesView,
+    AxisCell,
+    AxisHeader,
+    AxisItem,
+    CellCard,
     BulkAction,
     BulkJob,
     BulkJobsView,
@@ -180,6 +189,19 @@ export type HeldSelection = {
 export type SelectionRead = Omit<Extract<SelectionView, { base: unknown }>, 'book' | 'base'>;
 
 // The reader's layer over a world's views: changed copies of the world's, by id, and views of the reader's own.
+export type CellsQuery = {
+    book: string;
+    groupBy: string | null;
+    layout: OverviewLayout;
+    query: string;
+    chips: Chip[];
+    cells: { items: AxisItem[]; limit: number }[];
+    countUpTo: number;
+    walkSteps: number;
+};
+
+export type CellRead = { entries: CellCard[]; count: number; capped: boolean; more: boolean };
+
 export type ReaderViews = { changed: Record<string, SavedView>; own: SavedView[] };
 
 export type StoredViews = { world: SavedView[]; reader: ReaderViews };
@@ -189,6 +211,8 @@ export type Ports = {
     writeReaderViews(who: Who, book: string, reader: ReaderViews): Promise<'ok' | 'missing'>;
     // What rows show of each entry, in the order asked; null for one that isn't a live entry of the world.
     readRowFacts(user: User, book: string, entries: string[]): Promise<(RowFacts | null)[]>;
+    // Each cell's entries (its first `limit`) and count: those passing the filter and every one of its items.
+    readCells(user: User, query: CellsQuery): Promise<CellRead[]>;
     // The looks of the things a view draws, as the view is read: the session's views' things are what a look's edit
     // answers looks for.
     looksOf(context: ViewContext, view: string, things: string[]): Promise<Looks>;
@@ -340,7 +364,7 @@ const NO_KEY_SHARERS: KeySharersView = { book: null };
 // The views that show how many entries a world has; an action that adds or takes away an entry answers them all.
 const VIEWS_COUNTING_ENTRIES = [OVERVIEW_VIEW, RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, WORLD_VIEW, SELECTION_VIEW];
 
-const VIEWS_OF_CARDS = [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW];
+const VIEWS_OF_CARDS = [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW];
 
 const NO_RESULTS: ResultsView = { book: null };
 
@@ -357,6 +381,7 @@ const NO_BULK_JOBS: BulkJobsView = { book: null };
 const VIEWS_OF_A_WORLD = [
     OVERVIEW_VIEW,
     VIEWS_VIEW,
+    AXES_VIEW,
     RESULTS_VIEW,
     RELATION_KINDS_VIEW,
     LAST_CHANGE_VIEW,
@@ -417,8 +442,12 @@ export type ShownWorldState = { overview: ShownOverview; entry: OpenEntry | null
 // The view a tab shows of a world: `id` null when the world has no views; `draft` the tab's unsaved change of it.
 type ShownViewState = { book: string; id: string | null; draft: SavedView | null };
 
+// How many pages of CELL_CARDS_PER_PAGE each cell of the shown board or grid draws, by `cellKey`; none: one.
+type CellPages = { book: string; view: string | null; pages: Record<string, number> };
+
 type SessionState = {
     view: ShownViewState | null;
+    cellPages: CellPages | null;
     world: ShownWorldState | null;
     card: CardAsked | null;
     kindsOfBook: string | null;
@@ -430,6 +459,7 @@ type SessionState = {
 
 const NO_SESSION_STATE: SessionState = {
     view: null,
+    cellPages: null,
     world: null,
     card: null,
     kindsOfBook: null,
@@ -508,6 +538,22 @@ export const tabsOf = (stored: StoredViews): SavedView[] => [
 const sameView = (one: SavedView, other: SavedView): boolean => JSON.stringify(one) === JSON.stringify(other);
 
 const NO_VIEWS: ViewsView = { book: null };
+const NO_AXES: AxesView = { book: null };
+const NOT_A_CELL = 'The shown view has no such cell.';
+const NO_DROP_HERE = 'That cell isn’t made by a relation to one entry, so a card can’t be dropped there.';
+
+const cellKey = (column: number | null, row: number | null) => `${column ?? '-'}:${row ?? '-'}`;
+
+// The cells a view with axes draws: one per column and row, or per item of its one axis.
+export const cellsOf = (columns: number, rows: number): { column: number | null; row: number | null }[] => {
+    if (columns === 0 && rows === 0) return [];
+    const across: (number | null)[] = columns === 0 ? [null] : [...Array(columns).keys()];
+    const down: (number | null)[] = rows === 0 ? [null] : [...Array(rows).keys()];
+    return down.flatMap((row) => across.map((column) => ({ column, row })));
+};
+
+const directTarget = (item: AxisItem): string | null =>
+    typeof item.is === 'object' && item.is.depth === 'directly' ? item.is.target : null;
 const NO_VIEW_SHOWN = 'No view is shown.';
 const NO_SUCH_VIEW = 'This world has no such view.';
 const NOT_THE_WORLDS_VIEW = 'This view is your own, so there is nothing of the world’s to go back to.';
@@ -637,7 +683,7 @@ export function worldbuildingArea(ports: Ports) {
         view: SavedView | null,
         overview: Omit<ShownWorld, 'groupBy' | 'around'>,
     ): Promise<ActionResult> => {
-        remember(context.session, { view: { book, id, draft } });
+        remember(context.session, { view: { book, id, draft }, cellPages: null });
         const shown = await showWorld(context, book, {
             ...overview,
             groupBy: view ? view.groupBy : (overviewOf(context.session)?.groupBy ?? null),
@@ -647,9 +693,9 @@ export function worldbuildingArea(ports: Ports) {
         const filterChanged = await setFilterOf(context, book, view?.query ?? '', view?.chips ?? [], null);
         if ('refused' in filterChanged) return filterChanged;
         return {
-            changed: [...shown.changed, ...filterChanged.changed, VIEWS_VIEW],
+            changed: [...shown.changed, ...filterChanged.changed, VIEWS_VIEW, AXES_VIEW],
             opensViews: [...shown.opensViews, ...(filterChanged.opensViews ?? [])],
-            own: [...new Set([...shown.own, VIEWS_VIEW])],
+            own: [...new Set([...shown.own, VIEWS_VIEW, AXES_VIEW])],
         };
     };
 
@@ -667,7 +713,7 @@ export function worldbuildingArea(ports: Ports) {
         const selectionChanged = dropsSelection ? [SELECTION_VIEW] : [];
         if (query.trim() === '' && chips.length === 0) {
             remember(context.session, { filter: null, ...selectionChange });
-            return { changed: [RESULTS_VIEW, ...selectionChanged] };
+            return { changed: [RESULTS_VIEW, AXES_VIEW, ...selectionChanged] };
         }
         const labels = await ports.labelEntries(
             context.user,
@@ -687,7 +733,7 @@ export function worldbuildingArea(ports: Ports) {
             ...selectionChange,
         });
         return {
-            changed: [...(closes ? [ENTRY_VIEW, POINTING_AT_VIEW] : []), ...selectionChanged],
+            changed: [...(closes ? [ENTRY_VIEW, POINTING_AT_VIEW] : []), AXES_VIEW, ...selectionChanged],
             opensViews: [RESULTS_VIEW],
         };
     };
@@ -835,6 +881,81 @@ export function worldbuildingArea(ports: Ports) {
     const shownSelection = (session: string): HeldSelection | null => {
         const selection = stateOf(session).selection;
         return selection && selection.book === overviewOf(session)?.book ? selection : null;
+    };
+
+    // A board's or grid's headers and cells, each under the tab's filter: headers count only, cells draw their first
+    // pages. One request's walk is shared out among them.
+    const readAxesView = async (context: ViewContext): Promise<AxesView> => {
+        const shown = await viewShown(context.user, context.session);
+        const overview = overviewOf(context.session);
+        if (!shown || !overview || overview.book !== shown.state.book) return NO_AXES;
+        const { columns, rows } = shown.shown;
+        if (columns.length === 0 && rows.length === 0) return NO_AXES;
+        const book = shown.state.book;
+        const filter = stateOf(context.session).filter;
+        const filtered = filter?.book === book ? filter : null;
+        const pages = stateOf(context.session).cellPages;
+        const pagesOf = (column: number | null, row: number | null) =>
+            pages && pages.book === book && pages.view === shown.state.id
+                ? (pages.pages[cellKey(column, row)] ?? 1)
+                : 1;
+        const cells = cellsOf(columns.length, rows.length);
+        const cardsAtMost = Math.floor(MAX_CARDS_PER_READ / ((1 + CELL_HEADS_ABOVE) * Math.max(1, cells.length)));
+        const asked = [
+            ...[...columns, ...rows].map((item) => ({ items: [item], limit: 0 })),
+            ...cells.map(({ column, row }) => ({
+                items: [
+                    ...(column === null ? [] : [columns[column] as AxisItem]),
+                    ...(row === null ? [] : [rows[row] as AxisItem]),
+                ],
+                limit: Math.min(cardsAtMost, pagesOf(column, row) * CELL_CARDS_PER_PAGE),
+            })),
+        ];
+        const [read, kinds, labels] = await Promise.all([
+            ports.readCells(context.user, {
+                book,
+                groupBy: overview.groupBy,
+                layout: overview.layout,
+                query: filtered?.query ?? '',
+                chips: (filtered?.chips ?? []).map(({ kind, target, depth }) => ({ kind, target, depth })),
+                cells: asked,
+                countUpTo: CELL_COUNTED_UP_TO,
+                walkSteps: Math.max(1, Math.floor(WALK_STEPS_PER_READ / asked.length)),
+            }),
+            ports.readRelationKinds(context.user, book),
+            ports.labelEntries(
+                context.user,
+                book,
+                [...columns, ...rows].flatMap((item) => (typeof item.is === 'object' ? [item.is.target] : [])),
+            ),
+        ]);
+        let labelAt = 0;
+        const header = (item: AxisItem, at: number): AxisHeader => {
+            const target = typeof item.is === 'object' ? (labels[labelAt++] ?? null) : null;
+            const counted = read[at];
+            return {
+                item,
+                kindName: kinds?.find((kind) => kind.id === item.kind)?.name ?? null,
+                target,
+                targetDeleted: typeof item.is === 'object' && target === null,
+                count: counted?.count ?? 0,
+                capped: counted?.capped ?? false,
+                drops: directTarget(item) !== null && target !== null,
+            };
+        };
+        const headers = [...columns, ...rows].map(header);
+        const drawn: AxisCell[] = cells.map(({ column, row }, at) => {
+            const cell = read[headers.length + at];
+            return {
+                column,
+                row,
+                entries: cell?.entries ?? [],
+                count: cell?.count ?? 0,
+                capped: cell?.capped ?? false,
+                more: cell?.more ?? false,
+            };
+        });
+        return { book, columns: headers.slice(0, columns.length), rows: headers.slice(columns.length), cells: drawn };
     };
 
     const readSelectionView = async (context: ViewContext): Promise<SelectionView> => {
@@ -1126,6 +1247,7 @@ export function worldbuildingArea(ports: Ports) {
             },
             [POINTING_AT_VIEW]: readPointingAtView,
             [RESULTS_VIEW]: readResultsView,
+            [AXES_VIEW]: readAxesView,
             [FOUND_VIEW]: readFoundView,
             [SELECTION_VIEW]: readSelectionView,
             [BULK_JOBS_VIEW]: async (context: ViewContext): Promise<BulkJobsView> => {
@@ -1523,10 +1645,16 @@ export function worldbuildingArea(ports: Ports) {
                     ...(change.groupBy === undefined ? {} : { groupBy: change.groupBy }),
                     ...(change.drawing === undefined ? {} : { drawing: change.drawing }),
                     ...(change.fields === undefined ? {} : { fields: change.fields }),
+                    ...(change.columns === undefined ? {} : { columns: change.columns }),
+                    ...(change.rows === undefined ? {} : { rows: change.rows }),
                 };
                 if (change.groupBy === undefined) {
-                    remember(context.session, { view: { ...shown.state, draft } });
-                    return { changed: [VIEWS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW] };
+                    const axesChanged = change.columns !== undefined || change.rows !== undefined;
+                    remember(context.session, {
+                        view: { ...shown.state, draft },
+                        ...(axesChanged ? { cellPages: null } : {}),
+                    });
+                    return { changed: [VIEWS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW, AXES_VIEW] };
                 }
                 return showViewOf(context, book, shown.state.id, draft, draft, overview);
             },
@@ -1581,6 +1709,93 @@ export function worldbuildingArea(ports: Ports) {
                 });
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 return showViewOf(context, book, made.id, null, made, overview);
+            },
+            'worldbuilding.showMoreInCell': async (context, { book, column, row }) => {
+                const shown = await viewShown(context.user, context.session);
+                if (!shown || shown.state.book !== book) return { refused: NO_VIEW_SHOWN, changed: [VIEWS_VIEW] };
+                const { columns, rows } = shown.shown;
+                if (!cellsOf(columns.length, rows.length).some((cell) => cell.column === column && cell.row === row))
+                    return { refused: NOT_A_CELL, changed: [AXES_VIEW] };
+                const held = stateOf(context.session).cellPages;
+                const pages = held && held.book === book && held.view === shown.state.id ? held.pages : {};
+                const key = cellKey(column, row);
+                remember(context.session, {
+                    cellPages: { book, view: shown.state.id, pages: { ...pages, [key]: (pages[key] ?? 1) + 1 } },
+                });
+                return { changed: [AXES_VIEW] };
+            },
+            'worldbuilding.moveBetweenCells': async (
+                context,
+                { book, entry, from, to, keepBoth, after, before, loopCheckLimit },
+            ) => {
+                const shown = await viewShown(context.user, context.session);
+                if (!shown || shown.state.book !== book) return { refused: NO_VIEW_SHOWN, changed: [VIEWS_VIEW] };
+                const { columns, rows } = shown.shown;
+                const cells = cellsOf(columns.length, rows.length);
+                const isCell = (at: { column: number | null; row: number | null }) =>
+                    cells.some((cell) => cell.column === at.column && cell.row === at.row);
+                if (!isCell(from) || !isCell(to)) return { refused: NOT_A_CELL, changed: [AXES_VIEW] };
+                const slot = { after, before };
+                const changes: RelationChange[] = [];
+                const crossed = [
+                    { axis: columns, from: from.column, to: to.column, slot },
+                    { axis: rows, from: from.row, to: to.row, slot: { after: null, before: null } },
+                ];
+                for (const crossing of crossed) {
+                    if (crossing.from === null || crossing.to === null) continue;
+                    const was = crossing.axis[crossing.from] as AxisItem;
+                    const now = crossing.axis[crossing.to] as AxisItem;
+                    const target = directTarget(now);
+                    const source = directTarget(was);
+                    if (crossing.from === crossing.to) {
+                        if (target !== null && changes.length === 0 && crossing.slot === slot)
+                            changes.push({
+                                change: 'move',
+                                entry,
+                                kind: now.kind,
+                                target,
+                                newTarget: target,
+                                ...slot,
+                            });
+                        continue;
+                    }
+                    if (target === null) return { refused: NO_DROP_HERE };
+                    if (source !== null && was.kind === now.kind && !keepBoth)
+                        changes.push({
+                            change: 'move',
+                            entry,
+                            kind: now.kind,
+                            target: source,
+                            newTarget: target,
+                            ...crossing.slot,
+                        });
+                    else {
+                        changes.push({ change: 'add', entry, kind: now.kind, target, weak: false, ...crossing.slot });
+                        if (source !== null && !keepBoth)
+                            changes.push({ change: 'remove', entry, kind: was.kind, target: source });
+                    }
+                }
+                const moving = changes.filter(
+                    (change) => change.change !== 'move' || change.target !== change.newTarget,
+                );
+                const applied = moving.length > 0 ? moving : changes;
+                let last: { change: RelationChange; loops: UnreachedLoop[] } | null = null;
+                for (const change of applied) {
+                    const answer = await ports.changeRelation(who(context), book, change, loopCheckLimit);
+                    if (answer === 'missing') return { refused: WORLD_GONE };
+                    if ('refused' in answer) return { refused: answer.refused, changed: [...VIEWS_OF_CARDS] };
+                    last = { change, loops: answer.unreachedLoops };
+                }
+                if (!last) return { changed: [] };
+                const target = last.change.change === 'move' ? last.change.newTarget : last.change.target;
+                remember(context.session, {
+                    lastChange: {
+                        ...NOTHING_CHANGED,
+                        changedRelation: { book, entry, kind: last.change.kind, target },
+                        loops: { book, found: last.loops },
+                    },
+                });
+                return { changed: [...VIEWS_OF_CARDS, LAST_CHANGE_VIEW], own: [AXES_VIEW, LAST_CHANGE_VIEW] };
             },
             'worldbuilding.bulk': withOverview(async (context, overview, { book, action, loopCheckLimit }) => {
                 if (overview.book !== book) return { refused: NOT_SHOWN };

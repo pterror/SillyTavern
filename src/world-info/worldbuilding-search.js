@@ -12,7 +12,7 @@ export const findClauses = query => searchClauses(query).map(clause => ({ ...cla
 
 /**
  * @param {{ libOf: (user: import('@st/server-ui').User) => Promise<any> }} options
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'labelEntries' | 'readResults' | 'findEntries'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'labelEntries' | 'readResults' | 'readCells' | 'findEntries'>}
  */
 export function worldbuildingSearchPorts({ libOf }) {
     return {
@@ -32,6 +32,24 @@ export function worldbuildingSearchPorts({ libOf }) {
                 from,
                 pages,
                 limit: pageSize,
+                walkSteps,
+            }));
+        },
+        async readCells(user, { book, groupBy, layout, query, chips, cells, countUpTo, walkSteps }) {
+            const lib = await libOf(user);
+            return withPictureUrls(await lib.store.worldRead('worldbuildingCells', {
+                book: BigInt(book),
+                groupBy: groupBy === null ? null : Number(groupBy),
+                cardTextCharacters: layout.cardTextCharacters,
+                clauses: filterClauses(query),
+                chips: chips.map(chip => ({ kind: Number(chip.kind), target: BigInt(chip.target), depth: chip.depth })),
+                cells: cells.map(cell => ({
+                    limit: cell.limit,
+                    filters: cell.items.map(item => typeof item.is === 'object'
+                        ? { kind: Number(item.kind), is: item.is.depth, target: BigInt(item.is.target) }
+                        : { kind: Number(item.kind), is: item.is }),
+                })),
+                countUpTo,
                 walkSteps,
             }));
         },

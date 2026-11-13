@@ -5,6 +5,8 @@ import { READS_OF_LOOKS_BESIDES_THINGS } from '@st/looks/protocol';
 
 import {
     actions,
+    AXES_VIEW,
+    CELL_HEADS_ABOVE,
     cardsPerTopLevelEntry,
     ENTRY_VIEW,
     FOUND_PER_QUERY,
@@ -87,11 +89,12 @@ import type {
     Ports,
     RelationChange,
     ResultsQuery,
+    CellsQuery,
     ReaderViews,
     StoredViews,
 } from './server.ts';
 import type { ActionContext, ActionResult, Upload, User } from '@st/server-ui';
-import type { CardView, SavedView, ViewsView } from './protocol.ts';
+import type { AxesView, CardView, CellCard, SavedView, ViewsView } from './protocol.ts';
 
 const LOOK: ResolvedLook = {
     layers: { rest: [{ property: 'color', value: 'teal' }] },
@@ -216,6 +219,11 @@ const READS_ASKED: Costs = {
     stepPointingAt: (_u, q) => crossedBy(q) * cardsOf(q.layout) * READS_PER_CARD,
     labelEntries: (_u, _b, entries) => entries.length * READS_PER_LABEL,
     readResults: (_u, q) => q.pages * q.pageSize * READS_PER_DRAWN_CARD + q.walkSteps,
+    readCells: (_u, q) =>
+        q.cells.reduce(
+            (reads, cell) => reads + cell.limit * (1 + CELL_HEADS_ABOVE) * READS_PER_DRAWN_CARD + q.walkSteps,
+            0,
+        ),
     findEntries: (_u, q) => q.limit * (READS_PER_DRAWN_CARD + READS_PER_PICTURE),
     readSelection: (_u, selection, walkSteps) => selection.except.length + walkSteps,
     // The first chunk walks in the engine's own share (WALK_STEPS_PER_READ) before its loop check.
@@ -250,6 +258,25 @@ function countingReads(ports: Ports, reads: { asked: number }): Ports {
     return Object.fromEntries(counted) as Ports;
 }
 
+const cellCard = (entry: string, inCell: boolean): CellCard => ({
+    cell: 'entry',
+    occurrence: entry,
+    entry,
+    entryKey: entry,
+    label: named(entry, `name ${entry}`),
+    picture: null,
+    title: null,
+    text: '',
+    textCut: false,
+    keys: [],
+    names: [],
+    relations: [],
+    groupingKindRelationsTargetingThis: 0,
+    alreadyOpenAbove: false,
+    inCell,
+    region: [],
+});
+
 function world(
     count: number,
     { worlds: listed = ['1', '2'], results = 5 }: { worlds?: string[]; results?: number } = {},
@@ -276,7 +303,9 @@ function world(
         bulk: { selection: HeldSelection; action: BulkAction; loopCheckLimit: number; session: string }[];
         looks: { view: string; session: string; things: string[] }[];
         pictures: { book: string; entry: string | null; file: string | null }[];
+        cells: CellsQuery[];
     } = {
+        cells: [],
         looks: [],
         overview: [],
         step: [],
@@ -400,6 +429,15 @@ function world(
             readerWrites.push({ book, reader, session });
             storedViews.set(book, { world: storedViews.get(book)?.world ?? [], reader });
             return 'ok';
+        },
+        readCells: async (_u, query) => {
+            asked.cells.push(query);
+            return query.cells.map((cell) => ({
+                entries: cell.limit === 0 ? [] : [cellCard('7', cell.items.length === 2)],
+                count: cell.items.length,
+                capped: false,
+                more: false,
+            }));
         },
         readRowFacts: async (_u, _book, entries) =>
             entries.map((entry) => ({
@@ -777,6 +815,7 @@ function world(
 const WORLD_VIEWS = [
     OVERVIEW_VIEW,
     VIEWS_VIEW,
+    AXES_VIEW,
     RESULTS_VIEW,
     RELATION_KINDS_VIEW,
     LAST_CHANGE_VIEW,
@@ -1262,7 +1301,15 @@ test('a relation change names its world, passes the session and the loop check l
         loopCheckLimit: 500,
     };
     expect(await w.act('worldbuilding.addRelation', add)).toEqual({
-        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, LAST_CHANGE_VIEW],
+        changed: [
+            OVERVIEW_VIEW,
+            RESULTS_VIEW,
+            ENTRY_VIEW,
+            POINTING_AT_VIEW,
+            SELECTION_VIEW,
+            AXES_VIEW,
+            LAST_CHANGE_VIEW,
+        ],
         own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW],
     });
     expect(w.asked.changes[0]).toEqual({
@@ -1435,7 +1482,7 @@ test('an edit names its world and entry, passes the session, answers the entry a
     await w.act('worldbuilding.openOverview', open);
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     const both = {
-        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, FOUND_VIEW],
+        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW, FOUND_VIEW],
         own: [ENTRY_VIEW],
     };
     expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '7', text: 'Ilse left.' })).toEqual(both);
@@ -1454,7 +1501,7 @@ test('an edit names its world and entry, passes the session, answers the entry a
     );
     expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '404', text: '' })).toEqual({
         refused: "That entry isn't in this world.",
-        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, FOUND_VIEW],
+        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW, FOUND_VIEW],
         own: [],
     });
     expect(await w.act('worldbuilding.setEntryText', { book: '2', entry: '7', text: '' })).toEqual({
@@ -1563,7 +1610,7 @@ test('deleting the open entry closes it and offers it back under its label; rest
     });
     expect(await w.act('worldbuilding.deleteEntry', { book: '1', entry: '7' })).toEqual({
         refused: "That entry isn't in this world.",
-        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, FOUND_VIEW],
+        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW, FOUND_VIEW],
         own: [],
     });
     expect(await w.act('worldbuilding.restoreEntry', { book: '1', entry: '7' })).toEqual({
@@ -1904,7 +1951,10 @@ test("the filter is the shown world's: setting it opens the results at their fir
     expect(await w.act('worldbuilding.setFilter', { ...filter, chips: [{ ...inSaltmarrow, target: '999' }] })).toEqual({
         refused: "That entry isn't in this world.",
     });
-    expect(await w.act('worldbuilding.setFilter', filter)).toEqual({ changed: [], opensViews: [RESULTS_VIEW] });
+    expect(await w.act('worldbuilding.setFilter', filter)).toEqual({
+        changed: [AXES_VIEW],
+        opensViews: [RESULTS_VIEW],
+    });
     expect(await w.view<ResultsView>(RESULTS_VIEW)).toEqual({
         book: '1',
         generation: 1,
@@ -1929,12 +1979,12 @@ test("the filter is the shown world's: setting it opens the results at their fir
     });
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.setFilter', filter)).toEqual({
-        changed: [ENTRY_VIEW, POINTING_AT_VIEW],
+        changed: [ENTRY_VIEW, POINTING_AT_VIEW, AXES_VIEW],
         opensViews: [RESULTS_VIEW],
     });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
     expect(await w.act('worldbuilding.setFilter', { ...filter, query: ' ', chips: [] })).toEqual({
-        changed: [RESULTS_VIEW],
+        changed: [RESULTS_VIEW, AXES_VIEW],
     });
     expect(await w.view<ResultsView>(RESULTS_VIEW)).toEqual({ book: null });
     expect(await w.act('worldbuilding.setFilter', { ...filter, query: '' })).toMatchObject({
@@ -2083,6 +2133,7 @@ test("an imported book's offer is on the world's header; marking answers the car
         ENTRY_VIEW,
         POINTING_AT_VIEW,
         SELECTION_VIEW,
+        AXES_VIEW,
         FOUND_VIEW,
         WORLD_VIEW,
         LAST_CHANGE_VIEW,
@@ -2171,7 +2222,7 @@ test('selecting all matching holds the shown filter, else the whole world; unpic
     expect(w.asked.selections.at(-1)).toEqual({ book: '1', base: 'matching', filter: null, except: [] });
 
     expect(await w.act('worldbuilding.setFilter', filter)).toEqual({
-        changed: [SELECTION_VIEW],
+        changed: [AXES_VIEW, SELECTION_VIEW],
         opensViews: [RESULTS_VIEW],
     });
     expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
@@ -2190,12 +2241,15 @@ test('selecting all matching holds the shown filter, else the whole world; unpic
     expect(await w.view<SelectionView>(SELECTION_VIEW)).toMatchObject({ base: 'matching', except: ['301'] });
 
     expect(await w.act('worldbuilding.setFilter', { ...filter, query: '', chips: [] })).toEqual({
-        changed: [RESULTS_VIEW, SELECTION_VIEW],
+        changed: [RESULTS_VIEW, AXES_VIEW, SELECTION_VIEW],
     });
     expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
 
     await w.act('worldbuilding.select', { book: '1', entries: ['7'], selected: true });
-    expect(await w.act('worldbuilding.setFilter', filter)).toEqual({ changed: [], opensViews: [RESULTS_VIEW] });
+    expect(await w.act('worldbuilding.setFilter', filter)).toEqual({
+        changed: [AXES_VIEW],
+        opensViews: [RESULTS_VIEW],
+    });
     expect(await w.view<SelectionView>(SELECTION_VIEW)).toMatchObject({ base: 'none', except: ['7'] });
     await w.act('worldbuilding.openOverview', { ...open, book: '2' });
     await w.act('worldbuilding.openOverview', open);
@@ -2245,6 +2299,7 @@ test('a bulk action runs over the selection and clears it, answering the cards, 
             SELECTION_VIEW,
             ENTRY_VIEW,
             POINTING_AT_VIEW,
+            AXES_VIEW,
             BULK_JOBS_VIEW,
             LAST_CHANGE_VIEW,
         ],
@@ -2522,7 +2577,7 @@ test("a picture is chosen from the upload and removed, the world's or an entry's
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ picture: '/look-images/coast.png' });
     expect((await w.view<WorldsView>(WORLDS_VIEW)).worlds[0]).toMatchObject({ picture: '/look-images/coast.png' });
     expect(await w.act('worldbuilding.setPicture', { book: '1', entry: '7' }, upload('ilse.png'))).toEqual({
-        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, CARD_VIEW],
+        changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW, CARD_VIEW],
         own: [ENTRY_VIEW],
     });
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
@@ -2709,4 +2764,107 @@ test("a world with no views shows none, and its grouping is the tab's own", asyn
     ).toMatchObject({
         refused: 'No view is shown.',
     });
+});
+
+const directly = (kind: string, target: string) => ({ kind, is: { target, depth: 'directly' as const } });
+
+test("a board's columns and a grid's rows are read as cells under the tab's filter, each header counted", async () => {
+    const w = world(1000);
+    w.storedViews.set('1', {
+        world: [
+            savedView('who', 'Who works where', {
+                groupBy: null,
+                columns: [directly('1', '7'), directly('1', '8')],
+                rows: [{ kind: '1', is: 'none' }],
+            }),
+        ],
+        reader: { changed: {}, own: [] },
+    });
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: undefined });
+    const axes = await w.view<Extract<AxesView, { book: string }>>(AXES_VIEW);
+    expect(axes.columns.map((header) => [header.target?.text, header.kindName, header.count, header.drops])).toEqual([
+        ['name 7', 'in', 1, true],
+        ['name 8', 'in', 1, true],
+    ]);
+    expect(axes.rows).toMatchObject([{ target: null, drops: false, item: { is: 'none' } }]);
+    expect(axes.cells.map((cell) => [cell.column, cell.row, cell.count])).toEqual([
+        [0, 0, 2],
+        [1, 0, 2],
+    ]);
+    const asked = w.asked.cells.at(-1);
+    expect(asked?.cells.map((cell) => cell.limit)).toEqual([0, 0, 0, 6, 6]);
+    expect(asked?.cells[3]?.items).toEqual([directly('1', '7'), { kind: '1', is: 'none' }]);
+    await w.act('worldbuilding.showMoreInCell', { book: '1', column: 1, row: 0 });
+    await w.view(AXES_VIEW);
+    expect(w.asked.cells.at(-1)?.cells.map((cell) => cell.limit)).toEqual([0, 0, 0, 6, 12]);
+    expect(await w.act('worldbuilding.showMoreInCell', { book: '1', column: 2, row: 0 })).toMatchObject({
+        refused: 'The shown view has no such cell.',
+    });
+    await w.act('worldbuilding.setFilter', { book: '1', query: 'lamp', chips: [], pageSize: 10 });
+    await w.view(AXES_VIEW);
+    expect(w.asked.cells.at(-1)?.query).toBe('lamp');
+});
+
+test('changing a view’s columns or rows changes only the tab’s draft, and a view without axes reads no cells', async () => {
+    const w = world(1000);
+    w.storedViews.set('1', { world: [savedView('places', 'Places')], reader: { changed: {}, own: [] } });
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: undefined });
+    expect(await w.view(AXES_VIEW)).toEqual({ book: null });
+    const answer = await w.act('worldbuilding.changeView', {
+        book: '1',
+        change: { columns: [directly('1', '8')] },
+        overview: shownRange,
+    });
+    expect(answer).toMatchObject({ changed: expect.arrayContaining([AXES_VIEW, VIEWS_VIEW]) });
+    expect(await w.view<ViewsView>(VIEWS_VIEW)).toMatchObject({ unsaved: true, tabs: [{ shape: 'board' }] });
+    expect(await w.view(AXES_VIEW)).toMatchObject({ book: '1', columns: [{ item: directly('1', '8') }] });
+});
+
+test('a card dropped in another cell changes the relations of the axes it crossed, in one action', async () => {
+    const w = world(1000);
+    w.storedViews.set('1', {
+        world: [
+            savedView('grid', 'Grid', {
+                columns: [directly('1', '7'), directly('1', '8'), { kind: '1', is: 'any' }],
+                rows: [directly('2', '7'), directly('2', '8')],
+            }),
+        ],
+        reader: { changed: {}, own: [] },
+    });
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: undefined });
+    const drop = (from: object, to: object, keepBoth = false) =>
+        w.act('worldbuilding.moveBetweenCells', {
+            book: '1',
+            entry: '50',
+            from,
+            to,
+            keepBoth,
+            after: '60',
+            before: null,
+            loopCheckLimit: 10,
+        });
+    const changes = () => w.asked.changes.splice(0).map(({ change }) => change);
+    expect(await drop({ column: 0, row: 0 }, { column: 1, row: 1 })).toMatchObject({
+        own: expect.arrayContaining([AXES_VIEW]),
+    });
+    expect(changes()).toEqual([
+        { change: 'move', entry: '50', kind: '1', target: '7', newTarget: '8', after: '60', before: null },
+        { change: 'move', entry: '50', kind: '2', target: '7', newTarget: '8', after: null, before: null },
+    ]);
+    await drop({ column: 0, row: 0 }, { column: 1, row: 0 }, true);
+    expect(changes()).toEqual([
+        { change: 'add', entry: '50', kind: '1', target: '8', weak: false, after: '60', before: null },
+    ]);
+    await drop({ column: 2, row: 0 }, { column: 0, row: 0 });
+    expect(changes()).toEqual([
+        { change: 'add', entry: '50', kind: '1', target: '7', weak: false, after: '60', before: null },
+    ]);
+    await drop({ column: 0, row: 1 }, { column: 0, row: 1 });
+    expect(changes()).toEqual([
+        { change: 'move', entry: '50', kind: '1', target: '7', newTarget: '7', after: '60', before: null },
+    ]);
+    expect(await drop({ column: 0, row: 0 }, { column: 2, row: 0 })).toMatchObject({
+        refused: expect.stringContaining('can’t be dropped'),
+    });
+    expect(changes()).toEqual([]);
 });
