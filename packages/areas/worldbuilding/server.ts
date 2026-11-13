@@ -87,7 +87,11 @@ export type ShownOverview = Grouping & {
     stepLandedOn: string | null;
 };
 
-export type ShownWorld = Omit<ShownOverview, 'book' | 'stepLandedOn'> & { around: string | null };
+// `groupBy` undefined: the world's default grouping, its first relation kind (none when it has none).
+export type ShownWorld = Omit<ShownOverview, 'book' | 'stepLandedOn' | 'groupBy'> & {
+    groupBy?: string | null | undefined;
+    around: string | null;
+};
 
 export type OverviewStep = { from: string | null; by: number } | { from: string; to: 'parent' | 'firstChild' };
 
@@ -749,11 +753,23 @@ export function worldbuildingArea(ports: Ports) {
             const opensViews = [WORLD_VIEW, WORLDS_VIEW];
             return { changed, opensViews, own: [...changed, ...opensViews] };
         }
-        let overview: ShownOverview = { book: opened, groupBy, firstRank, endRank, layout, stepLandedOn: null };
+        const grouping =
+            groupBy !== undefined
+                ? groupBy
+                : ((await ports.readRelationKinds(context.user, opened))?.find((kind) => kind.mergingInto === null)
+                      ?.id ?? null);
+        let overview: ShownOverview = {
+            book: opened,
+            groupBy: grouping,
+            firstRank,
+            endRank,
+            layout,
+            stepLandedOn: null,
+        };
         if (around !== null && stepFitsTheBudget(1, layout)) {
             const landed = await ports.stepOverview(context.user, {
                 book: opened,
-                groupBy,
+                groupBy: grouping,
                 layout,
                 from: around,
                 by: 0,
@@ -787,7 +803,7 @@ export function worldbuildingArea(ports: Ports) {
     ): Promise<ActionResult> => {
         if (made === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
         if ('refused' in made) return { refused: made.refused };
-        const shown = await showWorld(context, made.book, { ...overview, groupBy: null, around: null });
+        const shown = await showWorld(context, made.book, { ...overview, around: null });
         return { ...shown, changed: [...shown.changed, WORLDS_VIEW], own: [...new Set([...shown.own, WORLDS_VIEW])] };
     };
 
@@ -1089,7 +1105,6 @@ export function worldbuildingArea(ports: Ports) {
                     return { changed, own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW] };
                 }
                 const shown = await showWorld(context, toBook, {
-                    groupBy: null,
                     firstRank: 0,
                     endRank: overview.endRank - overview.firstRank,
                     layout: overview.layout,
@@ -1111,7 +1126,7 @@ export function worldbuildingArea(ports: Ports) {
                 const entry = uid === null ? null : await ports.entryOfUid(context.user, book, uid);
                 if (uid !== null && entry === null) return { refused: NO_SUCH_ENTRY };
                 const held = overviewOf(context.session);
-                const groupBy = held?.book === book ? held.groupBy : null;
+                const groupBy = held?.book === book ? held.groupBy : undefined;
                 const shown = await showWorld(context, book, { ...overview, groupBy, around: entry });
                 if (entry === null) return shown;
                 rememberEntry(context.session, openedNow(entry, pointingAt));
@@ -1126,7 +1141,7 @@ export function worldbuildingArea(ports: Ports) {
                 const book = await ports.characterBook(context.user, character);
                 if (book === null) return { refused: NO_CHARACTER_BOOK };
                 const held = overviewOf(context.session);
-                const groupBy = held?.book === book ? held.groupBy : null;
+                const groupBy = held?.book === book ? held.groupBy : undefined;
                 return showWorld(context, book, { ...overview, groupBy, around: null });
             },
             'worldbuilding.showCard': async (context, { book, entry }) => {
@@ -1163,7 +1178,6 @@ export function worldbuildingArea(ports: Ports) {
                 if (shown?.book === book) {
                     const { layout, firstRank, endRank } = shown;
                     const opened = await showWorld(context, done.next, {
-                        groupBy: null,
                         firstRank: 0,
                         endRank: endRank - firstRank,
                         layout,

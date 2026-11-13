@@ -6819,6 +6819,7 @@ function onDrawersChanged() {
 function onDrawerVisibilityChanged() {
     onCharacterEditorMaybeShown();
     onCharacterListMaybeShown();
+    if (newUiStarted()) newUi().worldbuilding.paneShown(Boolean(document.getElementById('Worldbuilding')?.classList.contains('openDrawer')));
 }
 
 function onCharacterListMaybeShown() {

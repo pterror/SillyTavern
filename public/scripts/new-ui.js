@@ -89,6 +89,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
             tgTop: element('tg_top_fields'),
             tgSamplers: element('tg_sampler_fields'),
             tgCfg: element('tg_cfg_fields'),
+            worldbuilding: element('Worldbuilding'),
             usageStats: { all: one('.user_stats_button'), character: one('.rm_stats_button') },
         },
     });

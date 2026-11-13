@@ -628,15 +628,30 @@ importers:
 
   packages/areas/worldbuilding:
     dependencies:
+      '@codemirror/commands':
+        specifier: 6.11.1
+        version: 6.11.1
+      '@codemirror/state':
+        specifier: 6.7.6
+        version: 6.7.6
+      '@codemirror/view':
+        specifier: 6.43.13
+        version: 6.43.13
       '@st/looks':
         specifier: workspace:*
         version: link:../looks
+      '@st/page':
+        specifier: workspace:*
+        version: link:../../page
       '@st/protocol':
         specifier: workspace:*
         version: link:../../protocol
       '@st/server-ui':
         specifier: workspace:*
         version: link:../../server-ui
+      solid-js:
+        specifier: 1.9.17
+        version: 1.9.17
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -759,6 +774,9 @@ importers:
       '@st/usage-stats':
         specifier: workspace:*
         version: link:../areas/usage-stats
+      '@st/worldbuilding':
+        specifier: workspace:*
+        version: link:../areas/worldbuilding
       solid-js:
         specifier: 1.9.17
         version: 1.9.17

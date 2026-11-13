@@ -478,7 +478,8 @@ export const actions = {
     'worldbuilding.openOverview': v.pipe(
         v.object({
             book: v.nullable(entityId),
-            groupBy: v.nullable(kindId),
+            // Left out: the world's default grouping.
+            groupBy: v.optional(v.nullable(kindId)),
             ...rangeFields,
             layout,
             around: v.nullable(occurrenceKey),
@@ -490,8 +491,8 @@ export const actions = {
             READ_REFUSAL,
         ),
         v.check(
-            <T extends { book: string | null; groupBy: string | null; around: string | null }>(open: T) =>
-                open.book !== null || (open.groupBy === null && open.around === null),
+            <T extends { book: string | null; groupBy?: string | null | undefined; around: string | null }>(open: T) =>
+                open.book !== null || ((open.groupBy ?? null) === null && open.around === null),
             "A world's kinds and occurrences are named only with the world.",
         ),
     ),

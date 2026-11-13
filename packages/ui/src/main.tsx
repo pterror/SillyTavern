@@ -32,6 +32,7 @@ import type { Look as ActivationsLook, OldPage as ActivationsOldPage } from '@st
 import { UsageStats } from '@st/usage-stats/page';
 import type { Buttons as UsageStatsButtons, OldPage as UsageStatsOldPage } from '@st/usage-stats/page';
 import { Help, Hotkeys, helpCompat } from '@st/help/page';
+import { Worldbuilding, worldbuildingCompat } from '@st/worldbuilding/page';
 import type { OldPage as HelpOldPage } from '@st/help/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
@@ -58,6 +59,7 @@ export type StartOptions = {
         tgTop: HTMLElement;
         tgSamplers: HTMLElement;
         tgCfg: HTMLElement;
+        worldbuilding: HTMLElement;
         usageStats: UsageStatsButtons;
     };
 };
@@ -115,6 +117,11 @@ export function start(options: StartOptions) {
     document.body.append(usageStatsHost);
     mount(usageStatsHost, () => <UsageStats buttons={options.containers.usageStats} old={options.usageStats} />);
 
+    const worldbuilding = worldbuildingCompat();
+    mount(options.containers.worldbuilding, () => (
+        <Worldbuilding shown={worldbuilding.shown()} everShown={worldbuilding.everShown()} />
+    ));
+
     const help = helpCompat(client);
     const helpHost = document.createElement('div');
     document.body.append(helpHost);
@@ -136,6 +143,11 @@ export function start(options: StartOptions) {
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         alternatives: alternativesCompat(setLook),
         activations,
+        worldbuilding: {
+            paneShown: (open: boolean) => {
+                worldbuilding.paneShown(open);
+            },
+        },
         help: {
             open: (name: string) => help.open(name),
             /** @returns what takes the list off again */

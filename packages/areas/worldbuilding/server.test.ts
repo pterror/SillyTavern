@@ -802,6 +802,17 @@ test('opening a world opens its overview, its kinds and the last change in the s
     expect(w.asked.step).toEqual([]);
 });
 
+test('a world opened without a grouping is grouped by its first relation kind; grouped by nothing only when asked', async () => {
+    const w = world(1000);
+    const { groupBy: _left, ...withoutGrouping } = open;
+    await w.act('worldbuilding.openOverview', withoutGrouping);
+    expect((await w.view<OverviewView>(OVERVIEW_VIEW)).groupBy).toBe('1');
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: null });
+    expect((await w.view<OverviewView>(OVERVIEW_VIEW)).groupBy).toBe(null);
+    await w.act('worldbuilding.openOverview', { ...withoutGrouping, book: null });
+    expect((await w.view<OverviewView>(OVERVIEW_VIEW)).groupBy).toBe('1');
+});
+
 test('opening around an occurrence puts the range around its top-level entry and marks where it landed', async () => {
     const w = world(1000);
     await w.act('worldbuilding.openOverview', { ...open, around: '600/7/+' });
