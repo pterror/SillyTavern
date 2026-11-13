@@ -253,7 +253,7 @@ function Page(props: Props) {
 
     return (
         <WbProvider value={wb}>
-            <div class="wb">
+            <div class="wb" classList={{ 'wb-entry-shown': Boolean(shownEntry()) }}>
                 <div class="wb-head">
                     <Switcher
                         world={
@@ -273,7 +273,8 @@ function Page(props: Props) {
                     <span class="wb-fill" />
                     <button
                         type="button"
-                        class="wb-btn"
+                        class="wb-btn wb-new-entry"
+                        aria-label={t('New entry')}
                         disabled={!shownWorld()}
                         onClick={() => {
                             const book = shownWorld()?.id;
@@ -289,7 +290,7 @@ function Page(props: Props) {
                         }}
                     >
                         <Icon name="plus" />
-                        {t('New entry')}
+                        <span class="wb-wide-only">{t('New entry')}</span>
                     </button>
                 </div>
                 <Show when={!shownEntry() && shownViews()}>

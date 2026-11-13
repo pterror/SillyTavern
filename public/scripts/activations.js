@@ -137,19 +137,34 @@ function markedReply() {
     return { reply: nodeId, latest: nodeId !== null && last?.node_id === nodeId };
 }
 
+/** Whether the page has mobile-styles.css's layout, where a word is tapped for its card rather than pointed at. */
+const isPhone = () => window.matchMedia('screen and (max-width: 1000px)').matches;
+
 /**
- * Shows the card of what a word in a message names, or of what it brought into the marked reply.
+ * What a word in a message names, or what it brought into the marked reply.
  * @param {HTMLElement} word a name's box or a marked word
+ * @returns {{ entries: { book: string, entry: string }[], reply: string | null, latest: boolean } | null}
  */
-function peekAt(word) {
+function peekOf(word) {
     const { reply, latest } = markedReply();
     if (word.matches('.chat-name')) {
         const thing = word.querySelector('[data-thing]')?.getAttribute('data-thing');
         const world = thing ? linkedEntry(thing)?.world : null;
-        if (thing && world) newUi().worldbuilding.peek(word, { entries: [{ book: world, entry: thing }], reply, latest });
-        return;
+        return thing && world ? { entries: [{ book: world, entry: thing }], reply, latest } : null;
     }
-    newUi().worldbuilding.peek(word, { entries: broughtUp(word), reply: markOf(word).reply, latest: markOf(word).reply === reply && latest });
+    return { entries: broughtUp(word), reply: markOf(word).reply, latest: markOf(word).reply === reply && latest };
+}
+
+/**
+ * Shows the card of a word: by the word while it's pointed at, or on a phone from the bottom.
+ * @param {HTMLElement} word
+ * @param {boolean} tapped
+ */
+function peekAt(word, tapped) {
+    const wanted = peekOf(word);
+    if (!wanted) return;
+    if (tapped) newUi().worldbuilding.tap(word, wanted);
+    else newUi().worldbuilding.peek(word, wanted);
 }
 
 /**
@@ -224,7 +239,8 @@ export function initLoreMarks() {
     $(document).on('click', '.mes_text .lore-mark', function (event) {
         event.preventDefault();
         event.stopPropagation();
-        void openMarked(this);
+        if (isPhone()) peekAt(this, true);
+        else void openMarked(this);
     });
     $(document).on('keydown', '.mes_text .lore-mark', function (event) {
         if (event.key !== ' ' && event.key !== 'Enter') return;
@@ -235,7 +251,8 @@ export function initLoreMarks() {
     $(document).on('click', '.mes_text .chat-name', function (event) {
         event.preventDefault();
         event.stopPropagation();
-        openNamed(this);
+        if (isPhone()) peekAt(this, true);
+        else openNamed(this);
     });
     $(document).on('keydown', '.mes_text .chat-name', function (event) {
         if (event.key !== ' ' && event.key !== 'Enter') return;
@@ -244,7 +261,7 @@ export function initLoreMarks() {
     });
     $(document).on('mouseover', '.mes_text .chat-name, .mes_text .lore-mark', function (event) {
         const inner = event.target instanceof Element ? event.target.closest('.chat-name, .lore-mark') : null;
-        if (inner === this) peekAt(this);
+        if (inner === this && !isPhone()) peekAt(this, false);
     });
     $(document).on('mouseout', '.mes_text .chat-name, .mes_text .lore-mark', function (event) {
         newUi().worldbuilding.unpeek(event.relatedTarget ?? null);

@@ -51,6 +51,10 @@ test('the layout fits the page width, and a read never asks for more cards than 
         { columns: 3, rows: 2 },
     ]);
     expect(pageLayout(390).columns).toBe(1);
+    expect(pageLayout(390).overview.regionsByNestingLevel).toEqual([
+        { columns: 1, rows: 4 },
+        { columns: 1, rows: 4 },
+    ]);
     for (const width of [390, 800, 1280, 4000]) {
         const layout = pageLayout(width);
         const shown = topLevelShown(layout);

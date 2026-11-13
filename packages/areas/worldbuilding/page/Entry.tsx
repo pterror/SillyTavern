@@ -29,6 +29,11 @@ import type { Selected } from './Selection.tsx';
 import { EntryText } from './Text.tsx';
 import { openedView } from './views.ts';
 import { fill } from './words.ts';
+import { PHONE } from './layout.ts';
+
+// A swipe this far to the right, more across than down, goes back to the world.
+const SWIPE_BACK = 80;
+const isPhone = () => window.matchMedia(PHONE).matches;
 
 export function EntryPage(props: {
     entry: OpenEntryView;
@@ -46,14 +51,60 @@ export function EntryPage(props: {
     const [menu, setMenu] = createSignal(false);
     const [selected, setSelected] = createSignal<Selected | null>(null);
     let placeButton: HTMLButtonElement | undefined;
-    let menuButton: HTMLButtonElement | undefined;
+    let menuOpener: HTMLButtonElement | undefined;
+    const toggleMenu = (button: HTMLButtonElement) => {
+        menuOpener = button;
+        setPlacing(false);
+        setMenu(!menu());
+    };
+    let swipedFrom: { x: number; y: number } | null = null;
     const at = () => ({ book: props.entry.book, entry: props.entry.entry });
     const newEntryKind = () => {
         const kinds = props.kinds.filter((kind) => kind.mergingInto === null);
         return kinds.find((kind) => kind.id === props.groupBy) ?? kinds[0] ?? null;
     };
     return (
-        <article class="wb-entry">
+        <article
+            class="wb-entry"
+            onTouchStart={(event) => {
+                const touch = event.touches[0];
+                const editing = event.target instanceof Element && event.target.closest('.wb-text-editing') !== null;
+                swipedFrom = touch && !editing && isPhone() ? { x: touch.clientX, y: touch.clientY } : null;
+            }}
+            onTouchEnd={(event) => {
+                const touch = event.changedTouches[0];
+                const from = swipedFrom;
+                swipedFrom = null;
+                if (!touch || !from) return;
+                const across = touch.clientX - from.x;
+                if (across > SWIPE_BACK && Math.abs(touch.clientY - from.y) < across / 2) props.onWorld();
+            }}
+        >
+            <div class="wb-phone-bar">
+                <button
+                    type="button"
+                    class="wb-icon-button wb-phone-back"
+                    aria-label={t('Back to the world')}
+                    onClick={() => props.onWorld()}
+                >
+                    <Icon name="back" />
+                </button>
+                <span class="wb-phone-rels">
+                    {props.entry.relations
+                        .filter((relation) => !relation.targetDeleted)
+                        .map((relation) => `${relation.kindName ?? ''}: ${relation.target?.text ?? ''}`)
+                        .join(' · ')}
+                </span>
+                <button
+                    type="button"
+                    class="wb-icon-button"
+                    aria-label={t('More')}
+                    aria-expanded={menu()}
+                    onClick={(event) => toggleMenu(event.currentTarget)}
+                >
+                    <Icon name="more" />
+                </button>
+            </div>
             <RelationsLine
                 entry={props.entry}
                 worldName={props.worldName}
@@ -112,15 +163,11 @@ export function EntryPage(props: {
                         </button>
                         <span class="wb-fill" />
                         <button
-                            ref={(element) => (menuButton = element)}
                             type="button"
-                            class="wb-icon-button"
+                            class="wb-icon-button wb-entry-more"
                             aria-label={t('More')}
                             aria-expanded={menu()}
-                            onClick={() => {
-                                setPlacing(false);
-                                setMenu(!menu());
-                            }}
+                            onClick={(event) => toggleMenu(event.currentTarget)}
                         >
                             <Icon name="more" />
                         </button>
@@ -136,7 +183,7 @@ export function EntryPage(props: {
                             />
                         </Show>
                         <Show when={menu()}>
-                            <EntryMenu entry={props.entry} opener={() => menuButton} onClose={() => setMenu(false)} />
+                            <EntryMenu entry={props.entry} opener={() => menuOpener} onClose={() => setMenu(false)} />
                         </Show>
                     </div>
                     <Keys entry={props.entry} />
@@ -268,7 +315,10 @@ function Mentions(props: {
         <Show when={rows().length > 0}>
             <section class="wb-section">
                 <h3>
-                    {t('mentions')} → {props.entry.label.text}
+                    <span class="wb-wide-only">
+                        {t('mentions')} → {props.entry.label.text}
+                    </span>
+                    <span class="wb-phone-only">{t('Mentioned in')}</span>
                 </h3>
                 <For each={rows()}>
                     {(row) => (

@@ -1683,12 +1683,14 @@
     background: #e3b46b;
 }
 
+/* The board's gap is 10px; the app's face sets the controls' words about 7% wider than the board's, so a 6px gap keeps
+   the board's one line at its width. */
 .wb-vbar {
     flex: none;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
     padding: 8px 16px;
     border-bottom: 1px solid var(--wb-line-soft);
     font-size: 13.5px;
@@ -2224,4 +2226,461 @@
 
 .wb-ax-none {
     margin: 6px 10px;
+}
+
+/* The card of a tapped word, from the bottom (the PhoneChat board). */
+/* The page's root has a transform, so it, not the viewport, holds fixed boxes, and it has no height: size it outright. */
+.wb-chat-sheet-at {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100dvh;
+    z-index: 10000;
+    font-family: 'Noto Sans', system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    color: #e4e2dc;
+    text-align: left;
+}
+
+.wb-chat-scrim {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+}
+
+.wb-chat-sheet {
+    --wb-name: #9cc3f0;
+
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 85dvh;
+    overflow: auto;
+    background: #1f1f24;
+    border-top: 1px solid #3a3a41;
+    border-radius: 18px 18px 0 0;
+    padding: 10px 16px 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    animation: wb-sheet-up 0.18s ease-out;
+}
+
+@keyframes wb-sheet-up {
+    from {
+        transform: translateY(100%);
+    }
+}
+
+.wb-chat-sheet-grab {
+    width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: #4a4a52;
+    align-self: center;
+    flex: none;
+}
+
+.wb-chat-sheet-head {
+    display: flex;
+    gap: 14px;
+}
+
+.wb-chat-sheet-pic {
+    width: 76px;
+    height: 76px;
+    border-radius: 12px;
+    flex: none;
+    background: #26262c center / cover no-repeat;
+}
+
+.wb-chat-sheet-words {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.wb-chat-sheet-name {
+    font-size: 19px;
+    font-weight: 600;
+    padding-top: 8px;
+    line-height: 1.4;
+}
+
+.wb-chat-sheet-path {
+    font-size: 12.5px;
+    color: #8c8b86;
+}
+
+.wb-chat-sheet-text {
+    font-size: 14.5px;
+    line-height: 1.55;
+    color: #cfcdc6;
+}
+
+.wb-chat-sheet-why {
+    font-size: 12.5px;
+    color: #a3a29c;
+}
+
+.wb-chat-sheet .wb-chat-sheet-open {
+    height: 46px;
+    margin: 0;
+    border-radius: 12px;
+    border: 1px solid #3a3a41;
+    background: #26262c;
+    color: #e4e2dc;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.wb-chat-sheet .wb-opening {
+    font-weight: 400;
+}
+
+:where(.wb-chat-sheet .named-name) {
+    color: var(--wb-name, #9cc3f0);
+}
+
+.mes_text .wb-tapped {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+}
+
+.wb-phone-bar,
+.wb-phone-only {
+    display: none;
+}
+
+/* A phone (mobile-styles.css's breakpoint): the PhoneWorld and PhoneEntry boards. */
+@media screen and (max-width: 1000px) {
+    .wb-wide-only {
+        display: none;
+    }
+
+    .wb-phone-only {
+        display: inline;
+    }
+
+    .wb-head {
+        height: auto;
+        gap: 6px;
+        padding: 8px 8px 8px 16px;
+    }
+
+    .wb-switch-at {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .wb .wb-switch {
+        width: auto;
+        max-width: 100%;
+        gap: 10px;
+        padding: 0;
+        font-size: 17px;
+    }
+
+    .wb .wb-switch:hover {
+        background: none;
+    }
+
+    .wb .wb-switch .wb-switch-name {
+        flex: 0 1 auto;
+    }
+
+    .wb-switch-pic {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+    }
+
+    .wb-head > .wb-fill {
+        display: none;
+    }
+
+    .wb-search {
+        flex: none;
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        justify-content: center;
+        border-color: transparent;
+        background: none;
+        border-radius: 10px;
+        color: var(--wb-ink-soft);
+        cursor: pointer;
+    }
+
+    .wb-search .wb-ic {
+        width: 20px !important;
+        height: 20px !important;
+    }
+
+    .wb-search:not(:focus-within, .wb-searching) > :not(.wb-ic) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    .wb-search:is(:focus-within, .wb-searching) {
+        position: absolute;
+        left: 8px;
+        right: 8px;
+        top: 8px;
+        z-index: 3;
+        width: auto;
+        padding: 0 12px;
+        justify-content: flex-start;
+        background: var(--wb-raised);
+        border-color: #2e2e34;
+        color: var(--wb-ink-dim);
+    }
+
+    .wb-head {
+        position: relative;
+    }
+
+    .wb .wb-btn.wb-new-entry {
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        justify-content: center;
+        border: 0;
+        background: none;
+        border-radius: 10px;
+        color: var(--wb-ink-soft);
+    }
+
+    .wb .wb-btn.wb-new-entry .wb-ic {
+        width: 20px !important;
+        height: 20px !important;
+    }
+
+    .wb-vtabs,
+    .wb-vbar {
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    .wb-vtabs {
+        padding: 6px 10px 0;
+    }
+
+    .wb .wb-vt {
+        flex: none;
+        white-space: nowrap;
+    }
+
+    .wb-vbar {
+        flex-wrap: nowrap;
+        padding: 8px 10px;
+    }
+
+    .wb-vbar > * {
+        flex: none;
+    }
+
+    .wb-front {
+        padding: 10px 10px 40px;
+    }
+
+    .wb-front-pic {
+        width: 56px;
+        height: 56px;
+        border-radius: 14px;
+    }
+
+    .wb .wb-front-name {
+        font-size: 24px;
+    }
+
+    .wb .wb-front-desc {
+        font-size: 15px;
+    }
+
+    .wb-front .wb-grid,
+    .wb-entry .wb-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+    }
+
+    .wb-region {
+        padding: 10px;
+    }
+
+    .wb .wb-region-head {
+        gap: 16px;
+    }
+
+    .wb-region-pic {
+        width: 56px;
+        height: 56px;
+    }
+
+    .wb-region-name {
+        font-size: 17px;
+    }
+
+    .wb .wb-region-head .wb-card-words {
+        padding-right: 30px;
+    }
+
+    .wb-region-corner {
+        right: 6px;
+        top: 6px;
+    }
+
+    .wb .wb-card-open {
+        padding: 10px;
+    }
+
+    .wb-card-pic {
+        width: 52px;
+        height: 52px;
+    }
+
+    /* An entry opens over the world: the world's header gives way to the entry's own bar. */
+    .wb.wb-entry-shown > .wb-head,
+    .wb.wb-entry-shown > .wb-vtabs,
+    .wb.wb-entry-shown > .wb-vbar {
+        display: none;
+    }
+
+    .wb-entry {
+        padding: 0 16px 40px;
+        animation: wb-entry-over 0.18s ease-out;
+    }
+
+    @keyframes wb-entry-over {
+        from {
+            transform: translateX(24px);
+            opacity: 0;
+        }
+    }
+
+    .wb-phone-bar {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin: 0 -16px 16px;
+        padding: 4px;
+        border-bottom: 1px solid var(--wb-line-soft);
+        background: var(--wb-bg);
+    }
+
+    .wb .wb-phone-bar .wb-icon-button {
+        width: 44px;
+        height: 44px;
+        border-radius: 10px;
+        color: var(--wb-ink-soft);
+    }
+
+    .wb-phone-bar .wb-ic {
+        width: 20px !important;
+        height: 20px !important;
+    }
+
+    .wb-phone-rels {
+        flex: 1;
+        min-width: 0;
+        font-size: 13px;
+        color: var(--wb-ink-mid);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .wb-entry > .wb-rels,
+    .wb .wb-entry-more {
+        display: none;
+    }
+
+    .wb-entry-head {
+        gap: 14px;
+        align-items: center;
+    }
+
+    .wb-entry-pic {
+        width: 84px;
+        height: 84px;
+    }
+
+    .wb-entry-headwords {
+        display: contents;
+    }
+
+    .wb-entry-head {
+        flex-wrap: wrap;
+    }
+
+    .wb-entry-title {
+        flex: 1;
+        min-width: 0;
+        font-size: 26px;
+        padding-top: 12px;
+        min-height: 0;
+        gap: 6px;
+    }
+
+    .wb input.wb-entry-name {
+        font-size: 26px;
+        width: 100%;
+    }
+
+    .wb-keys {
+        flex-basis: 100%;
+        margin-top: 0;
+        font-size: 14px;
+    }
+
+    .wb .wb-key {
+        padding: 6px 12px;
+        line-height: 1.5;
+    }
+
+    .wb .wb-key-add {
+        padding: 6px 10px;
+        line-height: 1.5;
+    }
+
+    .wb-text {
+        margin-top: 18px;
+    }
+
+    .wb-text p {
+        margin: 0 0 12px;
+    }
+
+    .wb .wb-section h3 {
+        margin: 18px 0 6px;
+    }
+
+    .wb .wb-section h3 .wb-phone-only {
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .wb-section {
+        margin-top: 0;
+    }
+
+    .wb-mention {
+        padding: 8px 0;
+    }
+
+    .wb-place {
+        left: 0 !important;
+        right: auto !important;
+        width: min(440px, calc(100vw - 32px));
+    }
 }

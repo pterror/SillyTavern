@@ -40,6 +40,8 @@ export function worldbuildingCompat(client: Client, old: OldPage) {
             go({ at: { book, entry } });
         },
         peek: cards.peek,
+        // On a phone: the card comes up from the bottom, with Open.
+        tap: cards.tap,
         unpeek: cards.unpeek,
         ChatCard: cards.Drawn,
         openCharacterBook: (character: string) => {

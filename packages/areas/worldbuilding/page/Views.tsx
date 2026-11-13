@@ -161,21 +161,23 @@ export function ViewBar(props: {
                     <Show when={view().drawing === 'rows'}>
                         <Fields chosen={view().fields} onChoose={(fields) => props.onChange({ fields })} />
                     </Show>
-                    <span class="wb-vchg">
-                        <Show when={props.views.unsaved}>
-                            <button type="button" class="wb-vbtn" onClick={() => props.onSave()}>
-                                {t('Save')}
-                            </button>
-                            <button type="button" class="wb-vbtn wb-quietbtn" onClick={() => props.onDiscard()}>
-                                {t('Discard')}
-                            </button>
-                        </Show>
-                        <Show when={!props.views.unsaved && tab()?.changed === true}>
-                            <button type="button" class="wb-vbtn wb-quietbtn" onClick={() => props.onReset()}>
-                                {t('Reset to the world’s')}
-                            </button>
-                        </Show>
-                    </span>
+                    <Show when={props.views.unsaved || tab()?.changed === true}>
+                        <span class="wb-vchg">
+                            <Show when={props.views.unsaved}>
+                                <button type="button" class="wb-vbtn" onClick={() => props.onSave()}>
+                                    {t('Save')}
+                                </button>
+                                <button type="button" class="wb-vbtn wb-quietbtn" onClick={() => props.onDiscard()}>
+                                    {t('Discard')}
+                                </button>
+                            </Show>
+                            <Show when={!props.views.unsaved && tab()?.changed === true}>
+                                <button type="button" class="wb-vbtn wb-quietbtn" onClick={() => props.onReset()}>
+                                    {t('Reset to the world’s')}
+                                </button>
+                            </Show>
+                        </span>
+                    </Show>
                 </div>
             )}
         </Show>

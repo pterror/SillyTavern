@@ -30,19 +30,41 @@ export function quotedList(keys: string[], and: string): string {
     return `${quoted.slice(0, -1).join(', ')} ${and} ${quoted.at(-1) ?? ''}`;
 }
 
+// What brought the card's entry into the reply it was asked about, as a sentence; null when it wasn't asked or nothing did.
+export function broughtUpSentence(
+    card: HoverCard,
+    reply: 'latest' | 'other',
+    t: (text: string) => string,
+): string | null {
+    const keys = card.broughtUpBy;
+    if (keys === null || keys.length === 0) return null;
+    const sentence =
+        reply === 'latest' ? t('Brought up for the last reply by ${0}') : t('Brought up for that reply by ${0}');
+    return fill(sentence, quotedList(keys, t('and')));
+}
+
+// "kind: target · kind: target".
+export function RelationsPath(props: { card: HoverCard; class: string }) {
+    return (
+        <Show when={props.card.relations.length > 0}>
+            <span class={props.class}>
+                <For each={props.card.relations}>
+                    {(relation, at) => (
+                        <>
+                            {at() > 0 ? ' · ' : ''}
+                            {relation.kindName ?? ''}: {relation.target?.text ?? ''}
+                        </>
+                    )}
+                </For>
+            </span>
+        </Show>
+    );
+}
+
 // One entry's part of a card: its picture, its name in its look, its relations, its text's opening, and, when the card
 // was asked about a reply, what brought it into that reply.
 export function HoverItem(props: { card: HoverCard; reply: 'latest' | 'other' }) {
     const { t } = useUi();
-    const why = () => {
-        const keys = props.card.broughtUpBy;
-        if (keys === null || keys.length === 0) return null;
-        const sentence =
-            props.reply === 'latest'
-                ? t('Brought up for the last reply by ${0}')
-                : t('Brought up for that reply by ${0}');
-        return fill(sentence, quotedList(keys, t('and')));
-    };
     return (
         <>
             <Show when={props.card.picture}>{(url) => <Picture url={url()} class="wb-hover-pic" />}</Show>
@@ -50,20 +72,11 @@ export function HoverItem(props: { card: HoverCard; reply: 'latest' | 'other' })
                 <span class="wb-hover-name">
                     <Label named={props.card.label} />
                 </span>
-                <Show when={props.card.relations.length > 0}>
-                    <span class="wb-hover-path">
-                        <For each={props.card.relations}>
-                            {(relation, at) => (
-                                <>
-                                    {at() > 0 ? ' · ' : ''}
-                                    {relation.kindName ?? ''}: {relation.target?.text ?? ''}
-                                </>
-                            )}
-                        </For>
-                    </span>
-                </Show>
+                <RelationsPath card={props.card} class="wb-hover-path" />
                 <span class="wb-hover-text">{props.card.text}</span>
-                <Show when={why()}>{(said) => <span class="wb-hover-why">{said()}</span>}</Show>
+                <Show when={broughtUpSentence(props.card, props.reply, t)}>
+                    {(said) => <span class="wb-hover-why">{said()}</span>}
+                </Show>
             </span>
         </>
     );
