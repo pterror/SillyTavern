@@ -66,7 +66,7 @@ import { UPLOADS_DIRECTORY } from './constants.js';
 
 // Routers
 import { router as usersPublicRouter } from './endpoints/users-public.js';
-import { init as statsInit, onExit as statsOnExit } from './endpoints/stats.js';
+import { keepOldStatsFiles } from './old-stats-file.js';
 import { checkForNewContent } from './endpoints/content-manager.js';
 import { init as settingsInit } from './endpoints/settings.js';
 import { ServerStartup, setupPrivateEndpoints } from './server-startup.js';
@@ -362,8 +362,8 @@ async function preSetupTasks() {
             .catch(err => console.error('Background settings backup failed:', err))
             .finally(() => console.log(`[boot-timing] settingsInit (background) took ${Number(process.hrtime.bigint() - __settingsStart) / 1e6}ms wall, finished at +${Number(process.hrtime.bigint() - __t0) / 1e6}ms total`));
     }
-    await statsInit();
-    __mark('statsInit');
+    await keepOldStatsFiles();
+    __mark('keepOldStatsFiles');
 
     const consoleTitle = process.title;
 
@@ -371,7 +371,6 @@ async function preSetupTasks() {
     const exitProcess = async () => {
         if (isExiting) return;
         isExiting = true;
-        await statsOnExit();
         diskCache.dispose();
         disposeLocalImportScan();
         await stopDroppedWatches();

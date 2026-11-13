@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const TOP_N = 10;
+// One tab for every run of this script, so its runs don't each leave a tab on the server.
+const SCRIPT_TAB = '5a7e1c2d-0b9f-4e3a-8d6c-1f2e3d4c5b6a';
 
 function getArg(args, name, fallback) {
     const index = args.indexOf(`--${name}`);
@@ -59,15 +61,29 @@ async function openSession(base) {
  * @param {{ base: string, token: string, cookie: string }} session
  * @param {string} route
  * @param {object} body
+ * @param {Record<string, string>} [headers]
  */
-async function post(session, route, body) {
+async function post(session, route, body, headers = {}) {
     const res = await fetch(`${session.base}${route}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': session.token, Cookie: session.cookie },
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': session.token, Cookie: session.cookie, ...headers },
         body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`${route} answered ${res.status}: ${await res.text()}`);
     return res.json();
+}
+
+/**
+ * The user's usage stats over every chat, as the stats screen shows them.
+ * @param {{ base: string, token: string, cookie: string }} session
+ */
+async function usageStats(session) {
+    const tab = { 'X-ST-Session': SCRIPT_TAB };
+    const answer = await post(session, '/api/ui/action', { type: 'usageStats.show', payload: { of: 'all' } }, tab);
+    await post(session, '/api/ui/action', { type: 'usageStats.close', payload: {} }, tab);
+    const shown = answer.views?.find(frame => frame.key === 'usageStats.shown')?.value;
+    if (!answer.ok || !shown?.counts) throw new Error(`The usage stats were not shown: ${answer.error ?? 'no view'}`);
+    return shown;
 }
 
 /**
@@ -102,8 +118,8 @@ async function main() {
     console.log(line('Total characters:', totalOf(characters)));
     console.log(line('Total groups:', both.approxTotal || characters.approxTotal ? `~${both.total - characters.total}` : both.total - characters.total));
     console.log(line('Total favorites:', `${totalOf(favCharacters)} characters, ${favBoth.total - favCharacters.total} groups`));
-    const { stats } = await post(session, '/api/stats/totals', {});
-    console.log(line('Messages counted:', `${stats.user_msg_count} user, ${stats.non_user_msg_count} character`));
+    const { counts } = await usageStats(session);
+    console.log(line('Messages counted:', `${counts.userMessages} user, ${counts.characterMessages} character`));
 
     heading(`Top ${TOP_N} tags by usage`);
     const tags = await post(session, '/api/tags/query', { filter: { used: true }, sort: { field: 'by_entries' }, pageSize: TOP_N, counts: true });

@@ -9,7 +9,6 @@ import { characters, charactersStore, this_avatar, setCharacterId, holdCharacter
 import { printCharacters, printCharactersDebounced, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
 export { entitiesFilter };
-import { userStatsHandler, initStats } from './scripts/stats.js';
 import {
     kai_settings,
     loadKoboldSettings,
@@ -1323,6 +1322,7 @@ async function firstLoadInit() {
         },
         alternatives: alternativesOldPage,
         activations: activationsOldPage,
+        shownCharacter: () => getCurrentCharacter()?.avatar ?? null,
     });
     await checkOpenRouterAuth();
     initKeyboard();
@@ -1369,7 +1369,6 @@ async function firstLoadInit() {
     initWorldInfo();
     initHorde();
     initRossMods();
-    initStats();
     initCfg();
     initLogprobs();
     initInputMarkdown();
@@ -11400,10 +11399,6 @@ jQuery(async function () {
             }
         }
         isManualInput = false;
-    });
-
-    $('.user_stats_button').on('click', function () {
-        userStatsHandler();
     });
 
     $(document).on('click', '.external_import_button, #external_import_button', async () => {

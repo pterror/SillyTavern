@@ -29,6 +29,8 @@ import { Alternatives, alternativesCompat } from '@st/alternatives/page';
 import type { Look, OldPage } from '@st/alternatives/page';
 import { Activations, activationsCompat } from '@st/activations/page';
 import type { Look as ActivationsLook, OldPage as ActivationsOldPage } from '@st/activations/page';
+import { UsageStats } from '@st/usage-stats/page';
+import type { Buttons as UsageStatsButtons, OldPage as UsageStatsOldPage } from '@st/usage-stats/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
 
@@ -39,6 +41,7 @@ export type StartOptions = {
     currentChat: () => ChatOwner | null;
     alternatives: OldPage;
     activations: ActivationsOldPage;
+    usageStats: UsageStatsOldPage;
     containers: {
         backgrounds: HTMLElement;
         backgroundLayer: HTMLElement;
@@ -52,6 +55,7 @@ export type StartOptions = {
         tgTop: HTMLElement;
         tgSamplers: HTMLElement;
         tgCfg: HTMLElement;
+        usageStats: UsageStatsButtons;
     };
 };
 
@@ -103,6 +107,10 @@ export function start(options: StartOptions) {
     mount(activationsHost, () => (
         <Activations look={activationsLook()} old={options.activations} onClose={() => activations.close()} />
     ));
+
+    const usageStatsHost = document.createElement('div');
+    document.body.append(usageStatsHost);
+    mount(usageStatsHost, () => <UsageStats buttons={options.containers.usageStats} old={options.usageStats} />);
 
     return {
         receive: (push: ViewPush) => {

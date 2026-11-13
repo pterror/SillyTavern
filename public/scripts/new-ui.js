@@ -7,13 +7,18 @@ import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 
 /**
- * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'] }} options
+ * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], shownCharacter: () => string | null }} options
  */
-export function startNewUi({ quietPrompt, currentChat, alternatives, activations }) {
+export function startNewUi({ quietPrompt, currentChat, alternatives, activations, shownCharacter }) {
     if (newUiStarted()) return newUi();
     const element = (/** @type {string} */ id) => {
         const found = document.getElementById(id);
         if (!found) throw new Error(`The new page's container #${id} is missing`);
+        return found;
+    };
+    const one = (/** @type {string} */ selector) => {
+        const found = document.querySelector(selector);
+        if (!(found instanceof HTMLElement)) throw new Error(`The new page's element ${selector} is missing`);
         return found;
     };
     const started = start({
@@ -23,6 +28,10 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
         currentChat,
         alternatives,
         activations,
+        usageStats: {
+            shownCharacter,
+            failed: message => toastr.error(message),
+        },
         containers: {
             backgrounds: element('Backgrounds'),
             backgroundLayer: element('bg1'),
@@ -36,6 +45,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
             tgTop: element('tg_top_fields'),
             tgSamplers: element('tg_sampler_fields'),
             tgCfg: element('tg_cfg_fields'),
+            usageStats: { all: one('.user_stats_button'), character: one('.rm_stats_button') },
         },
     });
     setNewUi(started);

@@ -50,6 +50,7 @@
         "@st/serve-ui": "workspace:*",
         "@st/server-ui": "workspace:*",
         "@st/settings": "workspace:*",
+        "@st/usage-stats": "workspace:*",
         "@st/worldbuilding": "workspace:*",
         "archiver": "^7.0.1",
         "body-parser": "^1.20.2",

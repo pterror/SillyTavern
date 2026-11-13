@@ -103,35 +103,6 @@ observer.observe(document.documentElement, observerConfig);
 window.matchMedia('screen and (max-width: 1000px)').addEventListener('change', onCharacterEditorMaybeShown);
 
 
-/**
- * Converts generation time from milliseconds to a human-readable format.
- *
- * The function takes total generation time as an input, then converts it to a format
- * of "_ Days, _ Hours, _ Minutes, _ Seconds". If the generation time does not exceed a
- * particular measure (like days or hours), that measure will not be included in the output.
- *
- * @param {number} total_gen_time - The total generation time in milliseconds.
- * @returns {string} - A human-readable string that represents the time spent generating characters.
- */
-export function humanizeGenTime(total_gen_time) {
-    //convert time_spent to humanized format of "_ Hours, _ Minutes, _ Seconds" from milliseconds
-    let time_spent = total_gen_time || 0;
-    time_spent = Math.floor(time_spent / 1000);
-    let seconds = time_spent % 60;
-    time_spent = Math.floor(time_spent / 60);
-    let minutes = time_spent % 60;
-    time_spent = Math.floor(time_spent / 60);
-    let hours = time_spent % 24;
-    time_spent = Math.floor(time_spent / 24);
-    let days = time_spent;
-    let result = '';
-    if (days > 0) { result += `${days} Days, `; }
-    if (hours > 0) { result += `${hours} Hours, `; }
-    if (minutes > 0) { result += `${minutes} Minutes, `; }
-    result += `${seconds} Seconds`;
-    return result;
-}
-
 var parsedUA = null;
 
 export function getParsedUA() {

@@ -9,6 +9,9 @@ import { alternativesArea } from '@st/alternatives/server';
 import { activationsArea } from '@st/activations/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
 import { looksArea } from '@st/looks/server';
+import { usageStatsArea } from '@st/usage-stats/server';
+import { VIEW as USAGE_STATS_VIEW } from '@st/usage-stats/protocol';
+import { STATS_BACKUP_FILE } from './old-stats-file.js';
 import { looksPorts } from './looks-store.js';
 import { resolveChatLinkLooks } from './chat-links.js';
 import { sessionHeaderOf } from './request-session.js';
@@ -562,6 +565,35 @@ onUserStoreOpened(({ events, root, handle }) => {
         }[touched];
         ui.changed(user, ['worldbuilding.loopsLeftByJobs', 'worldbuilding.overview', 'worldbuilding.results', 'worldbuilding.pointingAt', 'worldbuilding.selection', ...also]).catch(error => console.error('Pushing a worldbuilding job step failed.', error));
     });
+    let statsQueued = false;
+    events.on('commit', () => {
+        if (statsQueued || !usageStats.showing(root)) return;
+        statsQueued = true;
+        setImmediate(() => {
+            statsQueued = false;
+            ui.changed(user, [USAGE_STATS_VIEW]).catch(error => console.error('Pushing the usage stats failed.', error));
+        });
+    });
+});
+
+/** @type {import('@st/usage-stats/server').Stored} */
+const NO_STATS = { userMsgs: 0, charMsgs: 0, userWords: 0, charWords: 0, swipes: 0, genMs: 0, genUnknown: 0, firstUserAt: null };
+
+const usageStats = usageStatsArea({
+    async totals(user) {
+        const { totals } = await (await libOf(user)).store.chatRead('stats', { owners: [] });
+        return totals;
+    },
+    async character(user, avatar) {
+        const lib = await libOf(user);
+        const [id] = await lib.ids(TYPE.character, [avatar]);
+        if (id === null || id === undefined) return NO_STATS;
+        const { owners: [stats] } = await lib.store.chatRead('stats', { owners: [id] });
+        return stats ?? NO_STATS;
+    },
+    async oldStatsFile(user) {
+        return fs.existsSync(path.join(user.directories.root, STATS_BACKUP_FILE)) ? STATS_BACKUP_FILE : null;
+    },
 });
 
 export const looks = looksArea(looksPorts({ libOf }));
@@ -659,7 +691,7 @@ const worldbuildingPorts = {
     },
 };
 
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts), looks.area], {
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts), looks.area, usageStats.area], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);
