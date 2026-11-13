@@ -116,16 +116,18 @@ const interactiveContent = 'a[href], audio[controls], video[controls], button, d
     + 'img[usemap], input:not([type="hidden" i]), label, select, textarea';
 
 /**
- * Where in its source a click on read text starts an edit: the source position the reader drew there. A click that
- * something else handles starts none: one a handler marked with `preventDefault`, which it does before this runs, or
- * one on interactive content inside the text. Nor does a click when click to edit is off or text is selected.
+ * Where in its source a click or double-click on read text starts an edit: the source position the reader drew there.
+ * A click that something else handles starts none: one a handler marked with `preventDefault`, which it does before
+ * this runs, or one on interactive content inside the text. Nor does a click when click to edit is off or text is
+ * selected.
  * @param {MouseEvent} event
  * @param {HTMLElement} rendered the element the text is read in
  * @param {boolean} clickToEdit
  * @returns {number | null}
  */
 export function editPosition(event, rendered, clickToEdit) {
-    if (event.defaultPrevented || !clickToEdit || window.getSelection()?.toString()) return null;
+    if (event.defaultPrevented) return null;
+    if (event.type === 'click' && (!clickToEdit || window.getSelection()?.toString())) return null;
     const interactive = event.target instanceof Element ? event.target.closest(interactiveContent) : null;
     if (interactive && interactive !== rendered && rendered.contains(interactive)) return null;
     const caret = caretAt(event);

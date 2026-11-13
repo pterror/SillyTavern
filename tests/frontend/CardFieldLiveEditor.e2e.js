@@ -58,13 +58,9 @@ test.describe('card fields edit in the live editor', () => {
         await expect.poll(async () => (await stored(page, avatar)).description).toBe('Old *text*. New **bold**.');
     });
 
-    test('with click to edit on, clicking a word in the preview starts the edit in that word, past markup and list numbers', async ({ page }) => {
+    test('double-clicking a word in the preview starts the edit in that word, past markup and list numbers', async ({ page }) => {
         const description = '1. First *item* here\n2. Second **item** with the target word\n\n> the target again';
         await createAndOpen(page, { description });
-        await page.evaluate(async () => {
-            const { power_user } = await import('/scripts/power-user.js');
-            power_user.click_to_edit = true;
-        });
         await openInfoTab(page, 'description');
         const preview = page.locator('.field_preview[data-for="description_textarea"]');
         await expect(preview.locator('li')).toHaveCount(2);
@@ -89,7 +85,7 @@ test.describe('card fields edit in the live editor', () => {
                 const b = range.getBoundingClientRect();
                 return { x: b.left + 1, y: b.top + b.height / 2 };
             }, k);
-            await page.mouse.click(point.x, point.y);
+            await page.mouse.dblclick(point.x, point.y);
             const editor = page.locator('#charInfoTab_description .cm-editor');
             await expect(editor).toBeVisible();
             const head = await page.evaluate(async () => {
