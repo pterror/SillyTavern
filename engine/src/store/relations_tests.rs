@@ -1000,7 +1000,11 @@ fn a_commit_that_ends_with_a_relation_to_no_entry_of_the_world_or_a_missing_kind
 }
 
 fn edit(store: &Store, change: relations::RelationEdit) -> Result<String, String> {
-    let answer = read(store, |view| relations::relation_edit(view, B, &change));
+    edit_over(store, change, None)
+}
+
+fn edit_over(store: &Store, change: relations::RelationEdit, over: Option<&str>) -> Result<String, String> {
+    let answer = read(store, |view| relations::relation_edit(view, B, &change, over.map(str::as_bytes)));
     let Js::Obj(fields) = answer else { panic!() };
     let get = |name: &str| fields.iter().find(|(key_name, _)| *key_name == name).map(|(_, value)| value.clone());
     match (get("refused"), get("json")) {
@@ -1059,6 +1063,13 @@ fn relation_edits_place_keep_other_relations_and_fields_as_written_and_refuse_wh
     assert!(weak_kept.contains(r#"{"kind":2,"targetEntry":"11","position":"a","note":"kept","weak":true}"#), "{weak_kept}");
     let moved_kept = edit(&store, owes(relations::RelationChange::Move { new_target: 12 })).unwrap();
     assert!(moved_kept.contains(r#""targetEntry":"12""#) && moved_kept.contains(r#""note":"kept""#), "{moved_kept}");
+    let both = edit_over(&store, owes(relations::RelationChange::Move { new_target: 12 }), Some(&last)).unwrap();
+    assert!(both.contains(r#""targetEntry":"12""#), "{both}");
+    assert!(relations::parse_relations_field(both.as_bytes()).contains_key(&(IN, 10)), "{both}");
+    assert_eq!(
+        edit_over(&store, base(relations::RelationChange::Add { weak: false }), Some(&last)),
+        Err("The entry already has that relation.".into())
+    );
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1132,6 +1143,7 @@ fn merging_a_kind_rewrites_live_sources_including_kept_relations_and_its_record_
                 after: None,
                 before: None,
             },
+            None,
         )
     });
     assert!(matches!(&refused, Js::Obj(fields) if fields.iter().any(|(name, _)| *name == "refused")));

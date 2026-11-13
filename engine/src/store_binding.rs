@@ -3007,9 +3007,12 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                 after: opt_integer(a, "after")?,
                 before: opt_integer(a, "before")?,
             };
+            let over: Option<String> = a.get("over")?;
             Box::new(move |store| {
                 store
-                    .chat_read(|view| relations::relation_edit(view, book, &edit))
+                    .chat_read(|view| {
+                        relations::relation_edit(view, book, &edit, over.as_deref().map(str::as_bytes))
+                    })
                     .map(JsTree)
             })
         }

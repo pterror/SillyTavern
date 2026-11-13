@@ -95,6 +95,22 @@ test('an entry\'s names are the keys it marks, in the keys\' order, through ever
     assert.deepEqual((await lib.books.read('From card')).entries[0].extensions.names, ['Ilse', 'lamp']);
 });
 
+test('several changes of one entry\'s relations are written together, or none of them when one is refused', async () => {
+    await lib.books.write('Cells', { entries: Object.fromEntries([entry(1, 0), entry(2, 1), entry(3, 2)].map(e => [e.uid, e])) });
+    const { id: book } = await lib.books.find('Cells');
+    const kind = await lib.books.createRelationKind(book, 'in');
+    const works = await lib.books.createRelationKind(book, 'works at');
+    const ids = await idsOf(book);
+    const [x, y, z] = [1, 2, 3].map(uid => ids.get(uid));
+    const relationsOf = async () => (await lib.books.read('Cells')).entries[1].extensions?.relations?.map(r => [r.kind, r.target]) ?? [];
+    const add = (k, target) => ({ change: 'add', entry: x, kind: k, target, after: null, before: null, weak: false });
+    assert.deepEqual(await lib.books.changeRelations(book, [add(kind, y), add(works, z)], 100), { unreachedLoops: [] });
+    assert.deepEqual(await relationsOf(), [[kind, 2], [works, 3]]);
+    const moved = { change: 'move', entry: x, kind, target: y, newTarget: z, after: null, before: null };
+    assert.deepEqual(await lib.books.changeRelations(book, [moved, add(works, z)], 100), { refused: 'The entry already has that relation.' });
+    assert.deepEqual(await relationsOf(), [[kind, 2], [works, 3]], 'the refused second change leaves the first unwritten');
+});
+
 test('relation actions pick a kind by id, place the entry, find a loop nothing at the top holds, and a weak relation opens it', async () => {
     await lib.books.write('Loops', { entries: Object.fromEntries([entry(1, 0), entry(2, 1), entry(3, 2)].map(e => [e.uid, e])) });
     const { id: book } = await lib.books.find('Loops');

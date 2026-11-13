@@ -2343,11 +2343,30 @@ export class WorldInfoEngine {
      * @returns {Promise<{ refused: string } | { unreachedLoops: UnreachedLoop[] } | 'missing'>}
      */
     changeRelation(book, edit, loopCheckLimit, actor = null) {
+        return this.changeRelations(book, [edit], loopCheckLimit, actor);
+    }
+
+    /**
+     * Changes one entry's relations by each edit in turn, in one commit: all of them or, refused, none.
+     * @param {bigint} book
+     * @param {{ change: 'add' | 'move' | 'remove' | 'setWeak', entry: bigint, kind: number, target: bigint, newTarget?: bigint, after?: bigint | null, before?: bigint | null, weak?: boolean }[]} edits all of the same entry
+     * @param {number} loopCheckLimit
+     * @param {Actor | null} [actor]
+     * @returns {Promise<{ refused: string } | { unreachedLoops: UnreachedLoop[] } | 'missing'>}
+     */
+    changeRelations(book, edits, loopCheckLimit, actor = null) {
+        const edit = edits[0];
+        if (!edit || edits.some(one => one.entry !== edit.entry)) throw new Error('changeRelations changes one entry\'s relations.');
         return this.inWorld(book, async () => {
-            /** @type {{ refused: string } | { before: string | null, json: string }} */
-            const edited = await this.store.worldRead('worldbuildingRelationEdit', { book, ...edit });
-            if ('refused' in edited) return { refused: edited.refused };
-            if (edited.json !== edited.before) {
+            /** @type {{ before: string | null, json: string } | null} */
+            let edited = null;
+            for (const one of edits) {
+                /** @type {{ refused: string } | { before: string | null, json: string }} */
+                const next = await this.store.worldRead('worldbuildingRelationEdit', { book, ...one, ...(edited ? { over: edited.json } : {}) });
+                if ('refused' in next) return { refused: next.refused };
+                edited = next;
+            }
+            if (edited && edited.json !== edited.before) {
                 /** @type {object[]} */
                 const records = [];
                 const writes = historyWrites(await this.stamper(actor, records));

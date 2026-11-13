@@ -228,7 +228,7 @@ const READS_ASKED: Costs = {
     readSelection: (_u, selection, walkSteps) => selection.except.length + walkSteps,
     // The first chunk walks in the engine's own share (WALK_STEPS_PER_READ) before its loop check.
     startBulk: (_w, _s, _a, limit) => WALK_STEPS_PER_READ + loopCheck(limit),
-    changeRelation: (_w, _b, _c, limit) => loopCheck(limit),
+    changeRelations: (_w, _b, _c, limit) => loopCheck(limit),
     // Each entry the text names costs at least two of its reads, and its look one more.
     readEntry: (_u, _b, _e, asked) =>
         asked.textLinkReads +
@@ -285,6 +285,7 @@ function world(
         overview: unknown[];
         step: (Grouping & OverviewStep)[];
         changes: { book: string; change: RelationChange; loopCheckLimit: number; session: string }[];
+        writes: number[];
         edits: { book: string; entry: string; edit: EntryEdit; session: string }[];
         created: { book: string; creation: EntryCreation; loopCheckLimit: number }[];
         entryReads: { book: string; entry: string; mentions: PagesRun }[];
@@ -310,6 +311,7 @@ function world(
         overview: [],
         step: [],
         changes: [],
+        writes: [],
         edits: [],
         created: [],
         entryReads: [],
@@ -760,9 +762,13 @@ function world(
             entries.delete(entry);
             return { entry: '90', unreachedLoops: [] };
         },
-        changeRelation: async ({ session }, book, change, loopCheckLimit) => {
-            asked.changes.push({ book, change, loopCheckLimit, session });
-            if (change.target === '999') return { refused: "The target isn't an entry of this world." };
+        changeRelations: async ({ session }, book, changes, loopCheckLimit) => {
+            asked.writes.push(changes.length);
+            for (const change of changes) asked.changes.push({ book, change, loopCheckLimit, session });
+            const change = changes.at(-1);
+            if (!change) return { unreachedLoops: [] };
+            if (changes.some((one) => one.target === '999'))
+                return { refused: "The target isn't an entry of this world." };
             if (change.entry === '8') {
                 return {
                     unreachedLoops: [
@@ -2820,7 +2826,7 @@ test('changing a view’s columns or rows changes only the tab’s draft, and a 
     expect(await w.view(AXES_VIEW)).toMatchObject({ book: '1', columns: [{ item: directly('1', '8') }] });
 });
 
-test('a card dropped in another cell changes the relations of the axes it crossed, in one action', async () => {
+test('a card dropped in another cell changes the relations of the axes it crossed, in one action and one write', async () => {
     const w = world(1000);
     w.storedViews.set('1', {
         world: [
@@ -2851,6 +2857,7 @@ test('a card dropped in another cell changes the relations of the axes it crosse
         { change: 'move', entry: '50', kind: '1', target: '7', newTarget: '8', after: '60', before: null },
         { change: 'move', entry: '50', kind: '2', target: '7', newTarget: '8', after: null, before: null },
     ]);
+    expect(w.asked.writes.splice(0)).toEqual([2]);
     await drop({ column: 0, row: 0 }, { column: 1, row: 0 }, true);
     expect(changes()).toEqual([
         { change: 'add', entry: '50', kind: '1', target: '8', weak: false, after: '60', before: null },

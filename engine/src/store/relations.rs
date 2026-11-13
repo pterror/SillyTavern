@@ -1974,7 +1974,14 @@ fn neighbour_positions(
     }))
 }
 
-pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, StoreError> {
+/// `over`: the entry's relations as an earlier edit of the same write left them, applied over instead of the stored
+/// field; `before` stays the stored field, so the write's history records the whole change at once.
+pub fn relation_edit(
+    view: &View,
+    book: u64,
+    edit: &RelationEdit,
+    over: Option<&[u8]>,
+) -> Result<Js, StoreError> {
     let Some(_) = entry_key_in(view, book, edit.entry)? else {
         return Ok(refusal("That entry isn't in this world."));
     };
@@ -2001,7 +2008,8 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
             "This entry's relations field holds something else; it isn't changed.",
         ));
     }
-    let items = match &before {
+    let edited = over.map(<[u8]>::to_vec).or_else(|| before.clone());
+    let items = match &edited {
         None => Vec::new(),
         Some(written) => match items_of(written) {
             Some(item) => item,
@@ -2041,7 +2049,7 @@ pub fn relation_edit(view: &View, book: u64, edit: &RelationEdit) -> Result<Js, 
                 .unwrap_or_default()
         }))
     };
-    let base = before.clone().unwrap_or_else(|| b"[]".to_vec());
+    let base = edited.clone().unwrap_or_else(|| b"[]".to_vec());
     let same = |item: &Item| item.kind == edit.kind && item.target == target;
     let json = match &edit.change {
         RelationChange::Add { weak } => {

@@ -293,10 +293,11 @@ export type Ports = {
         kind: string,
         into: string,
     ): Promise<'ok' | 'missing' | 'no kind' | 'same kind' | 'being merged'>;
-    changeRelation(
+    // `changes` are of one entry, made in turn and written together: all of them, or none when one is refused.
+    changeRelations(
         who: Who,
         book: string,
-        change: RelationChange,
+        changes: RelationChange[],
         loopCheckLimit: number,
     ): Promise<RelationChangeAnswer>;
     readEntry(user: User, book: string, entry: string, asked: EntryReadAsked): Promise<EntryRead>;
@@ -742,7 +743,7 @@ export function worldbuildingArea(ports: Ports) {
         context: ActionContext,
         { book, loopCheckLimit, ...change }: RelationChange & { book: string; loopCheckLimit: number },
     ): Promise<ActionResult> => {
-        const answer = await ports.changeRelation(who(context), book, change, loopCheckLimit);
+        const answer = await ports.changeRelations(who(context), book, [change], loopCheckLimit);
         if (answer === 'missing') return { refused: WORLD_GONE };
         if ('refused' in answer) return { refused: answer.refused };
         const target = change.change === 'move' ? change.newTarget : change.target;
@@ -1779,20 +1780,17 @@ export function worldbuildingArea(ports: Ports) {
                     (change) => change.change !== 'move' || change.target !== change.newTarget,
                 );
                 const applied = moving.length > 0 ? moving : changes;
-                let last: { change: RelationChange; loops: UnreachedLoop[] } | null = null;
-                for (const change of applied) {
-                    const answer = await ports.changeRelation(who(context), book, change, loopCheckLimit);
-                    if (answer === 'missing') return { refused: WORLD_GONE };
-                    if ('refused' in answer) return { refused: answer.refused, changed: [...VIEWS_OF_CARDS] };
-                    last = { change, loops: answer.unreachedLoops };
-                }
+                const last = applied.at(-1);
                 if (!last) return { changed: [] };
-                const target = last.change.change === 'move' ? last.change.newTarget : last.change.target;
+                const answer = await ports.changeRelations(who(context), book, applied, loopCheckLimit);
+                if (answer === 'missing') return { refused: WORLD_GONE };
+                if ('refused' in answer) return { refused: answer.refused, changed: [...VIEWS_OF_CARDS] };
+                const target = last.change === 'move' ? last.newTarget : last.target;
                 remember(context.session, {
                     lastChange: {
                         ...NOTHING_CHANGED,
-                        changedRelation: { book, entry, kind: last.change.kind, target },
-                        loops: { book, found: last.loops },
+                        changedRelation: { book, entry, kind: last.kind, target },
+                        loops: { book, found: answer.unreachedLoops },
                     },
                 });
                 return { changed: [...VIEWS_OF_CARDS, LAST_CHANGE_VIEW], own: [AXES_VIEW, LAST_CHANGE_VIEW] };

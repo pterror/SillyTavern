@@ -722,9 +722,9 @@ const worldbuildingPorts = {
     async mergeRelationKind({ user }, book, kind, into) {
         return (await libOf(user)).books.mergeRelationKind(BigInt(book), Number(kind), Number(into));
     },
-    async changeRelation({ user, session }, book, change, loopCheckLimit) {
+    async changeRelations({ user, session }, book, changes, loopCheckLimit) {
         const lib = await libOf(user);
-        const edit = {
+        const edits = changes.map(change => ({
             change: change.change,
             entry: BigInt(change.entry),
             kind: Number(change.kind),
@@ -732,8 +732,8 @@ const worldbuildingPorts = {
             ...('newTarget' in change ? { newTarget: BigInt(change.newTarget) } : {}),
             ...('after' in change ? { after: optionalId(change.after), before: optionalId(change.before) } : {}),
             ...('weak' in change ? { weak: change.weak } : {}),
-        };
-        return lib.books.changeRelation(BigInt(book), edit, loopCheckLimit, { user: user.handle, session });
+        }));
+        return lib.books.changeRelations(BigInt(book), edits, loopCheckLimit, { user: user.handle, session });
     },
 };
 
