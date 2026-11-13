@@ -119,6 +119,11 @@ function keepMatchingLines(container: HTMLElement, query: string): number {
 
 type Found = { topic: Topic; element: JSX.Element; count: Accessor<number | null> };
 
+/** A topic in the side menu; `count` while searching: how many of its lines match. */
+type Listed = { topic: Topic; count?: number };
+
+const EVERY_TOPIC: Listed[] = TOPICS.map((topic) => ({ topic }));
+
 function Panel(props: {
     view: Accessor<Open>;
     markdown: Accessor<boolean>;
@@ -155,7 +160,12 @@ function Panel(props: {
 
     const found = createMemo(() => (searching() ? search(t, query, props.markdown, props.old, show) : null));
     const settled = () => found()?.every((f) => f.count() !== null) === true;
-    const matched = () => (settled() ? (found() ?? []).filter((f) => (f.count() ?? 0) > 0) : []);
+    const matched = () => (found() ?? []).filter((f) => (f.count() ?? 0) > 0);
+    const listed = createMemo<Listed[]>((before) => {
+        if (!searching()) return EVERY_TOPIC;
+        if (!settled()) return before;
+        return matched().map((f) => ({ topic: f.topic, count: f.count() ?? 0 }));
+    }, EVERY_TOPIC);
 
     const pick = (next: Topic) => {
         setNavOpen(false);
@@ -215,12 +225,7 @@ function Panel(props: {
                         }}
                     />
                     <ul class="helpTopics">
-                        <Show
-                            when={searching()}
-                            fallback={<For each={TOPICS}>{(each) => <TopicItem topic={each} />}</For>}
-                        >
-                            <For each={matched()}>{(f) => <TopicItem topic={f.topic} count={f.count() ?? 0} />}</For>
-                        </Show>
+                        <For each={listed()}>{(item) => <TopicItem {...item} />}</For>
                     </ul>
                 </nav>
                 <div class="helpContent" ref={(el: HTMLDivElement) => (content = el)}>

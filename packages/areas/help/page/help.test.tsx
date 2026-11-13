@@ -11,22 +11,31 @@ import { helpCompat } from './compat.ts';
 
 const COMMANDS: Record<Browser, string[]> = { slash: ['echo', 'help', 'run'], macros: ['user', 'char'] };
 
-function stand(first: PanelView = { open: false }, markdown = false) {
+function stand(
+    first: PanelView = { open: false },
+    markdown = false,
+    browsersLoaded: Promise<void> = Promise.resolve(),
+) {
     const [panel, setPanel] = createSignal<PanelView>(first);
     const [hotkeys, setHotkeys] = createSignal<HotkeysView>({ markdown });
     const sent: { type: string; payload: unknown }[] = [];
-    let release: (() => void) | null = null;
+    const read: string[] = [];
+    let held = false;
+    let waiting: (() => void)[] = [];
     const client: Client = {
         send: async (type, payload) => {
             sent.push({ type, payload });
+            if (held) await new Promise<void>((resolve) => waiting.push(resolve));
             if (type === 'help.open') setPanel({ open: true, topic: 'overview', query: '' });
             if (type === 'help.close') setPanel({ open: false });
-            if (release === null) return { ok: true };
-            await new Promise<void>((resolve) => (release = resolve));
             return { ok: true };
         },
-        view: <T,>(key: string) =>
-            (key === PANEL_VIEW ? panel : key === HOTKEYS_VIEW ? hotkeys : () => undefined) as () => T | undefined,
+        view: <T,>(key: string) => {
+            read.push(key);
+            return (key === PANEL_VIEW ? panel : key === HOTKEYS_VIEW ? hotkeys : () => undefined) as () =>
+                | T
+                | undefined;
+        },
         receive: () => {},
         reconnected: async () => {},
         reread: async () => {},
@@ -48,6 +57,7 @@ function stand(first: PanelView = { open: false }, markdown = false) {
             };
         },
         async browser(kind, into) {
+            await browsersLoaded;
             const list = document.createElement('ul');
             list.className = `browser-${kind}`;
             for (const name of COMMANDS[kind]) {
@@ -74,18 +84,20 @@ function stand(first: PanelView = { open: false }, markdown = false) {
     );
     const panelElement = () => document.querySelector<HTMLElement>('.helpLayer');
     const hold = () => {
-        release = () => {};
+        held = true;
     };
     const letGo = () => {
-        const go = release;
-        release = null;
-        go?.();
+        held = false;
+        const go = waiting;
+        waiting = [];
+        for (const resolve of go) resolve();
     };
     return {
         compat,
         setPanel,
         setHotkeys,
         sent,
+        read,
         layers,
         panelElement,
         hold,
@@ -103,14 +115,21 @@ const flush = async () => {
     for (let i = 0; i < 5; i++) await settle();
 };
 
+const type = (input: HTMLInputElement, value: string) => {
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+};
+
 const text = (element: Element | null | undefined) => element?.textContent ?? '';
 const topics = (root: HTMLElement) =>
     [...root.querySelectorAll<HTMLElement>('.helpTopic')].map((item) => item.dataset['topic']);
 
 test('nothing is read or drawn until help opens; opening again raises the open panel', async () => {
-    const { compat, sent, layers, panelElement, dispose } = stand();
+    const { compat, sent, read, layers, panelElement, dispose } = stand();
     expect(panelElement()).toBeNull();
+    expect(read).toEqual([]);
     expect(await compat.open('')).toBeNull();
+    expect(read).toContain(PANEL_VIEW);
     expect(sent).toEqual([{ type: 'help.open', payload: { name: '' } }]);
     const root = panelElement();
     expect(root).not.toBeNull();
@@ -164,9 +183,7 @@ test('a search sends what is typed and shows, once every topic is counted, the t
     const s = stand();
     await s.compat.open('');
     const root = s.panelElement() as HTMLElement;
-    const input = root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement;
-    input.value = 'strikethrough';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    type(root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement, 'strikethrough');
     expect(s.sent.at(-1)).toEqual({ type: 'help.search', payload: { query: 'strikethrough' } });
     s.setPanel({ open: true, topic: 'overview', query: 'strikethrough' });
     await flush();
@@ -189,14 +206,31 @@ test('a search sends what is typed and shows, once every topic is counted, the t
     expect(topics(root)).toEqual([]);
     expect(root.querySelector('.helpNoResults')).not.toBeNull();
 
-    const before = s.sent.length;
+    const sentBefore = s.sent.length;
     s.setPanel({ open: true, topic: 'overview', query: 'bold' });
     await flush();
     root.querySelector<HTMLElement>('.helpTopic[data-topic="format"]')?.click();
-    expect(s.sent.length).toBe(before);
+    expect(s.sent.length).toBe(sentBefore);
 
     s.setPanel({ open: true, topic: 'overview', query: '' });
     expect(root.querySelector('.helpTopic.active')?.getAttribute('data-topic')).toBe('overview');
+    s.dispose();
+});
+
+test('while every topic is being counted, the side menu keeps the topics it listed before', async () => {
+    let load = () => {};
+    const loaded = new Promise<void>((resolve) => (load = resolve));
+    const s = stand({ open: false }, false, loaded);
+    await s.compat.open('');
+    const root = s.panelElement() as HTMLElement;
+    s.setPanel({ open: true, topic: 'overview', query: 'strikethrough' });
+    await flush();
+    expect(topics(root)).toEqual(['overview', 'slash', 'format', 'hotkeys', 'macros']);
+    expect(root.querySelector('.helpTopic.active')?.getAttribute('data-topic')).toBe('overview');
+    expect(root.querySelector('.helpNoResults')).toBeNull();
+    load();
+    await flush();
+    expect(topics(root)).toEqual(['hotkeys']);
     s.dispose();
 });
 
@@ -206,8 +240,7 @@ test("the search box isn't overwritten by an earlier answer while what's typed i
     const root = s.panelElement() as HTMLElement;
     const input = root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement;
     s.hold();
-    input.value = 'ab';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    type(input, 'ab');
     s.setPanel({ open: true, topic: 'overview', query: 'a' });
     expect(input.value).toBe('ab');
     s.setPanel({ open: true, topic: 'overview', query: 'ab' });
@@ -224,8 +257,13 @@ test('the close button asks the server, and the layer goes when the view says he
     const s = stand();
     await s.compat.open('');
     const layer = s.layers[0];
+    s.hold();
     layer?.requestClose();
     expect(s.sent.at(-1)).toEqual({ type: 'help.close', payload: {} });
+    await flush();
+    expect(layer?.closed).toBe(false);
+    expect(s.panelElement()).not.toBeNull();
+    s.letGo();
     await flush();
     expect(layer?.closed).toBe(true);
     expect(s.panelElement()).toBeNull();

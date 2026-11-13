@@ -13,6 +13,7 @@ import { usageStatsArea } from '@st/usage-stats/server';
 import { VIEW as USAGE_STATS_VIEW } from '@st/usage-stats/protocol';
 import { STATS_BACKUP_FILE } from './old-stats-file.js';
 import { helpArea } from '@st/help/server';
+import { HOTKEYS_VIEW } from '@st/help/protocol';
 import { looksPorts } from './looks-store.js';
 import { resolveChatLinkLooks } from './chat-links.js';
 import { sessionHeaderOf } from './request-session.js';
@@ -243,7 +244,7 @@ const backgroundPorts = {
 
 export const SETTINGS_VIEWS = ['settings'];
 
-export const HELP_SETTINGS_VIEWS = ['help.hotkeys'];
+export const HELP_SETTINGS_VIEWS = [HOTKEYS_VIEW];
 
 export const WORLD_LIST_VIEWS = ['worldbuilding.worlds', 'worldbuilding.world'];
 
