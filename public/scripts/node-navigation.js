@@ -7,7 +7,7 @@ import { selected_group } from './group-chats.js';
 import { updateMessage, _setCurrentTarget, rememberCardOpening } from './chat-store.js';
 import { isProvisionalNodeId } from './node-identity.js';
 import { _snapshotMessages } from './generation.js';
-import { arriveChatBox, leavingChatBox } from './chat-box.js';
+import { arriveChatBox, chatBoxLeft, leavingChatBox } from './chat-box.js';
 
 /**
  * @param {{ chat_metadata?: ChatMetadata } | null | undefined} answer
@@ -48,6 +48,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
                 return false;
             }
             payload = await response.json();
+            chatBoxLeft(/** @type {any} */ (payload).left);
             if (avatar != null) {
                 _setCurrentTarget(getCurrentChatId() ?? '', null);
             }
@@ -96,6 +97,7 @@ async function _persistNodeSelection(targetNodeId) {
         if (response.ok) {
             _setCurrentTarget(getCurrentChatId() ?? '', null);
             const answer = await response.json();
+            chatBoxLeft(answer.left);
             await takeStateFrom(answer);
             arriveChatBox({ avatar_url: avatar }, answer.draft);
         }
@@ -137,6 +139,7 @@ export async function switchToNode(targetNodeId) {
             return false;
         }
         const answer = await response.json();
+        chatBoxLeft(answer?.left);
         ancestry = answer?.ancestry;
         below = answer?.messages ?? [];
         _setCurrentTarget(getCurrentChatId() ?? '', null);

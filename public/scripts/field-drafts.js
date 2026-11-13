@@ -181,6 +181,19 @@ export function clearDraftsUnder(storage, kind, prefix) {
  * @param {DraftStorage} storage
  * @param {string} kind
  * @param {string} id
+ * @returns {(FieldDraft & { field: string })[]} the thing's drafts, each with its field
+ */
+export function fieldDraftsOf(storage, kind, id) {
+    return readIndex(storage, kind, id).flatMap((field) => {
+        const draft = readFieldDraft(storage, { kind, id, field });
+        return draft ? [{ field, ...draft }] : [];
+    });
+}
+
+/**
+ * @param {DraftStorage} storage
+ * @param {string} kind
+ * @param {string} id
  * @returns {boolean}
  */
 export function hasFieldDrafts(storage, kind, id) {
@@ -203,10 +216,20 @@ export async function commitFieldDraft(storage, ref, text, stored, commit) {
     } catch (error) {
         console.error('A field edit could not be committed; it is kept as a draft', { ref, error });
     }
-    const now = confirmed ? readFieldDraft(storage, ref) : null;
+    if (confirmed) confirmFieldDraft(storage, ref, text);
+    return confirmed;
+}
+
+/**
+ * The text was stored: a draft of just it is gone, and one written since is now over it
+ * @param {DraftStorage} storage
+ * @param {DraftRef} ref
+ * @param {string} text
+ */
+export function confirmFieldDraft(storage, ref, text) {
+    const now = readFieldDraft(storage, ref);
     if (now?.text === text) clearFieldDraft(storage, ref);
     else if (now) keepFieldDraft(storage, ref, now.text, text);
-    return confirmed;
 }
 
 /** @typedef {'text'|'line'|'number'|'toggle'} FieldType */

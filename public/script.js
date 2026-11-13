@@ -210,7 +210,7 @@ import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { getMountedTextarea } from './scripts/live-editor/registry.js';
-import { arriveChatBox, chatBoxFollowEnd, chatBoxText, focusChatBox, initChatBox, leavingChatBox, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
+import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxText, focusChatBox, forgetChatBoxChat, initChatBox, openingChatBox, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
 import { endOwnerOf } from './scripts/chat-box-ends.js';
 import { chatBoxSetup } from './scripts/message-text.js';
 import { initChatEditors, loadChatEditor } from './scripts/chat-text/editors.js';
@@ -5546,6 +5546,7 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
  * @property {string[]} [stored_sends]
  * @property {{ key: string, version: number, value: unknown }[]} [ui_views]
  * @property {import('./scripts/chat-box.js').Draft} [draft] the draft of the message the chat ends on
+ * @property {unknown} [left] what became of the drafts the request carried (`chatBoxLeft`)
  * @property {import('@st/protocol/looks').Looks} [looks] The looks of the chat's speakers' names.
  */
 
@@ -5575,11 +5576,12 @@ function chatOpenOwner(body) {
 /**
  * What a request that opens a chat asks with it, and the chat box's text it leaves behind
  * @param {{ avatar_url?: string, group_id?: string }} body
- * @returns {{ send_keys: string[], parts: Record<string, unknown>, leaving: ReturnType<typeof leavingChatBox> }}
+ * @returns {{ send_keys: string[], parts: Record<string, unknown>, leaving: ReturnType<typeof openingChatBox> }}
  */
 export function chatOpenAsk(body) {
     const owner = chatOpenOwner(body);
-    return { send_keys: keptSendKeys(owner), parts: chatOpenAsks(owner), leaving: leavingChatBox({ named: true }) };
+    const chat = body.group_id ? { group_id: String(body.group_id) } : { avatar_url: String(body.avatar_url) };
+    return { send_keys: keptSendKeys(owner), parts: chatOpenAsks(owner), leaving: openingChatBox(chat) };
 }
 
 /**
@@ -5588,6 +5590,7 @@ export function chatOpenAsk(body) {
  * @returns {ChatOpenAnswer}
  */
 export function takeChatOpenAnswer(body, answer) {
+    chatBoxLeft(answer.left);
     if (answer.group) holdGroup(answer.group);
     if (body.avatar_url) takeShownGreeting(String(body.avatar_url), answer.greeting_shown ?? null);
     takeChatOpenParts(answer.chat, answer.parts);
@@ -9870,6 +9873,9 @@ jQuery(async function () {
         }
     });
     for (const event of [event_types.MESSAGE_RECEIVED, event_types.GENERATION_ENDED, event_types.MESSAGE_DELETED]) eventSource.on(event, chatBoxFollowEnd);
+    eventSource.on(event_types.CHARACTER_DELETED, (/** @type {{ character?: { avatar?: string } }} */ event) => {
+        if (typeof event?.character?.avatar === 'string') forgetChatBoxChat({ avatar_url: event.character.avatar });
+    });
 
     $('#swipes-checkbox').on('change', function () {
         swipes = !!$('#swipes-checkbox').prop('checked');

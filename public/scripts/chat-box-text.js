@@ -10,9 +10,10 @@
 
 /**
  * @param {string} [initial]
+ * @param {() => void} [changed] hears each of the editor's edits, after the text has it
  * @returns {BoxText}
  */
-export function boxText(initial = '') {
+export function boxText(initial = '', changed = () => {}) {
     let current = initial;
     /** @type {string | undefined} */
     let latest;
@@ -30,6 +31,7 @@ export function boxText(initial = '') {
         edited(changes, id) {
             for (const change of [...changes].reverse()) current = current.slice(0, change.from) + change.insert + current.slice(change.to);
             latest = id;
+            changed();
         },
         text: () => current,
         replace(text) {

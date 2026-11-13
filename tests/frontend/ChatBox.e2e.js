@@ -163,7 +163,7 @@ test.describe('the chat box\'s drafts', () => {
         await chatBox(page).click();
         await page.keyboard.type('half a reply to A');
 
-        const left = page.waitForRequest(request => request.url().endsWith('/api/chats/open') && JSON.parse(request.postData() ?? '{}').leaving?.text === 'half a reply to A');
+        const left = page.waitForRequest(request => request.url().endsWith('/api/chats/open') && (JSON.parse(request.postData() ?? '{}').leaving ?? []).some(d => d.text === 'half a reply to A'));
         await openCharacter(page, second);
         await left;
         await expect.poll(() => boxText(page)).toBe('');
@@ -188,5 +188,28 @@ test.describe('the chat box\'s drafts', () => {
         await testSetup.awaitST({ page });
         await openCharacter(page, second);
         await expect.poll(() => boxText(page)).toBe('to B');
+    });
+
+    test('text the server never confirmed is in the browser, and goes with the next open of its chat after a reload', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        const first = await createCharacter(page, `Copy A ${stamp()}`);
+        const second = await createCharacter(page, `Copy B ${stamp()}`);
+        await openCharacter(page, first);
+        await expect(chatBox(page)).toHaveCount(1, { timeout: 10000 });
+        await chatBox(page).click();
+        await page.keyboard.type('never saved');
+        const copies = () => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('FieldDraft:') && key.includes('ChatBox')).length);
+        expect(await copies()).toBe(1);
+        let refused = 0;
+        await page.route('**/api/chats/draft', route => (refused++, route.abort()));
+        await page.reload();
+        await testSetup.awaitST({ page });
+        await page.unroute('**/api/chats/draft');
+        expect(refused).toBeGreaterThan(0);
+
+        await openCharacter(page, second);
+        await openCharacter(page, first);
+        await expect.poll(() => boxText(page)).toBe('never saved');
+        await expect.poll(copies).toBe(0);
     });
 });

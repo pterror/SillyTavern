@@ -1273,16 +1273,19 @@ export class ChatEngine {
     }
 
     /**
-     * Keeps a draft as the text given, after what it names: an edit of what is kept, the whole text when nothing is, none
-     * when it's empty
-     * @param {{ tree: bigint, owner: DraftOwner, text: string, actor: Actor }} p tree: the chat it's written in
-     * @returns {Promise<void>}
+     * Keeps a draft as the text given, after what it names, only if the draft is still the one the text was written over:
+     * a draft kept since, which the writer never saw, is never written over. Kept as an edit of what is kept, the whole
+     * text when nothing is, none when it's empty.
+     * @param {{ tree: bigint, owner: DraftOwner, text: string, base: string, actor: Actor }} p tree: the chat it's
+     *   written in; base: the draft as the writer last had it
+     * @returns {Promise<{ kept: boolean, text: string }>} whether the draft is the text given, and the draft now
      */
-    saveDraft({ tree, owner, text, actor }) {
+    saveDraft({ tree, owner, text, base, actor }) {
         return this.serialized(tree, async () => {
-            await this.inDraftLanes(tree, [owner], async () => {
+            return await this.inDraftLanes(tree, [owner], async () => {
                 const before = await this.draftOf(owner);
-                if (before === text) return;
+                if (before === text) return { kept: true, text };
+                if (before !== base) return { kept: false, text: before };
                 /** @type {object[]} */
                 const records = [];
                 const { user, session } = await this.actorIds(actor, records);
@@ -1291,6 +1294,7 @@ export class ChatEngine {
                     ? { kind: 'draftValue', ...owner, text, ...who }
                     : { kind: 'draftEdit', ...owner, ...textEdit(before, text), ...who });
                 await this.store.commit(records);
+                return { kept: true, text };
             });
         });
     }

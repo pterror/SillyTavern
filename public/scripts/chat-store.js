@@ -12,7 +12,7 @@ import { setStoredAdopter } from './stored-report.js';
 import { askToDrop, confirmOf, hasDrops, warnDropped } from './edit-drops.js';
 import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 import { countedTextHash } from './counted-text.js';
-import { arriveChatBox, leavingChatBox } from './chat-box.js';
+import { arriveChatBox, chatBoxFollowCut, chatBoxLeft, leavingChatBox } from './chat-box.js';
 
 /**
  * @param {number} i
@@ -536,6 +536,7 @@ export async function rememberCardOpening(text) {
         });
         if (!response.ok) throw new Error(`/api/chats/openings/choose responded ${response.status}`);
         const answer = await response.json().catch(() => null);
+        chatBoxLeft(answer?.left);
         await takeOpenings(character.avatar, answer);
         arriveChatBox({ avatar_url: character.avatar }, answer?.draft);
     } catch (error) {
@@ -1083,6 +1084,7 @@ export async function chatOpCut(firstMesId, lastMesId, { ask = false } = {}) {
     if (!answer) return false;
     forgetStored(chat.slice(from, to + 1).map(m => m.node_id));
     _takeCopies(answer.copied, to + 1);
+    chatBoxFollowCut(answer.draft);
     return true;
 }
 

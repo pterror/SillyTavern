@@ -75,11 +75,12 @@ test('a draft follows the shown greeting, is kept when the person leaves it, and
     const owner = { greeting, avatar: 'Ada.png' };
     assert.deepEqual(opened.body.draft, { owner, text: '' });
 
-    const kept = await post('draft', { avatar_url: 'Ada.png', owner, text: 'Hi Ada' }, tab);
-    assert.deepEqual(kept.body, { ok: true });
+    const kept = await post('draft', { avatar_url: 'Ada.png', owner, text: 'Hi Ada', base: '' }, tab);
+    assert.deepEqual(kept.body, { ok: true, left: 'kept', text: 'Hi Ada' });
     await writeCharacter('Eve.png', 'Eve', 'Hey.');
-    const away = await post('open', { avatar_url: 'Eve.png', leaving: { avatar_url: 'Ada.png', owner, text: 'Hi Ada, how' } }, tab);
+    const away = await post('open', { avatar_url: 'Eve.png', leaving: [{ avatar_url: 'Ada.png', owner, text: 'Hi Ada, how', base: 'Hi Ada' }] }, tab);
     assert.equal(away.status, 200, 'the open that leaves a chat keeps its draft');
+    assert.deepEqual(away.body.left, [{ avatar_url: 'Ada.png', owner, text: 'Hi Ada, how', left: 'kept' }]);
     const other = newSessionKey();
     assert.deepEqual((await post('open', { avatar_url: 'Ada.png' }, other)).body.draft, { owner, text: 'Hi Ada, how' }, 'every chat at that greeting shows it');
 
@@ -110,12 +111,13 @@ test('a draft stays with the message it responds to: each alternative shows its 
     const replied = await post('message/append', { avatar_url: 'Bo.png', after_node_id: userNode, messages: [{ name: 'Bo', is_user: false, mes: 'Sure.', send_date: 2, extra: {} }] }, tab);
     const [reply] = replied.body.node_ids;
     assert.deepEqual(replied.body.draft, { owner: { message: reply }, text: '' });
-    await post('draft', { avatar_url: 'Bo.png', owner: { message: reply }, text: 'about Sure' }, tab);
+    await post('draft', { avatar_url: 'Bo.png', owner: { message: reply }, text: 'about Sure', base: '' }, tab);
 
     const other = await post('message/append', { avatar_url: 'Bo.png', after_node_id: userNode, messages: [{ name: 'Bo', is_user: false, mes: 'No.', send_date: 3, extra: {} }] }, tab);
     const [alternative] = other.body.node_ids;
     assert.equal(other.body.draft.owner.message, alternative);
-    const back = await post('message/select', { avatar_url: 'Bo.png', node_id: reply, leaving: { owner: { message: alternative }, text: 'about No' } }, tab);
+    const back = await post('message/select', { avatar_url: 'Bo.png', node_id: reply, leaving: [{ avatar_url: 'Bo.png', owner: { message: alternative }, text: 'about No', base: '' }] }, tab);
+    assert.deepEqual(back.body.left.map(l => l.left), ['kept']);
     assert.deepEqual(back.body.draft, { owner: { message: reply }, text: 'about Sure' }, 'going back shows the first one\'s draft again');
     assert.deepEqual((await post('open', { avatar_url: 'Bo.png' }, tab)).body.draft, { owner: { message: reply }, text: 'about Sure' });
     const [altId] = await user.store.chats.messageIds([alternative]);
@@ -130,21 +132,22 @@ test('a save goes to the message it names, also after the chat moved on', async 
     const [userNode] = sent.body.node_ids;
     const replied = await post('message/append', { avatar_url: 'Fay.png', after_node_id: userNode, messages: [{ name: 'Fay', is_user: false, mes: 'Yes?', send_date: 2, extra: {} }] }, tab);
     const [reply] = replied.body.node_ids;
-    const late = await post('draft', { avatar_url: 'Fay.png', owner: { message: userNode }, text: 'typed before the reply' }, tab);
-    assert.deepEqual(late.body, { ok: true });
+    const late = await post('draft', { avatar_url: 'Fay.png', owner: { message: userNode }, text: 'typed before the reply', base: '' }, tab);
+    assert.deepEqual(late.body, { ok: true, left: 'kept', text: 'typed before the reply' });
     assert.equal(await user.store.chats.draftOf({ message: (await user.store.chats.messageIds([userNode]))[0] }), 'typed before the reply');
     assert.equal(await user.store.chats.draftOf({ message: (await user.store.chats.messageIds([reply]))[0] }), '');
 });
 
-test('a chat showing nothing keeps its draft at the root; an owner the chat can\'t end at is refused', async () => {
+test('a chat showing nothing keeps its draft at the root; a draft after what the chat can\'t end at is gone', async () => {
     await writeCharacter('Cy.png', 'Cy', '');
     const tab = newSessionKey();
     const opened = await post('open', { avatar_url: 'Cy.png' }, tab);
     assert.deepEqual(opened.body.draft, { owner: { root: true }, text: '' });
-    await post('draft', { avatar_url: 'Cy.png', owner: { root: true }, text: 'first words' }, tab);
+    await post('draft', { avatar_url: 'Cy.png', owner: { root: true }, text: 'first words', base: '' }, tab);
     assert.deepEqual((await post('open', { avatar_url: 'Cy.png' }, tab)).body.draft, { owner: { root: true }, text: 'first words' });
-    assert.equal((await post('draft', { avatar_url: 'Cy.png', owner: { greeting: 0, avatar: 'Ada.png' }, text: 'x' }, tab)).status, 409);
-    assert.equal((await post('draft', { avatar_url: 'Cy.png', owner: { message: 'nope' }, text: 'x' }, tab)).status, 409);
+    assert.deepEqual((await post('draft', { avatar_url: 'Cy.png', owner: { greeting: 0, avatar: 'Ada.png' }, text: 'x', base: '' }, tab)).body, { ok: true, left: 'gone' });
+    assert.deepEqual((await post('draft', { avatar_url: 'Cy.png', owner: { message: 'nope' }, text: 'x', base: '' }, tab)).body, { ok: true, left: 'gone' });
+    assert.equal((await post('draft', { avatar_url: 'Cy.png', owner: { root: true }, text: 'x' }, tab)).status, 400, 'a save names the draft it was written over');
 });
 
 test('a group chat started opens on a greeting of each member it chose then, and its draft follows the last', async () => {
@@ -161,7 +164,7 @@ test('a group chat started opens on a greeting of each member it chose then, and
     }
     const owner = { greeting: picks[1].greeting_id, avatar: 'Eve.png' };
     assert.deepEqual(started.body.opened.draft, { owner, text: '' });
-    await post('draft', { group_id: 'gd', owner, text: 'hello both' }, tab);
+    await post('draft', { group_id: 'gd', owner, text: 'hello both', base: '' }, tab);
     assert.deepEqual((await post('open', { group_id: 'gd' }, tab)).body.draft, { owner, text: 'hello both' });
 
     const shown = picks.map(p => ({ name: p.avatar, is_user: false, mes: p.text, send_date: 1, original_avatar: p.avatar, extra: { greeting_id: p.greeting_id } }));
@@ -185,11 +188,26 @@ test('saves of one greeting\'s draft from its own chat and a group chat at once 
     assert.deepEqual((await post('new', { group_id: 'gg' }, inGroup)).body.opened.draft.owner, owner, 'both chats end at the same greeting');
     const texts = Array.from({ length: 20 }, (_, i) => `${'x'.repeat(i)} written ${i}`);
     const answers = await Promise.all(texts.map((text, i) => (i % 2
-        ? post('draft', { group_id: 'gg', owner, text }, inGroup)
-        : post('draft', { avatar_url: 'Gil.png', owner, text }, own))));
+        ? post('draft', { group_id: 'gg', owner, text, base: '' }, inGroup)
+        : post('draft', { avatar_url: 'Gil.png', owner, text, base: '' }, own))));
     assert.ok(answers.every(a => a.status === 200));
     const [gil] = await user.store.lib.ids(0, ['Gil.png']);
     assert.ok(texts.includes(await user.store.chats.draftOf({ tree: gil, greeting: owner.greeting })), 'the draft is one of the texts saved, never a mix of them');
+});
+
+test('a draft kept since the page had it is never written over: the page\'s text is not kept, and the answer has the draft', async () => {
+    await writeCharacter('Hal.png', 'Hal', 'Hal here.');
+    const one = newSessionKey();
+    const two = newSessionKey();
+    const owner = (await post('open', { avatar_url: 'Hal.png' }, one)).body.draft.owner;
+    assert.deepEqual((await post('draft', { avatar_url: 'Hal.png', owner, text: 'from two', base: '' }, two)).body, { ok: true, left: 'kept', text: 'from two' });
+    assert.deepEqual((await post('draft', { avatar_url: 'Hal.png', owner, text: 'from one', base: '' }, one)).body, { ok: true, left: 'superseded', text: 'from two' });
+    assert.deepEqual((await post('draft', { avatar_url: 'Hal.png', owner, text: 'from two', base: '' }, one)).body, { ok: true, left: 'kept', text: 'from two' }, 'asking again for what is kept is kept');
+    const reopened = await post('open', { avatar_url: 'Hal.png', leaving: [{ avatar_url: 'Hal.png', owner, text: 'older', base: '' }, { avatar_url: 'Hal.png', owner: { message: 'nope' }, text: 'x', base: '' }, { owner }] }, one);
+    assert.deepEqual(reopened.body.left.map(l => l.left), ['superseded', 'gone', null]);
+    assert.deepEqual(reopened.body.left[0], { avatar_url: 'Hal.png', owner, text: 'older', left: 'superseded' }, 'each is named, so the page knows which copy it was');
+    assert.deepEqual(reopened.body.draft, { owner, text: 'from two' });
+    assert.equal((await post('open', { avatar_url: 'Hal.png' }, one)).body.left, undefined, 'an answer to a request that carried no drafts says nothing of them');
 });
 
 test('drafts are told to other sessions, not back to the one that wrote them', async () => {

@@ -452,23 +452,52 @@ export const router = express.Router();
 router.use(requireSessionHeader);
 
 /**
- * An action that takes the person away from where their chat ended carries the chat box's text as `leaving`, kept as
- * the draft of that end before the action is answered: `{ owner, text }`, with `avatar_url` or `group_id` when it is
- * another chat than the action's. Best effort: a draft not kept never fails the action.
+ * What became of a draft the page asked to keep: kept as given; not kept because the draft changed since the page had
+ * it; not kept because what it follows is gone; null when it could not be kept now, to be asked again
+ * @typedef {'kept' | 'superseded' | 'gone' | null} DraftLeft
  */
-router.use(async function keepLeavingDraft(request, _response, next) {
-    const leaving = request.body?.leaving;
-    if (request.method !== 'POST' || !leaving || typeof leaving !== 'object' || typeof leaving.text !== 'string') return next();
+
+/**
+ * @param {import('express').Request} request
+ * @param {unknown} given `{ owner, text, base }`, with `avatar_url` or `group_id` when it is another chat than the
+ *   request's
+ * @returns {Promise<{ left: DraftLeft, text?: string }>} text: the draft now, when it is kept or superseded
+ */
+async function keepDraft(request, given) {
+    if (given === null || typeof given !== 'object') return { left: null };
+    const draft = /** @type {Record<string, any>} */ (given);
+    if (typeof draft.text !== 'string' || typeof draft.base !== 'string') return { left: null };
     try {
-        const named = leaving.avatar_url !== undefined || leaving.group_id !== undefined;
-        const from = named ? leaving : request.body;
-        if (typeof from.avatar_url === 'string' && forbiddenRegExp.test(from.avatar_url)) return next();
+        const named = draft.avatar_url !== undefined || draft.group_id !== undefined;
+        const from = named ? draft : request.body;
+        if (typeof from.avatar_url === 'string' && forbiddenRegExp.test(from.avatar_url)) return { left: 'gone' };
         const chat = await chatOf(request, from);
-        const owner = chat ? await draftOwnerOf(chat, leaving.owner) : null;
-        if (chat && owner) await chat.store.chats.saveDraft({ tree: chat.tree, owner, text: leaving.text, actor: chat.session.actor() });
+        const owner = chat ? await draftOwnerOf(chat, draft.owner) : null;
+        if (!chat || !owner) return { left: 'gone' };
+        const saved = await chat.store.chats.saveDraft({ tree: chat.tree, owner, text: draft.text, base: draft.base, actor: chat.session.actor() });
+        return { left: saved.kept ? 'kept' : 'superseded', text: saved.text };
     } catch (error) {
-        console.error('The draft left behind was not kept:', error);
+        console.error('A draft was not kept:', error);
+        return { left: null };
     }
+}
+
+/**
+ * An action that takes the person away from where their chat ended, or that opens a chat with drafts the page holds
+ * unconfirmed, carries those drafts as `leaving`: each kept before the action is answered. Best effort: a draft not
+ * kept never fails the action. The answer's `left` names each draft carried, with what became of it.
+ */
+router.use(async function keepLeavingDrafts(request, response, next) {
+    const leaving = request.body?.leaving;
+    if (request.method !== 'POST' || !Array.isArray(leaving)) return next();
+    const left = [];
+    for (const draft of leaving) {
+        const { left: outcome } = await keepDraft(request, draft);
+        const named = draft && typeof draft === 'object' ? draft : {};
+        const chat = typeof named.group_id === 'string' ? { group_id: named.group_id } : typeof named.avatar_url === 'string' ? { avatar_url: named.avatar_url } : {};
+        left.push({ ...chat, owner: named.owner, text: named.text, left: outcome });
+    }
+    response.locals.left = left;
     next();
 });
 
@@ -785,6 +814,17 @@ async function shapeSent(request, chat, sources) {
 }
 
 /**
+ * The draft of where an answer leaves the chat ending, and what became of the drafts the request carried
+ * (`keepLeavingDrafts`)
+ * @param {import('express').Response} response
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @returns {Promise<{ draft: import('../chat-drafts.js').DraftAnswer | undefined, left?: object[] }>}
+ */
+async function endAnswer(response, chat) {
+    return { draft: await endDraft(chat), ...(Array.isArray(response.locals.left) ? { left: response.locals.left } : {}) };
+}
+
+/**
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {{ avatar_url?: unknown, group_id?: unknown, chat?: unknown, make_current?: unknown, fresh?: unknown, send_keys?: unknown, with_group?: unknown, with_character?: unknown, parts?: unknown }} body
@@ -838,7 +878,7 @@ async function openChatAnswer(request, response, body) {
             answer: {
                 ...common,
                 group_openings: groupOpenings.map(o => ({ avatar: o.avatar, greeting_id: o.greetingId, text: o.text })),
-                draft: await endDraft(chat),
+                ...await endAnswer(response, chat),
                 openings: null,
                 card_openings: null,
                 chats: (await chatListOf(chat)).map(r => r.file_id),
@@ -856,7 +896,7 @@ async function openChatAnswer(request, response, body) {
             ...common,
             ...(character ? { character } : {}),
             ...openings,
-            draft: await endDraft(chat),
+            ...await endAnswer(response, chat),
             greeting_shown: await greetingShownOf(chat, String(avatar)),
             ...await recordLastOpened(request, { character: avatar, group: null }),
         },
@@ -1023,7 +1063,7 @@ router.post('/new', validateAvatarUrlMiddleware, async function (request, respon
         const started = await chats.startChat({ tree: chat.tree, actor, node_id: opening, keep });
         if (!started.ok) return response.status(400).send({ error: started.reason });
         chat.session.answer(response, { moved: true });
-        return response.send({ ok: true, deleted, chat: await compatChatIdOf(chat), draft: await endDraft(chat) });
+        return response.send({ ok: true, deleted, chat: await compatChatIdOf(chat), ...await endAnswer(response, chat) });
     } catch (error) {
         console.error('Error starting a new chat:', error);
         return response.status(500).send({ error: true });
@@ -1085,21 +1125,11 @@ router.post('/ancestry', async function (request, response) {
 });
 
 router.post('/draft', validateAvatarUrlMiddleware, async function (request, response) {
-    try {
-        const { text } = request.body ?? {};
-        if (typeof text !== 'string') return response.status(400).send({ error: 'text is required' });
-        const chat = await chatOf(request);
-        if (!chat) return response.status(404).send({ ok: false, reason: 'unknown chat' });
-        const owner = await draftOwnerOf(chat, request.body.owner);
-        if (owner === null) {
-            return response.status(409).send({ ok: false, reason: 'unknown owner' });
-        }
-        await chat.store.chats.saveDraft({ tree: chat.tree, owner, text, actor: chat.session.actor() });
-        return response.send({ ok: true });
-    } catch (error) {
-        console.error('Error keeping a draft:', error);
-        return response.status(500).send({ error: true });
-    }
+    const { text, base } = request.body ?? {};
+    if (typeof text !== 'string' || typeof base !== 'string') return response.status(400).send({ error: 'text and base are required' });
+    const kept = await keepDraft(request, request.body);
+    if (kept.left === null) return response.status(500).send({ error: true });
+    return response.send({ ok: true, ...kept });
 });
 
 router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
@@ -1152,7 +1182,7 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
             });
             if (!written) return;
             chat.session.answer(response, { moved: true });
-            return response.send({ ok: true, node_ids: written.pushedIds, stored: storedMessagesOf(response) ?? undefined, draft: await endDraft(chat), message_counts: await storedMessageCounts(request, chat, written.pushedIds), message_macros: await storedMessageMacros(request, chat, written.pushedIds), links: await storedChatLinks(request.user.directories, chat, written.pushedIds), ...await openingsAnswerOf(request, chat) });
+            return response.send({ ok: true, node_ids: written.pushedIds, stored: storedMessagesOf(response) ?? undefined, ...await endAnswer(response, chat), message_counts: await storedMessageCounts(request, chat, written.pushedIds), message_macros: await storedMessageMacros(request, chat, written.pushedIds), links: await storedChatLinks(request.user.directories, chat, written.pushedIds), ...await openingsAnswerOf(request, chat) });
         }
         const contents = (Array.isArray(request.body.messages) ? request.body.messages : []).map(storedForm);
         const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
@@ -1197,7 +1227,7 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
         await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greetingId: chosen.id, epoch: defaultEpoch, actor: chat.session.actor() });
         chat.session.answer(response, { moved: true });
         const openings = await openingsForPage(request, chat, avatar);
-        return response.send({ ok: true, ...openings, draft: await endDraft(chat) });
+        return response.send({ ok: true, ...openings, ...await endAnswer(response, chat) });
     } catch (error) {
         console.error('Error recording the chosen opening:', error);
         return response.status(500).send({ error: true });
@@ -1297,7 +1327,7 @@ router.post('/message/cut', validateAvatarUrlMiddleware, async function (request
         const preview = request.body.preview === true;
         const result = await chat.store.chats.cutFromPath({ tree: chat.tree, first, last, actor: chat.session.actor(), preview, confirm: request.body.confirm });
         chat.session.answer(response, { moved: result.ok && !preview });
-        return response.status(result.ok ? 200 : 409).send(result.ok && !preview ? { ...result, draft: await endDraft(chat) } : result);
+        return response.status(result.ok ? 200 : 409).send(result.ok && !preview ? { ...result, ...await endAnswer(response, chat) } : result);
     } catch (error) {
         console.error('Error cutting messages:', error);
         return response.status(500).send({ error: true });
@@ -1314,7 +1344,7 @@ router.post('/message/alternative/delete', validateAvatarUrlMiddleware, async fu
             tree: chat.tree, node_id: node, actor: chat.session.actor(),
             preview: request.body.preview === true, confirm: request.body.confirm,
         });
-        return response.status(result.ok ? 200 : 409).send(result.ok && request.body.preview !== true ? { ...result, draft: await endDraft(chat) } : result);
+        return response.status(result.ok ? 200 : 409).send(result.ok && request.body.preview !== true ? { ...result, ...await endAnswer(response, chat) } : result);
     } catch (error) {
         console.error('Error deleting alternative:', error);
         return response.status(500).send({ error: true });
@@ -1351,7 +1381,7 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
             chat_metadata: loaded?.metadata,
             links: at === -1 ? undefined : await chatLinks(request.user.directories, chat, request.body.with_ancestry ? messages : messages.slice(at), { metadata: loaded?.metadata, adding: !request.body.with_ancestry }),
             stored: storedMessagesOf(response) ?? undefined,
-            draft: await endDraft(chat),
+            ...await endAnswer(response, chat),
             ...(await touchesOpening(chat, [child]) ? await openingsAnswerOf(request, chat) : {}),
         });
     } catch (error) {
