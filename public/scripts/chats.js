@@ -1330,7 +1330,7 @@ export function initChatUtilities() {
         await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
     });
 
-    $(document).on('click', 'body .mes .mes_text, body .mes .mes_reasoning', function (event) {
+    $(document).on('click dblclick', 'body .mes .mes_text, body .mes .mes_reasoning', function (event) {
         if ($('.mes_editor').length) return;
         const at = editPosition(/** @type {MouseEvent} */ (event.originalEvent), this, power_user.click_to_edit);
         if (at === null) return;
