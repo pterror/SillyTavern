@@ -3,6 +3,7 @@ import { newUi, newUiStarted, setNewUi } from './new-ui-page.js';
 import { getRequestHeaders } from './request-headers.js';
 import { attachNewPage } from './tab-session.js';
 import { translate } from './i18n.js';
+import { fixToastrForDialogs } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 
@@ -31,6 +32,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
         usageStats: {
             shownCharacter,
             failed: message => toastr.error(message),
+            dialogsChanged: fixToastrForDialogs,
         },
         containers: {
             backgrounds: element('Backgrounds'),

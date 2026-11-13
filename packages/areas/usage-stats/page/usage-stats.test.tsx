@@ -17,19 +17,33 @@ const counts: Counts = {
     swipes: 1,
 };
 
+// A close is answered only when the test calls `answerClose`, so what the page shows before the answer can be seen.
 function mount(refuse = false) {
     const [view, setView] = createSignal<ShownView | undefined>(undefined);
     const sent: { type: string; payload: unknown }[] = [];
     const failed: string[] = [];
     let viewsRead = 0;
+    const closes: ((ok: boolean) => void)[] = [];
+    // How many dialogs were open and not closing at each dialogsChanged call.
+    const layers: number[] = [];
     const client: Client = {
         send: async (type, payload) => {
             sent.push({ type, payload });
+            if (type === 'usageStats.close') {
+                return new Promise((resolve) => {
+                    closes.push((ok) => {
+                        if (!ok) {
+                            resolve({ ok: false, error: "The server can't be reached." });
+                            return;
+                        }
+                        setView({ of: null });
+                        resolve({ ok: true });
+                    });
+                });
+            }
             if (refuse) return { ok: false, error: 'internal' };
-            if (type === 'usageStats.show') {
-                const of = payload as { of: 'all' } | { of: 'character'; avatar: string };
-                setView(of.of === 'all' ? { of: 'all', counts, oldStatsFile: 'old.json' } : { ...of, counts });
-            } else setView({ of: null });
+            const of = payload as { of: 'all' } | { of: 'character'; avatar: string };
+            setView(of.of === 'all' ? { of: 'all', counts, oldStatsFile: 'old.json' } : { ...of, counts });
             return { ok: true };
         },
         view: <T,>() => {
@@ -52,7 +66,12 @@ function mount(refuse = false) {
                 <UiProvider value={{ client, t: (text) => text }}>
                     <UsageStats
                         buttons={{ all, character }}
-                        old={{ shownCharacter: () => shownCharacter, failed: (message) => failed.push(message) }}
+                        old={{
+                            shownCharacter: () => shownCharacter,
+                            failed: (message) => failed.push(message),
+                            dialogsChanged: () =>
+                                layers.push(document.querySelectorAll('dialog[open]:not([closing])').length),
+                        }}
                     />
                 </UiProvider>
             ),
@@ -68,7 +87,12 @@ function mount(refuse = false) {
         host,
         sent,
         failed,
+        layers,
         settle,
+        answerClose: async (ok: boolean) => {
+            closes.shift()?.(ok);
+            await settle();
+        },
         viewsRead: () => viewsRead,
         noCharacter: () => (shownCharacter = null),
     };
@@ -88,6 +112,7 @@ test('the user stats are shown once the server answers, and closed once it confi
     expect(stand.sent).toEqual([{ type: 'usageStats.show', payload: { of: 'all' } }]);
     const dialog = stand.host.querySelector('dialog');
     expect(dialog?.open).toBe(true);
+    expect(stand.layers.at(-1)).toBe(1);
     expect(stand.host.querySelector('h3')?.textContent).toBe('User Stats');
     expect(rows(stand.host)).toEqual([
         ['Chatting Since:', 'Never'],
@@ -103,7 +128,24 @@ test('the user stats are shown once the server answers, and closed once it confi
     stand.host.querySelector<HTMLElement>('.popup-button-ok')?.click();
     await stand.settle();
     expect(stand.sent.at(-1)).toEqual({ type: 'usageStats.close', payload: {} });
+    expect(dialog?.open).toBe(true);
+    await stand.answerClose(true);
     expect(dialog?.open).toBe(false);
+    expect(stand.layers.at(-1)).toBe(0);
+    expect(stand.failed).toEqual([]);
+});
+
+test('a close the server does not confirm keeps the stats open and says they could not be closed', async () => {
+    const stand = mount();
+    stand.all.click();
+    await stand.settle();
+    const dialog = stand.host.querySelector('dialog');
+    dialog?.dispatchEvent(new Event('cancel', { cancelable: true }));
+    await stand.settle();
+    expect(stand.sent.at(-1)).toEqual({ type: 'usageStats.close', payload: {} });
+    await stand.answerClose(false);
+    expect(dialog?.open).toBe(true);
+    expect(stand.failed).toEqual(['The stats could not be closed. Try reloading the page.']);
 });
 
 test('the character stats are of the character the panel shows; with none shown nothing is sent', async () => {
@@ -117,6 +159,9 @@ test('the character stats are of the character the panel shows; with none shown 
 
     stand.host.querySelector<HTMLElement>('.popup-button-close')?.click();
     await stand.settle();
+    expect(stand.sent.at(-1)).toEqual({ type: 'usageStats.close', payload: {} });
+    await stand.answerClose(true);
+    expect(stand.host.querySelector('dialog')?.open).toBe(false);
     stand.noCharacter();
     stand.character.click();
     await stand.settle();

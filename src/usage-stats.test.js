@@ -85,7 +85,8 @@ async function run() {
 
     {
         const view = await shown(app, { of: 'all' });
-        assert.equal(view.of, 'all');        assert.deepEqual(view.counts, {
+        assert.equal(view.of, 'all');
+        assert.deepEqual(view.counts, {
             firstChat: T0 + 1000,
             generationMs: 3000,
             repliesWithoutTime: 1,

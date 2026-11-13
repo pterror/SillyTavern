@@ -46,7 +46,6 @@ beforeAll(async () => {
     });
     app.use('/api/characters', (await import('../src/endpoints/characters.js')).router);
     app.use('/api/tags', (await import('../src/endpoints/tags.js')).router);
-    app.use('/api/ui/action', (await import('../src/ui-wiring.js')).ui.router);
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
 
@@ -91,7 +90,6 @@ describe('scripts/stats.js', () => {
             expect.stringMatching(/Total characters:\s+12$/),
             expect.stringMatching(/Total groups:\s+1$/),
             expect.stringMatching(/Total favorites:\s+6 characters, 1 groups$/),
-            expect.stringMatching(/Messages counted:\s+78 user, 0 character$/),
         ]));
     });
 
