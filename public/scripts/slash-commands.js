@@ -4,7 +4,6 @@ import { registerActionLoaderSlashCommands } from './action-loader-slashcommands
 import {
     executeSlashCommandsOnChatInput,
     executeSlashCommandsWithOptions,
-    getSlashCommandsHelp,
     chatBoxSlashParser,
     slashSuggestionsWanted,
     isExecutingCommandsFromChatInput,
@@ -27,7 +26,6 @@ import { registerTextUtilsCommands } from './slash-commands/commands/text-utils.
 
 export {
     executeSlashCommandsWithOptions,
-    getSlashCommandsHelp,
 };
 export {
     executeSlashCommandsOnChatInput,

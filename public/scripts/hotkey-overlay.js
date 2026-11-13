@@ -1,9 +1,12 @@
+import { t } from './i18n.js';
+import { newUi, newUiStarted } from './new-ui-page.js';
+
 const HOLD_DELAY_MS = 200;
 const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock']);
 
 /** @type {ReturnType<typeof setTimeout> | null} */
 let holdTimer = null;
-/** @type {HTMLElement | null} */
+/** @type {{ element: HTMLElement, remove: () => void } | null} */
 let overlay = null;
 /** @type {() => boolean} */
 let isEnabled = () => true;
@@ -53,7 +56,8 @@ function cancel() {
         holdTimer = null;
     }
     if (overlay) {
-        if (overlay.matches(':popover-open')) overlay.hidePopover();
+        if (overlay.element.matches(':popover-open')) overlay.element.hidePopover();
+        overlay.element.remove();
         overlay.remove();
         overlay = null;
     }
@@ -61,9 +65,7 @@ function cancel() {
 
 /** @param {number} number */
 async function show(number) {
-    const { renderHotkeys } = await import('./help-hotkeys.js');
-    const { t } = await import('./i18n.js');
-    if (number !== holdNumber) return;
+    if (!newUiStarted()) return;
     const element = document.createElement('div');
     element.classList.add('hotkeyOverlay');
     element.setAttribute('role', 'note');
@@ -71,9 +73,13 @@ async function show(number) {
     title.classList.add('hotkeyOverlayTitle');
     title.textContent = t`Hotkeys`;
     element.appendChild(title);
-    renderHotkeys(element);
+    const remove = await newUi().help.hotkeys(element);
+    if (number !== holdNumber) {
+        remove();
+        return;
+    }
     element.popover = 'manual';
     document.body.appendChild(element);
-    overlay = element;
+    overlay = { element, remove };
     element.showPopover();
 }

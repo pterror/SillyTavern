@@ -32,10 +32,6 @@ export function getParser() {
     }
     return parser;
 }
-export function getSlashCommandsHelp(...args) {
-    return getParser().getHelpString(...args);
-}
-
 export function closureToFilter(closure) {
     return async () => {
         try {

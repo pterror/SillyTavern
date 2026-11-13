@@ -6,6 +6,7 @@ import { chat } from '../../chat-state.js';
 import { t } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';
 import { addImageLightbox } from '../../image-lightbox.js';
+import { newUi } from '../../new-ui-page.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../SlashCommandArgument.js';
 import { SlashCommandBreakController } from '../SlashCommandBreakController.js';
 import { SlashCommandClosure } from '../SlashCommandClosure.js';
@@ -504,16 +505,10 @@ async function echoCallback(args, value) {
  * @returns {Promise<string>}
  */
 async function helpCommandCallback(_, type) {
-    const { openHelp } = await import('../../help-menu.js');
-    openHelp(String(type ?? ''));
+    const refused = await newUi().help.open(String(type ?? ''));
+    if (refused) toastr.warning(refused);
     return '';
 }
-
-$(document).on('click', '[data-displayHelp]', function (e) {
-    e.preventDefault();
-    const page = String($(this).data('displayhelp'));
-    helpCommandCallback(null, page);
-});
 
 export function registerFlowControlCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({

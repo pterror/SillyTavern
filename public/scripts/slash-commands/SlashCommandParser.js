@@ -449,10 +449,6 @@ export class SlashCommandParser {
         }));
     }
 
-    getHelpString() {
-        return '<div class="slashHelp">Loading...</div>';
-    }
-
     /**
      *
      * @param {*} text The text to parse.

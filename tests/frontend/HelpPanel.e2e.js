@@ -89,7 +89,7 @@ test.describe('Help panel', () => {
         await expect(page.locator('.helpLayer .helpContent')).toContainText('italics');
 
         await page.locator('.helpLayer .helpTopic[data-topic="overview"]').click();
-        await page.locator('.helpLayer .helpContent [data-displayHelp="1"]').click();
+        await page.locator('.helpLayer .helpContent a', { hasText: 'Slash Commands' }).click();
         await expect(activeTopic(page)).toHaveAttribute('data-topic', 'slash');
         await expect(page.locator('.helpLayer .slashCommandBrowser')).toBeVisible();
     });
@@ -101,7 +101,7 @@ test.describe('Help panel', () => {
         await search.fill('strikethrough');
         await expect(page.locator('.helpLayer .helpSection[data-topic="hotkeys"]')).toBeVisible();
         await expect(page.locator('.helpLayer .helpTopic[data-topic="hotkeys"] .helpTopicCount')).toHaveText('1');
-        await expect(page.locator('.helpLayer .helpSection[data-topic="macros"]')).toHaveCount(0);
+        await expect(page.locator('.helpLayer .helpSection[data-topic="macros"]')).toBeHidden();
 
         await search.fill('"echo"');
         await expect(page.locator('.helpLayer .helpSection[data-topic="slash"]')).toBeVisible();
@@ -140,31 +140,6 @@ test.describe('Help panel', () => {
         await expect(panel(page)).toHaveCount(0);
     });
 
-    test('extensions can add a topic, reachable by /help and listed', async ({ page }) => {
-        await page.evaluate(() => {
-            window['stTest'].context().registerHelpTopic({
-                id: 'my-extension',
-                title: 'My Extension',
-                aliases: ['myext'],
-                order: 60,
-                render(container, query) {
-                    container.innerHTML = '<ul><li>first line about apples</li><li>second line about pears</li></ul>';
-                    if (query) {
-                        for (const li of container.querySelectorAll('li')) {
-                            if (!li.textContent.includes(query)) li.remove();
-                        }
-                        return container.querySelectorAll('li').length;
-                    }
-                },
-            });
-        });
-        await runSlash(page, '/help myext');
-        await expect(activeTopic(page)).toHaveAttribute('data-topic', 'my-extension');
-        await expect(page.locator('.helpLayer .helpContent')).toContainText('apples');
-
-        await page.locator('.helpLayer .helpSearch').fill('pears');
-        await expect(page.locator('.helpLayer .helpTopic[data-topic="my-extension"] .helpTopicCount')).toHaveText('1');
-    });
 });
 
 test.describe('Hotkeys', () => {
@@ -236,10 +211,9 @@ test.describe('Hotkeys', () => {
         await page.keyboard.up('Control');
     });
 
-    test('the setting turns it off, and extensions\' hotkeys are listed', async ({ page }) => {
-        await page.evaluate(() => window['stTest'].context().registerHotkey({ category: 'My Extension', keys: ['Ctrl+Alt+M'], label: 'Do my thing' }));
+    test('the setting turns it off', async ({ page }) => {
         await page.keyboard.down('Control');
-        await expect(overlay(page)).toContainText('Do my thing');
+        await expect(overlay(page)).toContainText('Show this list of hotkeys');
         await page.keyboard.up('Control');
 
         const toggle = page.locator('#hotkey_overlay');

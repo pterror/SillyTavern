@@ -13,9 +13,11 @@ import { addLayer } from './drawer-stack.js';
  * @param {string} [options.closeIcon]
  * @param {() => boolean} [options.escapeCloses]
  * @param {() => void} [options.onClose]
+ * @param {() => void} [options.requestClose] called on the close button and Escape in place of closing: the layer stays
+ *   until `close` is called
  * @returns {EditorLayer}
  */
-export function openEditorLayer(content, { closeTitle, closeIcon = 'fa-minimize', escapeCloses = () => true, onClose = () => {} }) {
+export function openEditorLayer(content, { closeTitle, closeIcon = 'fa-minimize', escapeCloses = () => true, onClose = () => {}, requestClose }) {
     const layer = document.createElement('div');
     layer.classList.add('editorLayer');
 
@@ -41,18 +43,19 @@ export function openEditorLayer(content, { closeTitle, closeIcon = 'fa-minimize'
         layer.remove();
         onClose();
     };
-    closeButton.addEventListener('click', close);
+    const asked = requestClose ?? close;
+    closeButton.addEventListener('click', asked);
     closeButton.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
-            close();
+            asked();
         }
     });
     layer.addEventListener('keydown', event => {
         if (event.key !== 'Escape' || event.defaultPrevented || !escapeCloses()) return;
         event.preventDefault();
         event.stopPropagation();
-        close();
+        asked();
     });
 
     addLayer(layer, document.getElementById('movingDivs') ?? document.body);

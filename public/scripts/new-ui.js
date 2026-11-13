@@ -6,6 +6,47 @@ import { translate } from './i18n.js';
 import { fixToastrForDialogs } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
+import { openEditorLayer } from './editor-layer.js';
+import { drawerStackChanged, raiseDrawer } from './drawer-stack.js';
+
+/** @type {import('/ui/entry.js').StartOptions['help']} */
+const helpOldPage = {
+    layer(content, { className, closeTitle, requestClose }) {
+        const layer = openEditorLayer(content, { closeTitle, closeIcon: 'fa-xmark', requestClose });
+        layer.element.classList.add(className);
+        const raise = () => {
+            raiseDrawer(layer.element);
+            drawerStackChanged();
+        };
+        raise();
+        return { raise, close: layer.close };
+    },
+    async browser(kind, into) {
+        if (kind === 'slash') {
+            const { SlashCommandBrowser } = await import('./slash-commands/SlashCommandBrowser.js');
+            const browser = new SlashCommandBrowser();
+            browser.renderInto(into);
+            const input = /** @type {HTMLInputElement} */ (browser.search);
+            return {
+                search(query) {
+                    input.value = query;
+                    input.dispatchEvent(new Event('input'));
+                    return browser.dom.querySelectorAll('.autoComplete > :not(.isFiltered)').length;
+                },
+            };
+        }
+        const { MacroBrowser } = await import('./macros/engine/MacroBrowser.js');
+        const browser = new MacroBrowser();
+        browser.renderInto(into);
+        return {
+            search(query) {
+                browser.searchInput.value = query;
+                browser.searchInput.dispatchEvent(new Event('input'));
+                return browser.dom.querySelectorAll('.macro-item:not(.isFiltered)').length;
+            },
+        };
+    },
+};
 
 /**
  * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], shownCharacter: () => string | null }} options
@@ -34,6 +75,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
             failed: message => toastr.error(message),
             dialogsChanged: fixToastrForDialogs,
         },
+        help: helpOldPage,
         containers: {
             backgrounds: element('Backgrounds'),
             backgroundLayer: element('bg1'),

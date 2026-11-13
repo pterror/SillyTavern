@@ -10515,8 +10515,8 @@ jQuery(async function () {
                 await previewFullPrompt();
             }
         } else if (id === 'option_help') {
-            const { openHelp } = await import('./scripts/help-menu.js');
-            openHelp();
+            const refused = await newUi().help.open('');
+            if (refused) toastr.warning(refused);
         } else if (id == 'option_delete_mes') {
             setTimeout(() => openMessageDelete(fromSlashCommand, deleteToolCalls), animation_duration);
         } else if (id === 'option_settings') {

@@ -31,6 +31,8 @@ import { Activations, activationsCompat } from '@st/activations/page';
 import type { Look as ActivationsLook, OldPage as ActivationsOldPage } from '@st/activations/page';
 import { UsageStats } from '@st/usage-stats/page';
 import type { Buttons as UsageStatsButtons, OldPage as UsageStatsOldPage } from '@st/usage-stats/page';
+import { Help, Hotkeys, helpCompat } from '@st/help/page';
+import type { OldPage as HelpOldPage } from '@st/help/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
 
@@ -42,6 +44,7 @@ export type StartOptions = {
     alternatives: OldPage;
     activations: ActivationsOldPage;
     usageStats: UsageStatsOldPage;
+    help: HelpOldPage;
     containers: {
         backgrounds: HTMLElement;
         backgroundLayer: HTMLElement;
@@ -112,6 +115,13 @@ export function start(options: StartOptions) {
     document.body.append(usageStatsHost);
     mount(usageStatsHost, () => <UsageStats buttons={options.containers.usageStats} old={options.usageStats} />);
 
+    const help = helpCompat(client);
+    const helpHost = document.createElement('div');
+    document.body.append(helpHost);
+    mount(helpHost, () => (
+        <Help reading={help.reading()} old={options.help} onRaise={(raise) => help.onRaise(raise)} />
+    ));
+
     return {
         receive: (push: ViewPush) => {
             client.receive(push);
@@ -121,6 +131,14 @@ export function start(options: StartOptions) {
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         alternatives: alternativesCompat(setLook),
         activations,
+        help: {
+            open: (name: string) => help.open(name),
+            /** @returns what takes the list off again */
+            hotkeys: async (into: HTMLElement): Promise<() => void> => {
+                await help.hotkeysRead();
+                return mount(into, () => <Hotkeys />);
+            },
+        },
         names: {
             element: nameElement,
             hold: looks.hold,

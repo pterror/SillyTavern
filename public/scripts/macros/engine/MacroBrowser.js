@@ -245,11 +245,6 @@ export class MacroBrowser {
     }
 }
 
-/** @returns {string} */
-export function getMacrosHelp() {
-    return '<div class="macroHelp"><i class="fa-solid fa-spinner fa-spin"></i> Loading macro documentation...</div>';
-}
-
 /**
  * @param {string} category
  * @returns {{ label: string, order: number }}

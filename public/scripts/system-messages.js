@@ -2,9 +2,6 @@ import { addOneMessage, displayVersion, setSendButtonState, system_avatar, syste
 import { chat } from './chat-state.js';
 import { t } from './i18n.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
-import { getSlashCommandsHelp } from './slash-commands.js';
-import { SlashCommandBrowser } from './slash-commands/SlashCommandBrowser.js';
-import { MacroBrowser, getMacrosHelp } from './macros/engine/MacroBrowser.js';
 import { renderTemplateAsync } from './templates.js';
 
 /** @type {Record<string, ChatMessage>} */
@@ -16,16 +13,11 @@ export const SAFETY_CHAT = [];
  * @enum {string} System message types
  */
 export const system_message_types = {
-    HELP: 'help',
     WELCOME: 'welcome',
     EMPTY: 'empty',
     GENERIC: 'generic',
     NARRATOR: 'narrator',
     COMMENT: 'comment',
-    SLASH_COMMANDS: 'slash_commands',
-    FORMATTING: 'formatting',
-    HOTKEYS: 'hotkeys',
-    MACROS: 'macros',
     WELCOME_PROMPT: 'welcome_prompt',
     ASSISTANT_NOTE: 'assistant_note',
     ASSISTANT_MESSAGE: 'assistant_message',
@@ -47,26 +39,6 @@ export async function initSystemMessages() {
     const systemMessage = (fields) => ({ ...structuredClone(defaultMessage), ...fields, extra: { ...defaultMessage.extra, ...fields.extra } });
     /** @type {Record<string, ChatMessage>} */
     const result = {
-        /** @type {ChatMessage} */
-        help: systemMessage({
-            mes: await renderTemplateAsync('help'),
-        }),
-        /** @type {ChatMessage} */
-        slash_commands: systemMessage({
-            mes: '',
-        }),
-        /** @type {ChatMessage} */
-        hotkeys: systemMessage({
-            mes: await renderTemplateAsync('hotkeys'),
-        }),
-        /** @type {ChatMessage} */
-        formatting: systemMessage({
-            mes: await renderTemplateAsync('formatting'),
-        }),
-        /** @type {ChatMessage} */
-        macros: systemMessage({
-            mes: '',
-        }),
         /** @type {ChatMessage} */
         welcome: systemMessage({
             mes: await renderTemplateAsync('welcome', { displayVersion }),
@@ -130,14 +102,6 @@ export function getSystemMessageByType(type, text, extra = {}) {
         newMessage.mes = text;
     }
 
-    if (type === system_message_types.SLASH_COMMANDS) {
-        newMessage.mes = getSlashCommandsHelp();
-    }
-
-    if (type === system_message_types.MACROS) {
-        newMessage.mes = getMacrosHelp();
-    }
-
     if (!newMessage.extra || typeof newMessage.extra !== 'object') {
         newMessage.extra = {};
     }
@@ -157,23 +121,4 @@ export function sendSystemMessage(type, text, extra = {}) {
     chat.push(newMessage);
     addOneMessage(newMessage);
     setSendButtonState(false);
-    if (type === system_message_types.SLASH_COMMANDS) {
-        const browser = new SlashCommandBrowser();
-        const spinner = document.querySelector('#chat .last_mes .custom-slashHelp');
-        const parent = spinner.parentElement;
-        spinner.remove();
-        browser.renderInto(parent);
-        browser.search.focus();
-    }
-
-    if (type === system_message_types.MACROS) {
-        const browser = new MacroBrowser();
-        const spinner = document.querySelector('#chat .last_mes .custom-macroHelp');
-        if (spinner) {
-            const parent = spinner.parentElement;
-            spinner.remove();
-            browser.renderInto(parent);
-            browser.searchInput?.focus();
-        }
-    }
 }

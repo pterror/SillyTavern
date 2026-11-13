@@ -26,7 +26,6 @@ export function installTestContext() {
         const powerUser = await import('/scripts/power-user.js');
         const presetManager = await import('/scripts/preset-manager.js');
         const tags = await import('/scripts/tags.js');
-        const helpRegistry = await import('/scripts/help-registry.js');
         const popup = await import('/scripts/popup.js');
         const chatStore = await import('/scripts/chat-store.js');
         const metadataStore = await import('/scripts/metadata-store.js');
@@ -69,8 +68,6 @@ export function installTestContext() {
             saveMetadata: metadataStore.saveMetadata,
             updateMessageBlock: script.updateMessageBlock,
             editMessage: chatStore.chatOpEdit,
-            registerHotkey: helpRegistry.registerHotkey,
-            registerHelpTopic: helpRegistry.registerHelpTopic,
             getTagById: (/** @type {string} */ id) => tags.tagsStore.get(id),
             callGenericPopup: popup.callGenericPopup,
         };

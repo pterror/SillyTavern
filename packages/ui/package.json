@@ -6,6 +6,7 @@
         "@st/activations": "workspace:*",
         "@st/alternatives": "workspace:*",
         "@st/backgrounds": "workspace:*",
+        "@st/help": "workspace:*",
         "@st/occlusion": "workspace:*",
         "@st/page": "workspace:*",
         "@st/protocol": "workspace:*",

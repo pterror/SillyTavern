@@ -45,6 +45,7 @@
         "@st/activations": "workspace:*",
         "@st/alternatives": "workspace:*",
         "@st/backgrounds": "workspace:*",
+        "@st/help": "workspace:*",
         "@st/looks": "workspace:*",
         "@st/protocol": "workspace:*",
         "@st/serve-ui": "workspace:*",
