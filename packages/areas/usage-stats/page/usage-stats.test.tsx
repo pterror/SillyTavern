@@ -17,7 +17,8 @@ const counts: Counts = {
     swipes: 1,
 };
 
-// A close is answered only when the test calls `answerClose`, so what the page shows before the answer can be seen.
+// A close is answered only when the test calls `answerClose`, so what the page shows before the answer can be seen;
+// `push` stands for a view the server pushes meanwhile.
 function mount(refuse = false) {
     const [view, setView] = createSignal<ShownView | undefined>(undefined);
     const sent: { type: string; payload: unknown }[] = [];
@@ -93,6 +94,7 @@ function mount(refuse = false) {
             closes.shift()?.(ok);
             await settle();
         },
+        push: (next: ShownView) => setView(next),
         viewsRead: () => viewsRead,
         noCharacter: () => (shownCharacter = null),
     };
@@ -104,7 +106,7 @@ const rows = (host: HTMLElement) =>
         row.querySelector('.rm_stat_value')?.textContent,
     ]);
 
-test('the user stats are shown once the server answers, and closed once it confirms', async () => {
+test('the user stats are shown once the server answers, and closed at once, the server told afterwards', async () => {
     const stand = mount();
     expect(stand.viewsRead()).toBe(0);
     stand.all.click();
@@ -126,26 +128,39 @@ test('the user stats are shown once the server answers, and closed once it confi
     expect(stand.host.querySelector('small')?.textContent).toContain('old.json');
 
     stand.host.querySelector<HTMLElement>('.popup-button-ok')?.click();
-    await stand.settle();
-    expect(stand.sent.at(-1)).toEqual({ type: 'usageStats.close', payload: {} });
-    expect(dialog?.open).toBe(true);
-    await stand.answerClose(true);
     expect(dialog?.open).toBe(false);
+    expect(stand.host.querySelector('dialog')).toBeNull();
     expect(stand.layers.at(-1)).toBe(0);
+    expect(stand.sent.at(-1)).toEqual({ type: 'usageStats.close', payload: {} });
+    stand.push({ of: 'all', counts: { ...counts, userMessages: 5 }, oldStatsFile: null });
+    await stand.answerClose(true);
+    expect(stand.host.querySelector('dialog')).toBeNull();
+    expect(stand.sent.filter((s) => s.type === 'usageStats.close')).toHaveLength(1);
     expect(stand.failed).toEqual([]);
 });
 
-test('a close the server does not confirm keeps the stats open and says they could not be closed', async () => {
+test('a close the server refuses shows no error, and the stats stay closed', async () => {
     const stand = mount();
     stand.all.click();
     await stand.settle();
     const dialog = stand.host.querySelector('dialog');
     dialog?.dispatchEvent(new Event('cancel', { cancelable: true }));
-    await stand.settle();
+    expect(dialog?.open).toBe(false);
     expect(stand.sent.at(-1)).toEqual({ type: 'usageStats.close', payload: {} });
     await stand.answerClose(false);
-    expect(dialog?.open).toBe(true);
-    expect(stand.failed).toEqual(['The stats could not be closed. Try reloading the page.']);
+    expect(stand.host.querySelector('dialog')).toBeNull();
+    expect(stand.failed).toEqual([]);
+});
+
+test('stats the server says are closed close here too, and no close is sent', async () => {
+    const stand = mount();
+    stand.all.click();
+    await stand.settle();
+    stand.push({ of: null });
+    await stand.settle();
+    expect(stand.host.querySelector('dialog')).toBeNull();
+    expect(stand.layers.at(-1)).toBe(0);
+    expect(stand.sent.filter((s) => s.type === 'usageStats.close')).toHaveLength(0);
 });
 
 test('the character stats are of the character the panel shows; with none shown nothing is sent', async () => {
@@ -158,10 +173,9 @@ test('the character stats are of the character the panel shows; with none shown 
     expect(stand.host.querySelector('small')).toBeNull();
 
     stand.host.querySelector<HTMLElement>('.popup-button-close')?.click();
-    await stand.settle();
+    expect(stand.host.querySelector('dialog')).toBeNull();
     expect(stand.sent.at(-1)).toEqual({ type: 'usageStats.close', payload: {} });
     await stand.answerClose(true);
-    expect(stand.host.querySelector('dialog')?.open).toBe(false);
     stand.noCharacter();
     stand.character.click();
     await stand.settle();

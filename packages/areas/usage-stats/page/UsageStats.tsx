@@ -8,8 +8,8 @@ export type OldPage = {
     // The avatar of the character the character panel shows.
     shownCharacter(): string | null;
     failed(message: string): void;
-    // Called whenever the stats dialog opens, starts closing or stays open after all, so the old page can keep its
-    // toasts above the topmost open dialog.
+    // Called whenever the stats dialog opens, starts closing or has closed, so the old page can keep its toasts above
+    // the topmost open dialog.
     dialogsChanged(): void;
 };
 
@@ -47,17 +47,19 @@ export function UsageStats(props: { buttons: Buttons; old: OldPage }) {
 
     return (
         <Show when={opened()}>
-            <Panel old={props.old} />
+            <Panel old={props.old} onClosed={() => setOpened(false)} />
         </Show>
     );
 }
 
-// Mounted only after the first show's answer opened the view, so reading it sends no view.open.
-function Panel(props: { old: Pick<OldPage, 'failed' | 'dialogsChanged'> }) {
+// Mounted only after the first show's answer opened the view, so reading it sends no view.open. Closed by the user,
+// it closes at once and tells the server afterwards: what the server answers can't keep it open.
+function Panel(props: { old: Pick<OldPage, 'dialogsChanged'>; onClosed: () => void }) {
     const { client, t } = useUi();
     const view = client.view<ShownView>(VIEW);
     const [drawn, setDrawn] = createSignal<Exclude<ShownView, { of: null }> | null>(null);
     let dialog: HTMLDialogElement | undefined;
+    let closing = false;
 
     const animated = (attribute: 'opening' | 'closing', then: () => void) => {
         const element = dialog;
@@ -71,32 +73,37 @@ function Panel(props: { old: Pick<OldPage, 'failed' | 'dialogsChanged'> }) {
         else element.addEventListener('animationend', done, { once: true });
     };
 
+    // Whether it started closing the dialog.
+    const hide = (): boolean => {
+        if (closing || dialog?.open !== true) return false;
+        closing = true;
+        animated('closing', () => {
+            dialog?.close();
+            props.old.dialogsChanged();
+            props.onClosed();
+        });
+        props.old.dialogsChanged();
+        return true;
+    };
+
     createEffect(
         on(view, (current) => {
-            if (current === undefined) return;
-            if (current.of !== null) {
-                setDrawn(current);
-                if (dialog && !dialog.open) {
-                    dialog.showModal();
-                    props.old.dialogsChanged();
-                    animated('opening', () => {});
-                }
-            } else if (dialog?.open === true) {
-                animated('closing', () => {
-                    if (view()?.of === null) {
-                        dialog?.close();
-                        setDrawn(null);
-                    }
-                    props.old.dialogsChanged();
-                });
+            if (current === undefined || closing) return;
+            if (current.of === null) {
+                hide();
+                return;
+            }
+            setDrawn(current);
+            if (dialog && !dialog.open) {
+                dialog.showModal();
                 props.old.dialogsChanged();
+                animated('opening', () => {});
             }
         }),
     );
 
-    const close = async () => {
-        const answer = await client.send('usageStats.close', {});
-        if (!answer.ok) props.old.failed(t('The stats could not be closed. Try reloading the page.'));
+    const close = () => {
+        if (hide()) void client.send('usageStats.close', {});
     };
 
     return (
@@ -105,7 +112,7 @@ function Panel(props: { old: Pick<OldPage, 'failed' | 'dialogsChanged'> }) {
             class="popup popup--animation-fast"
             onCancel={(event) => {
                 event.preventDefault();
-                void close();
+                close();
             }}
         >
             <div class="popup-body">
@@ -117,7 +124,7 @@ function Panel(props: { old: Pick<OldPage, 'failed' | 'dialogsChanged'> }) {
                         type="button"
                         class="popup-button-ok menu_button menu_button_default"
                         autofocus
-                        onClick={() => void close()}
+                        onClick={close}
                     >
                         {t('OK')}
                     </button>
@@ -126,7 +133,7 @@ function Panel(props: { old: Pick<OldPage, 'failed' | 'dialogsChanged'> }) {
             <div
                 class="popup-button-close right_menu_button fa-solid fa-circle-xmark"
                 title={t('Close popup')}
-                onClick={() => void close()}
+                onClick={close}
             />
         </dialog>
     );
