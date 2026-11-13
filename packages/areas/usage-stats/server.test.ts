@@ -33,14 +33,14 @@ function stand() {
     };
     const { area, showing } = usageStatsArea(ports);
     const user: User = { handle: 'u', directories: { root: '/u' } };
-    const context = (session: string, root = '/u'): ActionContext => ({
-        user: { ...user, directories: { root } },
+    const context = (session: string): ActionContext => ({
+        user,
         session,
         chat: null,
         upload: null,
     });
     const act = (type: string, payload: unknown, session = 's') => area.actions[type]!(context(session), payload);
-    const read = async (session = 's', root = '/u') => (await area.views[VIEW]!(context(session, root))) as ShownView;
+    const read = async (session = 's') => (await area.views[VIEW]!(context(session))) as ShownView;
     return { area, showing, act, read, asked };
 }
 
@@ -89,12 +89,6 @@ test('what is shown is per tab, and closing or leaving shows nothing', async () 
     area.gone('b');
     expect(await read('b')).toEqual({ of: null });
     expect(showing('/u')).toBe(false);
-});
-
-test("a tab taken over by another user doesn't show the first user's stats", async () => {
-    const { act, read } = stand();
-    await act('usageStats.show', { of: 'all' });
-    expect(await read('s', '/someone-else')).toEqual({ of: null });
 });
 
 test('a show names what it shows', () => {

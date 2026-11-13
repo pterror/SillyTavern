@@ -35,11 +35,12 @@ export const countsOf = (stored: Stored): Counts => ({
 });
 
 export function usageStatsArea(ports: Ports) {
+    // By session, until its tab is gone; `root`: the user's, to know whose writes change it.
     const shown = new Map<string, { root: string; of: Shown }>();
 
     const read = async ({ user, session }: ViewContext): Promise<ShownView> => {
         const held = shown.get(session);
-        if (!held || held.root !== user.directories.root) return { of: null };
+        if (!held) return { of: null };
         if (held.of.of === 'character') {
             return {
                 of: 'character',
