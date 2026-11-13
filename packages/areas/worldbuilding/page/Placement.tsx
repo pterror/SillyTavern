@@ -330,7 +330,7 @@ export function PlacementPopover(props: {
                 <Show when={offered().length > 0}>
                     <button
                         type="button"
-                        class="menu_button margin0 wb-place-more"
+                        class="menu_button margin0 whitespacenowrap wb-place-more"
                         aria-expanded={list() === 'more'}
                         onClick={() => toggle('more')}
                     >

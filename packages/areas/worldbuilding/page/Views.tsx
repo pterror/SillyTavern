@@ -60,7 +60,7 @@ export function ViewTabs(props: { views: Shown; onShow: (view: string) => void; 
                     </label>
                 )}
             </For>
-            <button type="button" class="menu_button margin0 wb-vt-add" onClick={() => props.onAdd()}>
+            <button type="button" class="menu_button margin0 whitespacenowrap wb-vt-add" onClick={() => props.onAdd()}>
                 {t('+ View')}
             </button>
         </div>
@@ -166,15 +166,27 @@ export function ViewBar(props: {
                     <Show when={props.views.unsaved || tab()?.changed === true}>
                         <span class="wb-vchg">
                             <Show when={props.views.unsaved}>
-                                <button type="button" class="menu_button margin0" onClick={() => props.onSave()}>
+                                <button
+                                    type="button"
+                                    class="menu_button margin0 whitespacenowrap"
+                                    onClick={() => props.onSave()}
+                                >
                                     {t('Save')}
                                 </button>
-                                <button type="button" class="menu_button margin0" onClick={() => props.onDiscard()}>
+                                <button
+                                    type="button"
+                                    class="menu_button margin0 whitespacenowrap"
+                                    onClick={() => props.onDiscard()}
+                                >
                                     {t('Discard')}
                                 </button>
                             </Show>
                             <Show when={!props.views.unsaved && tab()?.changed === true}>
-                                <button type="button" class="menu_button margin0" onClick={() => props.onReset()}>
+                                <button
+                                    type="button"
+                                    class="menu_button margin0 whitespacenowrap"
+                                    onClick={() => props.onReset()}
+                                >
                                     {t('Reset to the world’s')}
                                 </button>
                             </Show>

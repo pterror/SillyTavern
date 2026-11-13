@@ -45,6 +45,8 @@
     line-height: 1.6;
     text-align: left;
     text-shadow: none;
+    backdrop-filter: blur(var(--SmartThemeBlurStrength));
+    -webkit-backdrop-filter: blur(var(--SmartThemeBlurStrength));
 }
 
 .look-screen *,

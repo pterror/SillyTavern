@@ -61,7 +61,7 @@ export function Keys(props: { entry: OpenEntryView }) {
                     <>
                         <button
                             type="button"
-                            class="menu_button margin0 wb-key-add"
+                            class="menu_button margin0 whitespacenowrap wb-key-add"
                             onClick={() => {
                                 setOpen(null);
                                 setAdding('name');
@@ -71,7 +71,7 @@ export function Keys(props: { entry: OpenEntryView }) {
                         </button>
                         <button
                             type="button"
-                            class="menu_button margin0 wb-key-add"
+                            class="menu_button margin0 whitespacenowrap wb-key-add"
                             onClick={() => {
                                 setOpen(null);
                                 setAdding('trigger');

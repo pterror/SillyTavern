@@ -515,7 +515,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
             <span class="wb-fill" />
             <button
                 type="button"
-                class="menu_button margin0 wb-bulk-clear"
+                class="menu_button margin0 whitespacenowrap wb-bulk-clear"
                 onClick={() => void wb.act('worldbuilding.selectNone', { book: props.selection.book })}
             >
                 {t('Clear')}

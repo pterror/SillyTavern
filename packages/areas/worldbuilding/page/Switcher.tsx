@@ -59,7 +59,7 @@ export function Switcher(props: { world: ShownWorld | null; onOpen: (book: strin
             <button
                 ref={(element) => (button = element)}
                 type="button"
-                class="menu_button menu_button_icon margin0 wb-switch"
+                class="menu_button menu_button_icon margin0 whitespacenowrap wb-switch"
                 aria-label={t('Switch world')}
                 aria-expanded={open()}
                 onClick={() => setOpen(!open())}

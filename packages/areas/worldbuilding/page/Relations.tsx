@@ -34,7 +34,7 @@ export function RelationsLine(props: {
             <button
                 ref={(element) => (button = element)}
                 type="button"
-                class="menu_button margin0 wb-rels-add"
+                class="menu_button margin0 whitespacenowrap wb-rels-add"
                 aria-expanded={adding()}
                 onClick={() => setAdding(!adding())}
             >

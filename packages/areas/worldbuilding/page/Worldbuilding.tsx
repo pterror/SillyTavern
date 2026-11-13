@@ -274,7 +274,7 @@ function Page(props: Props) {
                     <span class="wb-fill" />
                     <button
                         type="button"
-                        class="menu_button menu_button_icon margin0 wb-btn wb-new-entry"
+                        class="menu_button menu_button_icon margin0 whitespacenowrap wb-btn wb-new-entry"
                         aria-label={t('New entry')}
                         disabled={!shownWorld()}
                         onClick={() => {

@@ -237,6 +237,7 @@
     align-items: center;
     gap: 10px;
     width: 288px;
+    justify-content: flex-start;
 }
 
 .wb-switch-name {

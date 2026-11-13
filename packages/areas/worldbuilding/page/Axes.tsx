@@ -368,7 +368,7 @@ export function AxisControl(props: {
             <span class="wb-ax-add">
                 <button
                     type="button"
-                    class="menu_button margin0 wb-padd"
+                    class="menu_button margin0 whitespacenowrap wb-padd"
                     ref={(element) => (plus = element)}
                     aria-label={fill(t('Add to ${0}'), props.label)}
                     aria-expanded={adding()}

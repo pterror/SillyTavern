@@ -214,7 +214,7 @@ export function EntryPage(props: {
             </For>
             <button
                 type="button"
-                class="menu_button menu_button_icon margin0 wb-new-under"
+                class="menu_button menu_button_icon margin0 whitespacenowrap wb-new-under"
                 onClick={() => {
                     const kind = newEntryKind();
                     void wb.act('worldbuilding.createEntry', {

@@ -493,7 +493,7 @@ function PicturePop(props: {
             <div class="look-hopts">
                 <button
                     type="button"
-                    class="menu_button margin0"
+                    class="menu_button margin0 whitespacenowrap"
                     classList={{ active: whole() }}
                     onClick={() => void client.send('looks.useOwnPicture', thing())}
                 >
@@ -501,7 +501,7 @@ function PicturePop(props: {
                 </button>
                 <button
                     type="button"
-                    class="menu_button margin0"
+                    class="menu_button margin0 whitespacenowrap"
                     classList={{ active: props.view.picture.crop !== null }}
                     onClick={() => {
                         if (props.view.picture.crop === null)
@@ -523,7 +523,7 @@ function PicturePop(props: {
                 </button>
                 <button
                     type="button"
-                    class="menu_button margin0 look-danger"
+                    class="menu_button margin0 whitespacenowrap look-danger"
                     onClick={() => {
                         props.onClose();
                         void client.send('looks.setPicture', {
@@ -575,7 +575,7 @@ function Uses(props: { view: Open }) {
             </For>
             <button
                 type="button"
-                class="menu_button margin0 look-uadd"
+                class="menu_button margin0 whitespacenowrap look-uadd"
                 ref={(el) => (plus = el)}
                 aria-expanded={adding()}
                 onClick={() => setAdding(!adding())}
@@ -787,7 +787,7 @@ function EffectPanel(props: {
                     </Show>
                     <option value="__newuser">{t('New shared look for every world…')}</option>
                 </select>
-                <button type="button" class="menu_button margin0 look-rs2" onClick={reset}>
+                <button type="button" class="menu_button margin0 whitespacenowrap look-rs2" onClick={reset}>
                     {t('Reset')}
                 </button>
             </Head>
@@ -809,7 +809,7 @@ function EffectPanel(props: {
                                 <div class="look-seg">
                                     <button
                                         type="button"
-                                        class="menu_button margin0"
+                                        class="menu_button margin0 whitespacenowrap"
                                         classList={{ active: solid() }}
                                         onClick={() =>
                                             write('color', { mode: 'solid', color: stops()[0] ?? '#f6cf86' })
@@ -819,7 +819,7 @@ function EffectPanel(props: {
                                     </button>
                                     <button
                                         type="button"
-                                        class="menu_button margin0"
+                                        class="menu_button margin0 whitespacenowrap"
                                         classList={{ active: !solid() }}
                                         onClick={() =>
                                             write('color', {
@@ -960,7 +960,7 @@ function EffectPanel(props: {
                             {(style) => (
                                 <button
                                     type="button"
-                                    class="menu_button margin0"
+                                    class="menu_button margin0 whitespacenowrap"
                                     classList={{ active: controls('underline').style === style }}
                                     onClick={() => write('underline', { ...controls('underline'), style })}
                                 >
@@ -1010,7 +1010,7 @@ function EffectPanel(props: {
                     <div class="look-seg">
                         <button
                             type="button"
-                            class="menu_button margin0"
+                            class="menu_button margin0 whitespacenowrap"
                             classList={{ active: controls('letters').italic }}
                             aria-pressed={controls('letters').italic}
                             onClick={() =>
@@ -1021,7 +1021,7 @@ function EffectPanel(props: {
                         </button>
                         <button
                             type="button"
-                            class="menu_button margin0"
+                            class="menu_button margin0 whitespacenowrap"
                             classList={{ active: controls('letters').caps }}
                             aria-pressed={controls('letters').caps}
                             onClick={() =>
@@ -1104,7 +1104,7 @@ function Typefaces(props: { view: Open; current: Controls['typeface']; onPick: (
     const button = (font: Open['fonts'][number]) => (
         <button
             type="button"
-            class="menu_button margin0"
+            class="menu_button margin0 whitespacenowrap"
             classList={{ active: props.current.font === font.id }}
             style={{ 'font-family': `"${font.family}"` }}
             onClick={() => props.onPick({ font: font.id, uploaded: font.uploaded })}
@@ -1140,7 +1140,7 @@ function Typefaces(props: { view: Open; current: Controls['typeface']; onPick: (
                             <For each={uploaded()}>{button}</For>
                             <button
                                 type="button"
-                                class="menu_button margin0 look-addf"
+                                class="menu_button margin0 whitespacenowrap look-addf"
                                 onClick={() => addFont(world())}
                             >
                                 {t('Add a font…')}
@@ -1202,7 +1202,7 @@ function MarkPanel(props: { view: Open; state: LookState }) {
                 <span class="look-fixed">{t('Every world')}</span>
                 <button
                     type="button"
-                    class="menu_button margin0 look-rs2"
+                    class="menu_button margin0 whitespacenowrap look-rs2"
                     onClick={() => set({ style: null, color: null, opacity: null })}
                 >
                     {t('Reset')}
@@ -1213,7 +1213,7 @@ function MarkPanel(props: { view: Open; state: LookState }) {
                     {([style, label]) => (
                         <button
                             type="button"
-                            class="menu_button margin0"
+                            class="menu_button margin0 whitespacenowrap"
                             classList={{ active: shown().style === style }}
                             onClick={() => set({ style })}
                         >
