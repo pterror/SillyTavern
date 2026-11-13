@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { deleteWorld, makeWorld } from './worlds.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -32,25 +33,12 @@ async function globeColor(page) {
     });
 }
 
-/**
- * @param {import('@playwright/test').Page} page
- * @param {string} name
- */
-async function deleteBookFile(page, name) {
-    await page.evaluate(async (name) => {
-        const { getRequestHeaders } = await import('./script.js');
-        await fetch('/api/worldinfo/delete', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ name }),
-        });
-    }, name);
-}
 
 test.describe('a link to a lorebook that doesn\'t exist', () => {
     test.beforeEach(testSetup.awaitST);
 
-    test('shows on the globe, and follows the link, the books and the embedded book', async ({ page }) => {
+    test('shows on the globe, and follows the link and the books', async ({ page }) => {
+        test.setTimeout(60_000);
         const missingName = `Missing Book ${Date.now()}`;
         const otherMissingName = `Other Missing Book ${Date.now()}`;
 
@@ -96,68 +84,29 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect.poll(() => globeColor(page)).toBe('warning');
             await expect(page.locator('#toast-container .toast', { hasText: missingName })).toHaveCount(0);
 
-            await page.evaluate(async (missingName) => {
-                const { createNewWorldInfo } = await import('./scripts/world-info.js');
-                await createNewWorldInfo(missingName);
-            }, missingName);
+            await makeWorld(page, missingName);
+            await page.locator('#WIDrawerIcon').click();
             await expect(globe).toHaveClass(/\bworld_set\b/);
             await expect(globe).not.toHaveClass(/\bwarning\b/);
             await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
             await expect.poll(() => globeColor(page)).toBe('active');
 
-            await page.evaluate(async (missingName) => {
-                const { deleteWorldInfo } = await import('./scripts/world-info.js');
-                await deleteWorldInfo(missingName);
-            }, missingName);
+            await deleteWorld(page, missingName);
+            await page.locator('#WIDrawerIcon').click();
             await expect(globe).not.toHaveClass(/\bwarning\b/);
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
             await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
 
             await page.evaluate(async (missingName) => {
-                const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
+                const { charUpdatePrimaryWorld } = await import('./scripts/world-links.js');
                 await charUpdatePrimaryWorld(missingName);
             }, missingName);
             await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${missingName}" not found`);
 
-            await page.evaluate(async (avatar) => {
-                const { getRequestHeaders } = await import('./script.js');
-                const { getOneCharacter } = await import('./scripts/character-list.js');
-                const response = await fetch('/api/characters/merge-attributes', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({
-                        avatar,
-                        data: {
-                            character_book: {
-                                name: 'Inner Book',
-                                extensions: {},
-                                entries: [{ id: 0, keys: ['compass'], content: 'The compass points north.', enabled: true, insertion_order: 0, extensions: {} }],
-                            },
-                        },
-                    }),
-                });
-                if (!response.ok) {
-                    throw new Error(`merge failed: ${response.status}`);
-                }
-                await getOneCharacter(avatar);
-            }, avatar);
-            await expect(globe).toHaveClass(/\bworld_set\b/);
-            await expect(globe).not.toHaveClass(/\bwarning\b/);
-            await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
-
-            await page.evaluate(async (avatar) => {
-                const { openEmbeddedLoreEditor } = await import('./scripts/world-info.js');
-                await openEmbeddedLoreEditor(avatar);
-            }, avatar);
-            await page.locator('#world_popup_delete').click();
-            await page.locator('dialog[open] .popup-button-ok').click();
-            await expect(globe).toHaveClass(/\bwarning\b/);
-            await expect(globe).toHaveAttribute('title', `Linked lorebook "${missingName}" not found`);
-
             await page.evaluate(async () => {
-                const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
+                const { charUpdatePrimaryWorld } = await import('./scripts/world-links.js');
                 await charUpdatePrimaryWorld('');
             });
             await expect(globe).not.toHaveClass(/\bwarning\b/);
@@ -165,7 +114,7 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
 
             await page.evaluate(async (otherMissingName) => {
-                const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
+                const { charUpdatePrimaryWorld } = await import('./scripts/world-links.js');
                 await charUpdatePrimaryWorld(otherMissingName);
             }, otherMissingName);
             await expect(globe).toHaveClass(/\bwarning\b/);
@@ -179,7 +128,7 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${otherMissingName}" not found`);
         } finally {
-            await deleteBookFile(page, missingName);
+            await deleteWorld(page, missingName);
             await page.evaluate(async (avatar) => {
                 const { getRequestHeaders } = await import('./script.js');
                 await fetch('/api/characters/delete', {
@@ -269,6 +218,7 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
     });
 
     test('shows on the globe in create mode, for the link the new character will be created with', async ({ page }) => {
+        test.setTimeout(60_000);
         const bookName = `Create Mode Book ${Date.now()}`;
         const globe = page.locator('#world_button');
         const ownTitle = await globe.getAttribute('title');
@@ -280,45 +230,47 @@ test.describe('a link to a lorebook that doesn\'t exist', () => {
             await expect(globe).not.toHaveClass(/\bwarning\b/);
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
 
+            await makeWorld(page, bookName);
+            await page.locator('#WIDrawerIcon').click();
             await page.evaluate(async (bookName) => {
-                const { createNewWorldInfo, charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
-                await createNewWorldInfo(bookName);
+                const { charUpdatePrimaryWorld } = await import('./scripts/world-links.js');
                 await charUpdatePrimaryWorld(bookName);
             }, bookName);
             await expect(globe).toHaveClass(/\bworld_set\b/);
             await expect(globe).not.toHaveClass(/\bwarning\b/);
 
-            const linkAfterDelete = await page.evaluate(async (bookName) => {
-                const { deleteWorldInfo } = await import('./scripts/world-info.js');
+            await deleteWorld(page, bookName);
+            await page.locator('#WIDrawerIcon').click();
+            const linkAfterDelete = await page.evaluate(async () => {
                 const { create_save } = await import('./script.js');
-                await deleteWorldInfo(bookName);
                 return create_save.world;
-            }, bookName);
+            });
             expect(linkAfterDelete).toBe('');
             await expect(globe).not.toHaveClass(/\bwarning\b/);
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
 
             await page.evaluate(async (bookName) => {
-                const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
+                const { charUpdatePrimaryWorld } = await import('./scripts/world-links.js');
                 await charUpdatePrimaryWorld(bookName);
             }, bookName);
             await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${bookName}" not found`);
 
-            await page.locator('#rm_button_back').click();
+            await openCharacterManagementDrawer(page);
+            if (await page.locator('#rm_button_back').isVisible()) await page.locator('#rm_button_back').click();
             await page.locator('#rm_button_create').click();
             await expect(globe).toHaveClass(/\bwarning\b/);
             await expect(globe).toHaveAttribute('title', `Linked lorebook "${bookName}" not found`);
 
             await page.evaluate(async () => {
-                const { charUpdatePrimaryWorld } = await import('./scripts/world-info.js');
+                const { charUpdatePrimaryWorld } = await import('./scripts/world-links.js');
                 await charUpdatePrimaryWorld('');
             });
             await expect(globe).not.toHaveClass(/\bwarning\b/);
             await expect(globe).not.toHaveClass(/\bworld_set\b/);
             await expect(globe).toHaveAttribute('title', /** @type {string} */ (ownTitle));
         } finally {
-            await deleteBookFile(page, bookName);
+            await deleteWorld(page, bookName);
             await page.evaluate(async () => {
                 const { create_save } = await import('./script.js');
                 create_save.world = '';

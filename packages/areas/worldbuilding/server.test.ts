@@ -2412,6 +2412,14 @@ test('a world named by its name opens, with its entry by uid opened too; an unkn
     expect(
         await w.act('worldbuilding.openNamed', { world: 'World 1', uid: 3, overview: shownWorld, pointingAt }),
     ).toEqual({ refused: "That entry isn't in this world." });
+    expect(
+        await w.act('worldbuilding.openNamed', { world: 'World 1', uid: null, overview: shownWorld, pointingAt }),
+    ).toEqual({
+        changed: [ENTRY_VIEW, POINTING_AT_VIEW],
+        opensViews: WORLD_VIEWS,
+        own: [OVERVIEW_VIEW, WORLD_VIEW, ENTRY_VIEW, POINTING_AT_VIEW],
+    });
+    expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
 });
 
 test("a character's own lorebook opens as a world that says which character it came with", async () => {

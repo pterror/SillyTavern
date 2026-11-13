@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { deleteWorld, makeWorld } from './worlds.js';
 
 /** @param {import('@playwright/test').Page} page */
 function enabledOptions(page) {
@@ -31,12 +32,12 @@ test.describe('the character panel while creating a character', () => {
     test('a lorebook linked before the character exists is saved with it, with no chat open', async ({ page }) => {
         const s = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
         const book = `CreateBook-${s}`;
-        await page.evaluate(async (book) => {
+        await page.evaluate(async () => {
             // @ts-ignore
             await stTest.context().executeSlashCommandsWithOptions('/closechat');
-            const { createNewWorldInfo } = await import('./scripts/world-info.js');
-            if (!await createNewWorldInfo(book, { interactive: false })) throw new Error('no book');
-        }, book);
+        });
+        await makeWorld(page, book);
+        await page.locator('#WIDrawerIcon').click();
         // @ts-ignore
         expect(await page.evaluate(() => stTest.context().characterId)).toBeUndefined();
 
@@ -60,17 +61,16 @@ test.describe('the character panel while creating a character', () => {
         const avatar = await (await createResponse).text();
         try {
             await expect.poll(() => page.evaluate(async (fileName) => {
-                const { world_info } = await import('./scripts/world-info.js');
-                return world_info.charLore?.find(entry => entry.name === fileName)?.extraBooks ?? [];
+                const { extraBooksOf } = await import('./scripts/world-links.js');
+                return extraBooksOf(fileName);
             }, avatar.replace(/\.png$/, ''))).toEqual([book]);
         } finally {
-            await page.evaluate(async ({ avatar, book }) => {
+            await page.evaluate(async (avatar) => {
                 // @ts-ignore
                 const headers = stTest.context().getRequestHeaders();
                 await fetch('/api/characters/delete', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
-                const { deleteWorldInfo } = await import('./scripts/world-info.js');
-                await deleteWorldInfo(book);
-            }, { avatar, book });
+            }, avatar);
+            await deleteWorld(page, book);
         }
     });
 });

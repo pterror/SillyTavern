@@ -276,9 +276,11 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
     let box: HTMLDivElement | undefined;
     dismissOn(() => box, props.onClose, props.opener);
     const at = () => ({ book: props.entry.book, entry: props.entry.entry });
+    // The action starts before the menu closes, so what it reads of the menu's props is read while they are there.
     const run = (action: () => Promise<unknown>) => {
+        const started = action();
         props.onClose();
-        void action();
+        void started;
     };
     return (
         <div class="wb-menu wb-entry-menu" role="menu" ref={(element) => (box = element)}>
@@ -291,8 +293,9 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                     role="menuitem"
                     onClick={() =>
                         run(async () => {
+                            const entry = at();
                             const file = await chooseFile('image/*');
-                            if (file) await wb.act('worldbuilding.setPicture', at(), file);
+                            if (file) await wb.act('worldbuilding.setPicture', entry, file);
                         })
                     }
                 >

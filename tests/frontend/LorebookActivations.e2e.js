@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
+import { makeWorld } from './worlds.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -52,7 +53,11 @@ function startLlamaCpp() {
  * @param {string} name
  * @param {string} book
  */
-function createCharacterAndBook(page, name, book) {
+async function createCharacterAndBook(page, name, book) {
+    const entry = { uid: 0, key: ['lantern'], keysecondary: [], comment: 'The lantern', content: 'The lantern never goes out.', position: 0, order: 10, disable: false };
+    await makeWorld(page, book, { 0: entry });
+    await page.locator('#WIDrawerIcon').click();
+    await expect(page.locator('#Worldbuilding')).not.toBeVisible();
     return page.evaluate(async ({ name, book }) => {
         // @ts-ignore
         const context = stTest.context();
@@ -61,11 +66,6 @@ function createCharacterAndBook(page, name, book) {
         form.set('first_mes', 'Welcome in.');
         const created = await fetch('/api/characters/create', { method: 'POST', headers: context.getRequestHeaders({ omitContentType: true }), body: form });
         if (!created.ok) throw new Error(`create failed: ${created.status}`);
-        const entry = { uid: 0, key: ['lantern'], keysecondary: [], comment: 'The lantern', content: 'The lantern never goes out.', position: 0, order: 10, disable: false };
-        const made = await fetch('/api/worldinfo/create', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ name: book, data: { entries: { 0: entry } } }) });
-        if (!made.ok) throw new Error(`book failed: ${made.status}`);
-        const { updateWorldInfoList } = await import('/scripts/world-info.js');
-        await updateWorldInfoList();
         await context.executeSlashCommandsWithOptions(`/world silent=true ${book}`);
         return created.text();
     }, { name, book });
@@ -140,9 +140,8 @@ test('a reply that a lorebook entry came up for is marked; the mark lists the en
 
         await row.locator('.activation-open').click();
         await expect(panel).toBeHidden();
-        await expect(page.locator('#WorldInfo')).toBeVisible();
-        await expect(page.locator('#world_popup_entries_list .world_entry[uid="0"]')).toBeVisible({ timeout: 10000 });
-        await expect.poll(() => page.locator('#world_editor_select option:checked').textContent()).toBe(book);
+        await expect(page.locator('#Worldbuilding .wb-entry .wb-entry-name')).toContainText('The lantern', { timeout: 10000 });
+        await expect(page.locator('#Worldbuilding .wb-switch-name')).toHaveText(book);
 
         await page.reload();
         await testSetup.awaitST({ page });
@@ -215,9 +214,8 @@ test('the words that brought an entry in are underlined where they were written;
         await expect(marks).toHaveCount(1);
 
         await marks.click();
-        await expect(page.locator('#WorldInfo')).toBeVisible();
-        await expect(page.locator('#world_popup_entries_list .world_entry[uid="0"]')).toBeVisible({ timeout: 10000 });
-        await expect.poll(() => page.locator('#world_editor_select option:checked').textContent()).toBe(book);
+        await expect(page.locator('#Worldbuilding .wb-entry .wb-entry-name')).toContainText('The lantern', { timeout: 10000 });
+        await expect(page.locator('#Worldbuilding .wb-switch-name')).toHaveText(book);
         await expect(page.locator('.mes_editor')).toHaveCount(0);
     } finally {
         await setLoreMarks(page, 'on').catch(() => {});

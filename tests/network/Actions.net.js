@@ -69,13 +69,13 @@ for (const profile of [PROFILES.local, PROFILES['3g'], PROFILES['phone over vpn'
             await expect(page.locator('dialog.alternatives[open]')).toHaveCount(0);
 
             await run({
-                action: 'open a drawer (World Info)',
+                action: 'open a drawer (worlds)',
                 profile: profile.name,
                 act: () => page.locator('#WIDrawerIcon').click(),
-                visible: { selector: '#WorldInfo.openDrawer' },
+                visible: { selector: '#Worldbuilding.openDrawer .wb-head' },
             });
             await page.locator('#WIDrawerIcon').click();
-            await expect(page.locator('#WorldInfo.openDrawer')).toHaveCount(0);
+            await expect(page.locator('#Worldbuilding.openDrawer')).toHaveCount(0);
 
             await page.locator('#options_button').click();
             await run({

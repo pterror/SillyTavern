@@ -97,9 +97,11 @@ function WorldsMenu(props: {
     let menu: HTMLDivElement | undefined;
     dismissOn(() => menu, props.onClose, props.opener);
     const overview = () => wb.firstRead();
+    // The action starts before the menu closes, so what it reads of the menu's props is read while they are there.
     const run = (action: () => Promise<unknown>) => {
+        const started = action();
         props.onClose();
-        void action();
+        void started;
     };
     return (
         <div class="wb-menu wb-worlds" role="menu" ref={(element) => (menu = element)}>

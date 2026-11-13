@@ -736,7 +736,7 @@ function saveCharacterFieldDebounced(avatar, formId, value) {
 /**
  * @returns {Promise<void>}
  */
-export async function flushCharacterFieldSaves() {
+async function flushCharacterFieldSaves() {
     const pending = [...pendingCharacterFieldSaves.values()];
     pendingCharacterFieldSaves.clear();
     for (const save of pending) {

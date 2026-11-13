@@ -93,8 +93,7 @@ function NewRelation(props: {
     const relate = (targetEntry: string) => {
         const chosen = kind();
         if (chosen === null) return;
-        props.onClose();
-        void wb.act('worldbuilding.addRelation', {
+        const relation = {
             book: props.entry.book,
             entry: props.entry.entry,
             kind: chosen,
@@ -103,7 +102,9 @@ function NewRelation(props: {
             before: null,
             weak: false,
             loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE,
-        });
+        };
+        props.onClose();
+        void wb.act('worldbuilding.addRelation', relation);
     };
     return (
         <div class="wb-relpop" role="dialog" aria-label={t('New relation')} ref={(element) => (box = element)}>

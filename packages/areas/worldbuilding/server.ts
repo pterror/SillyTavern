@@ -733,6 +733,7 @@ export function worldbuildingArea(ports: Ports) {
         context: ActionContext,
         book: string | null,
         { groupBy, firstRank, endRank, layout, around }: ShownWorld,
+        keepsEntry = true,
     ): Promise<{ changed: string[]; opensViews: string[]; own: string[] }> => {
         const opened = await ports.openWorld(who(context), book);
         if (opened === null) {
@@ -788,7 +789,7 @@ export function worldbuildingArea(ports: Ports) {
         }
         const { filter, selection, world } = stateOf(context.session);
         const filterStays = filter?.book === opened;
-        const entry = world?.overview.book === opened ? world.entry : null;
+        const entry = keepsEntry && world?.overview.book === opened ? world.entry : null;
         remember(context.session, {
             world: { overview, entry },
             kindsOfBook: opened,
@@ -1131,7 +1132,7 @@ export function worldbuildingArea(ports: Ports) {
                 if (uid !== null && entry === null) return { refused: NO_SUCH_ENTRY };
                 const held = overviewOf(context.session);
                 const groupBy = held?.book === book ? held.groupBy : undefined;
-                const shown = await showWorld(context, book, { ...overview, groupBy, around: entry });
+                const shown = await showWorld(context, book, { ...overview, groupBy, around: entry }, false);
                 if (entry === null) return shown;
                 rememberEntry(context.session, openedNow(entry, pointingAt));
                 const entryViews = [ENTRY_VIEW, POINTING_AT_VIEW];
@@ -1146,7 +1147,7 @@ export function worldbuildingArea(ports: Ports) {
                 if (book === null) return { refused: NO_CHARACTER_BOOK };
                 const held = overviewOf(context.session);
                 const groupBy = held?.book === book ? held.groupBy : undefined;
-                return showWorld(context, book, { ...overview, groupBy, around: null });
+                return showWorld(context, book, { ...overview, groupBy, around: null }, false);
             },
             'worldbuilding.showCard': async (context, { book, entry }) => {
                 remember(context.session, { card: { book, entry } });

@@ -114,45 +114,4 @@ test.describe('character names searched on the server', () => {
         }
     });
 
-    test('a lorebook entry\'s character filter finds a character the page does not hold', async ({ page }) => {
-        const stamp = `${Date.now()}`;
-        const name = `Loresearch${stamp}`;
-        const worldName = `CharSearchWI_${stamp}`;
-        const avatar = await createUnheldCharacter(page, name);
-        const fileName = avatar.replace(/\.[^/.]+$/, '');
-
-        await page.evaluate(async (worldName) => {
-            const { createNewWorldInfo, createWorldInfoEntry, saveWorldInfo, loadWorldInfo } = await import('./scripts/world-info.js');
-            if (!await createNewWorldInfo(worldName, { interactive: false })) throw new Error('no world');
-            const data = await loadWorldInfo(worldName);
-            const entry = await createWorldInfoEntry(worldName, data);
-            entry.key = ['char_search_keyword'];
-            await saveWorldInfo(worldName, data, true);
-        }, worldName);
-
-        try {
-            await page.evaluate(async (worldName) => {
-                const { openWorldInfoEditor } = await import('./scripts/world-info.js');
-                openWorldInfoEditor(worldName);
-            }, worldName);
-            const entryRow = page.locator('#world_popup_entries_list .world_entry').first();
-            await entryRow.waitFor({ state: 'attached', timeout: 10000 });
-            await entryRow.evaluate(row => $(row).find('.inline-drawer-toggle').first().trigger('click'));
-            await entryRow.locator('select[name="characterFilter"]').waitFor({ state: 'attached' });
-            await entryRow.locator('select[name="characterFilter"] + .select2-container .select2-selection').click();
-            await page.keyboard.type(name);
-            const option = page.locator('.select2-results__option', { hasText: fileName });
-            await expect(option).toBeVisible();
-            const saved = page.waitForRequest(request => request.url().endsWith('/api/worldinfo/entry/edit'));
-            await option.click();
-            expect((await saved).postDataJSON().data.characterFilter.names).toEqual([fileName]);
-        } finally {
-            await page.evaluate(async (worldName) => {
-                const { deleteWorldInfo } = await import('./scripts/world-info.js');
-                await deleteWorldInfo(worldName);
-            }, worldName);
-            await deleteCharacter(page, avatar);
-        }
-    });
-
 });

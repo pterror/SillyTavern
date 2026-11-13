@@ -212,8 +212,9 @@ function KeyPopover(props: {
                 type="button"
                 class="wb-pop-remove"
                 onClick={() => {
+                    const key = at();
                     props.onClose();
-                    void wb.act('worldbuilding.removeKey', at());
+                    void wb.act('worldbuilding.removeKey', key);
                 }}
             >
                 {t('Remove')}
