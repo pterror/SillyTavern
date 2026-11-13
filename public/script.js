@@ -4,7 +4,7 @@ import {
     Popper,
 } from './lib.js';
 
-import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown, takeCardCounts } from './scripts/RossAscends-mods.js';
+import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown, takeCardCounts, chatBoxKeys } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, setCharacterId, holdCharacter, keepHeldCharacters } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
@@ -157,7 +157,7 @@ import { chatOpenAsks, takeChatOpenParts } from './scripts/chat-open-parts.js';
 import { debounce_timeout, MEDIA_DISPLAY, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE, UNSET_VALUE } from './scripts/constants.js';
 
 import { extension_settings } from './scripts/extension-settings.js';
-import { executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution } from './scripts/slash-commands.js';
+import { chatBoxSlashParser, executeSlashCommandsOnChatInput, initDefaultSlashCommands, isExecutingCommandsFromChatInput, slashSuggestionsWanted, pauseScriptExecution, stopScriptExecution } from './scripts/slash-commands.js';
 import { initMacroAutoComplete } from './scripts/autocomplete/MacroAutoComplete.js';
 import {
     chooseBogusFolder,
@@ -209,8 +209,10 @@ import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
-import { getFocusedField, getMountedTextarea } from './scripts/live-editor/registry.js';
-import { initChatBoxEditor, initChatLiveEditor } from './scripts/chat-live-editor.js';
+import { getMountedTextarea } from './scripts/live-editor/registry.js';
+import { arriveChatBox, chatBoxFollowEnd, chatBoxText, focusChatBox, initChatBox, leavingChatBox, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
+import { endOwnerOf } from './scripts/chat-box-ends.js';
+import { chatBoxSetup } from './scripts/message-text.js';
 import { initChatEditors, loadChatEditor } from './scripts/chat-text/editors.js';
 import { readerSelection } from './scripts/chat-text/surface.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, discardFieldEdit, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
@@ -241,7 +243,6 @@ import { initReasoning, parseReasoningInSwipes, PromptReasoning, ReasoningHandle
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
-import { saveDraft, loadDraft, isDraftHeld } from './scripts/chat-draft.js';
 import { initFailedSends, keepFailedSend, recordSend, keptSendKeys, forgetStoredSends } from './scripts/failed-sends.js';
 import { initItemizedPrompts, ITEMIZED_PROMPT_FLAG, itemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types } from './scripts/system-messages.js';
@@ -1000,24 +1001,8 @@ export function getCurrentChatId() {
     }
 }
 
-/** @returns {import('./scripts/chat-draft.js').DraftContext|null} */
-export function getCurrentDraftContext() {
-    const selection = getSelectionState();
-    const chatId = getCurrentChatId();
-    if (!chatId) {
-        return null;
-    }
-    if (selection.type === 'group') {
-        return { type: 'group', id: selection.groupId, chatId };
-    }
-    if (selection.type === 'character') {
-        return { type: 'character', id: selection.avatar, chatId };
-    }
-    return null;
-}
-
 /**
- * @returns {import('./scripts/chat-draft.js').DraftContext|null}
+ * @returns {import('./scripts/failed-sends.js').ChatOwner|null}
  */
 function getCurrentChatContext() {
     const selection = getSelectionState();
@@ -1031,19 +1016,6 @@ function getCurrentChatContext() {
     return null;
 }
 
-function flushDraftSave() {
-    const context = getCurrentDraftContext();
-    if (!context) {
-        return;
-    }
-    const text = String($('#send_textarea').val());
-    if (!text.trim() && isDraftHeld(context)) {
-        return;
-    }
-    saveDraft(localStorage, context, text);
-}
-
-const saveDraftDebounced = debounce(flushDraftSave, debounce_timeout.standard);
 
 export const talkativeness_default = 0.5;
 const depth_prompt_depth_default = 4;
@@ -1303,15 +1275,6 @@ async function firstLoadInit() {
         conflicted: settingsChangesConflicted,
         returned: returnPendingSettingsChanges,
     });
-    initChatLiveEditor({
-        macroScope: openChatMacroScope,
-        power_user,
-        uploadImage: uploadEditorImage,
-        userName: () => name1,
-        nextMessageId: () => chat.length,
-        macroPerson: (macroName, characterName) => macroPerson(macroName, { name: characterName }),
-    });
-    initChatBoxEditor(/** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')));
     initChatEditors({
         hotkeys: () => Boolean(power_user.enable_md_hotkeys),
         toolbarChoice: () => (Array.isArray(power_user.editor_toolbar) ? power_user.editor_toolbar : []),
@@ -1383,7 +1346,21 @@ async function firstLoadInit() {
     await initTokenizers();
     initAuthorsNote();
     await initPersonas();
-    await initSlashCommandAutoComplete();
+    initChatBox({
+        element: /** @type {HTMLElement} */ (document.getElementById('chat_box')),
+        chat: () => {
+            const selection = getSelectionState();
+            if (selection.type === 'group') return { group_id: selection.groupId };
+            if (selection.type === 'character') return { avatar_url: selection.avatar };
+            return null;
+        },
+        endOwner: () => endOwnerOf(chat, selected_group ? null : getCurrentCharacter()?.avatar ?? null),
+        setup: chatBoxSetup,
+        label: t`Message`,
+        keys: chatBoxKeys(),
+        slashParser: chatBoxSlashParser,
+        slashWanted: slashSuggestionsWanted,
+    }).catch(error => console.error('The chat box could not be made:', error));
     initMacroAutoComplete();
     initWorldInfo();
     initHorde();
@@ -1625,6 +1602,7 @@ async function pointToFreshChat(replace = null) {
         if (!response.ok) throw new Error(String(response.status));
         const answer = await response.json();
         if (typeof answer.chat === 'string') current = answer.chat;
+        arriveChatBox({ avatar_url: getCurrentCharacter().avatar }, answer.draft);
         for (const name of answer.deleted ?? []) await eventSource.emit(event_types.CHAT_DELETED, name);
     } catch (error) {
         console.error('Failed to start the new chat', error);
@@ -1928,9 +1906,8 @@ export async function requestTextareaSend(source) {
         await userInputGenerateMutex.update();
         return;
     }
-    flushDraftSave();
     queuedSend = {
-        chat: JSON.stringify(getCurrentDraftContext()),
+        chat: JSON.stringify(getCurrentChatContext()),
         timer: setInterval(() => {
             const idle = !userInputGenerateMutex.isBusy && !isGenerating() && swipeState === SWIPE_STATE.NONE && !isExecutingCommandsFromChatInput;
             if (!idle) return;
@@ -2002,7 +1979,7 @@ async function sendTextareaMessage() {
     let generateType = 'normal';
     // "Continue on send" is activated when the user hits "send" (or presses enter) on an empty chat box, and the last
     // message was sent from a character (not the user or the system).
-    const textareaText = String($('#send_textarea').val());
+    const textareaText = chatBoxText();
     const lastMessage = chat[chat.length - 1];
     if (power_user.continue_on_send &&
         !hasPendingFileAttachment() &&
@@ -2015,11 +1992,14 @@ async function sendTextareaMessage() {
         generateType = 'continue';
     }
 
-    if (textareaText && getSelectionState().type === 'none' && name2 !== neutralCharacterName) {
+    const noChat = getSelectionState().type === 'none';
+    const taken = takeChatBoxText();
+    const typed = { text: taken.text, sent: noChat ? null : taken.sent };
+    if (textareaText && noChat && name2 !== neutralCharacterName) {
         await newAssistantChat({ temporary: false });
     }
 
-    let generation = await Generate(generateType);
+    let generation = await Generate(generateType, { typed });
     showSwipeButtons();
     return generation;
 }
@@ -3032,9 +3012,7 @@ export async function processCommands(message) {
     if (!message || !message.trim().startsWith('/')) {
         return false;
     }
-    await executeSlashCommandsOnChatInput(message, {
-        clearChatInput: true,
-    });
+    await executeSlashCommandsOnChatInput(message);
     return true;
 }
 
@@ -3297,9 +3275,6 @@ export class StreamingProcessor {
         this.messageTextDom = null;
         /** @type {HTMLElement} */
         this.messageTimerDom = null;
-        /** @type {HTMLElement} */
-        /** @type {HTMLTextAreaElement} */
-        this.sendTextarea = document.querySelector('#send_textarea');
         this.type = type;
         this.force_name2 = forceName2;
         this.isStopped = false;
@@ -3372,8 +3347,7 @@ export class StreamingProcessor {
         let messageId = -1;
 
         if (this.type == 'impersonate') {
-            this.sendTextarea.value = '';
-            this.sendTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+            writeChatBox('');
         } else {
             await saveReply({ type: this.type, getMessage: text, fromStreaming: true });
             messageId = chat.length - 1;
@@ -3412,8 +3386,7 @@ export class StreamingProcessor {
         });
 
         if (isImpersonate) {
-            this.sendTextarea.value = processedText;
-            this.sendTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+            writeChatBox(processedText);
         } else {
             const mesChanged = chat[messageId].mes !== processedText;
             await this.#checkDomElements(messageId);
@@ -3870,12 +3843,7 @@ export function shouldAutoContinue(messageChunk, isImpersonate, api) {
         return false;
     }
 
-    const textareaText = String($('#send_textarea').val());
     const USABLE_LENGTH = 5;
-
-    if (textareaText.length > 0) {
-        return false;
-    }
 
     if (messageChunk.trim().length > USABLE_LENGTH && chat.length) {
         const messageLength = chat[chat.length - 1].extra?.text_token_count;
@@ -5577,6 +5545,7 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
  * @property {number} [settings_hash]
  * @property {string[]} [stored_sends]
  * @property {{ key: string, version: number, value: unknown }[]} [ui_views]
+ * @property {import('./scripts/chat-box.js').Draft} [draft] the draft of the message the chat ends on
  * @property {import('@st/protocol/looks').Looks} [looks] The looks of the chat's speakers' names.
  */
 
@@ -5604,12 +5573,13 @@ function chatOpenOwner(body) {
 }
 
 /**
+ * What a request that opens a chat asks with it, and the chat box's text it leaves behind
  * @param {{ avatar_url?: string, group_id?: string }} body
- * @returns {{ send_keys: string[], parts: Record<string, unknown> }}
+ * @returns {{ send_keys: string[], parts: Record<string, unknown>, leaving: ReturnType<typeof leavingChatBox> }}
  */
 export function chatOpenAsk(body) {
     const owner = chatOpenOwner(body);
-    return { send_keys: keptSendKeys(owner), parts: chatOpenAsks(owner) };
+    return { send_keys: keptSendKeys(owner), parts: chatOpenAsks(owner), leaving: leavingChatBox({ named: true }) };
 }
 
 /**
@@ -5663,6 +5633,7 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
     chat.forEach(ensureMessageMediaIsArray);
     _snapshotMessages();
     await getChatResult({ openings: answer });
+    arriveChatBox({ avatar_url: getCurrentCharacter().avatar }, answer.draft);
 
     _snapshotMessages();
 
@@ -5673,7 +5644,7 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
         if (getMountedTextarea(active) || $(active).is('input:visible, textarea:visible') || (active instanceof HTMLElement && active.isContentEditable)) {
             return;
         }
-        $('#send_textarea').trigger('click').trigger('focus');
+        focusChatBox();
     });
 }
 
@@ -7763,9 +7734,9 @@ export function closeMessageEditor(what = 'all') {
 
 export function setGenerationProgress(progress) {
     if (!progress) {
-        $('#send_textarea').css({ 'background': '', 'transition': '' });
+        $('#chat_box').css({ 'background': '', 'transition': '' });
     } else {
-        $('#send_textarea').css({
+        $('#chat_box').css({
             'background': `linear-gradient(90deg, #008000d6 ${progress}%, transparent ${progress}%)`,
             'transition': '0.25s ease-in-out',
         });
@@ -9893,44 +9864,12 @@ jQuery(async function () {
 
     $(document).on('click', '.api_loading', () => cancelStatusCheck('Canceled because connecting was manually canceled'));
 
-    $('#send_textarea').on('input', () => saveDraftDebounced());
-
     eventSource.on(event_types.CHAT_CHANGED, () => {
-        if (queuedSend && queuedSend.chat !== JSON.stringify(getCurrentDraftContext())) {
+        if (queuedSend && queuedSend.chat !== JSON.stringify(getCurrentChatContext())) {
             cancelQueuedSend(t`The queued send was cancelled because the chat changed. Your text is kept as that chat's draft.`);
         }
-        const context = getCurrentDraftContext();
-        if (!context) {
-            return;
-        }
-        const draft = loadDraft(localStorage, context);
-        if (draft) {
-            $('#send_textarea').val(draft)[0].dispatchEvent(new Event('input', { bubbles: true }));
-        }
     });
-
-    //////////INPUT BAR FOCUS-KEEPING LOGIC/////////////
-    let S_TAPreviouslyFocused = false;
-    $('#send_textarea').on('focusin focus click', () => {
-        S_TAPreviouslyFocused = true;
-    });
-    $('#send_but, #option_regenerate, #option_continue, #mes_continue, #mes_impersonate').on('click', () => {
-        if (S_TAPreviouslyFocused) {
-            $('#send_textarea').trigger('focus');
-        }
-    });
-    $(document).on('click', event => {
-        if (getFocusedField()?.id !== 'send_textarea') {
-            var validIDs = ['options_button', 'send_but', 'mes_impersonate', 'mes_continue', 'send_textarea', 'option_regenerate', 'option_continue'];
-            if (!validIDs.includes($(event.target).attr('id'))) {
-                S_TAPreviouslyFocused = false;
-            }
-        } else {
-            S_TAPreviouslyFocused = true;
-        }
-    });
-
-    /////////////////
+    for (const event of [event_types.MESSAGE_RECEIVED, event_types.GENERATION_ENDED, event_types.MESSAGE_DELETED]) eventSource.on(event, chatBoxFollowEnd);
 
     $('#swipes-checkbox').on('change', function () {
         swipes = !!$('#swipes-checkbox').prop('checked');
@@ -11261,13 +11200,13 @@ jQuery(async function () {
             const isEditVisible = messageEditing !== null || $('.reasoning_editor').length > 0;
             if (isEditVisible && power_user.auto_save_msg_edits === false) {
                 closeMessageEditor('all');
-                $('#send_textarea').trigger('focus');
+                focusChatBox();
                 return;
             }
             if (isEditVisible && power_user.auto_save_msg_edits === true) {
                 chatElement.find(`.mes[mesid="${this_edit_mes_id}"] .mes_edit_done`).trigger('click');
                 closeMessageEditor('reasoning');
-                $('#send_textarea').trigger('focus');
+                focusChatBox();
                 return;
             }
             if (this_edit_mes_id === undefined && $('#mes_stop').is(':visible')) {

@@ -204,6 +204,7 @@ jest.unstable_mockModule('../public/scripts/chat-store.js', () => ({
 jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({
     provisionalNodeId: jest.fn(),
     isProvisionalNodeId: jest.fn(() => false),
+    isStoredNodeId: jest.fn(() => false),
 }));
 
 jest.unstable_mockModule('../public/scripts/filters.js', () => ({

@@ -411,7 +411,7 @@ test.describe('raw-action send request log', () => {
                         document.querySelector('#mes_stop').click();
                     }
                     if (stopClicked && shown && document.body.dataset.generating === undefined && userInputGenerateMutex.isBusy) {
-                        $('#send_textarea').val(second)[0].dispatchEvent(new Event('input', { bubbles: true }));
+                        (await import('/scripts/chat-box.js')).writeChatBox(second);
                         document.querySelector('#send_but').click();
                         return true;
                     }
@@ -423,7 +423,7 @@ test.describe('raw-action send request log', () => {
 
             await expect(page.locator('#chat .mes[mesid="3"] .mes_text')).toContainText(second, { timeout: 15000 });
             await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('Mock reply', { timeout: 15000 });
-            await expect(page.locator('#send_textarea')).toHaveValue('');
+            await expect.poll(() => page.evaluate(async () => (await import('/scripts/chat-box.js')).chatBoxText())).toBe('');
         } finally {
             await page.unroute('**/generate/stop/**');
             await slow.close();
@@ -469,7 +469,7 @@ test.describe('raw-action send request log', () => {
                 await releaseGap(page);
                 await page.waitForTimeout(SETTLE_MS);
                 await expect(page.locator('#chat .mes[mesid="3"]')).toHaveCount(0);
-                await expect(page.locator('#send_textarea')).toHaveValue(second);
+                await expect(chatBox(page)).toHaveText(second);
             } else {
                 await chatBox(page).press('Enter');
                 expect(await isQueued(page)).toBe(true);
@@ -508,7 +508,7 @@ test.describe('raw-action send request log', () => {
         expect(generateCalls).toEqual([]);
 
         await openCharacter(page, avatar);
-        await expect(page.locator('#send_textarea')).toHaveValue(second);
+        await expect(chatBox(page)).toHaveText(second);
         await expect(page.locator('#chat .mes[mesid="3"]')).toHaveCount(0);
     });
 
@@ -534,7 +534,7 @@ test.describe('raw-action send request log', () => {
             await expect(page.locator('body')).not.toHaveAttribute('data-generating', 'true', { timeout: 30000 });
             await page.waitForTimeout(SETTLE_MS);
             await expect(page.locator('#chat .mes[mesid="3"]')).toHaveCount(0);
-            await expect(page.locator('#send_textarea')).toHaveValue(second);
+            await expect(chatBox(page)).toHaveText(second);
         } finally {
             await slow.close();
         }

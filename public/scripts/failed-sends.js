@@ -38,7 +38,7 @@ let deps;
  * @property {boolean} [pending]
  */
 
-/** @typedef {import('./chat-draft.js').DraftContext} DraftContext */
+/** @typedef {{ type: 'character'|'group', id: string, chatId: string }} ChatOwner the chat a send was made in */
 /** @typedef {{ type: string, id: string }} Owner */
 
 /** @typedef {'spot'|'moved'|'elsewhere'} FailedSendMode */
@@ -115,7 +115,7 @@ function shortText(text) {
     return flat.length > AFTER_TEXT_LENGTH ? `${flat.slice(0, AFTER_TEXT_LENGTH)}…` : flat;
 }
 
-/** @type {Map<string, DraftContext>} */
+/** @type {Map<string, ChatOwner>} */
 const recordedIn = new Map();
 
 /**
@@ -430,7 +430,7 @@ function withStoredGreeting(context, entry) {
 }
 
 /**
- * @param {DraftContext} context
+ * @param {ChatOwner} context
  * @param {FailedSend} entry
  * @returns {FailedSend}
  */

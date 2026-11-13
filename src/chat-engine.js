@@ -333,6 +333,11 @@ const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], defaultId: null, de
 /** @type {Place} */
 export const LAST = Object.freeze({ last: true });
 
+/**
+ * The message a draft responds to: a stored message; a tree, its root; or a card entity and one of its greetings' ids
+ * @typedef {{ message: bigint } | { tree: bigint, greeting?: number }} DraftOwner
+ */
+
 export class PlaceError extends Error {}
 
 /**
@@ -1093,9 +1098,10 @@ export class ChatEngine {
      * @param {boolean} [p.regenerated]
      * @param {Place} [p.place] where the first new message goes among its alternatives
      * @param {Actor} p.actor
+     * @param {DraftOwner | null} [p.draftSent] the draft the append sends, cleared by it
      * @returns {Promise<{ ok: boolean, reason?: string, node_ids: string[], already_stored?: string[] }>}
      */
-    appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], changes = [], author = AUTHOR.user, ref = null, regenerated = false, place = LAST, actor }) {
+    appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], changes = [], author = AUTHOR.user, ref = null, regenerated = false, place = LAST, actor, draftSent = null }) {
         const lorebooks = changes.flatMap(ops => (Array.isArray(ops) ? ops : [])).filter(op => op?.key === WORLD_INFO && !op.variable).map(op => op.value);
         return this.serialized(tree, () => this.withWorldLinks(lorebooks, async link => {
             /** @type {object[]} */
@@ -1157,13 +1163,50 @@ export class ChatEngine {
                 ids.push(id);
                 cursor = id;
             }
-            await this.claimConversation(records, tree, actor, { user, session });
-            if (records.length) await this.store.commit(records);
+            const end = ids.at(-1);
+            const made = end !== undefined && records.some(r => /** @type {any} */ (r).kind === 'messageAppend' && /** @type {any} */ (r).id === end) ? end : null;
+            await this.inDraftLanes(tree, made === null ? [] : [draftSent], async () => {
+                if (made !== null && draftSent !== null && await this.store.chatRead('draft', draftSent) !== null) {
+                    records.push({ kind: 'draftValue', ...draftSent, text: '', user, ...(session === null ? {} : { session }) });
+                }
+                await this.claimConversation(records, tree, actor, { user, session });
+                if (records.length) await this.store.commit(records);
+            });
             const external = await this.externalIds(ids);
             const answer = { ok: true, node_ids: external };
             if (already.length) answer.already_stored = already.map(id => external[ids.indexOf(id)]);
             return answer;
         }));
+    }
+
+    /**
+     * What the text written in a chat will be sent after: the message the session landed on; at the root, the opening
+     * it shows, stored or a card greeting (a group's last member opening); with none, the root
+     * @param {{ tree: bigint, actor: Actor }} p
+     * @returns {Promise<DraftOwner>}
+     */
+    async endOwner({ tree, actor }) {
+        const { user, session } = await this.knownActorIds(actor);
+        const lands = await this.store.chatRead('landing', { tree, ...(session === null ? {} : { session }), ...(user === null ? {} : { user }) });
+        if (lands !== null) return { message: lands };
+        if ((await this.owner(tree)).group) {
+            const last = (await this.memberOpenings({ tree, actor })).at(-1);
+            return last ? { tree: last.card, greeting: last.greetingId } : { tree };
+        }
+        const model = this.people.greetingModel ? await this.people.greetingModel(tree) : null;
+        /** @type {CardGreetings} */
+        const card = model === null ? NO_GREETINGS : {
+            greetings: model.greetings.map(g => ({ mes: g.text, extra: {} })),
+            ids: model.greetings.map(g => g.id),
+            defaultId: model.defaultId,
+            defaultEpoch: model.defaultEpoch,
+        };
+        const [shown] = (await this.openingAlternatives({ tree, actor, range: { limit: 1 }, card })).alternatives;
+        if (typeof shown?.node_id === 'string') {
+            const [id] = await this.messageIds([shown.node_id]);
+            if (id !== null) return { message: id };
+        }
+        return Number.isInteger(shown?.extra?.greeting_id) ? { tree, greeting: shown.extra.greeting_id } : { tree };
     }
 
     /**
@@ -1205,6 +1248,51 @@ export class ChatEngine {
             records.push({ kind: 'memberOpeningChoice', session, user, tree, card: member.id, index: greetingChoice(greeting.id, model.defaultEpoch) });
         }
         return records;
+    }
+
+    /**
+     * Runs a write holding, besides the tree's own, the lane of each other tree a draft it writes belongs to: a member's
+     * greeting draft is shared by the member's own chats and every group's
+     * @template T
+     * @param {bigint} tree the tree whose lane the write already holds
+     * @param {(DraftOwner | null)[]} owners
+     * @param {() => Promise<T>} write
+     * @returns {Promise<T>}
+     */
+    inDraftLanes(tree, owners, write) {
+        const lanes = [...new Set(owners.flatMap(o => (o === null || 'message' in o || o.tree === tree ? [] : [o.tree])))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+        return lanes.reduceRight((/** @type {() => Promise<T>} */ inner, lane) => () => this.serialized(lane, inner), write)();
+    }
+
+    /**
+     * @param {DraftOwner} owner
+     * @returns {Promise<string>} the draft's text, '' when there is none
+     */
+    async draftOf(owner) {
+        return (await this.store.chatRead('draft', owner)) ?? '';
+    }
+
+    /**
+     * Keeps a draft as the text given, after what it names: an edit of what is kept, the whole text when nothing is, none
+     * when it's empty
+     * @param {{ tree: bigint, owner: DraftOwner, text: string, actor: Actor }} p tree: the chat it's written in
+     * @returns {Promise<void>}
+     */
+    saveDraft({ tree, owner, text, actor }) {
+        return this.serialized(tree, async () => {
+            await this.inDraftLanes(tree, [owner], async () => {
+                const before = await this.draftOf(owner);
+                if (before === text) return;
+                /** @type {object[]} */
+                const records = [];
+                const { user, session } = await this.actorIds(actor, records);
+                const who = { user, ...(session === null ? {} : { session }) };
+                records.push(before === '' || text === ''
+                    ? { kind: 'draftValue', ...owner, text, ...who }
+                    : { kind: 'draftEdit', ...owner, ...textEdit(before, text), ...who });
+                await this.store.commit(records);
+            });
+        });
     }
 
     /**

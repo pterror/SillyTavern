@@ -16,6 +16,7 @@ import { textgenerationwebui_banned_in_macros } from '../../textgen-settings.js'
 import { eventSource, event_types } from '../../events.js';
 import { logMacroGeneralError } from './MacroDiagnostics.js';
 import { getStringHash } from '../../hash-utils.js';
+import { chatBoxText } from '../../chat-box.js';
 /**
  * Constructs the MacroEnv object passed to macro handlers on the page, from the page's state. The server builds its
  * own from a request's (src/macro-substitution.js).
@@ -63,7 +64,7 @@ function pageState() {
         get chatMetadata() { return chat_metadata; },
         get chatId() { return getCurrentChatId(); },
         get variables() { return scratchVariables ?? { local: localVariables, global: globalVariables }; },
-        get input() { return /** @type {HTMLTextAreaElement} */ (document.querySelector('#send_textarea'))?.value ?? ''; },
+        get input() { return chatBoxText(); },
         get firstDisplayedMessageId() {
             const mesId = Number(document.querySelector('#chat .mes')?.getAttribute('mesid'));
             return !Number.isNaN(mesId) && mesId >= 0 ? mesId : null;

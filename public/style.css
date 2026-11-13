@@ -2068,24 +2068,16 @@ button {
     color: var(--SmartThemeBodyColor);
 }
 
-#send_textarea {
+#chat_box {
     min-height: calc(var(--bottomFormBlockSize) + 2px);
-    height: calc(var(--bottomFormBlockSize) + 2px);
-    max-height: 50vh;
-    max-height: 50dvh;
-    word-wrap: break-word;
-    resize: vertical;
-    display: block;
-    background-color: rgba(255, 0, 0, 0);
-    border: 0;
-    box-shadow: none;
-    padding: 6px;
-    font-family: var(--mainFontFamily);
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
     margin: 0;
     text-shadow: 0px 0px calc(var(--shadowWidth) * 1px) var(--SmartThemeShadowColor);
     flex: 1;
     order: 3;
-    field-sizing: content;
 
     --progColor: rgb(146, 190, 252);
     --progFlashColor: rgb(215, 136, 114);
@@ -2106,20 +2098,23 @@ button {
     transition: clip-path var(--animation-duration-2x);
 }
 
-#send_textarea:placeholder-shown {
-    overflow: hidden;
+#chat_box .cm-editor {
+    flex: 1;
+    padding: 6px;
+    background-color: transparent;
+    border-radius: 0;
 }
 
-#send_textarea:focus-visible {
+#chat_box .cm-editor.cm-focused {
     outline: none;
 }
 
-#send_form:has(#send_textarea:focus-visible) {
+#send_form:has(#chat_box .cm-focused) {
     border-color: var(--interactable-outline-color-faint);
     outline: 1px solid var(--interactable-outline-color-faint);
 }
 
-#form_sheld.isExecutingCommandsFromChatInput.script_paused #send_textarea {
+#form_sheld.isExecutingCommandsFromChatInput.script_paused #chat_box {
     animation-name: script_progress_pulse;
     animation-duration: 1500ms;
     animation-timing-function: ease-in-out;
@@ -2127,15 +2122,15 @@ button {
     animation-iteration-count: infinite;
 }
 
-#form_sheld.script_success #send_textarea {
+#form_sheld.script_success #chat_box {
     border-top-color: var(--progSuccessColor);
 }
 
-#form_sheld.script_error #send_textarea {
+#form_sheld.script_error #chat_box {
     border-top-color: var(--progErrorColor);
 }
 
-#form_sheld.script_aborted #send_textarea {
+#form_sheld.script_aborted #chat_box {
     border-top-color: var(--progAbortedColor);
 }
 
@@ -3069,10 +3064,14 @@ textarea::placeholder {
     opacity: 0.7;
 }
 
-#send_textarea::placeholder {
-    color: var(--SmartThemeEmColor) !important;
-    text-align: center;
+#chat_box .cm-placeholder {
+    color: var(--SmartThemeEmColor);
+    opacity: 0.7;
     white-space: nowrap;
+}
+
+#chat_box .cm-content:has(.cm-placeholder) {
+    text-align: center;
 }
 
 @media screen and (max-width: 1000px) {
@@ -5300,8 +5299,6 @@ input[type="range"]::-webkit-slider-thumb {
     padding: 5px;
     background-color: var(--black50a);
     border-radius: 5px;
-    max-height: 75vh;
-    max-height: 75dvh;
 }
 
 .chat-editor .cm-editor.cm-focused {
@@ -7397,16 +7394,16 @@ textarea.live-editor-textarea {
     user-select: none;
 }
 
-.cm-editor.live-chat-text q {
+#chat_box q {
     color: var(--SmartThemeQuoteColor);
 }
 
-.cm-editor.live-chat-text font[color] q {
+#chat_box font[color] q {
     color: inherit;
 }
 
-.cm-editor.live-chat-text q::before,
-.cm-editor.live-chat-text q::after {
+#chat_box q::before,
+#chat_box q::after {
     content: '';
 }
 

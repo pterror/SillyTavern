@@ -47,3 +47,31 @@ describe('macro suggestions', () => {
         expect(await macros(reader('no braces'), 9, false)).toBeUndefined();
     });
 });
+
+describe('slash command suggestions', () => {
+    const named = (name, start, options, secondary = null) => ({ name, start, optionList: options, ...(secondary ? { getSecondaryNameAt: () => secondary } : {}) });
+    const option = (name, more = {}) => ({ name, value: name, ...more });
+
+    test('offer the commands the parser names at the cursor, replacing what was typed of the name', async () => {
+        const slash = suggest.slashSuggestions(() => ({ getNameAt: async () => named('he', 1, [option('help'), option('hidden', { isSelectable: false })]) }), () => true);
+        const answer = await slash(reader('/he'), 3, false);
+        expect(answer?.from).toBe(1);
+        expect(answer?.to).toBe(3);
+        expect(answer?.options.map(o => o.label)).toEqual(['help']);
+    });
+
+    test('past the command\'s name, offer what the parser names there: its arguments and their values', async () => {
+        const slash = suggest.slashSuggestions(() => ({ getNameAt: async () => named('echo', 1, [option('echo')], named('', 6, [option('title=')])) }), () => true);
+        const answer = await slash(reader('/echo '), 6, false);
+        expect(answer?.from).toBe(6);
+        expect(answer?.options.map(o => o.label)).toEqual(['title=']);
+    });
+
+    test('offer nothing in text that isn\'t a command, or while the setting holds them back unless asked', async () => {
+        const getNameAt = jest.fn(async () => named('he', 1, [option('help')]));
+        const slash = suggest.slashSuggestions(() => ({ getNameAt }), () => false);
+        expect(await slash(reader('hello'), 5, true)).toBeUndefined();
+        expect(await slash(reader('/he'), 3, false)).toBeUndefined();
+        expect((await slash(reader('/he'), 3, true))?.options.map(o => o.label)).toEqual(['help']);
+    });
+});

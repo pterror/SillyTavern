@@ -631,8 +631,6 @@ export function registerCharacterCommands() {
                     return '';
                 }
 
-                $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
-
                 outerResolve(new Promise(innerResolve => setTimeout(() => innerResolve(Generate('impersonate', options)), 1)));
             }, 1));
 

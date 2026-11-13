@@ -1,5 +1,6 @@
 import { requestStore } from './user-stores.js';
 import { requestSession } from './request-session.js';
+import { draftOwnerOf } from './chat-drafts.js';
 
 /**
  * @typedef {object} ChatContext
@@ -13,6 +14,8 @@ import { requestSession } from './request-session.js';
  * @property {import('./users.js').UserDirectoryList} [directories]
  * @property {import('./pending-opening.js').PendingOpening | null} [opening] the opening the page sent that waits for what goes under it
  * @property {string} [openedAt] the node that opening was stored as
+ * @property {import('./chat-drafts.js').DraftOwner | null} [draftSent] the draft whose text the request's action took,
+ *   cleared by the write that stores what it sent
  */
 
 /**
@@ -30,7 +33,11 @@ export async function chatContext(request, { avatar, group }) {
     const treeSpeaker = groupId !== null || name === null ? null : (await store.people.byAvatar([name])).get(name) ?? null;
     const session = await requestSession(store.chats, request, tree);
     const replyChanges = request.body?.reply_changes;
-    return { store, tree, treeSpeaker, session, avatar: groupId === null ? name : null, groupId, directories: request.user?.directories, ...(Array.isArray(replyChanges) ? { replyChanges } : {}) };
+    /** @type {ChatContext} */
+    const chat = { store, tree, treeSpeaker, session, avatar: groupId === null ? name : null, groupId, directories: request.user?.directories, ...(Array.isArray(replyChanges) ? { replyChanges } : {}) };
+    const sent = request.body?.draft_sent;
+    if (sent !== undefined) chat.draftSent = await draftOwnerOf(chat, sent);
+    return chat;
 }
 
 /**

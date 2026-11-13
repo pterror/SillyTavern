@@ -3,7 +3,7 @@ import { addOneMessage, default_avatar, extension_prompts, extractMessageBias, g
 import { chat, chat_metadata } from '../chat-state.js';
 import { eventSource, event_types } from '../events.js';
 import { getMessageTimeStamp } from '../RossAscends-mods.js';
-import { AUTOCOMPLETE_STATE, AutoComplete } from '../autocomplete/AutoComplete.js';
+import { AUTOCOMPLETE_STATE } from '../autocomplete/AutoComplete.js';
 import { chat_completion_sources } from '../chat-completion-settings.js';
 import { buildConnectApiMap } from '../connect-api-map.js';
 import { t } from '../i18n.js';
@@ -91,8 +91,6 @@ export const COMMENT_NAME_DEFAULT = 'Note';
 export const SCRIPT_PROMPT_KEY = 'script_inject_';
 
 export async function generateSystemMessage(args, prompt) {
-    $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
-
     if (!prompt) {
         console.warn('WARN: No prompt provided for /sysgen command');
         toastr.warning(t`You must provide a prompt for the system message`);
@@ -329,7 +327,7 @@ export function processChatSlashCommands() {
  */
 async function clearCommandProgress() {
     if (isExecutingCommandsFromChatInput) return;
-    const ta = document.getElementById('send_textarea');
+    const ta = document.getElementById('chat_box');
     const fs = document.getElementById('form_sheld');
     if (!ta || !fs) return;
     ta.style.setProperty('--progDone', '1');
@@ -392,7 +390,6 @@ export function stopScriptExecution() {
  * @typedef ExecuteSlashCommandsOnChatInputOptions
  * @prop {SlashCommandScope} [scope]
  * @prop {import('./SlashCommandParser.js').ParserFlags} [parserFlags]
- * @prop {boolean} [clearChatInput]
  * @prop {string} [source]
  */
 
@@ -406,7 +403,6 @@ export async function executeSlashCommandsOnChatInput(text, options = {}) {
     options = Object.assign({
         scope: null,
         parserFlags: null,
-        clearChatInput: false,
         source: null,
     }, options);
 
@@ -414,14 +410,8 @@ export async function executeSlashCommandsOnChatInput(text, options = {}) {
     commandsFromChatInputAbortController?.abort('processCommands was called');
     activateScriptButtons();
 
-    /** @type {HTMLTextAreaElement} */
-    const ta = document.querySelector('#send_textarea');
+    const ta = /** @type {HTMLElement} */ (document.querySelector('#chat_box'));
     const fs = document.querySelector('#form_sheld');
-
-    if (options.clearChatInput) {
-        ta.value = '';
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-    }
 
     ta.style.setProperty('--prog', '0%');
     ta.style.setProperty('--progDone', '0');
@@ -486,37 +476,25 @@ export async function executeSlashCommandsOnChatInput(text, options = {}) {
     return result;
 }
 
-/**
- * @param {HTMLTextAreaElement} textarea
- * @param {Boolean} isFloating
- * @returns {Promise<AutoComplete>}
- */
-async function setSlashCommandAutoComplete(textarea, isFloating = false) {
-    if (!canUseNegativeLookbehind()) {
-        console.warn('Cannot use negative lookbehind in this browser');
-        return;
-    }
+/** @type {SlashCommandParser | null} */
+let chatBoxParser = null;
 
-    const parser = new SlashCommandParser();
-    const ac = new AutoComplete(
-        textarea,
-        () => ac.text[0] == '/' && (power_user.stscript.autocomplete.state === AUTOCOMPLETE_STATE.ALWAYS || power_user.stscript.autocomplete.state === AUTOCOMPLETE_STATE.MIN_LENGTH && ac.text.length > 2),
-        async (text, index) => await parser.getNameAt(text, index),
-        isFloating,
-    );
-    return ac;
+/**
+ * @returns {SlashCommandParser} the parser the chat box's suggestions read slash commands with
+ */
+export function chatBoxSlashParser() {
+    chatBoxParser ??= new SlashCommandParser();
+    return chatBoxParser;
 }
 
-export async function initSlashCommandAutoComplete() {
-    const sendTextarea = /** @type {HTMLTextAreaElement} */ (document.querySelector('#send_textarea'));
-    setSlashCommandAutoComplete(sendTextarea);
-    sendTextarea.addEventListener('input', () => {
-        if (sendTextarea.value && sendTextarea.value[0] == '/') {
-            sendTextarea.style.fontFamily = 'var(--monoFontFamily, monospace)';
-        } else {
-            sendTextarea.style.fontFamily = null;
-        }
-    });
+/**
+ * @param {string} text the chat box's text as typed
+ * @returns {boolean} whether slash command suggestions show for it, as the autocomplete setting says
+ */
+export function slashSuggestionsWanted(text) {
+    if (!canUseNegativeLookbehind()) return false;
+    const state = power_user.stscript.autocomplete.state;
+    return state === AUTOCOMPLETE_STATE.ALWAYS || (state === AUTOCOMPLETE_STATE.MIN_LENGTH && text.length > 2);
 }
 
 /**

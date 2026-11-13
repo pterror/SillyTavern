@@ -229,7 +229,7 @@ export async function findCharacterAvatarByName(page, name) {
  * @param {import('@playwright/test').Page} page
  */
 export function chatBox(page) {
-    return page.locator('#send_form .cm-editor .cm-content').or(page.locator('#send_textarea:not(.live-editor-textarea)'));
+    return page.locator('#chat_box .cm-content');
 }
 
 /**

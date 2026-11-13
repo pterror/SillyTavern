@@ -56,7 +56,6 @@ async function generateRawCallback(args, value) {
         return '';
     }
 
-    $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
     const lock = isTrueBoolean(args?.lock);
     const as = args?.as || 'system';
     const quietToLoud = as === 'char';
@@ -99,7 +98,6 @@ async function generateRawCallback(args, value) {
  * @returns {Promise<string>}
  */
 async function generateCallback(args, value) {
-    $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
     const lock = isTrueBoolean(args?.lock);
     const trim = isTrueBoolean(args?.trim?.toString());
     const as = args?.as || 'system';

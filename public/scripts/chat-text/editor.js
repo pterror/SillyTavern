@@ -18,6 +18,7 @@ import {
     formatSteps,
 } from '../../live-editor-lib.js';
 import { liveSearch, showPresets } from '../live-editor/search.js';
+import { boxSize } from './box-size.js';
 import { macroPills } from './macros.js';
 import { savedText } from './saved-text.js';
 import { macroSuggestions, mentionSuggestions } from './suggest.js';
@@ -129,6 +130,71 @@ async function imageSize(file) {
 }
 
 /**
+ * The markdown formatting commands, and an image upload, as tools
+ * @returns {Tool[]}
+ */
+export function formatTools() {
+    const { toggleStyle, hasStyle } = markdownFormat;
+    return [
+        { id: 'bold', label: page.t`Bold`, icon: icon('fa-bold'), run: toggleStyle('bold'), on: state => hasStyle(state, 'bold') },
+        { id: 'italic', label: page.t`Italic`, icon: icon('fa-italic'), run: toggleStyle('italic'), on: state => hasStyle(state, 'italic') },
+        { id: 'underline', label: page.t`Underline`, icon: icon('fa-underline'), run: toggleStyle('underline'), on: state => hasStyle(state, 'underline') },
+        { id: 'strike', label: page.t`Strikethrough`, icon: icon('fa-strikethrough'), run: toggleStyle('strike'), on: state => hasStyle(state, 'strike') },
+        { id: 'code', label: page.t`Code`, icon: icon('fa-code'), run: toggleStyle('code'), on: state => hasStyle(state, 'code') },
+        { id: 'heading', label: page.t`Heading`, icon: icon('fa-heading'), run: markdownFormat.heading, on: markdownFormat.inHeading },
+        { id: 'link', label: page.t`Link`, icon: icon('fa-link'), run: markdownFormat.link, on: markdownFormat.inLink },
+        { id: 'quote', label: page.t`Quote`, icon: icon('fa-quote-left'), run: markdownFormat.quote, on: markdownFormat.inQuote },
+        { id: 'list', label: page.t`List`, icon: icon('fa-list-ul'), run: markdownFormat.list, on: markdownFormat.inList },
+        { id: 'codeBlock', label: page.t`Code block`, icon: icon('fa-terminal'), run: markdownFormat.codeBlock, on: markdownFormat.inCodeBlock },
+        { id: 'image', label: page.t`Image`, icon: icon('fa-image'), run: insertImage },
+    ];
+}
+
+/**
+ * Binds each command's key on an editor, running it there
+ * @param {View} view
+ * @param {ReadonlyMap<string, Tool>} byId the editor's tools by id
+ * @returns {() => void} unbinds them
+ */
+export function commandKeys(view, byId) {
+    return keybinds(KEYS.map(key => ({
+        keys: [key.keys],
+        typing: true,
+        ...(key.when === 'hotkeys' ? { when: () => page.hotkeys() } : {}),
+        run: () => byId.get(key.id)?.run(view) ?? false,
+    })), { target: view.dom, capture: true });
+}
+
+/**
+ * The toolbar of an editor, in the space it reserves, its buttons naming their keys
+ * @param {View} view
+ * @param {import('@pterror/interact-editor/toolbar').Watched<readonly Tool[]>} tools
+ * @returns {{ element: HTMLElement, stop: () => void }}
+ */
+export function toolbarFor(view, tools) {
+    shortcutsShown ??= modifierHeld({ modifier: isMac ? 'Meta' : 'Control' });
+    /** @param {string} id */
+    const keyOf = id => {
+        const binding = KEYS.find(key => key.id === id);
+        return binding ? formatSteps(binding.keys, step => formatKey(step)) : undefined;
+    };
+    const bar = toolbar({ view, tools });
+    const stopHints = keyHints({ buttons: bar.buttons, keyOf, held: shortcutsShown });
+    bar.element.classList.add('chat-editor-toolbar');
+    bar.element.setAttribute('aria-label', page.t`Formatting`);
+    return {
+        element: bar.element,
+        stop() {
+            stopHints();
+            bar.stop();
+        },
+    };
+}
+
+/** @returns {EditorPage} what editors read from the page */
+export const editorPage = () => page;
+
+/**
  * @typedef {object} ChatEditorOptions
  * @property {Element} parent where the editor and its toolbar go
  * @property {TextSetup} setup how the text is drawn
@@ -181,20 +247,9 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
         redraw();
         return true;
     };
-    const { toggleStyle, hasStyle } = markdownFormat;
     /** @type {readonly Tool[]} */
     const tools = [
-        { id: 'bold', label: page.t`Bold`, icon: icon('fa-bold'), run: toggleStyle('bold'), on: state => hasStyle(state, 'bold') },
-        { id: 'italic', label: page.t`Italic`, icon: icon('fa-italic'), run: toggleStyle('italic'), on: state => hasStyle(state, 'italic') },
-        { id: 'underline', label: page.t`Underline`, icon: icon('fa-underline'), run: toggleStyle('underline'), on: state => hasStyle(state, 'underline') },
-        { id: 'strike', label: page.t`Strikethrough`, icon: icon('fa-strikethrough'), run: toggleStyle('strike'), on: state => hasStyle(state, 'strike') },
-        { id: 'code', label: page.t`Code`, icon: icon('fa-code'), run: toggleStyle('code'), on: state => hasStyle(state, 'code') },
-        { id: 'heading', label: page.t`Heading`, icon: icon('fa-heading'), run: markdownFormat.heading, on: markdownFormat.inHeading },
-        { id: 'link', label: page.t`Link`, icon: icon('fa-link'), run: markdownFormat.link, on: markdownFormat.inLink },
-        { id: 'quote', label: page.t`Quote`, icon: icon('fa-quote-left'), run: markdownFormat.quote, on: markdownFormat.inQuote },
-        { id: 'list', label: page.t`List`, icon: icon('fa-list-ul'), run: markdownFormat.list, on: markdownFormat.inList },
-        { id: 'codeBlock', label: page.t`Code block`, icon: icon('fa-terminal'), run: markdownFormat.codeBlock, on: markdownFormat.inCodeBlock },
-        { id: 'image', label: page.t`Image`, icon: icon('fa-image'), run: insertImage },
+        ...formatTools(),
         { id: 'macros', label: page.t`Show macros as written`, icon: icon('fa-file-code'), run: toggleMacros, on: () => asWritten },
         { id: 'find', label: page.t`Find and replace`, icon: icon('fa-magnifying-glass'), run: openSearchPanel },
         { id: 'presets', label: page.t`Find and replace presets`, icon: icon('fa-wand-magic-sparkles'), run: v => (showPresets(v), true) },
@@ -220,6 +275,7 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
             history(),
             keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
             EditorView.lineWrapping,
+            boxSize('75dvh'),
             drawSelection(),
             liveSearch({ context: presetContext ?? (() => ({ characterName: speaker })) }),
             overtype(),
@@ -231,23 +287,9 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
     });
     view = made.view;
 
-    shortcutsShown ??= modifierHeld({ modifier: isMac ? 'Meta' : 'Control' });
-    /** @param {string} id */
-    const keyOf = id => {
-        const binding = KEYS.find(key => key.id === id);
-        return binding ? formatSteps(binding.keys, step => formatKey(step)) : undefined;
-    };
-    const bar = toolbar({ view, tools: shownTools });
-    const stopHints = keyHints({ buttons: bar.buttons, keyOf, held: shortcutsShown });
-    bar.element.classList.add('chat-editor-toolbar');
-    bar.element.setAttribute('aria-label', page.t`Formatting`);
+    const bar = toolbarFor(view, shownTools);
     holder.prepend(bar.element);
-    const stopKeys = keybinds(KEYS.map(key => ({
-        keys: [key.keys],
-        typing: true,
-        ...(key.when === 'hotkeys' ? { when: () => page.hotkeys() } : {}),
-        run: () => byId.get(key.id)?.run(view) ?? false,
-    })), { target: view.dom, capture: true });
+    const stopKeys = commandKeys(view, byId);
 
     return {
         view,
@@ -263,7 +305,6 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
         redraw,
         stop() {
             stopKeys();
-            stopHints();
             bar.stop();
             made.stop();
             holder.remove();

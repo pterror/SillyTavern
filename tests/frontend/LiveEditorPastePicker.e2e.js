@@ -185,27 +185,19 @@ test.describe('the paste picker', () => {
 test.describe('the paste picker in the app', () => {
     test.beforeEach(testSetup.awaitST);
 
-    test('in the chat box: switching works, and Escape puts the picker away without anything else', async ({ page }) => {
+    test('in the chat box: pasted HTML is written as markdown, with no picker', async ({ page }) => {
         await page.evaluate(async () => {
             // @ts-ignore
             await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
         });
-        const editor = page.locator('#send_form .cm-editor');
+        const editor = page.locator('#chat_box .cm-editor');
         await expect(editor).toHaveCount(1, { timeout: 10000 });
         await editor.locator('.cm-content').click();
         await paste(page, editor, { 'text/html': HTML, 'text/plain': PLAIN });
-        const read = () => page.evaluate(() => /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea')).value);
-        expect(await read()).toBe(PLAIN);
-        await page.keyboard.press('Control+Alt+v');
-        await page.keyboard.press('Control+Alt+v');
-        expect(await read()).toContain('<b>bold</b>');
-        await page.keyboard.press('Escape');
+        const read = () => page.evaluate(async () => (await import('/scripts/chat-box.js')).chatBoxText());
+        await expect.poll(read).toBe(MARKDOWN);
         await expect(editor.locator('.live-paste-picker')).toHaveCount(0);
-        expect(await read()).toContain('<b>bold</b>');
-        await page.evaluate(() => {
-            // @ts-ignore
-            $('#send_textarea').val('').trigger('input');
-        });
+        await page.evaluate(async () => (await import('/scripts/chat-box.js')).writeChatBox(''));
     });
 
     test('in a message edit: pasted HTML is written as markdown', async ({ page }) => {

@@ -3,6 +3,8 @@ import { currentPageMacroFacts } from './macro-values.js';
 import { askOnChatOpen, chatOpenPart } from './chat-open-parts.js';
 import { cardTokenTexts } from './card-token-texts.js';
 import { getFocusedField } from './live-editor/registry.js';
+import { chatBoxText, focusChatBox, setChatBoxPlaceholder } from './chat-box.js';
+import { t } from './i18n.js';
 import { DOMPurify, Bowser } from '../lib.js';
 
 import {
@@ -46,7 +48,6 @@ import { debounce_timeout, SWIPE_SOURCE } from './constants.js';
 
 import { Popup } from './popup.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { getCurrentUserHandle } from './user.js';
 import { kai_settings } from './kai-settings.js';
 
 var RPanelPin = document.getElementById('rm_button_panel_pin');
@@ -164,6 +165,57 @@ export function shouldSendOnEnter() {
         case send_on_enter_options.ENABLED:
             return true;
     }
+}
+
+/**
+ * Opens the editor of the last message, or of the last of the person's own
+ * @param {boolean} own
+ * @returns {boolean} whether there was one to edit
+ */
+function editLastMessage(own) {
+    if ($('#shadow_select_chat_popup').css('display') !== 'none') return false;
+    if (own) {
+        if (!($('.swipe_right:last').css('display') === 'flex' || $('.last_mes').attr('is_system') === 'true')) return false;
+        const mine = document.querySelectorAll('div[is_user="true"]');
+        const edit = mine[mine.length - 1]?.querySelector('.mes_block .mes_edit') ?? null;
+        if (edit === null) return false;
+        $(edit).trigger('click');
+        return true;
+    }
+    if (!$('.last_mes .mes_buttons').is(':visible')) return false;
+    const edit = document.querySelector('.last_mes .mes_block .mes_edit');
+    if (edit === null) return false;
+    $(edit).trigger('click');
+    return true;
+}
+
+/**
+ * @param {'left' | 'right'} side
+ * @param {boolean} repeated
+ * @returns {boolean} whether the last message was swiped
+ */
+function swipeLast(side, repeated) {
+    if (!isSwipingAllowed() || document.body.classList.contains('nGY2_body_scrollbar') || $('#shadow_select_chat_popup').css('display') !== 'none') return false;
+    $(`.swipe_${side}:last`).trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated });
+    return true;
+}
+
+/** @param {import('@codemirror/view').EditorView} view */
+const isEmpty = view => view.state.doc.length === 0;
+
+/**
+ * The chat box's commands on keys: Enter sends (as the person's setting says); in an empty box, Up edits the last
+ * message, Ctrl+Up the person's last, and Left and Right swipe the last message
+ * @returns {import('@codemirror/view').KeyBinding[]}
+ */
+export function chatBoxKeys() {
+    return [
+        { key: 'Enter', run: () => (shouldSendOnEnter() ? (requestTextareaSend('enter'), true) : false) },
+        { key: 'ArrowUp', run: view => isEmpty(view) && editLastMessage(false) },
+        { key: 'Ctrl-ArrowUp', run: view => isEmpty(view) && editLastMessage(true) },
+        { key: 'ArrowLeft', run: view => isEmpty(view) && swipeLast('left', false) },
+        { key: 'ArrowRight', run: view => isEmpty(view) && swipeLast('right', false) },
+    ];
 }
 
 export { humanizedDateTime } from './humanized-date.js';
@@ -363,8 +415,7 @@ export function renderHotswap() {
 //changes input bar and send button display depending on connection status
 function RA_checkOnlineStatus() {
     if (online_status == 'no_connection') {
-        const send_textarea = $('#send_textarea');
-        send_textarea.attr('placeholder', send_textarea.attr('no_connection_text'));
+        setChatBoxPlaceholder(t`Not connected to API!`);
         $('#send_form').addClass('no-connection');
         $('#send_but').addClass('displayNone');
         $('#mes_continue').addClass('displayNone');
@@ -374,8 +425,7 @@ function RA_checkOnlineStatus() {
         connection_made = false;
     } else {
         if (online_status !== undefined && online_status !== 'no_connection') {
-            const send_textarea = $('#send_textarea');
-            send_textarea.attr('placeholder', send_textarea.attr('connected_text'));
+            setChatBoxPlaceholder(t`Type a message, or /? for help`);
             $('#send_form').removeClass('no-connection');
             $('#API-status-top').removeClass('fa-plug-circle-exclamation redOverlayGlow');
             $('#API-status-top').addClass('fa-plug');
@@ -465,25 +515,6 @@ function RA_autoconnect(PrevApi) {
     }
 }
 
-const getUserInputKey = () => getCurrentUserHandle() + '_userInput';
-
-function restoreUserInput() {
-    if (!power_user.restore_user_input) {
-        console.debug('restoreUserInput disabled');
-        return;
-    }
-
-    const userInput = localStorage.getItem(getUserInputKey());
-    if (userInput) {
-        $('#send_textarea').val(userInput)[0].dispatchEvent(new Event('input', { bubbles: true }));
-    }
-}
-
-function saveUserInput() {
-    const userInput = String($('#send_textarea').val());
-    localStorage.setItem(getUserInputKey(), userInput);
-}
-const saveUserInputDebounced = debounce(saveUserInput);
 
 /**
  * Lets a floating window be dragged by its header (`#<id>header`, grabbed by its `.drag-grabber`), kept inside the
@@ -525,23 +556,7 @@ export function dragElement($elmnt) {
     });
 }
 
-/**@type {HTMLTextAreaElement} */
-const sendTextArea = document.querySelector('#send_textarea');
 const chatBlock = document.getElementById('chat');
-const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
-
-function autoFitSendTextArea() {
-    const originalScrollBottom = chatBlock.scrollHeight - (chatBlock.scrollTop + chatBlock.offsetHeight);
-
-    sendTextArea.style.height = '1px'; // Reset height to 1px to force recalculation of scrollHeight
-    const newHeight = sendTextArea.scrollHeight;
-    sendTextArea.style.height = `${newHeight}px`;
-
-    if (!isFirefox) {
-        chatBlock.scrollTop = chatBlock.scrollHeight - (chatBlock.offsetHeight + originalScrollBottom);
-    }
-}
-const autoFitSendTextAreaDebounced = debounce(autoFitSendTextArea, debounce_timeout.short);
 
 // ---------------------------------------------------
 
@@ -684,15 +699,6 @@ export function initRossMods() {
     restoreDrawerOrder();
     keepOneRightPanelOpen();
 
-    var chatbarInFocus = false;
-    $('#send_textarea').on('focus', function () {
-        chatbarInFocus = true;
-    });
-
-    $('#send_textarea').on('blur', function () {
-        chatbarInFocus = false;
-    });
-
     $(SelectedCharacterTab).on('click', function () { accountStorage.setItem('SelectedNavTab', 'rm_button_selected_ch'); });
 
     $(document).on('click', '.character_select', function () {
@@ -707,9 +713,7 @@ export function initRossMods() {
         setActiveGroup(groupId);
     });
 
-    const cssAutofit = CSS.supports('field-sizing', 'content');
-
-    if (cssAutofit) {
+    {
         let lastHeight = chatBlock.offsetHeight;
         const chatBlockResizeObserver = new ResizeObserver((entries) => {
             for (const entry of entries) {
@@ -732,25 +736,6 @@ export function initRossMods() {
         chatBlockResizeObserver.observe(chatBlock);
     }
 
-    sendTextArea.addEventListener('input', () => {
-        saveUserInputDebounced();
-
-        if (cssAutofit) {
-            // Unset modifications made with a manual resize
-            sendTextArea.style.height = 'auto';
-            return;
-        }
-
-        const hasContent = sendTextArea.value !== '';
-        const fitsCurrentSize = sendTextArea.scrollHeight <= sendTextArea.offsetHeight;
-        const isScrollbarShown = sendTextArea.clientWidth < sendTextArea.offsetWidth;
-        const isHalfScreenHeight = sendTextArea.offsetHeight >= window.innerHeight / 2;
-        const needsDebounce = hasContent && (fitsCurrentSize || (isScrollbarShown && isHalfScreenHeight));
-        if (needsDebounce) autoFitSendTextAreaDebounced();
-        else autoFitSendTextArea();
-    });
-
-    restoreUserInput();
 
     // Swipe gestures (see: https://www.npmjs.com/package/swiped-events)
     document.addEventListener('swiped-left', function (e) {
@@ -798,11 +783,7 @@ export function initRossMods() {
 
 
     function isInputElementInFocus() {
-        const field = getFocusedField();
-        if (field) {
-            return field.id !== 'send_textarea';
-        }
-        return $(':focus').prop('contenteditable') == 'true';
+        return getFocusedField() !== null || $(':focus').prop('contenteditable') == 'true';
     }
 
     function isModifiedKeyboardEvent(event) {
@@ -818,7 +799,6 @@ export function initRossMods() {
     });
 
     const hotkeyTargets = {
-        'send_textarea': sendTextArea,
         'dialogue_popup_input': document.querySelector('#dialogue_popup_input'),
     };
 
@@ -832,15 +812,6 @@ export function initRossMods() {
             return;
         }
 
-        //Enter to send when send_textarea in focus
-        if (getFocusedField() == hotkeyTargets.send_textarea) {
-            const sendOnEnter = shouldSendOnEnter();
-            if (!event.isComposing && !event.shiftKey && !event.ctrlKey && !event.altKey && event.key == 'Enter' && sendOnEnter) {
-                event.preventDefault();
-                requestTextareaSend('enter');
-                return;
-            }
-        }
         if (getFocusedField() == hotkeyTargets.dialogue_popup_input && !isMobile()) {
             if (!event.shiftKey && !event.ctrlKey && event.key == 'Enter') {
                 event.preventDefault();
@@ -887,13 +858,13 @@ export function initRossMods() {
             if (editMesDone.length > 0) {
                 console.debug('Accepting edits with Ctrl+Enter');
                 event.preventDefault();
-                $('#send_textarea').trigger('focus');
+                focusChatBox();
                 editMesDone.trigger('click');
                 return;
             } else if (reasoningMesDone.length > 0) {
                 console.debug('Accepting edits with Ctrl+Enter');
                 event.preventDefault();
-                $('#send_textarea').trigger('focus');
+                focusChatBox();
                 reasoningMesDone.trigger('click');
                 return;
             } else if (is_send_press == false) {
@@ -906,7 +877,7 @@ export function initRossMods() {
                 }
 
                 // If there is input text, we do not trigger a regenerate - we just send it
-                if ($('#send_textarea').val() !== '') {
+                if (chatBoxText() !== '') {
                     if (shouldSendOnEnter()) {
                         console.debug('Sending with Ctrl+Enter');
                         event.preventDefault();
@@ -948,7 +919,6 @@ export function initRossMods() {
             if (
                 isSwipingAllowed() &&
                 !isNanogallery2LightboxActive() &&
-                $('#send_textarea').val() === '' &&
                 $('#shadow_select_chat_popup').css('display') === 'none' &&
                 !isInputElementInFocus() &&
                 !(document.activeElement instanceof HTMLVideoElement)
@@ -963,7 +933,6 @@ export function initRossMods() {
             if (
                 isSwipingAllowed() &&
                 !isNanogallery2LightboxActive() &&
-                $('#send_textarea').val() === '' &&
                 $('#shadow_select_chat_popup').css('display') === 'none' &&
                 !isInputElementInFocus() &&
                 !(document.activeElement instanceof HTMLVideoElement)
@@ -975,40 +944,6 @@ export function initRossMods() {
             }
         }
 
-
-        if (event.ctrlKey && event.key == 'ArrowUp') { //edits last USER message if chatbar is empty and focused
-            if (
-                hotkeyTargets.send_textarea.value === '' &&
-                chatbarInFocus === true &&
-                ($('.swipe_right:last').css('display') === 'flex' || $('.last_mes').attr('is_system') === 'true') &&
-                $('#shadow_select_chat_popup').css('display') === 'none'
-            ) {
-                const isUserMesList = document.querySelectorAll('div[is_user="true"]');
-                const lastIsUserMes = isUserMesList[isUserMesList.length - 1];
-                const editMes = lastIsUserMes?.querySelector('.mes_block .mes_edit') ?? null;
-                if (editMes !== null) {
-                    $(editMes).trigger('click');
-                    return;
-                }
-            }
-        }
-
-        if (event.key == 'ArrowUp') { //edits last message if chatbar is empty and focused
-            if (
-                hotkeyTargets.send_textarea.value === '' &&
-                chatbarInFocus === true &&
-                //$('.swipe_right:last').css('display') === 'flex' &&
-                $('.last_mes .mes_buttons').is(':visible') &&
-                $('#shadow_select_chat_popup').css('display') === 'none'
-            ) {
-                const lastMes = document.querySelector('.last_mes');
-                const editMes = lastMes.querySelector('.mes_block .mes_edit');
-                if (editMes !== null) {
-                    $(editMes).trigger('click');
-                    return;
-                }
-            }
-        }
 
         if (event.key == 'Escape' && !event.defaultPrevented) {
             //dont override Escape hotkey functions from script.js

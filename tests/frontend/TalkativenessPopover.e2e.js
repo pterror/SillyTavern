@@ -88,7 +88,7 @@ for (const path of ['css-anchor', 'js-fallback']) {
 
                 expect(await page.locator('dialog[open]').count()).toBe(0);
                 await chatBox(page).fill('still interactive');
-                await expect(page.locator('#send_textarea')).toHaveValue('still interactive');
+                await expect(chatBox(page)).toHaveText('still interactive');
                 expect(await isPopoverOpen(page)).toBe(true);
                 await chatBox(page).fill('');
 

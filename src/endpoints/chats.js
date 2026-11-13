@@ -7,7 +7,7 @@ import readline from 'node:readline';
 import express from 'express';
 import sanitize from 'sanitize-filename';
 
-import validateAvatarUrlMiddleware from '../middleware/validateFileName.js';
+import validateAvatarUrlMiddleware, { forbiddenRegExp } from '../middleware/validateFileName.js';
 import {
     humanizedDateTime,
     tryParse,
@@ -37,6 +37,7 @@ import { CHATS_LOOKS, CHAT_LOOKS, RECENT_LOOKS } from '../../public/scripts/name
 import { pageSettingsHash } from '../settings-hash.js';
 import { PlaceError, placeOf, storedForm } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
+import { draftOwnerOf, endDraft } from '../chat-drafts.js';
 
 /**
  * @param {unknown} error
@@ -451,6 +452,27 @@ export const router = express.Router();
 router.use(requireSessionHeader);
 
 /**
+ * An action that takes the person away from where their chat ended carries the chat box's text as `leaving`, kept as
+ * the draft of that end before the action is answered: `{ owner, text }`, with `avatar_url` or `group_id` when it is
+ * another chat than the action's. Best effort: a draft not kept never fails the action.
+ */
+router.use(async function keepLeavingDraft(request, _response, next) {
+    const leaving = request.body?.leaving;
+    if (request.method !== 'POST' || !leaving || typeof leaving !== 'object' || typeof leaving.text !== 'string') return next();
+    try {
+        const named = leaving.avatar_url !== undefined || leaving.group_id !== undefined;
+        const from = named ? leaving : request.body;
+        if (typeof from.avatar_url === 'string' && forbiddenRegExp.test(from.avatar_url)) return next();
+        const chat = await chatOf(request, from);
+        const owner = chat ? await draftOwnerOf(chat, leaving.owner) : null;
+        if (chat && owner) await chat.store.chats.saveDraft({ tree: chat.tree, owner, text: leaving.text, actor: chat.session.actor() });
+    } catch (error) {
+        console.error('The draft left behind was not kept:', error);
+    }
+    next();
+});
+
+/**
  * @param {import('express').Request} request
  * @param {{ avatar_url?: unknown, group_id?: unknown }} [body]
  */
@@ -810,13 +832,13 @@ async function openChatAnswer(request, response, body) {
     if (body.group_id) {
         const groupId = String(body.group_id);
         const stats = await chat.store.lib.chatStats([chat.tree]);
+        const groupOpenings = messages.length === 0 && !metadata.tainted ? await chats.memberOpenings({ tree: chat.tree, actor: chat.session.reader() }) : [];
         return {
             status: 200,
             answer: {
                 ...common,
-                group_openings: messages.length === 0 && !metadata.tainted
-                    ? (await chats.memberOpenings({ tree: chat.tree, actor: chat.session.reader() })).map(o => ({ avatar: o.avatar, greeting_id: o.greetingId, text: o.text }))
-                    : [],
+                group_openings: groupOpenings.map(o => ({ avatar: o.avatar, greeting_id: o.greetingId, text: o.text })),
+                draft: await endDraft(chat),
                 openings: null,
                 card_openings: null,
                 chats: (await chatListOf(chat)).map(r => r.file_id),
@@ -827,12 +849,14 @@ async function openChatAnswer(request, response, body) {
         };
     }
     const character = body.with_character === true ? await wholeCard() : null;
+    const openings = await openingsForPage(request, chat, String(avatar));
     return {
         status: 200,
         answer: {
             ...common,
             ...(character ? { character } : {}),
-            ...await openingsForPage(request, chat, String(avatar)),
+            ...openings,
+            draft: await endDraft(chat),
             greeting_shown: await greetingShownOf(chat, String(avatar)),
             ...await recordLastOpened(request, { character: avatar, group: null }),
         },
@@ -999,7 +1023,7 @@ router.post('/new', validateAvatarUrlMiddleware, async function (request, respon
         const started = await chats.startChat({ tree: chat.tree, actor, node_id: opening, keep });
         if (!started.ok) return response.status(400).send({ error: started.reason });
         chat.session.answer(response, { moved: true });
-        return response.send({ ok: true, deleted, chat: await compatChatIdOf(chat) });
+        return response.send({ ok: true, deleted, chat: await compatChatIdOf(chat), draft: await endDraft(chat) });
     } catch (error) {
         console.error('Error starting a new chat:', error);
         return response.status(500).send({ error: true });
@@ -1060,6 +1084,24 @@ router.post('/ancestry', async function (request, response) {
     }
 });
 
+router.post('/draft', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const { text } = request.body ?? {};
+        if (typeof text !== 'string') return response.status(400).send({ error: 'text is required' });
+        const chat = await chatOf(request);
+        if (!chat) return response.status(404).send({ ok: false, reason: 'unknown chat' });
+        const owner = await draftOwnerOf(chat, request.body.owner);
+        if (owner === null) {
+            return response.status(409).send({ ok: false, reason: 'unknown owner' });
+        }
+        await chat.store.chats.saveDraft({ tree: chat.tree, owner, text, actor: chat.session.actor() });
+        return response.send({ ok: true });
+    } catch (error) {
+        console.error('Error keeping a draft:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
 router.post('/message/edit', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const nodeId = String(request.body.node_id || '');
@@ -1110,13 +1152,13 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
             });
             if (!written) return;
             chat.session.answer(response, { moved: true });
-            return response.send({ ok: true, node_ids: written.pushedIds, stored: storedMessagesOf(response) ?? undefined, message_counts: await storedMessageCounts(request, chat, written.pushedIds), message_macros: await storedMessageMacros(request, chat, written.pushedIds), links: await storedChatLinks(request.user.directories, chat, written.pushedIds), ...await openingsAnswerOf(request, chat) });
+            return response.send({ ok: true, node_ids: written.pushedIds, stored: storedMessagesOf(response) ?? undefined, draft: await endDraft(chat), message_counts: await storedMessageCounts(request, chat, written.pushedIds), message_macros: await storedMessageMacros(request, chat, written.pushedIds), links: await storedChatLinks(request.user.directories, chat, written.pushedIds), ...await openingsAnswerOf(request, chat) });
         }
         const contents = (Array.isArray(request.body.messages) ? request.body.messages : []).map(storedForm);
         const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
-        const result = await chat.store.chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents, sendKeys, actor: chat.session.actor() });
+        const result = await chat.store.chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents, sendKeys, actor: chat.session.actor(), draftSent: chat.draftSent ?? null });
         chat.session.answer(response, { moved: result.ok });
-        return response.status(result.ok ? 200 : 409).send({ ...result, message_counts: result.ok ? await storedMessageCounts(request, chat, result.node_ids) : undefined, message_macros: result.ok ? await storedMessageMacros(request, chat, result.node_ids) : undefined, links: result.ok ? await storedChatLinks(request.user.directories, chat, result.node_ids) : undefined });
+        return response.status(result.ok ? 200 : 409).send({ ...result, draft: result.ok ? await endDraft(chat) : undefined, message_counts: result.ok ? await storedMessageCounts(request, chat, result.node_ids) : undefined, message_macros: result.ok ? await storedMessageMacros(request, chat, result.node_ids) : undefined, links: result.ok ? await storedChatLinks(request.user.directories, chat, result.node_ids) : undefined });
     } catch (error) {
         console.error('Error appending messages:', error);
         return response.status(500).send({ error: true });
@@ -1154,7 +1196,8 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
         if (!chosen) return response.status(409).send({ error: 'no such greeting' });
         await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greetingId: chosen.id, epoch: defaultEpoch, actor: chat.session.actor() });
         chat.session.answer(response, { moved: true });
-        return response.send({ ok: true, ...await openingsForPage(request, chat, avatar) });
+        const openings = await openingsForPage(request, chat, avatar);
+        return response.send({ ok: true, ...openings, draft: await endDraft(chat) });
     } catch (error) {
         console.error('Error recording the chosen opening:', error);
         return response.status(500).send({ error: true });
@@ -1254,7 +1297,7 @@ router.post('/message/cut', validateAvatarUrlMiddleware, async function (request
         const preview = request.body.preview === true;
         const result = await chat.store.chats.cutFromPath({ tree: chat.tree, first, last, actor: chat.session.actor(), preview, confirm: request.body.confirm });
         chat.session.answer(response, { moved: result.ok && !preview });
-        return response.status(result.ok ? 200 : 409).send(result);
+        return response.status(result.ok ? 200 : 409).send(result.ok && !preview ? { ...result, draft: await endDraft(chat) } : result);
     } catch (error) {
         console.error('Error cutting messages:', error);
         return response.status(500).send({ error: true });
@@ -1271,7 +1314,7 @@ router.post('/message/alternative/delete', validateAvatarUrlMiddleware, async fu
             tree: chat.tree, node_id: node, actor: chat.session.actor(),
             preview: request.body.preview === true, confirm: request.body.confirm,
         });
-        return response.status(result.ok ? 200 : 409).send(result);
+        return response.status(result.ok ? 200 : 409).send(result.ok && request.body.preview !== true ? { ...result, draft: await endDraft(chat) } : result);
     } catch (error) {
         console.error('Error deleting alternative:', error);
         return response.status(500).send({ error: true });
@@ -1308,6 +1351,7 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
             chat_metadata: loaded?.metadata,
             links: at === -1 ? undefined : await chatLinks(request.user.directories, chat, request.body.with_ancestry ? messages : messages.slice(at), { metadata: loaded?.metadata, adding: !request.body.with_ancestry }),
             stored: storedMessagesOf(response) ?? undefined,
+            draft: await endDraft(chat),
             ...(await touchesOpening(chat, [child]) ? await openingsAnswerOf(request, chat) : {}),
         });
     } catch (error) {

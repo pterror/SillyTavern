@@ -54,18 +54,9 @@ fn append(id: u64, parent: Option<u64>, tree: u64) -> Record {
 
 fn at(o: Owner) -> [Value; 2] {
     match o {
-        Owner::Message(m) | Owner::Reply { message: true, after: m, .. } => [Value::Sel(1, m), Value::Absent],
-        Owner::Root(t) | Owner::Reply { message: false, after: t, .. } => [Value::Sel(0, t), Value::Absent],
+        Owner::Message(m) => [Value::Sel(1, m), Value::Absent],
+        Owner::Root(t) => [Value::Sel(0, t), Value::Absent],
         Owner::Greeting(t, g) => [Value::Sel(0, t), Value::UInt(g)],
-    }
-}
-
-const GENERATION: &str = "0190a1b2-0000-7000-8000-0000000000ab";
-
-fn generation(o: Owner) -> Value {
-    match o {
-        Owner::Reply { .. } => Value::Bytes(GENERATION.as_bytes().to_vec()),
-        _ => Value::Absent,
     }
 }
 
@@ -73,7 +64,7 @@ fn value(o: Owner, text: &str) -> Record {
     let [a, g] = at(o);
     rec(
         "draftValue",
-        vec![a, g, Value::Text(text.as_bytes().to_vec()), Value::Absent, Value::Absent, generation(o)],
+        vec![a, g, Value::Text(text.as_bytes().to_vec()), Value::Absent, Value::Absent],
     )
 }
 
@@ -89,7 +80,6 @@ fn edit(o: Owner, offset: u64, removed: u64, text: &str) -> Record {
             Value::Text(text.as_bytes().to_vec()),
             Value::Absent,
             Value::Absent,
-            generation(o),
         ],
     )
 }
@@ -200,7 +190,7 @@ fn a_draft_needs_what_it_follows_and_goes_with_it() {
     assert!(matches!(
         s.commit_wait(vec![rec(
             "draftValue",
-            vec![a, Value::UInt(0), Value::Text(b"x".to_vec()), Value::Absent, Value::Absent, Value::Absent]
+            vec![a, Value::UInt(0), Value::Text(b"x".to_vec()), Value::Absent, Value::Absent]
         )]),
         Err(StoreError::Refused(_))
     ));
@@ -228,34 +218,6 @@ fn a_draft_needs_what_it_follows_and_goes_with_it() {
     assert_eq!(read(&s, GREETING), None);
     assert!(!live(&s, kept[2]) && !live(&s, kept[3]));
     assert_eq!(read(&s, Owner::Root(11)).as_deref(), Some("another card's"));
-    drop(s);
-    fs::remove_dir_all(&dir).unwrap();
-}
-
-#[test]
-fn a_draft_after_a_reply_being_generated_is_its_own_and_goes_with_what_the_reply_follows() {
-    let dir = temp_dir("reply");
-    let s = open(&dir);
-    s.commit_wait(vec![card(10), append(0, None, 10), append(1, Some(0), 10)]).unwrap();
-    let id = drafts::generation_id(GENERATION.as_bytes()).unwrap();
-    let after_message = Owner::Reply { message: true, after: 1, generation: id };
-    let at_root = Owner::Reply { message: false, after: 10, generation: id };
-    s.commit_wait(vec![value(after_message, "while it streams"), value(at_root, "at the root"), value(M, "after the message")])
-        .unwrap();
-    assert_eq!(read(&s, after_message).as_deref(), Some("while it streams"));
-    assert_eq!(read(&s, M).as_deref(), Some("after the message"));
-    s.commit_wait(vec![append(2, Some(1), 10), value(Owner::Message(2), "while it streams"), value(after_message, "")])
-        .unwrap();
-    assert_eq!(read(&s, Owner::Message(2)).as_deref(), Some("while it streams"));
-    assert_eq!(read(&s, after_message), None);
-    s.commit_wait(vec![value(after_message, "again")]).unwrap();
-    for m in [2, 1] {
-        s.commit_wait(vec![rec("messageDelete", vec![Value::Id(m), Value::Absent, Value::Absent, Value::Time(9)])])
-            .unwrap();
-    }
-    assert_eq!(read(&s, after_message), None, "goes with the message the reply follows");
-    s.commit_wait(vec![rec("entityDelete", vec![Value::Id(10)])]).unwrap();
-    assert_eq!(read(&s, at_root), None, "goes with the tree the reply starts");
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }

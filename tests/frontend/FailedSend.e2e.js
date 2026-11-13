@@ -155,7 +155,7 @@ test.describe('a send the server did not store', () => {
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(1);
         await expect(page.locator('#chat .mes.failed_send')).toHaveAttribute('mesid', '1');
         await expect(page.locator('#chat .mes.failed_send .mes_text')).toContainText(text);
-        expect(await page.evaluate(() => String($('#send_textarea').val()))).toBe('');
+        expect(await page.evaluate(async () => (await import('/scripts/chat-box.js')).chatBoxText())).toBe('');
 
         await notice(page, 'Message not saved').getByRole('button', { name: 'Save it again' }).click();
         await expect(page.locator('#chat .mes.failed_send')).toHaveCount(0);

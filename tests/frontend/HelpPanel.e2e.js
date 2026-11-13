@@ -51,7 +51,7 @@ test.describe('Help panel', () => {
             await page.locator('#chatDrawerIcon').click();
             await chatBox(page).click();
             await page.keyboard.type('still usable');
-            await expect(page.locator('#send_textarea')).toHaveValue('still usable');
+            await expect(chatBox(page)).toHaveText('still usable');
             await chatBox(page).fill('');
             await expect(panel(page)).toBeAttached();
         } finally {
@@ -192,7 +192,7 @@ test.describe('Hotkeys', () => {
         await chatBox(page).focus();
         await page.keyboard.down('Control');
         await expect(overlay(page)).toBeVisible();
-        expect(await page.evaluate(async () => (await import('/scripts/live-editor/registry.js')).getFocusedField()?.id)).toBe('send_textarea');
+        await expect(chatBox(page)).toBeFocused();
         await page.keyboard.up('Control');
         await expect(overlay(page)).toHaveCount(0);
     });

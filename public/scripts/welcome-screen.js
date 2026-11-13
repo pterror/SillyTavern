@@ -37,6 +37,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { clamp, flashHighlight, isElementInViewport, timestampToMoment } from './utils.js';
 import { addLooks, drawName, holdLooks } from './names.js';
 import { RECENT_LOOKS } from './name-holders.js';
+import { focusChatBox } from './chat-box.js';
 
 const assistantAvatarKey = 'assistant';
 const pinnedChatsKey = 'pinnedChats';
@@ -329,7 +330,6 @@ async function loadOlderRecentChats() {
 async function sendWelcomePanel(chats, expand = false, { replace = false, stillShown = () => true } = {}) {
     try {
         const chatElement = document.getElementById('chat');
-        const sendTextArea = document.getElementById('send_textarea');
         if (!chatElement) {
             console.error('Chat element not found');
             return false;
@@ -412,9 +412,7 @@ async function sendWelcomePanel(chats, expand = false, { replace = false, stillS
             button.addEventListener('click', async () => {
                 await closeCurrentChat();
                 await newAssistantChat({ temporary: true });
-                if (sendTextArea instanceof HTMLTextAreaElement) {
-                    sendTextArea.focus();
-                }
+                focusChatBox();
             });
         });
         fragment.querySelectorAll('.recentChat.group').forEach((groupChat) => {

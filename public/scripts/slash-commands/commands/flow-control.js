@@ -14,9 +14,10 @@ import { SlashCommandEnumValue, enumTypes } from '../SlashCommandEnumValue.js';
 import { SlashCommandNamedArgumentAssignment } from '../SlashCommandNamedArgumentAssignment.js';
 import { delay, isFalseBoolean, isTrueBoolean, stringToRange } from '../../utils.js';
 import { resolveVariable } from '../../variables.js';
+import { writeChatBox } from '../../chat-box.js';
 
 function setInputCallback(_, value) {
-    $('#send_textarea').val(value || '')[0].dispatchEvent(new Event('input', { bubbles: true }));
+    writeChatBox(value || '');
     return value;
 }
 

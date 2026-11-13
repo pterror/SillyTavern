@@ -24,6 +24,7 @@ import { textgen_types, textgenerationwebui_settings } from './textgen-settings.
 import { showReasoningText } from './message-text.js';
 import { cancelDebounce, copyText, debounce, escapeRegex, isFalseBoolean, isTrueBoolean, setDatasetProperty, stringToRange, trimSpaces } from './utils.js';
 import { ReasoningType, reasoningOf, withReasoning } from './reasoning-block.js';
+import { chatBoxText, writeChatBox } from './chat-box.js';
 
 export { ReasoningType };
 
@@ -1620,22 +1621,10 @@ function registerReasoningAppEvents() {
             return;
         }
 
-        const sendTextArea = /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
-
-        if (!sendTextArea) {
-            console.warn('[Reasoning] Send textarea not found');
-            return;
-        }
-
-        console.debug('[Reasoning] Auto-parsing reasoning block for impersonation');
-
-        if (!sendTextArea.value) {
-            console.debug('[Reasoning] Reasoning is empty, skipping');
-            return;
-        }
-
-        sendTextArea.value = removeReasoningFromString(sendTextArea.value);
-        sendTextArea.dispatchEvent(new Event('input', { bubbles: true }));
+        const written = chatBoxText();
+        if (!written) return;
+        const parsed = removeReasoningFromString(written);
+        if (parsed !== written) writeChatBox(parsed);
     });
 }
 

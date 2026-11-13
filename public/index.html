@@ -4244,10 +4244,6 @@
                                 <input id="hotkey_overlay" type="checkbox" />
                                 <small data-i18n="Show hotkeys while holding Ctrl">Show hotkeys while holding Ctrl</small>
                             </label>
-                            <label class="checkbox_label" for="restore_user_input" title="Restore unsaved user input on page refresh." data-i18n="[title]Restore unsaved user input on page refresh">
-                                <input id="restore_user_input" type="checkbox" />
-                                <small data-i18n="Restore User Input">Restore User Input</small>
-                            </label>
                             <div id="CustomCSS-block" class="flex-container flexFlowColumn">
                                 <h4 class="title_restorable" title="Apply a custom CSS style to all of the ST GUI." data-i18n="[title]Apply a custom CSS style to all of the ST GUI">
                                     <span data-i18n="Custom CSS">Custom CSS</span>
@@ -6807,7 +6803,7 @@
                     <div id="leftSendForm" class="alignContentCenter">
                         <div id="options_button" class="fa-solid fa-bars interactable"></div>
                     </div>
-                    <textarea id="send_textarea" name="text" class="mdHotkeys" data-i18n="[no_connection_text]Not connected to API!;[connected_text]Type a message, or /? for help" placeholder="Not connected to API!" no_connection_text="Not connected to API!" connected_text="Type a message, or /? for help" autocomplete="off"></textarea>
+                    <div id="chat_box" class="chat-editor"></div>
                     <div id="rightSendForm" class="alignContentCenter">
                         <div id="stscript_continue" title="Continue script execution" class="stscript_btn stscript_continue" data-i18n="[title]Continue script execution">
                             <i class="fa-solid fa-play"></i>

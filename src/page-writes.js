@@ -62,6 +62,7 @@ export async function applyPageWrites(response, chat, body, { waitForReply = fal
             const made = await store.chats.appendMessages({
                 tree, treeSpeaker, after: null, contents,
                 sendKeys: [...opening.refs.map(() => null), ...(pushed?.refs ?? []).map(ref => ref || null)], actor: session.actor(),
+                draftSent: chat.draftSent ?? null,
             });
             if (!made.ok || made.node_ids.length !== contents.length) return fail(made.reason ?? 'the opening could not be stored');
             made.node_ids.forEach((id, i) => recordStored(response, { ref: refs[i], node_id: id }));
@@ -75,6 +76,7 @@ export async function applyPageWrites(response, chat, body, { waitForReply = fal
         if (typeof nodeId !== 'string' || nodeId === '') return fail('there is no stored message for them to follow');
         const appended = await store.chats.appendMessages({
             tree, treeSpeaker, after: nodeId, contents: pushed.messages.map(storedForm), sendKeys: pushed.refs.map(ref => ref || null), actor: session.actor(),
+            draftSent: chat.draftSent ?? null,
         });
         if (!appended.ok || appended.node_ids.length !== pushed.messages.length) return fail(appended.reason ?? 'the messages could not be stored');
         appended.node_ids.forEach((id, i) => recordStored(response, { ref: pushed.refs[i], node_id: id }));

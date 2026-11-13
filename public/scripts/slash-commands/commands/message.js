@@ -120,8 +120,6 @@ async function deleteSwipeCallback(_, arg) {
 }
 
 async function askCharacter(args, text) {
-    $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
-
     if (selected_group) {
         toastr.warning(t`Cannot run /ask command in a group chat!`);
         return '';
@@ -234,8 +232,6 @@ async function triggerGenerationCallback(args, value) {
             return '';
         }
 
-        $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
-
         let avatar = undefined;
 
         if (selected_group && value) {
@@ -324,8 +320,6 @@ async function continueChatCallback(args, prompt) {
         }
 
         try {
-            $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
-
             const options = prompt?.trim() ? { quiet_prompt: prompt.trim(), quietToLoud: true } : {};
             await Generate('continue', options);
 

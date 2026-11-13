@@ -1420,7 +1420,7 @@ export function initChatUtilities() {
         $('#file_form').addClass('displayNone');
     });
 
-    document.getElementById('send_textarea').addEventListener('paste', async function (event) {
+    document.getElementById('chat_box').addEventListener('paste', async function (event) {
         if (event.clipboardData.files.length === 0) {
             return;
         }
@@ -1429,7 +1429,7 @@ export function initChatUtilities() {
         event.stopPropagation();
 
         await handleFileAttach(Array.from(event.clipboardData.files));
-    });
+    }, { capture: true });
 
     new DragAndDropHandler('#form_sheld', async (files) => {
         await handleFileAttach(files);

@@ -276,6 +276,14 @@ export function messageStyles(message) {
 }
 
 /**
+ * How the chat box draws what is written in it: as the person's message will be drawn, its macros filled in when sent
+ * @returns {TextSetup}
+ */
+export function chatBoxSetup() {
+    return chatSetup(null, 'chat-box', () => undefined);
+}
+
+/**
  * How a message's text, or its reasoning, is drawn in an editor opened in it: as the message draws it, its macros'
  * values those the chat has for the message now
  * @param {Element} element the message's text or reasoning element

@@ -20,7 +20,7 @@ async function openChatWithCharacterMessage(page) {
     await page.waitForFunction(n => window['stTest'].context().name2 === n, name);
     await chatBox(page).fill(`/sendas name="${name}" hello`);
     await expect(async () => {
-        if (await page.locator('#send_textarea').inputValue()) {
+        if (await page.evaluate(async () => (await import('/scripts/chat-box.js')).chatBoxText())) {
             await chatBox(page).press('Enter');
         }
         await expect(page.locator('#chat .mes .avatar').first()).toBeVisible({ timeout: 2000 });

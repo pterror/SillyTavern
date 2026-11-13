@@ -7,6 +7,7 @@ import { selected_group } from './group-chats.js';
 import { updateMessage, _setCurrentTarget, rememberCardOpening } from './chat-store.js';
 import { isProvisionalNodeId } from './node-identity.js';
 import { _snapshotMessages } from './generation.js';
+import { arriveChatBox, leavingChatBox } from './chat-box.js';
 
 /**
  * @param {{ chat_metadata?: ChatMetadata } | null | undefined} answer
@@ -40,7 +41,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
             const response = await fetch('/api/chats/message/select', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, chat_name: getCurrentChatId() }),
+                body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, chat_name: getCurrentChatId(), leaving: leavingChatBox() }),
             });
             if (!response.ok) {
                 console.warn(`[switchToAlternativePath] HTTP ${response.status} selecting ${targetNodeId}`);
@@ -63,6 +64,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true } 
     updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId });
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
     await takeStateFrom(payload);
+    if (avatar != null) arriveChatBox({ avatar_url: avatar }, payload.draft);
 
     _snapshotMessages();
 
@@ -89,11 +91,13 @@ async function _persistNodeSelection(targetNodeId) {
         const response = await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId }),
+            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, leaving: leavingChatBox() }),
         });
         if (response.ok) {
             _setCurrentTarget(getCurrentChatId() ?? '', null);
-            await takeStateFrom(await response.json());
+            const answer = await response.json();
+            await takeStateFrom(answer);
+            arriveChatBox({ avatar_url: avatar }, answer.draft);
         }
     } catch (error) {
         console.warn('[switchToNode] Failed to persist the selection:', error);
@@ -127,7 +131,7 @@ export async function switchToNode(targetNodeId) {
         const response = await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, chat_name: getCurrentChatId(), with_ancestry: true }),
+            body: JSON.stringify({ avatar_url: avatar, node_id: targetNodeId, chat_name: getCurrentChatId(), with_ancestry: true, leaving: leavingChatBox() }),
         });
         if (!response.ok) {
             return false;
@@ -137,6 +141,7 @@ export async function switchToNode(targetNodeId) {
         below = answer?.messages ?? [];
         _setCurrentTarget(getCurrentChatId() ?? '', null);
         await takeStateFrom(answer);
+        arriveChatBox({ avatar_url: avatar }, answer?.draft);
     } catch (error) {
         console.warn('[switchToNode] Failed to go to the message:', error);
         return false;

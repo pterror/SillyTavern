@@ -49,8 +49,9 @@ function metadataOps(metadata, state) {
 export async function appendUnderStart(chat, { contents, sendKeys = [], changes = [], regenerated = false, opening: replaced = null }) {
     const { store, tree, treeSpeaker, session } = chat;
     const pending = chat.opening;
+    const draftSent = chat.draftSent ?? null;
     if (!pending) {
-        return store.chats.appendMessages({ tree, treeSpeaker, after: null, contents, sendKeys, changes, regenerated, actor: session.actor() });
+        return store.chats.appendMessages({ tree, treeSpeaker, after: null, contents, sendKeys, changes, regenerated, actor: session.actor(), draftSent });
     }
     const openingContents = replaced ? [...pending.messages.slice(0, -1), storedForm(replaced)] : pending.messages;
     const state = await store.chats.stateMap(tree, null);
@@ -62,6 +63,7 @@ export async function appendUnderStart(chat, { contents, sendKeys = [], changes 
         changes: [...openingChanges, ...contents.map((_, i) => changes[i] ?? null)],
         regenerated,
         actor: session.actor(),
+        draftSent,
     });
     if (!made.ok) return made;
     chat.opening = null;

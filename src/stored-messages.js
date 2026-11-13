@@ -82,7 +82,7 @@ export async function storeUserMessage(response, { chat, anchorNodeId, message, 
     const sendKeys = [typeof ref === 'string' ? ref : null];
     const appendResult = anchorNodeId === null
         ? await appendUnderStart(chat, { contents, sendKeys })
-        : await store.chats.appendMessages({ tree, treeSpeaker, after: anchorNodeId, contents, sendKeys, actor: session.actor() });
+        : await store.chats.appendMessages({ tree, treeSpeaker, after: anchorNodeId, contents, sendKeys, actor: session.actor(), draftSent: chat.draftSent ?? null });
     const nodeId = appendResult.ok ? appendResult.node_ids?.[appendResult.node_ids.length - 1] ?? null : null;
     if (!nodeId) {
         const reason = appendResult.reason ?? 'no node was stored';

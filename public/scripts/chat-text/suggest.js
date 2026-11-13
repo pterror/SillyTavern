@@ -64,6 +64,49 @@ export function macroSuggestions(valueOf, t) {
     };
 }
 
+/**
+ * @typedef {{ name: string, start: number, optionList: any[], getSecondaryNameAt?: (text: string, index: number, isSelect: boolean) => any }} NameResult
+ *   a name the slash command parser found at a position, and what it could be
+ */
+
+/**
+ * Slash commands, their arguments and their values, from the slash command parser, in a text that starts with `/`
+ * @param {() => { getNameAt: (text: string, index: number) => Promise<NameResult | null> }} parser
+ * @param {(text: string) => boolean} wanted whether suggestions are shown for the text as typed (the autocomplete
+ *   setting)
+ * @returns {Suggest}
+ */
+export function slashSuggestions(parser, wanted) {
+    return async (read, pos, explicit) => {
+        const text = read(0, END);
+        if (!text.startsWith('/') || !(explicit || wanted(text))) return undefined;
+        let result = await parser().getNameAt(text, pos);
+        if (result && pos > result.start + result.name.length && result.getSecondaryNameAt) {
+            result = result.getSecondaryNameAt(text, pos, false) ?? null;
+        }
+        if (!result) return undefined;
+        const name = result.name ?? '';
+        const from = result.start;
+        const to = Math.max(pos, from + name.length);
+        /** @type {Option[]} */
+        const options = result.optionList.filter(option => option.isSelectable !== false).map(option => ({
+            label: option.name,
+            ...(option.type ? { detail: String(option.type) } : {}),
+            info: () => {
+                const box = document.createElement('div');
+                const details = option.renderDetails?.();
+                if (details) box.append(details);
+                return box;
+            },
+            apply: (/** @type {EditorView} */ view) => {
+                const replacer = option.valueProvider ? option.valueProvider(name) : option.value;
+                put(view, from + (option.replacementStartOffset ?? 0), to, String(replacer ?? option.name));
+            },
+        }));
+        return options.length === 0 ? undefined : { from, to, options };
+    };
+}
+
 const MENTIONABLE = ['user', 'char'];
 const MENTION_BEFORE = /(?:^|[\s(["'*_])@[^\s@]*$/u;
 const LINE_BEFORE = 200;

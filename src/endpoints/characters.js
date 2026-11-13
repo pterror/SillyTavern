@@ -47,6 +47,7 @@ import { convertedFileKey } from '../library-codes.js';
 import { avatarFile, avatarImage, avatarPathOf, inAvatarLane, linkWithAvatar, writeWithAvatar } from '../character-avatars.js';
 import { writeUserImage } from '../image-entities.js';
 import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, moveToChatNamed } from '../chat-request.js';
+import { draftFrames } from '../chat-drafts.js';
 import { requestSession, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
 import { ALTERNATIVES_VIEWS, pageLooks, ui, uiUser } from '../ui-wiring.js';
 import { CANDIDATE_LOOKS, LIST_LOOKS } from '../../public/scripts/name-holders.js';
@@ -2342,11 +2343,17 @@ async function tabStreamSession(request, store, send) {
         openingsPushed = { tree: here.tree, json };
         send({ type: 'openings', avatar: owner.avatar, ...openings });
     };
+    const pushDrafts = async (/** @type {any[]} */ records) => {
+        if (!records.some(r => r.kind === 'draftValue' || r.kind === 'draftEdit')) return;
+        sid ??= await chats.sessionId(session);
+        for (const frame of await draftFrames(store, records, sid)) send(frame);
+    };
     return {
         session,
         async told(records) {
             stateChain = stateChain.then(() => pushState(/** @type {any[]} */ (records))).catch(error => console.error('[characters/changes/stream] The chat state was not pushed:', error));
             stateChain = stateChain.then(() => pushOpenings(/** @type {any[]} */ (records))).catch(error => console.error('[characters/changes/stream] The openings were not pushed:', error));
+            stateChain = stateChain.then(() => pushDrafts(/** @type {any[]} */ (records))).catch(error => console.error('[characters/changes/stream] The drafts were not pushed:', error));
             const ours = /** @type {any[]} */ (records).filter(r => SESSION_KINDS.has(r.kind) && r.session !== undefined);
             if (!ours.length) return;
             sid ??= await chats.sessionId(session);

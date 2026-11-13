@@ -337,7 +337,6 @@ export const power_user = {
             flags: {},
         },
     },
-    restore_user_input: true,
     reduced_motion: false,
     compact_input_area: true,
     auto_connect: false,
@@ -1898,7 +1897,6 @@ export async function loadPowerUserSettings(settings, data) {
     $('#stscript_autocomplete_width_right').val(power_user.stscript.autocomplete.width.right ?? AUTOCOMPLETE_WIDTH.CHAT);
     document.querySelector('#stscript_autocomplete_width_right')?.dispatchEvent(new Event('input', { bubbles: true }));
 
-    $('#restore_user_input').prop('checked', power_user.restore_user_input);
 
     $('#chat_truncation').val(power_user.chat_truncation);
     $('#chat_truncation_counter').val(power_user.chat_truncation);
@@ -3892,10 +3890,6 @@ jQuery(() => {
         saveSettingsDebounced('power_user.stscript.parser.flags');
     });
 
-    $('#restore_user_input').on('input', function () {
-        power_user.restore_user_input = !!$(this).prop('checked');
-        saveSettingsDebounced('power_user.restore_user_input');
-    });
 
     $('#reduced_motion').on('input', function () {
         power_user.reduced_motion = !!$(this).prop('checked');

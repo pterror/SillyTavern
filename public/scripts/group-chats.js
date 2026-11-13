@@ -93,6 +93,7 @@ import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { drawName, holdLooks, nameNode } from './names.js';
 import { CANDIDATE_LOOKS } from './name-holders.js';
+import { arriveChatBox } from './chat-box.js';
 
 export {
     selected_group,
@@ -502,6 +503,7 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
         await printMessages();
     }
     _snapshotMessages();
+    arriveChatBox({ group_id: groupId }, answer.draft);
 
     updateChatMetadata(metadata, true);
 
@@ -903,7 +905,8 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
         is_group_generating = true;
         setCharacterName('');
         setCharacterId(undefined);
-        const userInput = String($('#send_textarea').val());
+        const userInput = params?.typed?.text ?? '';
+        let typed = params?.typed;
 
         // id of this specific batch for regeneration purposes
         group_generation_id = Date.now();
@@ -957,7 +960,6 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             // Send user message as is
             await sendMessageAsUser(userInput);
             await saveMetadata();
-            $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
         }
         groupChatQueueOrder = new Map();
 
@@ -978,7 +980,8 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
 
             // Wait for generation to finish
             const generateType = ['swipe', 'impersonate', 'quiet', 'continue'].includes(type) ? type : 'normal';
-            textResult = await Generate(generateType, { automatic_trigger: byAutoMode, ...(params || {}) });
+            textResult = await Generate(generateType, { automatic_trigger: byAutoMode, ...(params || {}), typed });
+            typed = undefined;
             let messageChunk = textResult?.messageChunk;
 
             if (messageChunk) {
@@ -2268,14 +2271,6 @@ export async function importGroupChat(formData, { refresh = true } = {}) {
     return [];
 }
 
-function onSendTextareaInput() {
-    if (is_group_automode_enabled) {
-        // Wait for current automode generation to finish
-        is_group_automode_enabled = false;
-        $('#rm_group_automode').prop('checked', false);
-    }
-}
-
 function stopAutoModeGeneration() {
     if (groupAutoModeAbortController) {
         groupAutoModeAbortController.abort();
@@ -2341,7 +2336,6 @@ jQuery(() => {
         is_group_automode_enabled = value;
         eventSource.once(event_types.GENERATION_STOPPED, stopAutoModeGeneration);
     });
-    $('#send_textarea').on('keyup', onSendTextareaInput);
     $('#groupCurrentMemberPopoutButton').on('click', doCurMemberListPopout);
     $('#rm_group_chat_name').on('input', onGroupNameInput);
     $('#rm_group_delete').off().on('click', onDeleteGroupClick);

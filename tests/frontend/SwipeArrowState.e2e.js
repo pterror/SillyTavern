@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, chatBox } from './frontent-test-utils.js';
 
 test('only a message on its last alternative is marked so; Ctrl+Up without a user message does nothing', async ({ page }) => {
     /** @type {string[]} */
@@ -20,7 +20,7 @@ test('only a message on its last alternative is marked so; Ctrl+Up without a use
     await expect.poll(() => page.evaluate(() => stTest.context().chat[0].swipe_id)).toBe(0);
     await expect(greeting).not.toHaveClass(/\blast_swipe\b/);
 
-    await page.locator('#send_textarea').focus();
+    await chatBox(page).focus();
     await page.keyboard.press('Control+ArrowUp');
     await page.waitForTimeout(300);
     expect(errors).toEqual([]);

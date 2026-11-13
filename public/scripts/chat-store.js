@@ -12,6 +12,7 @@ import { setStoredAdopter } from './stored-report.js';
 import { askToDrop, confirmOf, hasDrops, warnDropped } from './edit-drops.js';
 import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 import { countedTextHash } from './counted-text.js';
+import { arriveChatBox, leavingChatBox } from './chat-box.js';
 
 /**
  * @param {number} i
@@ -531,10 +532,12 @@ export async function rememberCardOpening(text) {
         const response = await fetch('/api/chats/openings/choose', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: character.avatar, text, index }),
+            body: JSON.stringify({ avatar_url: character.avatar, text, index, leaving: leavingChatBox() }),
         });
         if (!response.ok) throw new Error(`/api/chats/openings/choose responded ${response.status}`);
-        await takeOpenings(character.avatar, await response.json().catch(() => null));
+        const answer = await response.json().catch(() => null);
+        await takeOpenings(character.avatar, answer);
+        arriveChatBox({ avatar_url: character.avatar }, answer?.draft);
     } catch (error) {
         console.warn('[greetings] Could not remember the chosen greeting:', error);
         toastr.warning(t`The chat couldn't remember the greeting you switched to, so reopening it will show the default greeting.`, t`Greeting not remembered`);

@@ -1,6 +1,6 @@
 import {
     cleanUpMessage, deactivateSendButtons, dropLastMessage, extension_prompts, extractJsonFromData, extractMessageFromData,
-    extractMultiSwipes, extractTitleFromData, getCurrentCharacter, getCurrentDraftContext, hideStopButton, hideSwipeButtons,
+    extractMultiSwipes, extractTitleFromData, getCurrentCharacter, hideStopButton, hideSwipeButtons,
     online_status, parseAndSaveLogprobs, processCommands, removeLastMessage, resolveClientToolHandoffLoop,
     saveReply, sendMessageAsUser, setGenerationProgress, setSendButtonState, showStopButton, storeSentMessage,
     StreamingProcessor, swipe, triggerAutoContinue, unblockGeneration, updateMessageBlock,
@@ -12,7 +12,7 @@ import { name1 } from './app-selection-state.js';
 import { changedMetadata, noteMetadataChangesStored, noteMetadataSent } from './metadata-store.js';
 import { changeOps, changesSince } from './state-sync.js';
 import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-identity.js';
-import { holdDraft, releaseDraft } from './chat-draft.js';
+import { writeChatBox } from './chat-box.js';
 import { isFailedSend, keepFailedSend, wasSendStored } from './failed-sends.js';
 import { updateMessage, setStoreRef, storeRefOf, adoptStored, deepFreeze, claimPushedCounts, takeMessageMacros } from './chat-store.js';
 import { hasPendingFileAttachment } from './chats.js';
@@ -324,6 +324,11 @@ export async function finishStreamedReplyPersistence({ assistantNodeId }) {
  * @property {string} [quietName]
  * @property {number} [depth]
  * @property {JsonSchema|null} [jsonSchema]
+ * @property {ChatBoxSend} [typed] what the person sent from the chat box: its text, and the draft it was
+ */
+
+/**
+ * @typedef {{ text: string, sent: import('./chat-box-ends.js').DraftOwner | null }} ChatBoxSend
  */
 
 /**
@@ -606,13 +611,21 @@ export async function Generate(type, options = {}) {
 }
 
 /**
+ * Puts what the person sent back in the chat box, when the send is refused before anything is sent
+ * @param {ChatBoxSend | undefined} typed
+ */
+function giveBack(typed) {
+    if (typed && typed.text !== '') writeChatBox(typed.text);
+}
+
+/**
  * @param {string} type
  * @param {GenerateOptions} options
  * @param {PendingSend[]} pendingSends
  * @returns {Promise<any>}
  */
 async function generateOnce(type, options = {}, pendingSends = []) {
-    const { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, jsonSchema = null, responseLength, depth = 0 } = options;
+    const { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_avatar, signal, quietImage, quietName, jsonSchema = null, responseLength, depth = 0, typed } = options;
     const metadataAtStart = changedMetadata();
     setGenerationProgress(0);
     generation_started = new Date();
@@ -626,23 +639,21 @@ async function generateOnce(type, options = {}, pendingSends = []) {
     const isImpersonate = type == 'impersonate';
     const isContinue = type == 'continue';
 
-    if (!(depth || type == 'regenerate' || type == 'swipe' || type == 'quiet')) {
-        const interruptedByCommand = await processCommands(String($('#send_textarea').val()));
-
-        if (interruptedByCommand) {
-            unblockGeneration(type);
-            return Promise.resolve();
-        }
+    if (typed && !depth && await processCommands(typed.text)) {
+        unblockGeneration(type);
+        return Promise.resolve();
     }
 
     const unsavedReply = /** @type {ChatMessage | undefined} */ (chat[chat.length - 1]);
     if (type !== 'quiet' && type !== 'impersonate' && typeof unsavedReply?.extra?.reply_not_saved === 'string') {
         toastr.error(t`The last reply isn't saved yet. Use "Save it again" on its notice first, or delete it.`, t`Reply not saved`, { preventDuplicates: true });
+        giveBack(typed);
         unblockGeneration(type);
         return Promise.resolve();
     }
     if (type !== 'quiet' && type !== 'impersonate' && isFailedSend(unsavedReply)) {
         toastr.error(t`Your last message isn't saved yet. Save it or discard it on its notice first.`, t`Message not saved`, { preventDuplicates: true });
+        giveBack(typed);
         unblockGeneration(type);
         return Promise.resolve();
     }
@@ -655,12 +666,14 @@ async function generateOnce(type, options = {}, pendingSends = []) {
     }
 
     if (online_status === 'no_connection') {
+        giveBack(typed);
         setSendButtonState(false);
         return Promise.resolve();
     }
 
     const owner = generationOwner();
     if (!owner) {
+        giveBack(typed);
         unblockGeneration(type);
         return Promise.resolve();
     }
@@ -669,16 +682,9 @@ async function generateOnce(type, options = {}, pendingSends = []) {
     const lastMessageIndex = chat.length - 1;
 
     let textareaText;
-    /** @type {import('./chat-draft.js').DraftContext|null} */
-    let sentDraftContext = null;
     if (type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !depth) {
         setSendButtonState(true);
-        textareaText = String($('#send_textarea').val());
-        sentDraftContext = getCurrentDraftContext();
-        if (sentDraftContext) {
-            holdDraft(localStorage, sentDraftContext, textareaText);
-        }
-        $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
+        textareaText = typed?.text ?? '';
     } else {
         textareaText = '';
         if (lastMessage?.is_user !== true && type !== 'quiet' && type !== 'swipe' && !isImpersonate && !depth && chat.length) {
@@ -708,9 +714,6 @@ async function generateOnce(type, options = {}, pendingSends = []) {
         sentUserMessage = await sendMessageAsUser(textareaText, /** @type {number} */ (/** @type {unknown} */ (null)), false, name1, user_avatar, true);
     }
 
-    if (sentDraftContext && textareaText) {
-        releaseDraft(localStorage, sentDraftContext, textareaText);
-    }
     const sentKey = storeRefOf(sentUserMessage);
     if (sentUserMessage && sentKey !== undefined) {
         pendingSends.push({ key: sentKey, message: sentUserMessage });
@@ -734,6 +737,7 @@ async function generateOnce(type, options = {}, pendingSends = []) {
         ...rawActionWritesFor(type, lastMessage, lastMessageIndex, metadataAtStart),
         user_message: sentMessage,
         user_message_ref: sentMessage !== undefined ? storeRefOf(sentUserMessage) : undefined,
+        draft_sent: sentMessage !== undefined ? typed?.sent ?? undefined : undefined,
         macro_facts: pageMacroFacts(),
         response_length: typeof responseLength === 'number' && responseLength > 0 ? responseLength : undefined,
         extension_prompts: await pageInjections(),
@@ -890,7 +894,7 @@ async function generateOnce(type, options = {}, pendingSends = []) {
         });
 
         if (isImpersonate) {
-            $('#send_textarea').val(getMessage)[0].dispatchEvent(new Event('input', { bubbles: true }));
+            writeChatBox(getMessage);
             await eventSource.emit(event_types.IMPERSONATE_READY, getMessage);
         } else if (type == 'quiet') {
             unblockGeneration(type);

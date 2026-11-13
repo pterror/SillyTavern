@@ -147,11 +147,10 @@ test.describe('live editor: reported problems', () => {
             // @ts-ignore
             await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
         });
-        const editor = page.locator('#send_form .cm-editor');
+        const editor = page.locator('#chat_box .cm-editor');
         await expect(editor).toHaveCount(1, { timeout: 10000 });
-        await page.evaluate(() => {
-            // @ts-ignore
-            $('#send_textarea').val('She said "hi" to me.').trigger('input');
+        await page.evaluate(async () => {
+            (await import('/scripts/chat-box.js')).writeChatBox('She said "hi" to me.');
             /** @type {HTMLElement} */ (document.activeElement)?.blur();
         });
         const quoteColor = await probeStyle(page, '<div class="mes_text"><q>x</q></div>', 'q', 'color');
@@ -165,10 +164,7 @@ test.describe('live editor: reported problems', () => {
         await expectChatQuote();
         await editor.locator('.cm-content').focus();
         await expectChatQuote();
-        await page.evaluate(() => {
-            // @ts-ignore
-            $('#send_textarea').val('').trigger('input');
-        });
+        await page.evaluate(async () => (await import('/scripts/chat-box.js')).writeChatBox(''));
     });
 
     test('ED10: find and replace has the app\'s look: themed buttons, each checkbox on the line of its label', async ({ page }) => {

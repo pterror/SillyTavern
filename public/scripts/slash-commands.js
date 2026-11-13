@@ -5,7 +5,8 @@ import {
     executeSlashCommandsOnChatInput,
     executeSlashCommandsWithOptions,
     getSlashCommandsHelp,
-    initSlashCommandAutoComplete,
+    chatBoxSlashParser,
+    slashSuggestionsWanted,
     isExecutingCommandsFromChatInput,
     pauseScriptExecution,
     processChatSlashCommands,
@@ -30,7 +31,8 @@ export {
 };
 export {
     executeSlashCommandsOnChatInput,
-    initSlashCommandAutoComplete,
+    chatBoxSlashParser,
+    slashSuggestionsWanted,
     isExecutingCommandsFromChatInput,
     pauseScriptExecution,
     stopScriptExecution,

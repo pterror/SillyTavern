@@ -2,8 +2,6 @@ import { getHotkeys, registerHotkey } from './help-registry.js';
 import { t, translate } from './i18n.js';
 import { power_user } from './power-user.js';
 
-const sendTextarea = () => /** @type {HTMLTextAreaElement | null} */ (document.getElementById('send_textarea'));
-const chatBoxEmpty = () => !sendTextarea()?.value;
 const markdownHotkeysOn = () => Boolean(power_user.enable_md_hotkeys);
 
 const chat = translate('Chat Hotkeys', 'help_hotkeys_0');
@@ -13,10 +11,10 @@ const editing = t`Editing fields`;
 const popups = t`Popups`;
 const other = t`Other`;
 
-registerHotkey({ category: chat, keys: ['Up'], label: translate('Edit last message in chat', 'help_hotkeys_2'), when: chatBoxEmpty });
-registerHotkey({ category: chat, keys: ['Ctrl+Up'], label: translate('Edit last USER message in chat', 'help_hotkeys_4'), when: chatBoxEmpty });
-registerHotkey({ category: chat, keys: ['Left'], label: translate('swipe left', 'help_hotkeys_6'), when: chatBoxEmpty });
-registerHotkey({ category: chat, keys: ['Right'], label: t`swipe right (only while the chat box is empty)`, when: chatBoxEmpty });
+registerHotkey({ category: chat, keys: ['Up'], label: translate('Edit last message in chat', 'help_hotkeys_2') });
+registerHotkey({ category: chat, keys: ['Ctrl+Up'], label: translate('Edit last USER message in chat', 'help_hotkeys_4') });
+registerHotkey({ category: chat, keys: ['Left'], label: translate('swipe left', 'help_hotkeys_6') });
+registerHotkey({ category: chat, keys: ['Right'], label: t`swipe right` });
 registerHotkey({ category: chat, keys: ['Enter'], label: translate('send your message to AI', 'help_hotkeys_10_1') });
 registerHotkey({ category: chat, keys: ['Ctrl+Enter'], label: translate('Regenerate the last AI response', 'help_hotkeys_12') });
 registerHotkey({ category: chat, keys: ['Alt+Enter'], label: translate('Continue the last AI response', 'help_hotkeys_14') });

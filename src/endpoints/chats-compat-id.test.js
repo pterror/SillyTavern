@@ -15,7 +15,6 @@ setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 const { router: chatsRouter } = await import('./chats.js');
 const { newSessionKey, MODE, chatNameAt, sessionTime } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
-const { buildDraftStorageKey } = await import('../../public/scripts/chat-draft.js');
 const { convertedUser, writeLibraryCard, treeOf, seedMessages, chatNamed } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-compat-id-test-');
@@ -98,7 +97,6 @@ test('the id stays through appends and bookmarks made at the pointer; opening a 
     await writeCharacter('cal.png', 'Cal');
     const tab = newSessionKey();
     const id = await openedId('cal.png', tab);
-    const draftKey = buildDraftStorageKey({ type: 'character', id: 'cal.png', chatId: id });
     const last = (await seedMessages(user.store, { avatar: 'cal.png' }, null, [message(false, 'Hi.'), message(true, 'One.')], { session: tab })).at(-1);
     assert.equal(await openedId('cal.png', tab), id);
 
@@ -108,7 +106,6 @@ test('the id stays through appends and bookmarks made at the pointer; opening a 
 
     await seedMessages(user.store, { avatar: 'cal.png' }, last, [message(false, 'Two.')], { session: tab });
     assert.equal(await openedId('cal.png', tab), id);
-    assert.equal(buildDraftStorageKey({ type: 'character', id: 'cal.png', chatId: await openedId('cal.png', tab) }), draftKey);
 
     const opened = await postJson('/api/chats/open', { avatar_url: 'cal.png', chat: made.data.id, make_current: true }, tab);
     assert.equal(opened.data.chat, 'Here');
@@ -130,12 +127,10 @@ test('a reply on a pinned current bookmark keeps the id and the draft; the bookm
     const tree = await treeOf(user.store, { avatar: 'dot.png' });
     const [pinned] = (await user.store.chats.bookmarks({ tree, limit: 500 })).rows.filter(r => r.name === id);
     assert.ok((await user.store.chats.changeBookmark({ tree, bookmark: pinned.id, change: { mode: MODE.pinned } })).ok);
-    const draftKey = buildDraftStorageKey({ type: 'character', id: 'dot.png', chatId: id });
 
     const replied = await postJson('/api/chats/message/append', { avatar_url: 'dot.png', after_node_id: pinnedAt, messages: [message(false, 'Two.')] }, tab);
     assert.equal(replied.status, 200);
     assert.equal(await openedId('dot.png', tab), id);
-    assert.equal(buildDraftStorageKey({ type: 'character', id: 'dot.png', chatId: await openedId('dot.png', tab) }), draftKey);
     assert.deepEqual(await shown('dot.png', id, tab), ['Hi.', 'One.', 'Two.']);
     assert.deepEqual(await shown('dot.png', id, newSessionKey()), ['Hi.', 'One.']);
 });
