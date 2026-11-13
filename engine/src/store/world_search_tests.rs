@@ -364,9 +364,13 @@ fn the_chips_are_read_with_their_targets_labels_and_finding_matches_names_and_ti
     let found = store.world_find(1, &words("lamp", titles_and_keys.clone()), 20).unwrap();
     let things: BTreeSet<String> = list(field(&found, "entries"))
         .iter()
-        .map(|named| text_of(field(named, "thing")))
+        .map(|found| text_of(field(field(found, "label"), "thing")))
         .collect();
     assert_eq!(things, set(&["103", "104", "105", "106", "108", "109", "111"]));
+    for found in list(field(&found, "entries")) {
+        assert_eq!(field(found, "picture"), &Js::Null);
+        list(field(found, "relations"));
+    }
     let first = store.world_find(1, &words("lamp", titles_and_keys), 2).unwrap();
     assert_eq!(list(field(&first, "entries")).len(), 2);
     assert!(next_of(&first).is_some());

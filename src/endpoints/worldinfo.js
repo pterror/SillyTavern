@@ -218,9 +218,9 @@ router.post('/entry/find', storeRoute('finding a World Info entry', async (reque
     const found = await lib.books.find(name);
     if (!found?.defined) return response.status(404).send({ error: `Lorebook '${name}' not found` });
     const clauses = searchClauses(text).map(clause => ({ ...clause, fields: [FOUND_BY_FIELD[/** @type {keyof typeof FOUND_BY_FIELD} */ (field)]] }));
-    /** @type {{ entries: { thing: string }[] }} */
+    /** @type {{ entries: { label: { thing: string } }[] }} */
     const read = clauses.length ? await lib.store.worldRead('worldbuildingFind', { book: found.id, clauses, limit: 1 }) : { entries: [] };
-    const [first] = read.entries.length ? await lib.entities([BigInt(read.entries[0].thing)]) : [null];
+    const [first] = read.entries.length ? await lib.entities([BigInt(read.entries[0].label.thing)]) : [null];
     const uid = first ? first.key.slice(first.key.indexOf(':') + 1) : null;
     return response.send({ uid: uid === null ? null : Number(uid) });
 }));

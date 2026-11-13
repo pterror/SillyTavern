@@ -7,6 +7,8 @@ import type { DecorationSet } from '@codemirror/view';
 import { useUi } from '@st/page/context';
 import { Name, nameClass } from '@st/page/name';
 import type { TextLink } from '../protocol.ts';
+import { wordsOf } from './Selection.tsx';
+import type { Selected } from './Selection.tsx';
 
 export type Piece = { text: string; link: null } | { text: string; link: string; picture: string | null };
 
@@ -90,9 +92,21 @@ export function EntryText(props: {
     onEnter: (entry: string, at: HTMLElement) => void;
     onLeave: (event: MouseEvent) => void;
     onOpen: (entry: string) => void;
+    onSelect: (selected: Selected) => void;
 }) {
     const { t } = useUi();
     const [editing, setEditing] = createSignal(false);
+    const readSelection = (within: HTMLElement): boolean => {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+        const range = selection.getRangeAt(0);
+        if (!within.contains(range.commonAncestorContainer)) return false;
+        const words = wordsOf(selection.toString());
+        if (words === '') return false;
+        const rect = range.getBoundingClientRect();
+        props.onSelect({ words, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom });
+        return true;
+    };
     return (
         <Show
             when={editing()}
@@ -102,7 +116,10 @@ export function EntryText(props: {
                     role="textbox"
                     tabIndex={0}
                     aria-label={t('The entry’s text')}
+                    onMouseUp={(event) => readSelection(event.currentTarget)}
                     onClick={(event) => {
+                        const selection = window.getSelection();
+                        if (selection && !selection.isCollapsed) return;
                         if (!(event.target as Element).closest('.wb-link')) setEditing(true);
                     }}
                     onKeyDown={(event) => {
@@ -150,6 +167,7 @@ export function EntryText(props: {
                 links={props.links}
                 label={t('The entry’s text')}
                 onSave={props.onSave}
+                onSelect={props.onSelect}
                 onDone={() => setEditing(false)}
             />
         </Show>
@@ -161,6 +179,7 @@ function Editor(props: {
     links: TextLink[];
     label: string;
     onSave: (text: string) => Promise<unknown>;
+    onSelect: (selected: Selected) => void;
     onDone: () => void;
 }) {
     let host: HTMLDivElement | undefined;
@@ -175,6 +194,22 @@ function Editor(props: {
         await props.onSave(text);
     };
     const save = (): Promise<void> => (saving = saving.then(sendLatest));
+    const selected = () => {
+        if (!view) return;
+        const { from, to, empty } = view.state.selection.main;
+        if (empty) return;
+        const words = wordsOf(view.state.sliceDoc(from, to));
+        const start = view.coordsAtPos(from);
+        const end = view.coordsAtPos(to, -1);
+        if (words === '' || !start || !end) return;
+        props.onSelect({
+            words,
+            left: Math.min(start.left, end.left),
+            right: Math.max(start.right, end.right),
+            top: Math.min(start.top, end.top),
+            bottom: Math.max(start.bottom, end.bottom),
+        });
+    };
     onMount(() => {
         if (!host) return;
         view = new EditorView({
@@ -195,6 +230,14 @@ function Editor(props: {
                     EditorView.domEventHandlers({
                         blur: () => {
                             void save().then(() => props.onDone());
+                        },
+                        mouseup: () => {
+                            requestAnimationFrame(selected);
+                            return false;
+                        },
+                        keyup: (event) => {
+                            if (event.shiftKey) selected();
+                            return false;
                         },
                         keydown: (event) => {
                             if (event.key !== 'Escape') return false;

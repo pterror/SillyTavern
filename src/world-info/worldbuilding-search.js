@@ -1,4 +1,5 @@
 import { WORLD_FIELD, WORLD_LABELS, searchClauses } from '../search-clauses.js';
+import { lookImageUrl } from '@st/looks/look';
 import { withPictureUrls } from './worldbuilding-pictures.js';
 
 const FOUND_BY = [WORLD_FIELD.key, WORLD_FIELD.title];
@@ -36,7 +37,8 @@ export function worldbuildingSearchPorts({ libOf }) {
         },
         async findEntries(user, { book, query, limit }) {
             const lib = await libOf(user);
-            return lib.store.worldRead('worldbuildingFind', { book: BigInt(book), clauses: findClauses(query), limit });
+            const found = await lib.store.worldRead('worldbuildingFind', { book: BigInt(book), clauses: findClauses(query), limit });
+            return { ...found, entries: found.entries.map((/** @type {any} */ entry) => ({ ...entry, picture: entry.picture === null ? null : lookImageUrl(entry.picture) })) };
         },
     };
 }

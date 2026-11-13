@@ -49,6 +49,7 @@ function stand(entry: OpenEntryView) {
         pointingAt: () => ({ endRank: 1, layout: { regionsByNestingLevel: [], cardTextCharacters: 0 } }),
         open: () => {},
         say: () => {},
+        drag: { press: () => {}, clickIsDrop: () => false, held: () => null },
     };
     const host = document.createElement('div');
     document.body.append(host);

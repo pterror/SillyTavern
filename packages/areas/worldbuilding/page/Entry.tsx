@@ -13,6 +13,7 @@ import type {
     WorldsView,
 } from '../protocol.ts';
 import { Cell, Label, Picture } from './Cards.tsx';
+import { REGION_ATTRIBUTES } from './Drag.tsx';
 import type { CardActions } from './Cards.tsx';
 import { useWb } from './context.ts';
 import { dismissOn } from './dismiss.ts';
@@ -23,6 +24,8 @@ import { Keys } from './Keys.tsx';
 import { PlacementPopover } from './Placement.tsx';
 import { RelationsLine } from './Relations.tsx';
 import { chooseFile } from './Switcher.tsx';
+import { SelectionMenu } from './Selection.tsx';
+import type { Selected } from './Selection.tsx';
 import { EntryText } from './Text.tsx';
 import { openedView } from './views.ts';
 import { fill } from './words.ts';
@@ -41,6 +44,7 @@ export function EntryPage(props: {
     const hover = hoverCards();
     const [placing, setPlacing] = createSignal(false);
     const [menu, setMenu] = createSignal(false);
+    const [selected, setSelected] = createSignal<Selected | null>(null);
     let placeButton: HTMLButtonElement | undefined;
     let menuButton: HTMLButtonElement | undefined;
     const at = () => ({ book: props.entry.book, entry: props.entry.entry });
@@ -145,7 +149,19 @@ export function EntryPage(props: {
                 onEnter={(entry, element) => hover.enter(props.entry.book, entry, element)}
                 onLeave={hover.leave}
                 onOpen={(entry) => wb.open(entry)}
+                onSelect={setSelected}
             />
+            <Show when={selected()} keyed>
+                {(shown) => (
+                    <SelectionMenu
+                        selected={shown}
+                        book={props.entry.book}
+                        entry={props.entry.entry}
+                        kind={props.groupBy}
+                        onClose={() => setSelected(null)}
+                    />
+                )}
+            </Show>
             <For each={props.pointingAt?.entry === props.entry.entry ? props.pointingAt.sections : []}>
                 {(section) => <PointingAt section={section} entry={props.entry} actions={props.actions} />}
             </For>
@@ -181,6 +197,15 @@ export function EntryPage(props: {
 
 function PointingAt(props: { section: PointingAtSection; entry: OpenEntryView; actions: CardActions }) {
     const wb = useWb();
+    const actions: CardActions = {
+        ...props.actions,
+        grouping: () => ({
+            book: props.entry.book,
+            kind: props.section.kind,
+            kindName: props.section.kindName ?? '',
+        }),
+    };
+    const here = () => ({ entry: props.entry.entry, label: props.entry.label });
     let end: HTMLDivElement | undefined;
     const shownEnd = () => props.section.firstRank + props.section.entries.length;
     onMount(() => {
@@ -194,15 +219,22 @@ function PointingAt(props: { section: PointingAtSection; entry: OpenEntryView; a
         onCleanup(() => watch.disconnect());
     });
     return (
-        <section class="wb-section">
+        <section
+            class="wb-section"
+            {...REGION_ATTRIBUTES(props.entry.entry, props.entry.label.text, props.section.kind)}
+        >
             <h3>
                 {props.section.kindName ?? ''} → {props.entry.label.text}
             </h3>
             <div class="wb-grid">
                 <For each={props.section.entries}>
                     {(cell) => (
-                        <div class="wb-top-cell" classList={{ 'wb-wide': cell.region.length > 0 }}>
-                            <Cell cell={cell} regionEntry={null} actions={props.actions} />
+                        <div
+                            class="wb-top-cell"
+                            classList={{ 'wb-wide': cell.region.length > 0 }}
+                            data-entry={cell.entry}
+                        >
+                            <Cell cell={cell} region={here()} actions={actions} />
                         </div>
                     )}
                 </For>

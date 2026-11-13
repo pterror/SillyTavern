@@ -75,7 +75,7 @@ export function Results(props: {
                 <For each={entries()}>
                     {(cell) => (
                         <div class="wb-top-cell" classList={{ 'wb-wide': cell.region.length > 0 }}>
-                            <Cell cell={cell} regionEntry={null} actions={props.actions} />
+                            <Cell cell={cell} region={null} actions={props.actions} />
                         </div>
                     )}
                 </For>

@@ -1362,3 +1362,274 @@
 :where(.wb-chat-card .named-name, .mes_text .chat-name > .named-name) {
     color: var(--wb-name, #9cc3f0);
 }
+
+/* Arranging: a card's menu, the target search, dragging, and what selected words become. */
+
+.wb .wb-card-more {
+    position: absolute;
+    right: 8px;
+    top: 8px;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    display: grid;
+    place-items: center;
+    color: var(--wb-ink-mid);
+    opacity: 0;
+}
+
+.wb-card:hover > .wb-card-more,
+.wb-card:focus-within > .wb-card-more,
+.wb-region-head:hover ~ .wb-region-corner .wb-card-more,
+.wb-region-corner:hover .wb-card-more,
+.wb-region-corner:focus-within .wb-card-more,
+.wb .wb-card-more:focus-visible {
+    opacity: 1;
+}
+
+.wb .wb-card-more:hover,
+.wb .wb-card-more.wb-on {
+    opacity: 1;
+    background: #26262c;
+    color: var(--wb-ink);
+}
+
+.wb-card.wb-card-menu-open {
+    overflow: visible;
+    z-index: 6;
+    border-color: #45454d;
+}
+
+.wb-region.wb-card-menu-open {
+    z-index: 6;
+}
+
+.wb-region-corner {
+    position: absolute;
+    right: 16px;
+    top: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.wb .wb-region-corner .wb-region-search {
+    position: static;
+}
+
+.wb .wb-region-corner .wb-card-more {
+    position: relative;
+    right: auto;
+    top: auto;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+}
+
+.wb-card-menu-box {
+    display: contents;
+}
+
+.wb .wb-card-menu {
+    right: 8px;
+    top: 40px;
+    width: 230px;
+    z-index: 5;
+}
+
+.wb .wb-card-menu > button {
+    padding: 7px 10px;
+}
+
+.wb .wb-card-menu > button.wb-on {
+    background: #26262c;
+}
+
+.wb-region-corner .wb-card-menu {
+    right: 0;
+    top: 38px;
+}
+
+.wb-pick {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 300px;
+    padding: 8px;
+    background: var(--wb-raised);
+    border: 1px solid var(--wb-line-strong);
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    font-size: 14px;
+}
+
+.wb-card-pick {
+    position: absolute;
+    right: -250px;
+    top: 40px;
+    z-index: 6;
+}
+
+.wb-region-corner .wb-card-pick {
+    right: -242px;
+    top: 38px;
+}
+
+.wb-pick-head {
+    font-size: 13px;
+    color: var(--wb-ink-mid);
+    padding: 2px 6px;
+}
+
+.wb-pick-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 34px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid #55555d;
+    background: var(--wb-bg);
+    color: var(--wb-ink);
+}
+
+.wb .wb-pick-field input {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: 0;
+    outline: none;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+}
+
+.wb-pick-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 280px;
+    overflow-y: auto;
+}
+
+.wb .wb-pick-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    color: var(--wb-ink);
+}
+
+.wb .wb-pick-row.wb-on {
+    background: #26262c;
+}
+
+.wb-pick-pic {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    flex: none;
+    background: var(--wb-raised) center / cover no-repeat;
+}
+
+.wb-pick-name {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.wb-pick-where {
+    margin-left: auto;
+    flex: none;
+    font-size: 12px;
+    color: var(--wb-ink-dim);
+    white-space: nowrap;
+}
+
+.wb .wb-gone {
+    opacity: 0.35;
+}
+
+.wb .wb-drop {
+    box-shadow: inset 0 0 0 2px #6f9cc8;
+    background: rgba(111, 156, 200, 0.08);
+}
+
+.wb-dragged {
+    position: fixed;
+    z-index: 50;
+    transform: rotate(-1.2deg);
+    pointer-events: none;
+}
+
+.wb-dragged-card > * {
+    position: relative;
+    border: 1px solid var(--wb-line);
+    border-radius: 14px;
+    background: #202026;
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+    opacity: 1;
+}
+
+.wb-dragged-card > section {
+    padding: 12px;
+}
+
+.wb-intent {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    padding: 6px 10px;
+    border-radius: 9px;
+    background: #2b4258;
+    color: #eaf3fb;
+    font-size: 13.5px;
+    width: max-content;
+}
+
+.wb-intent span {
+    font-size: 12.5px;
+    color: #bcd2e6;
+}
+
+.wb-intent .wb-intent-kind {
+    font-size: 12px;
+    color: #9fb7cc;
+}
+
+.wb-selmenu {
+    position: fixed;
+    z-index: 40;
+}
+
+.wb .wb-selmenu-items {
+    position: static;
+    width: 100%;
+}
+
+.wb .wb-selmenu-items > .wb-prim {
+    background: #26262c;
+}
+
+.wb-selmenu .wb-pick {
+    width: 100%;
+}
+
+.wb .wb-section.wb-drop {
+    background: none;
+    box-shadow: 0 0 0 2px #6f9cc8;
+    border-radius: 10px;
+}
+
+.wb .wb-text ::selection,
+.wb .wb-text-editing .cm-selectionBackground,
+.wb .wb-text-editing.cm-focused .cm-selectionBackground {
+    background: #2f4f73;
+}
+
+.wb .wb-gone .wb-card-more {
+    opacity: 0;
+}

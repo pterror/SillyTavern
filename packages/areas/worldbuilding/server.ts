@@ -39,6 +39,7 @@ import type {
     Chip,
     EntryCell,
     HoverCard,
+    FoundEntry,
     FoundView,
     ResultsView,
     EntryView,
@@ -158,7 +159,7 @@ export type ResultsRead = {
     pages: { cursor: string | null; entries: EntryCell[]; next: string | null }[];
 };
 
-export type Found = { entries: Named[]; next: string | null };
+export type Found = { entries: FoundEntry[]; next: string | null };
 
 export type NamesOfferChange = 'ok' | 'missing' | { refused: string };
 

@@ -694,7 +694,11 @@ pub fn find_entries(
     let keys_list = key_list(view, book)?;
     let mut entries = Vec::with_capacity(page.entries.len());
     for (entity, _) in page.entries {
-        entries.push(entry_label::named(view, keys_list, entity)?.js());
+        entries.push(Js::Obj(vec![
+            ("label", entry_label::named(view, keys_list, entity)?.js()),
+            ("picture", entry_label::picture(view, entity)?),
+            ("relations", Js::Arr(overview::relations_line(view, book, keys_list, entity)?)),
+        ]));
     }
     Ok((
         Js::Obj(vec![

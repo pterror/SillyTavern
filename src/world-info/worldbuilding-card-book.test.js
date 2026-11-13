@@ -90,7 +90,7 @@ test('the character\'s own book opens as a world, is never listed among them, an
     const [inn] = await entryIds(id);
     assert.deepEqual(await ports.moveEntryToWorld(who, id, inn, plain), { refused: CARD_ENTRY_STAYS });
     assert.deepEqual(await ports.moveEntryToWorld(who, plain, (await entryIds(plain))[0], id), { refused: CARD_ENTRY_STAYS });
-    assert.deepEqual((await ports.findEntries(uiUser, { book: id, query: 'river', limit: 5 })).entries.map(e => e.text), ['The river.']);
+    assert.deepEqual((await ports.findEntries(uiUser, { book: id, query: 'river', limit: 5 })).entries.map(e => e.label.text), ['The river.']);
 });
 
 test('the page\'s edits of the character\'s own book write the card\'s fields, and the card\'s export carries them', async () => {

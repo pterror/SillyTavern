@@ -50,10 +50,12 @@ export const READS_PER_LOOP_CHECK_VISIT = 2;
 // is in the world, and its text's head and record; one that mentions the entry, its label and its picture too.
 export const READS_PER_PICTURE = 1;
 export const READS_PER_MENTION_CHECK = 4 + READS_PER_LABEL + READS_PER_PICTURE;
-// The reads bounded by a count of labels: the targets found, the key's sharers, the loops of the last change and of
-// the jobs (each loop its entry, its target and the entries it names), and the world header's example.
+// The reads bounded by a count of labels: the key's sharers, the loops of the last change and of the jobs (each loop
+// its entry, its target and the entries it names), and the world header's example; and the targets found, each read
+// as a card with its picture.
 export const READS_OF_COUNTED_LABELS =
-    (FOUND_PER_QUERY + KEY_SHARERS_SHOWN + 2 * LOOPS_SHOWN * (2 + ENTRIES_NAMED_PER_LOOP) + 1) * READS_PER_LABEL;
+    (KEY_SHARERS_SHOWN + 2 * LOOPS_SHOWN * (2 + ENTRIES_NAMED_PER_LOOP) + 1) * READS_PER_LABEL +
+    FOUND_PER_QUERY * (READS_PER_DRAWN_CARD + READS_PER_PICTURE);
 // An answer's first part holds the action's own work and the views it names its own; every other view is a later part
 // of its own. So a part holds at most one view's bounded reads and one action's work, besides the counted labels.
 // The action's work: a write's loop check walks up from each source it changed (at most a step's) and, sharing one
@@ -380,7 +382,10 @@ export type ResultsView =
     | { book: string; generation: number; filter: { query: string; chips: ShownChip[] }; pages: ResultsPage[] }
     | { book: null };
 
-export type FoundView = { book: string; query: string; entries: Named[]; next: string | null } | { book: null };
+// An entry a search for a target found: its label, picture and relations, so the page can say where it sits.
+export type FoundEntry = { label: Named; picture: string | null; relations: RelationOnCard[] };
+
+export type FoundView = { book: string; query: string; entries: FoundEntry[]; next: string | null } | { book: null };
 
 // `none`: the entries in `except` are selected; `matching`: what the shown filter (else the whole world) matches is,
 // but those in `except`. `matching` counts the selected up to SELECTION_COUNTED_UP_TO, `matchingCapped` saying there may

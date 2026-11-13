@@ -88,7 +88,7 @@ function NewRelation(props: {
     const results = () => {
         const shown = found();
         if (!shown || shown.book === null || query().trim() === '' || shown.query !== query()) return [];
-        return shown.entries.filter((entry) => entry.thing !== props.entry.entry);
+        return shown.entries.filter((found) => found.label.thing !== props.entry.entry);
     };
     const relate = (targetEntry: string) => {
         const chosen = kind();
@@ -145,7 +145,7 @@ function NewRelation(props: {
                     onInput={(event) => typed(event.currentTarget.value)}
                     onKeyDown={(event) => {
                         const first = results()[0];
-                        if (event.key === 'Enter' && first) relate(first.thing);
+                        if (event.key === 'Enter' && first) relate(first.label.thing);
                     }}
                 />
             </div>
@@ -153,8 +153,13 @@ function NewRelation(props: {
                 <div class="wb-relpop-found" role="listbox" aria-label={t('Entries')}>
                     <For each={results()}>
                         {(entry) => (
-                            <button type="button" role="option" class="wb-choice" onClick={() => relate(entry.thing)}>
-                                {entry.text}
+                            <button
+                                type="button"
+                                role="option"
+                                class="wb-choice"
+                                onClick={() => relate(entry.label.thing)}
+                            >
+                                {entry.label.text}
                             </button>
                         )}
                     </For>

@@ -67,7 +67,7 @@ test('results, chips and found entries over the store', async () => {
     assert.deepEqual(later.pages.map(page => page.entries.map(found => found.entry)), [[id(3)]]);
 
     const found = await ports.findEntries(uiUser, { book: B, query: 'lamp', limit: 20 });
-    assert.deepEqual(new Set(found.entries.map(named => named.text)), new Set(['Lamp Street', 'an old lamp', 'Far Lamp']), 'a trigger matches too; the label is the label rule\'s');
+    assert.deepEqual(new Set(found.entries.map(found => found.label.text)), new Set(['Lamp Street', 'an old lamp', 'Far Lamp']), 'a trigger matches too; the label is the label rule\'s');
     assert.equal(found.next, null);
     assert.deepEqual(await ports.findEntries(uiUser, { book: B, query: ' ', limit: 20 }), { entries: [], next: null });
 });

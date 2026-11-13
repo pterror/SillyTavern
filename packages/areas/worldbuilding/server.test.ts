@@ -33,6 +33,7 @@ import {
     READS_PER_LABEL,
     READS_PER_LOOP_CHECK_VISIT,
     READS_PER_MENTION_CHECK,
+    READS_PER_PICTURE,
     READS_PER_REQUEST,
     READS_OF_ACTION,
     READS_PER_VIEW,
@@ -212,7 +213,7 @@ const READS_ASKED: Costs = {
     stepPointingAt: (_u, q) => crossedBy(q) * cardsOf(q.layout) * READS_PER_CARD,
     labelEntries: (_u, _b, entries) => entries.length * READS_PER_LABEL,
     readResults: (_u, q) => q.pages * q.pageSize * READS_PER_DRAWN_CARD + q.walkSteps,
-    findEntries: (_u, q) => q.limit * READS_PER_LABEL,
+    findEntries: (_u, q) => q.limit * (READS_PER_DRAWN_CARD + READS_PER_PICTURE),
     readSelection: (_u, selection, walkSteps) => selection.except.length + walkSteps,
     // The first chunk walks in the engine's own share (WALK_STEPS_PER_READ) before its loop check.
     startBulk: (_w, _s, _a, limit) => WALK_STEPS_PER_READ + loopCheck(limit),
@@ -593,7 +594,10 @@ function world(
         },
         findEntries: async (_u, q) => {
             asked.found.push(q);
-            return { entries: q.query === '' ? [] : [named('7', 'name 7')], next: null };
+            return {
+                entries: q.query === '' ? [] : [{ label: named('7', 'name 7'), picture: null, relations: [] }],
+                next: null,
+            };
         },
         readLoopsLeftByJobs: async (_u, book) => (book === '1' ? [{ entry: '7', kind: '1', entries: ['7', '8'] }] : []),
         readSelection: async (_u, selection) => {
@@ -2009,7 +2013,7 @@ test("finding an entry of a world opens its best matches by name and title, a co
     expect(await w.view<FoundView>(FOUND_VIEW)).toEqual({
         book: '1',
         query: 'na',
-        entries: [named('7', 'name 7')],
+        entries: [{ label: named('7', 'name 7'), picture: null, relations: [] }],
         next: null,
     });
     expect(w.asked.found).toEqual([{ book: '1', query: 'na', limit: FOUND_PER_QUERY }]);

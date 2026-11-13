@@ -25,6 +25,7 @@ import type { CardActions } from './Cards.tsx';
 import type { Target } from './compat.ts';
 import { WbProvider } from './context.ts';
 import type { Wb } from './context.ts';
+import { DragLayer, dragControl } from './Drag.tsx';
 import { EntryPage } from './Entry.tsx';
 import { Icon } from './icons.tsx';
 import { PLAIN_ROWS_PER_SCREEN, pageLayout, sameLayout, topLevelShown } from './layout.ts';
@@ -113,7 +114,8 @@ function Page(props: Props) {
         pane()?.scrollTo({ top: 0 });
         void act('worldbuilding.openEntry', { entry, pointingAt: pointingAtShown() });
     };
-    const wb: Wb = { act, layout: () => layout().overview, firstRead, pointingAt: pointingAtShown, open, say };
+    const drag = dragControl(act);
+    const wb: Wb = { act, layout: () => layout().overview, firstRead, pointingAt: pointingAtShown, open, say, drag };
 
     const [typed, setTyped] = createSignal<Typed>(NOTHING_TYPED);
     const type = (next: Typed) => {
@@ -136,6 +138,11 @@ function Page(props: Props) {
             const kind = shownOverview()?.groupBy;
             if (kind === null || kind === undefined) return;
             type({ ...typed(), scope: { chip: { kind, target: entry, depth: 'anyDepth' }, label } });
+        },
+        grouping() {
+            const shown = shownOverview();
+            const kind = shownKinds().find((one) => one.id === shown?.groupBy);
+            return shown && kind ? { book: shown.book ?? '', kind: kind.id, kindName: kind.name } : null;
         },
     };
 
@@ -277,6 +284,7 @@ function Page(props: Props) {
                         )}
                     </Show>
                 </main>
+                <DragLayer control={drag} />
                 <Show when={said()}>
                     <div class="wb-said" role="status">
                         {said()}
