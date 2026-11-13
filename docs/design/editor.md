@@ -20,9 +20,9 @@ greetings and other alternatives, worldbuilding text, prompt manager prompts, au
   it (interact-markdown's `overtype`, its own extension, composed in).
 - A reading surface (rendered messages, the wiki view) shows no marks. Both are drawn from the same syntax tree and
   styles; they differ only in the marks and in macro pill styling.
-- Going from reading to editing is an explicit action (Edit, a key), or a click into the text when the person turned
-  on click to edit (`click_to_edit`); never focus. A click that something else handles (a link, a `<summary>`, a lore
-  mark) starts no edit.
+- Going from reading to editing is an explicit action (Edit, a key), or a gesture in the text: a click when the
+  person turned on click to edit (`click_to_edit`), a double-click when it is off. Never focus. A click that
+  something else handles (a link, a `<summary>`, a lore mark) starts no edit.
 - A macro is one token: a pill showing its value, deleted whole by Backspace; `{{` opens suggestions. The reader shows
   the value without the pill styling. As the live editor's pills do now (`public/scripts/macro-pill.js`): a value only
   known when sent shows what the macro is, marked "Filled in when sent"; one that sends nothing is marked so; a person
