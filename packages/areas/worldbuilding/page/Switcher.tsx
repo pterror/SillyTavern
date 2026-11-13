@@ -59,7 +59,7 @@ export function Switcher(props: { world: ShownWorld | null; onOpen: (book: strin
             <button
                 ref={(element) => (button = element)}
                 type="button"
-                class="wb-switch"
+                class="menu_button menu_button_icon margin0 wb-switch"
                 aria-label={t('Switch world')}
                 aria-expanded={open()}
                 onClick={() => setOpen(!open())}
@@ -104,13 +104,13 @@ function WorldsMenu(props: {
         void started;
     };
     return (
-        <div class="wb-menu wb-worlds" role="menu" ref={(element) => (menu = element)}>
+        <div class="wb-menu list-group wb-worlds" role="menu" ref={(element) => (menu = element)}>
             <For each={worlds()?.worlds ?? []}>
                 {(world) => (
                     <button
                         type="button"
                         role="menuitem"
-                        class="wb-world-row"
+                        class="list-group-item wb-world-row"
                         classList={{ 'wb-on': world.id === props.world?.id }}
                         onClick={() => props.onOpen(world.id)}
                     >
@@ -122,6 +122,7 @@ function WorldsMenu(props: {
             </For>
             <hr />
             <button
+                class="list-group-item"
                 type="button"
                 role="menuitem"
                 onClick={() =>
@@ -134,6 +135,7 @@ function WorldsMenu(props: {
                 {t('New world…')}
             </button>
             <button
+                class="list-group-item"
                 type="button"
                 role="menuitem"
                 onClick={() =>
@@ -150,28 +152,23 @@ function WorldsMenu(props: {
                     <>
                         <hr />
                         <Show when={!world.ownBook}>
-                            <button
-                                type="button"
-                                role="menuitemcheckbox"
-                                aria-checked={world.usedInEveryChat}
-                                class="wb-check-row"
-                                onClick={() =>
-                                    run(() =>
-                                        wb.act('worldbuilding.setUsedInEveryChat', {
-                                            changes: [{ book: world.id, used: !world.usedInEveryChat }],
-                                        }),
-                                    )
-                                }
-                            >
-                                <span class="wb-check-box">
-                                    <Show when={world.usedInEveryChat}>
-                                        <Icon name="check" size={14} />
-                                    </Show>
-                                </span>
+                            <label class="list-group-item checkbox_label" role="none">
+                                <input
+                                    type="checkbox"
+                                    checked={world.usedInEveryChat}
+                                    onChange={() =>
+                                        run(() =>
+                                            wb.act('worldbuilding.setUsedInEveryChat', {
+                                                changes: [{ book: world.id, used: !world.usedInEveryChat }],
+                                            }),
+                                        )
+                                    }
+                                />
                                 {t('Used in every chat')}
-                            </button>
+                            </label>
                         </Show>
                         <button
+                            class="list-group-item"
                             type="button"
                             role="menuitem"
                             onClick={() =>
@@ -186,6 +183,7 @@ function WorldsMenu(props: {
                         </button>
                         <Show when={world.picture !== null}>
                             <button
+                                class="list-group-item"
                                 type="button"
                                 role="menuitem"
                                 onClick={() =>
@@ -197,6 +195,7 @@ function WorldsMenu(props: {
                         </Show>
                         <Show when={!world.ownBook}>
                             <button
+                                class="list-group-item"
                                 type="button"
                                 role="menuitem"
                                 onClick={() =>
@@ -211,6 +210,7 @@ function WorldsMenu(props: {
                                 {t('Duplicate')}
                             </button>
                             <button
+                                class="list-group-item"
                                 type="button"
                                 role="menuitem"
                                 onClick={() =>
@@ -226,7 +226,7 @@ function WorldsMenu(props: {
                             <button
                                 type="button"
                                 role="menuitem"
-                                class="wb-danger"
+                                class="list-group-item wb-danger"
                                 onClick={() =>
                                     run(async () => {
                                         const sure = await ask(

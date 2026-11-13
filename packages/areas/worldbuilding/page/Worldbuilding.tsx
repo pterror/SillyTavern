@@ -48,13 +48,14 @@ import type { RowsContext } from './Rows.tsx';
 
 const POINTING_AT_SHOWN = 12;
 
-type Props = { shown: boolean; target: Target | null; onTargetTaken: () => void };
+// `notify`: the app's toast, for what the server refused.
+type Props = { shown: boolean; target: Target | null; onTargetTaken: () => void; notify: (words: string) => void };
 
 // The page reads nothing until its pane is first shown.
 export function Worldbuilding(props: Props & { everShown: boolean }) {
     return (
         <Show when={props.everShown}>
-            <Page shown={props.shown} target={props.target} onTargetTaken={props.onTargetTaken} />
+            <Page shown={props.shown} target={props.target} onTargetTaken={props.onTargetTaken} notify={props.notify} />
         </Show>
     );
 }
@@ -74,7 +75,6 @@ function Page(props: Props) {
 
     const [pane, setPane] = createSignal<HTMLElement>();
     const [width, setWidth] = createSignal(0);
-    const [said, setSaid] = createSignal<string | null>(null);
     const layout = createMemo<PageLayout>(() => pageLayout(width() > 0 ? width() : 1280), pageLayout(1280), {
         equals: (a, b) => sameLayout(a.overview, b.overview) && a.columns === b.columns,
     });
@@ -107,9 +107,10 @@ function Page(props: Props) {
         return shown && shown.book !== null && shown.book === shownWorld()?.id ? shown.kinds : [];
     };
 
-    const say = (words: string) => setSaid(words);
+    const say = (words: string) => {
+        props.notify(words);
+    };
     const act: Wb['act'] = async (type, payload, file) => {
-        setSaid(null);
         const done = await client.send(type, payload, file);
         if (!done.ok) say(done.error);
         return done;
@@ -273,7 +274,7 @@ function Page(props: Props) {
                     <span class="wb-fill" />
                     <button
                         type="button"
-                        class="wb-btn wb-new-entry"
+                        class="menu_button menu_button_icon margin0 wb-btn wb-new-entry"
                         aria-label={t('New entry')}
                         disabled={!shownWorld()}
                         onClick={() => {
@@ -363,14 +364,6 @@ function Page(props: Props) {
                         kinds={shownKinds()}
                         groupBy={shownOverview()?.groupBy ?? null}
                     />
-                </Show>
-                <Show when={said()}>
-                    <div class="wb-said" role="status">
-                        {said()}
-                        <button type="button" aria-label={t('Close')} onClick={() => setSaid(null)}>
-                            ×
-                        </button>
-                    </div>
                 </Show>
             </div>
         </WbProvider>

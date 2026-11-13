@@ -59,25 +59,34 @@ const tabItemSelectors = [
     '.tab-container .tab-title',
 ].join(', ');
 
+/**
+ * Gives an element a role unless its markup states one.
+ * @param {Element} element
+ * @param {string} role
+ */
+function defaultRole(element, role) {
+    if (!element.hasAttribute('role')) element.setAttribute('role', role);
+}
+
 /** @type {Record<string, (element: Element) => void>} */
 const a11yRules = {
     [buttonSelectors]: (element) => {
-        element.setAttribute('role', 'button');
+        defaultRole(element, 'button');
     },
     [listSelectors]: (element) => {
-        element.setAttribute('role', 'list');
+        defaultRole(element, 'list');
     },
     [listItemSelectors]: (element) => {
-        element.setAttribute('role', 'listitem');
+        defaultRole(element, 'listitem');
     },
     [toolbarSelectors]: (element) => {
-        element.setAttribute('role', 'toolbar');
+        defaultRole(element, 'toolbar');
     },
     [tabListSelectors]: (element) => {
-        element.setAttribute('role', 'tablist');
+        defaultRole(element, 'tablist');
     },
     [tabItemSelectors]: (element) => {
-        element.setAttribute('role', 'tab');
+        defaultRole(element, 'tab');
         const radio = element.querySelector('.invisible-radio');
         const content = element.nextElementSibling;
         if (content?.id) {
@@ -88,7 +97,7 @@ const a11yRules = {
         }
     },
     '#toast-container .toast': (element) => {
-        element.setAttribute('role', 'status');
+        defaultRole(element, 'status');
     },
 };
 

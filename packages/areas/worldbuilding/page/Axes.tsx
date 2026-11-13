@@ -302,7 +302,12 @@ export type AxesChange = (change: { columns?: AxisItem[]; rows?: AxisItem[] }) =
 function DepthPill(props: { onToggle: () => void }) {
     const { t } = useUi();
     return (
-        <button type="button" class="wb-dep" title={t('Only what is directly in it')} onClick={() => props.onToggle()}>
+        <button
+            type="button"
+            class="tag wb-dep"
+            title={t('Only what is directly in it')}
+            onClick={() => props.onToggle()}
+        >
             {t('at any depth')}
         </button>
     );
@@ -335,11 +340,11 @@ export function AxisControl(props: {
         props.onChange({ [props.axis]: items });
     };
     return (
-        <span class="wb-vctl wb-ax-ctl" classList={{ 'wb-chips': props.items.length > 0 }}>
-            <b>{props.label}</b>
+        <span class="wb-ax-ctl">
+            <span>{props.label}</span>
             <For each={props.items}>
                 {(item, at) => (
-                    <span class="wb-pill">
+                    <span class="tag wb-pill">
                         <button
                             type="button"
                             class="wb-pill-words"
@@ -363,7 +368,7 @@ export function AxisControl(props: {
             <span class="wb-ax-add">
                 <button
                     type="button"
-                    class="wb-padd"
+                    class="menu_button margin0 wb-padd"
                     ref={(element) => (plus = element)}
                     aria-label={fill(t('Add to ${0}'), props.label)}
                     aria-expanded={adding()}
@@ -400,7 +405,7 @@ function AddItem(props: {
     let menu: HTMLDivElement | undefined;
     dismissOn(() => menu, props.onClose, props.opener);
     return (
-        <div class="wb-menu wb-ax-menu" role="menu" ref={(element) => (menu = element)}>
+        <div class="wb-menu list-group wb-ax-menu" role="menu" ref={(element) => (menu = element)}>
             <Show
                 when={kind()}
                 fallback={
@@ -410,7 +415,12 @@ function AddItem(props: {
                     >
                         <For each={props.kinds}>
                             {(one) => (
-                                <button type="button" role="menuitem" onClick={() => setKind(one)}>
+                                <button
+                                    class="list-group-item"
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => setKind(one)}
+                                >
                                     {one.name}…
                                 </button>
                             )}
@@ -421,6 +431,7 @@ function AddItem(props: {
                 {(chosen) => (
                     <>
                         <button
+                            class="list-group-item"
                             type="button"
                             role="menuitem"
                             onClick={() => props.onAdd({ kind: chosen().id, is: 'any' })}
@@ -428,6 +439,7 @@ function AddItem(props: {
                             {chosen().name}: {t('any')}
                         </button>
                         <button
+                            class="list-group-item"
                             type="button"
                             role="menuitem"
                             onClick={() => props.onAdd({ kind: chosen().id, is: 'none' })}

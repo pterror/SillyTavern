@@ -149,7 +149,7 @@ function TokenField(props: { value: string; label: string; wide: boolean; onDone
     return (
         <input
             ref={(element) => (field = element)}
-            class="wb-tok-field"
+            class="text_pole margin0 wb-tok-field"
             classList={{ 'wb-tok-wide': props.wide }}
             aria-label={props.label}
             value={props.value}
@@ -173,13 +173,13 @@ function Choices<T>(props: {
 }) {
     const { t } = useUi();
     return (
-        <span class="wb-choices" role="listbox" aria-label={props.label} style={props.style}>
+        <span class="list-group st-floating wb-choices" role="listbox" aria-label={props.label} style={props.style}>
             <For each={props.items}>
                 {(item) => (
                     <button
                         type="button"
                         role="option"
-                        class="wb-choice"
+                        class="list-group-item wb-choice"
                         classList={{ 'wb-on': item.value === props.chosen }}
                         aria-selected={item.value === props.chosen}
                         onClick={() => props.onPick(item.value)}
@@ -330,19 +330,19 @@ export function PlacementPopover(props: {
                 <Show when={offered().length > 0}>
                     <button
                         type="button"
-                        class="wb-place-more"
+                        class="menu_button margin0 wb-place-more"
                         aria-expanded={list() === 'more'}
                         onClick={() => toggle('more')}
                     >
                         {t('+ More')}
                     </button>
                     <Show when={list() === 'more'}>
-                        <span class="wb-choices wb-choices-static">
+                        <span class="list-group wb-choices wb-choices-static">
                             <For each={offered()}>
                                 {(extra) => (
                                     <button
                                         type="button"
-                                        class="wb-choice"
+                                        class="list-group-item wb-choice"
                                         onClick={() => {
                                             setList(null);
                                             setAdding(extra.extra);

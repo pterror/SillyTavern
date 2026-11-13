@@ -31,7 +31,7 @@ export function CardMenuButton(props: {
             <button
                 ref={(element) => (button = element)}
                 type="button"
-                class="wb-card-more"
+                class="right_menu_button interactable wb-card-more"
                 classList={{ 'wb-on': props.open }}
                 aria-label={fill(t('More for ${0}'), props.label.text)}
                 title={t('Move, also put in, take out')}
@@ -66,7 +66,7 @@ function CardMenu(props: {
     const wb = useWb();
     const [picking, setPicking] = createSignal<Picking>(null);
     let box: HTMLDivElement | undefined;
-    dismissOn(() => box, props.onClose, props.opener);
+    dismissOn(() => box, props.onClose, props.opener, { align: 'end', framed: false });
     const relation = () => ({ book: props.grouping.book, entry: props.entry, kind: props.grouping.kind });
     const run = (action: () => Promise<unknown>) => {
         const started = action();
@@ -99,8 +99,9 @@ function CardMenu(props: {
     };
     return (
         <div class="wb-card-menu-box" ref={(element) => (box = element)}>
-            <div class="wb-menu wb-card-menu" role="menu">
+            <div class="wb-menu list-group st-floating wb-card-menu" role="menu">
                 <button
+                    class="list-group-item"
                     type="button"
                     role="menuitem"
                     classList={{ 'wb-on': picking() === 'move' }}
@@ -112,6 +113,7 @@ function CardMenu(props: {
                     {(region) => (
                         <>
                             <button
+                                class="list-group-item"
                                 type="button"
                                 role="menuitem"
                                 classList={{ 'wb-on': picking() === 'also' }}
@@ -120,6 +122,7 @@ function CardMenu(props: {
                                 {t('Also put in…')}
                             </button>
                             <button
+                                class="list-group-item"
                                 type="button"
                                 role="menuitem"
                                 onClick={() =>
@@ -141,7 +144,7 @@ function CardMenu(props: {
             <Show when={picking()} keyed>
                 {(how) => (
                     <TargetPicker
-                        class="wb-card-pick"
+                        class="wb-card-pick st-floating"
                         heading={fill(how === 'move' ? t('Move ${0} to') : t('Also put ${0} in'), props.label.text)}
                         book={props.grouping.book}
                         kind={props.grouping.kind}

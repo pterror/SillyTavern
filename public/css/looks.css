@@ -1,7 +1,34 @@
-/* The Look screen: a full-width pane under the top bar, over whatever opened it. Values follow the approved mockup. */
+/* The Look screen: a full-width pane under the top bar, over whatever opened it, in the theme's colours and type. */
+
+:root {
+    --look-accent-14: color-mix(in srgb, var(--SmartThemeUnderlineColor) 14%, var(--SmartThemeBlurTintColor));
+    --look-accent-35: color-mix(in srgb, var(--SmartThemeUnderlineColor) 35%, var(--SmartThemeBlurTintColor));
+    --look-accent-70: color-mix(in srgb, var(--SmartThemeUnderlineColor) 70%, var(--SmartThemeBlurTintColor));
+    --look-danger-ink: color-mix(in srgb, var(--fullred) 45%, var(--SmartThemeBodyColor));
+    --look-on-accent: color-mix(in srgb, var(--SmartThemeUnderlineColor) 25%, var(--SmartThemeBodyColor));
+    --look-shadow: var(--SmartThemeShadowColor);
+    --look-tone-0: var(--SmartThemeBlurTintColor);
+    --look-tone-2: color-mix(in srgb, var(--SmartThemeBodyColor) 2%, var(--SmartThemeBlurTintColor));
+    --look-tone-4: color-mix(in srgb, var(--SmartThemeBodyColor) 4%, var(--SmartThemeBlurTintColor));
+    --look-tone-5: color-mix(in srgb, var(--SmartThemeBodyColor) 5%, var(--SmartThemeBlurTintColor));
+    --look-tone-6: color-mix(in srgb, var(--SmartThemeBodyColor) 6%, var(--SmartThemeBlurTintColor));
+    --look-tone-8: color-mix(in srgb, var(--SmartThemeBodyColor) 8%, var(--SmartThemeBlurTintColor));
+    --look-tone-10: color-mix(in srgb, var(--SmartThemeBodyColor) 10%, var(--SmartThemeBlurTintColor));
+    --look-tone-12: color-mix(in srgb, var(--SmartThemeBodyColor) 12%, var(--SmartThemeBlurTintColor));
+    --look-tone-16: color-mix(in srgb, var(--SmartThemeBodyColor) 16%, var(--SmartThemeBlurTintColor));
+    --look-tone-20: color-mix(in srgb, var(--SmartThemeBodyColor) 20%, var(--SmartThemeBlurTintColor));
+    --look-tone-25: color-mix(in srgb, var(--SmartThemeBodyColor) 25%, var(--SmartThemeBlurTintColor));
+    --look-tone-35: color-mix(in srgb, var(--SmartThemeBodyColor) 35%, var(--SmartThemeBlurTintColor));
+    --look-tone-50: color-mix(in srgb, var(--SmartThemeBodyColor) 50%, var(--SmartThemeBlurTintColor));
+    --look-tone-55: color-mix(in srgb, var(--SmartThemeBodyColor) 55%, var(--SmartThemeBlurTintColor));
+    --look-tone-70: color-mix(in srgb, var(--SmartThemeBodyColor) 70%, var(--SmartThemeBlurTintColor));
+    --look-tone-80: color-mix(in srgb, var(--SmartThemeBodyColor) 80%, var(--SmartThemeBlurTintColor));
+    --look-tone-90: color-mix(in srgb, var(--SmartThemeBodyColor) 90%, var(--SmartThemeBlurTintColor));
+    --look-tone-100: var(--SmartThemeBodyColor);
+}
 
 .look-screen {
-    --look-name: #9cc3f0;
+    --look-name: var(--SmartThemeUnderlineColor);
 
     position: fixed;
     top: var(--topBarBlockSize);
@@ -11,10 +38,10 @@
     z-index: 3050;
     display: flex;
     flex-direction: column;
-    background: #141416;
-    color: #e4e2dc;
-    font-family: 'Noto Sans', system-ui, sans-serif;
-    font-size: 15px;
+    background: var(--look-tone-0);
+    color: var(--look-tone-100);
+    font-family: var(--mainFontFamily);
+    font-size: var(--mainFontSize);
     line-height: 1.6;
     text-align: left;
     text-shadow: none;
@@ -26,7 +53,7 @@
     box-sizing: border-box;
 }
 
-.look-screen button {
+:where(.look-screen) button {
     font: inherit;
     color: inherit;
     background: none;
@@ -39,9 +66,9 @@
     box-shadow: none;
 }
 
-.look-screen input,
-.look-screen select,
-.look-screen textarea {
+:where(.look-screen) input,
+:where(.look-screen) select,
+:where(.look-screen) textarea {
     font: inherit;
     color: inherit;
     margin: 0;
@@ -69,8 +96,8 @@
     align-items: center;
     gap: 12px;
     padding: 0 16px;
-    border-bottom: 1px solid #26262c;
-    background: #17171a;
+    border-bottom: 1px solid var(--look-tone-10);
+    background: var(--look-tone-2);
 }
 
 .look-screen .look-back {
@@ -83,13 +110,13 @@
 }
 
 .look-screen .look-back:hover {
-    background: #222227;
+    background: var(--look-tone-8);
 }
 
 .look-hdt {
     flex: 1;
     text-align: center;
-    color: #a3a29c;
+    color: var(--look-tone-70);
     margin-right: 120px;
 }
 
@@ -109,9 +136,9 @@
 
 .look-rd {
     position: relative;
-    border: 1px solid #26262c;
+    border: 1px solid var(--look-tone-10);
     border-radius: 14px;
-    background: #111113;
+    background: var(--look-tone-0);
     display: grid;
     place-items: center;
     font-weight: 600;
@@ -123,7 +150,7 @@
     max-width: 100%;
     height: 170px;
     flex: none;
-    font-size: 44px;
+    font-size: calc(var(--mainFontSize) * 2.9333);
     cursor: default;
 }
 
@@ -145,9 +172,9 @@
     border: 0;
     outline: none;
     text-align: center;
-    font-size: 14px;
+    font-size: calc(var(--mainFontSize) * 0.9333);
     font-weight: 400;
-    color: #bdbbb4;
+    color: var(--look-tone-80);
     padding: 1px 4px;
     border-radius: 6px;
 }
@@ -158,12 +185,12 @@
 
 .look-screen .look-notein:hover::placeholder,
 .look-screen .look-notein:focus::placeholder {
-    color: #55555d;
+    color: var(--look-tone-35);
 }
 
 .look-screen .look-notein:hover,
 .look-screen .look-notein:focus {
-    background: #1a1a1e;
+    background: var(--look-tone-4);
 }
 
 .look-nline {
@@ -185,7 +212,7 @@
     width: 100%;
     height: 100%;
     border-radius: 50%;
-    background-color: #2c2c33;
+    background-color: var(--look-tone-12);
     background-size: cover;
     background-position: center;
     opacity: 0;
@@ -207,8 +234,8 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 16px;
-    color: #8c8b86;
+    font-size: calc(var(--mainFontSize) * 1.0667);
+    color: var(--look-tone-55);
 }
 
 .look-still .named {
@@ -219,17 +246,13 @@
     position: absolute;
     left: 12px;
     top: calc(100% - 18px);
-    z-index: 8;
     display: flex;
     gap: 12px;
     padding: 10px;
-    background: #1f1f24;
-    border: 1px solid #3a3a41;
-    border-radius: 12px;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-    font-size: 14px;
+    font-size: calc(var(--mainFontSize) * 0.9333);
     font-weight: 400;
     line-height: 1.4;
+    flex-direction: row;
 }
 
 .look-hbig {
@@ -239,14 +262,14 @@
     border-radius: 10px;
     overflow: hidden;
     flex: none;
-    background: #1f1f24 center / cover no-repeat;
+    background: var(--look-tone-6) center / cover no-repeat;
 }
 
 .look-hframe {
     position: absolute;
-    border: 2px solid #f0eee8;
+    border: 2px solid var(--look-tone-100);
     border-radius: 50%;
-    box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 0 0 999px var(--look-shadow);
     cursor: move;
     touch-action: none;
 }
@@ -258,22 +281,8 @@
     min-width: 170px;
 }
 
-.look-screen .look-hopts button {
-    padding: 6px 10px;
-    border-radius: 8px;
-}
-
-.look-screen .look-hopts button:hover {
-    background: #26262c;
-}
-
-.look-screen .look-hopts button.look-on {
-    background: #1f2a34;
-    color: #eaf3fb;
-}
-
 .look-screen .look-hopts .look-danger {
-    color: #e79a8f;
+    color: var(--look-danger-ink);
 }
 
 .look-states {
@@ -287,20 +296,20 @@
     width: 150px;
     height: 54px;
     border-radius: 10px;
-    border: 1px solid #2a2a30;
-    background: #141416;
+    border: 1px solid var(--look-tone-12);
+    background: var(--look-tone-0);
     padding: 0 10px;
     display: flex;
     align-items: center;
 }
 
 .look-screen .look-sth:hover {
-    border-color: #45454d;
+    border-color: var(--look-tone-25);
 }
 
 .look-screen .look-sth.look-sel {
-    border-color: #5f84a8;
-    box-shadow: 0 0 0 1px #5f84a8;
+    border-color: var(--look-accent-70);
+    box-shadow: 0 0 0 1px var(--look-accent-70);
 }
 
 .look-stl {
@@ -310,7 +319,7 @@
     width: 100%;
     padding: 4px 6px;
     border-radius: 7px;
-    font-size: 15px;
+    font-size: var(--mainFontSize);
     font-weight: 600;
     line-height: 1.3;
     white-space: nowrap;
@@ -332,7 +341,7 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: #2c2c33;
+    background: var(--look-tone-12);
     flex: none;
 }
 
@@ -341,22 +350,22 @@
     min-width: 12px;
     height: 5px;
     border-radius: 3px;
-    background: #2c2c33;
+    background: var(--look-tone-12);
 }
 
 .look-cur {
     position: absolute;
     width: 14px;
     height: 14px;
-    fill: #f0eee8;
-    stroke: #141416;
+    fill: var(--look-tone-100);
+    stroke: var(--look-tone-0);
     stroke-width: 1;
     display: none;
 }
 
 .look-sth-messagePointed .look-stl,
 .look-sth-wordPointed .look-stl {
-    background: #1c1c21;
+    background: var(--look-tone-5);
 }
 
 .look-sth-messagePointed .look-cur {
@@ -372,9 +381,9 @@
 }
 
 .look-sth-selected .look-stw {
-    background: #2f4f73;
+    background: var(--look-accent-35);
     border-radius: 3px;
-    box-shadow: 0 0 0 2px #2f4f73;
+    box-shadow: 0 0 0 2px var(--look-accent-35);
 }
 
 .look-uses {
@@ -383,83 +392,44 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13.5px;
+    font-size: calc(var(--mainFontSize) * 0.9);
     margin-bottom: -6px;
 }
 
 .look-ul {
-    color: #8c8b86;
+    color: var(--look-tone-55);
 }
 
 .look-uchip {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 2px 4px 2px 11px;
-    border-radius: 999px;
-    border: 1px solid #33333a;
-    background: #1c1c21;
 }
 
 .look-screen .look-ux {
     width: 22px;
     height: 22px;
-    border-radius: 50%;
-    color: #8c8b86;
     text-align: center;
 }
 
-.look-screen .look-ux:hover {
-    background: #2a2a31;
-    color: #e4e2dc;
-}
-
-.look-screen .look-uadd {
-    color: #8c8b86;
-    padding: 2px 10px;
-    border-radius: 999px;
-    border: 1px dashed #3a3a41;
-}
-
-.look-screen .look-uadd:hover {
-    color: #e4e2dc;
-}
-
 .look-upop {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 40px;
-    z-index: 8;
-    display: flex;
-    flex-direction: column;
     min-width: 220px;
-    padding: 6px;
-    background: #1f1f24;
-    border: 1px solid #3a3a41;
-    border-radius: 12px;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
 
 .look-screen .look-upop button {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    padding: 7px 10px;
-    border-radius: 8px;
-}
-
-.look-screen .look-upop button:hover {
-    background: #26262c;
 }
 
 .look-screen .look-upop .look-unew {
-    color: #a3a29c;
+    color: var(--look-tone-70);
 }
 
 .look-uat {
     margin-left: 8px;
-    font-size: 11.5px;
-    color: #8c8b86;
+    font-size: calc(var(--mainFontSize) * 0.7667);
+    color: var(--look-tone-55);
 }
 
 .look-tbar {
@@ -467,9 +437,9 @@
     justify-content: center;
     gap: 6px;
     padding: 6px;
-    border: 1px solid #2a2a30;
+    border: 1px solid var(--look-tone-12);
     border-radius: 12px;
-    background: #17171a;
+    background: var(--look-tone-2);
     align-self: center;
 }
 
@@ -479,7 +449,7 @@
     border-radius: 9px;
     display: grid;
     place-items: center;
-    font-size: 22px;
+    font-size: calc(var(--mainFontSize) * 1.4667);
     font-weight: 600;
     line-height: 1;
     opacity: 0.38;
@@ -487,7 +457,7 @@
 
 .look-screen .look-tool:hover {
     opacity: 0.8;
-    background: #222227;
+    background: var(--look-tone-8);
 }
 
 .look-screen .look-tool.look-on {
@@ -495,8 +465,8 @@
 }
 
 .look-screen .look-tool.look-open {
-    background: #1f2a34;
-    box-shadow: inset 0 0 0 1px #5f84a8;
+    background: var(--look-accent-14);
+    box-shadow: inset 0 0 0 1px var(--look-accent-70);
 }
 
 .look-screen .look-csst {
@@ -514,9 +484,9 @@
 }
 
 .look-fx {
-    border: 1px solid #2c2c33;
+    border: 1px solid var(--look-tone-12);
     border-radius: 12px;
-    background: #1b1b1f;
+    background: var(--look-tone-4);
     padding: 10px 12px;
     display: flex;
     flex-direction: column;
@@ -528,12 +498,12 @@
     align-items: center;
     justify-content: space-between;
     font-weight: 600;
-    font-size: 14px;
+    font-size: calc(var(--mainFontSize) * 0.9333);
 }
 
 .look-fst {
     font-weight: 400;
-    color: #a3a29c;
+    color: var(--look-tone-70);
 }
 
 .look-screen .look-fxh select.look-scope {
@@ -541,14 +511,8 @@
     margin-right: 8px;
     max-width: 250px;
     width: 235px;
-    height: 28px;
-    border-radius: 7px;
-    border: 1px solid #33333a;
-    background-color: #1b1b1f;
-    color: #cfcdc6;
-    font-size: 12.5px;
+    font-size: calc(var(--mainFontSize) * 0.8333);
     font-weight: 400;
-    padding: 0 22px 0 6px;
 }
 
 .look-fixed {
@@ -556,29 +520,16 @@
     margin-left: auto;
     margin-right: 8px;
     font-weight: 400;
-    font-size: 12.5px;
-    color: #a3a29c;
-}
-
-.look-screen .look-rs2 {
-    font-size: 13px;
-    font-weight: 600;
-    padding: 4px 10px;
-    border-radius: 8px;
-    border: 1px solid #33333a;
-    color: #cfcdc6;
-}
-
-.look-screen .look-rs2:hover {
-    background: #26262c;
+    font-size: calc(var(--mainFontSize) * 0.8333);
+    color: var(--look-tone-70);
 }
 
 .look-ctl {
     display: flex;
     align-items: center;
     gap: 10px;
-    font-size: 13px;
-    color: #a3a29c;
+    font-size: calc(var(--mainFontSize) * 0.8667);
+    color: var(--look-tone-70);
 }
 
 .look-ctl label {
@@ -595,14 +546,14 @@
     box-shadow: none;
     filter: none;
     cursor: pointer;
-    accent-color: #9cc3f0;
+    accent-color: var(--SmartThemeUnderlineColor);
     margin: 0;
 }
 
 .look-screen .look-ctl input[type='color'] {
     width: 40px;
     height: 28px;
-    border: 1px solid #3a3a41;
+    border: 1px solid var(--look-tone-20);
     border-radius: 7px;
     background: none;
     padding: 2px;
@@ -614,18 +565,6 @@
     flex-wrap: wrap;
 }
 
-.look-screen .look-seg button {
-    padding: 4px 12px;
-    border-radius: 8px;
-    border: 1px solid #33333a;
-    font-size: 13.5px;
-}
-
-.look-screen .look-seg button.look-on {
-    border-color: #5f84a8;
-    background: #1f2a34;
-}
-
 .look-fgrp {
     display: flex;
     flex-direction: column;
@@ -633,13 +572,8 @@
 }
 
 .look-fgl {
-    font-size: 12px;
-    color: #8c8b86;
-}
-
-.look-screen .look-seg .look-addf {
-    border: 1px dashed #3a3a41;
-    color: #a3a29c;
+    font-size: calc(var(--mainFontSize) * 0.8);
+    color: var(--look-tone-55);
 }
 
 .look-tiles {
@@ -650,7 +584,7 @@
 
 .look-screen .look-tile {
     height: 66px;
-    border: 1px solid #33333a;
+    border: 1px solid var(--look-tone-16);
     border-radius: 9px;
     display: flex;
     flex-direction: column;
@@ -661,12 +595,12 @@
 }
 
 .look-screen .look-tile.look-on {
-    border-color: #5f84a8;
-    background: #1f2a34;
+    border-color: var(--look-accent-70);
+    background: var(--look-accent-14);
 }
 
 .look-tv {
-    font-size: 20px;
+    font-size: calc(var(--mainFontSize) * 1.3333);
     font-weight: 600;
     line-height: 1.2;
     color: var(--look-name);
@@ -679,17 +613,19 @@
 }
 
 .look-tn {
-    font-size: 12px;
-    color: #a3a29c;
+    font-size: calc(var(--mainFontSize) * 0.8);
+    color: var(--look-tone-70);
 }
 
 .look-cssfx {
     margin: 0;
     padding: 8px 10px;
     border-radius: 8px;
-    background: #141416;
-    color: #7d7c78;
-    font: 12.5px/1.6 ui-monospace, monospace;
+    background: var(--look-tone-0);
+    color: var(--look-tone-50);
+    font-family: var(--monoFontFamily);
+    font-size: calc(var(--mainFontSize) * 0.8333);
+    line-height: 1.6;
     white-space: pre-wrap;
     min-height: 1.6em;
 }
@@ -697,14 +633,10 @@
 .look-screen .look-cssta {
     width: 100%;
     min-height: 64px;
-    padding: 8px 10px;
-    border-radius: 8px;
-    border: 1px solid #3a3a41;
-    background: #141416;
-    color: #e4e2dc;
-    font: 12.5px/1.6 ui-monospace, monospace;
     resize: vertical;
-    outline: none;
+    font-family: var(--monoFontFamily);
+    font-size: calc(var(--mainFontSize) * 0.8333);
+    line-height: 1.6;
 }
 
 .look-mark-sample {
@@ -730,10 +662,10 @@
 }
 
 .look-cx {
-    border: 1px solid #26262c;
+    border: 1px solid var(--look-tone-10);
     border-radius: 12px;
     padding: 12px 14px;
-    background: #17171a;
+    background: var(--look-tone-2);
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -741,17 +673,17 @@
 }
 
 .look-cxl {
-    font-size: 11.5px;
+    font-size: calc(var(--mainFontSize) * 0.7667);
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #8c8b86;
+    color: var(--look-tone-55);
 }
 
 .look-chatl {
     display: flex;
     gap: 10px;
     align-items: flex-start;
-    font-size: 15px;
+    font-size: var(--mainFontSize);
     padding-top: 6px;
 }
 
@@ -760,7 +692,7 @@
     height: 30px;
     border-radius: 50%;
     flex: none;
-    background: #2c2c33;
+    background: var(--look-tone-12);
 }
 
 .look-screen .look-tm {
@@ -774,7 +706,7 @@
 
 .look-screen .look-mkbtn:hover,
 .look-screen .look-mkbtn.look-open {
-    background: #1f2a34;
+    background: var(--look-accent-14);
 }
 
 .look-mline {
@@ -782,14 +714,14 @@
     align-items: baseline;
     gap: 10px;
     font-weight: 600;
-    font-size: 16px;
+    font-size: calc(var(--mainFontSize) * 1.0667);
     padding-top: 14px;
 }
 
 .look-when {
-    font-size: 12px;
+    font-size: calc(var(--mainFontSize) * 0.8);
     font-weight: 400;
-    color: #8c8b86;
+    color: var(--look-tone-55);
 }
 
 .look-orow {
@@ -798,8 +730,8 @@
     gap: 10px;
     padding: 6px 8px;
     border-radius: 8px;
-    background: #26262d;
-    font-size: 14.5px;
+    background: var(--look-tone-10);
+    font-size: calc(var(--mainFontSize) * 0.9667);
     margin-top: 4px;
 }
 
@@ -812,7 +744,7 @@
     height: 26px;
     border-radius: 6px;
     flex: none;
-    background: #1f1f24 center / cover no-repeat;
+    background: var(--look-tone-6) center / cover no-repeat;
 }
 
 .look-card {
@@ -820,8 +752,8 @@
     gap: 12px;
     padding: 10px;
     border-radius: 10px;
-    background: #1f1f24;
-    border: 1px solid #34343b;
+    background: var(--look-tone-6);
+    border: 1px solid var(--look-tone-16);
 }
 
 .look-cpic {
@@ -829,17 +761,17 @@
     height: 54px;
     border-radius: 9px;
     flex: none;
-    background: #1f1f24 center / cover no-repeat;
+    background: var(--look-tone-6) center / cover no-repeat;
 }
 
 .look-ct {
-    font-size: 17px;
+    font-size: calc(var(--mainFontSize) * 1.1333);
     font-weight: 600;
     padding-top: 8px;
     line-height: 1.4;
 }
 
 .look-cp {
-    font-size: 12px;
-    color: #8c8b86;
+    font-size: calc(var(--mainFontSize) * 0.8);
+    color: var(--look-tone-55);
 }

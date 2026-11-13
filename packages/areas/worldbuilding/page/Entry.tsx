@@ -83,7 +83,7 @@ export function EntryPage(props: {
             <div class="wb-phone-bar">
                 <button
                     type="button"
-                    class="wb-icon-button wb-phone-back"
+                    class="right_menu_button interactable wb-icon-button wb-phone-back"
                     aria-label={t('Back to the world')}
                     onClick={() => props.onWorld()}
                 >
@@ -97,7 +97,7 @@ export function EntryPage(props: {
                 </span>
                 <button
                     type="button"
-                    class="wb-icon-button"
+                    class="right_menu_button interactable wb-icon-button"
                     aria-label={t('More')}
                     aria-expanded={menu()}
                     onClick={(event) => toggleMenu(event.currentTarget)}
@@ -136,7 +136,7 @@ export function EntryPage(props: {
                         <Show when={props.entry.keys.some((key) => key.isName)}>
                             <button
                                 type="button"
-                                class="wb-icon-button"
+                                class="right_menu_button interactable wb-icon-button"
                                 aria-label={t('How this entry’s names look')}
                                 title={t('How this entry’s names look')}
                                 onClick={() => void wb.act('looks.open', { thing: props.entry.entry })}
@@ -147,7 +147,7 @@ export function EntryPage(props: {
                         <button
                             ref={(element) => (placeButton = element)}
                             type="button"
-                            class="wb-icon-button"
+                            class="right_menu_button interactable wb-icon-button"
                             aria-label={t('In the prompt')}
                             title={t('In the prompt')}
                             aria-expanded={placing()}
@@ -164,7 +164,7 @@ export function EntryPage(props: {
                         <span class="wb-fill" />
                         <button
                             type="button"
-                            class="wb-icon-button wb-entry-more"
+                            class="right_menu_button interactable wb-icon-button wb-entry-more"
                             aria-label={t('More')}
                             aria-expanded={menu()}
                             onClick={(event) => toggleMenu(event.currentTarget)}
@@ -214,7 +214,7 @@ export function EntryPage(props: {
             </For>
             <button
                 type="button"
-                class="wb-new-under"
+                class="menu_button menu_button_icon margin0 wb-new-under"
                 onClick={() => {
                     const kind = newEntryKind();
                     void wb.act('worldbuilding.createEntry', {
@@ -367,7 +367,7 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
     const wb = useWb();
     const [moving, setMoving] = createSignal(false);
     let box: HTMLDivElement | undefined;
-    dismissOn(() => box, props.onClose, props.opener);
+    dismissOn(() => box, props.onClose, props.opener, { align: 'end' });
     const at = () => ({ book: props.entry.book, entry: props.entry.entry });
     // The action starts before the menu closes, so what it reads of the menu's props is read while they are there.
     const run = (action: () => Promise<unknown>) => {
@@ -376,9 +376,10 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
         void started;
     };
     return (
-        <div class="wb-menu wb-entry-menu" role="menu" ref={(element) => (box = element)}>
+        <div class="wb-menu list-group wb-entry-menu" role="menu" ref={(element) => (box = element)}>
             <Show when={!moving()} fallback={<MoveTo entry={props.entry} onDone={props.onClose} />}>
                 <button
+                    class="list-group-item"
                     type="button"
                     role="menuitem"
                     onClick={() => run(() => wb.act('looks.open', { thing: props.entry.entry }))}
@@ -386,10 +387,11 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                     {t('How its names look')}
                 </button>
                 <hr />
-                <button type="button" role="menuitem" onClick={() => setMoving(true)}>
+                <button class="list-group-item" type="button" role="menuitem" onClick={() => setMoving(true)}>
                     {t('Move to another world…')}
                 </button>
                 <button
+                    class="list-group-item"
                     type="button"
                     role="menuitem"
                     onClick={() =>
@@ -404,6 +406,7 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                 </button>
                 <Show when={props.entry.picture !== null}>
                     <button
+                        class="list-group-item"
                         type="button"
                         role="menuitem"
                         onClick={() => run(() => wb.act('worldbuilding.removePicture', at()))}
@@ -414,7 +417,7 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                 <button
                     type="button"
                     role="menuitem"
-                    class="wb-danger"
+                    class="list-group-item wb-danger"
                     onClick={() => run(() => wb.act('worldbuilding.deleteEntry', at()))}
                 >
                     {t('Delete')}
@@ -435,6 +438,7 @@ function MoveTo(props: { entry: OpenEntryView; onDone: () => void }) {
             <For each={others()}>
                 {(world) => (
                     <button
+                        class="list-group-item"
                         type="button"
                         role="menuitem"
                         onClick={() =>

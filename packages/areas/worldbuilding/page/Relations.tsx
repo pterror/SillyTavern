@@ -34,7 +34,7 @@ export function RelationsLine(props: {
             <button
                 ref={(element) => (button = element)}
                 type="button"
-                class="wb-rels-add"
+                class="menu_button margin0 wb-rels-add"
                 aria-expanded={adding()}
                 onClick={() => setAdding(!adding())}
             >
@@ -110,21 +110,23 @@ function NewRelation(props: {
         <div class="wb-relpop" role="dialog" aria-label={t('New relation')} ref={(element) => (box = element)}>
             <div class="wb-relpop-row">
                 <span class="wb-relpop-name">{props.entry.label.text}</span>
-                <span class="wb-relpop-kinds">
+                <span class="wb-relpop-kinds tab-container" aria-label={t('Relation')}>
                     <For each={pickable()}>
                         {(item) => (
-                            <button
-                                type="button"
-                                classList={{ 'wb-on': kind() === item.id }}
-                                aria-pressed={kind() === item.id}
-                                onClick={() => setKind(item.id)}
-                            >
-                                {item.name}
-                            </button>
+                            <label class="tab-title">
+                                <input
+                                    type="radio"
+                                    class="invisible-radio"
+                                    name="wb-relation-kind"
+                                    checked={kind() === item.id}
+                                    onChange={() => setKind(item.id)}
+                                />
+                                <span>{item.name}</span>
+                            </label>
                         )}
                     </For>
                     <input
-                        class="wb-relpop-field"
+                        class="text_pole margin0 wb-relpop-field"
                         placeholder={t('other…')}
                         aria-label={t('Another relation')}
                         onKeyDown={(event) => {
@@ -138,7 +140,7 @@ function NewRelation(props: {
                 </span>
                 <input
                     ref={(element) => (target = element)}
-                    class="wb-relpop-field wb-relpop-wide"
+                    class="text_pole margin0 wb-relpop-field wb-relpop-wide"
                     placeholder={t('Which entry')}
                     aria-label={t('Which entry')}
                     value={query()}
@@ -156,7 +158,7 @@ function NewRelation(props: {
                             <button
                                 type="button"
                                 role="option"
-                                class="wb-choice"
+                                class="list-group-item wb-choice"
                                 onClick={() => relate(entry.label.thing)}
                             >
                                 {entry.label.text}

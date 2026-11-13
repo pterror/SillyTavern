@@ -194,7 +194,7 @@ export function Region(props: { cell: EntryCell; region: Membership; actions: Ca
                 <arrange.Menu />
                 <button
                     type="button"
-                    class="wb-region-search"
+                    class="right_menu_button interactable wb-region-search"
                     title={fill(t('Search in ${0}'), label())}
                     aria-label={fill(t('Search in ${0}'), label())}
                     onClick={() => props.actions.searchIn(props.cell.entry, label())}

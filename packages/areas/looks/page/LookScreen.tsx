@@ -3,6 +3,7 @@ import type { Accessor, JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { Name } from '@st/page/name';
+import { float } from '@st/page/popover';
 import {
     LOOK_SCOPE_CLASS,
     LOOK_SHOWS_MESSAGE_POINTED_CLASS,
@@ -70,7 +71,7 @@ const MARK_STYLE_LABELS: [MarkStyle, string][] = [
     ['none', 'None'],
 ];
 
-const GLYPH_INK = '#e4e2dc';
+const GLYPH_INK = 'currentColor';
 const DEFAULT_CROP: PictureCrop = { x: 0.28, y: 0.12, width: 0.44, height: 0.44 };
 
 // The classes that show a state's layers as if it were on: a state shows the layers below it too.
@@ -462,7 +463,12 @@ function PicturePop(props: {
         window.addEventListener('pointerup', up);
     };
     return (
-        <div class="look-hpop" role="dialog" aria-label={t('Small picture beside the name')} ref={(el) => (box = el)}>
+        <div
+            class="st-floating look-hpop"
+            role="dialog"
+            aria-label={t('Small picture beside the name')}
+            ref={(el) => (box = el)}
+        >
             <span
                 class="look-hbig"
                 style={url() === null ? undefined : { 'background-image': `url("${url() ?? ''}")` }}
@@ -487,14 +493,16 @@ function PicturePop(props: {
             <div class="look-hopts">
                 <button
                     type="button"
-                    classList={{ 'look-on': whole() }}
+                    class="menu_button margin0"
+                    classList={{ active: whole() }}
                     onClick={() => void client.send('looks.useOwnPicture', thing())}
                 >
                     {t('Whole picture')}
                 </button>
                 <button
                     type="button"
-                    classList={{ 'look-on': props.view.picture.crop !== null }}
+                    class="menu_button margin0"
+                    classList={{ active: props.view.picture.crop !== null }}
                     onClick={() => {
                         if (props.view.picture.crop === null)
                             void client.send('looks.cropPicture', { ...thing(), crop: DEFAULT_CROP });
@@ -515,7 +523,7 @@ function PicturePop(props: {
                 </button>
                 <button
                     type="button"
-                    class="look-danger"
+                    class="menu_button margin0 look-danger"
                     onClick={() => {
                         props.onClose();
                         void client.send('looks.setPicture', {
@@ -535,16 +543,9 @@ function PicturePop(props: {
 function Uses(props: { view: Open }) {
     const { client, t } = useUi();
     const [adding, setAdding] = createSignal(false);
-    let box: HTMLDivElement | undefined;
+    let plus: HTMLButtonElement | undefined;
     const at = (world: string | null) => (world === null ? t('everywhere') : t('this world'));
     const offered = () => props.view.available.filter((item) => !props.view.uses.some((u) => u.id === item.id));
-    onMount(() => {
-        const pressed = (event: PointerEvent) => {
-            if (adding() && box?.contains(event.target as Node) !== true) setAdding(false);
-        };
-        document.addEventListener('pointerdown', pressed, true);
-        onCleanup(() => document.removeEventListener('pointerdown', pressed, true));
-    });
     const makeNew = async (world: string | null) => {
         setAdding(false);
         const name = await ask({ kind: 'input', message: t('Name the shared look'), value: '' }, t);
@@ -552,11 +553,11 @@ function Uses(props: { view: Open }) {
         await client.send('looks.makeShared', { name, world, usedBy: props.view.thing });
     };
     return (
-        <div class="look-uses" ref={(el) => (box = el)}>
+        <div class="look-uses">
             <span class="look-ul">{t('Uses')}</span>
             <For each={props.view.uses}>
                 {(used) => (
-                    <span class="look-uchip">
+                    <span class="tag look-uchip">
                         {used.name ?? t('A shared look that is gone')}
                         <span class="look-uat">{at(used.world)}</span>
                         <button
@@ -572,16 +573,23 @@ function Uses(props: { view: Open }) {
                     </span>
                 )}
             </For>
-            <button type="button" class="look-uadd" aria-expanded={adding()} onClick={() => setAdding(!adding())}>
+            <button
+                type="button"
+                class="menu_button margin0 look-uadd"
+                ref={(el) => (plus = el)}
+                aria-expanded={adding()}
+                onClick={() => setAdding(!adding())}
+            >
                 {t('+ shared look')}
             </button>
             <Show when={adding()}>
-                <div class="look-upop" role="menu">
+                <SharedLookMenu opener={() => plus} onClose={() => setAdding(false)}>
                     <For each={offered()}>
                         {(item) => (
                             <button
                                 type="button"
                                 role="menuitem"
+                                class="list-group-item"
                                 onClick={() => {
                                     setAdding(false);
                                     void client.send('looks.use', {
@@ -601,18 +609,33 @@ function Uses(props: { view: Open }) {
                             <button
                                 type="button"
                                 role="menuitem"
-                                class="look-unew"
+                                class="list-group-item look-unew"
                                 onClick={() => void makeNew(world())}
                             >
                                 {t('New shared look in this world…')}
                             </button>
                         )}
                     </Show>
-                    <button type="button" role="menuitem" class="look-unew" onClick={() => void makeNew(null)}>
+                    <button
+                        type="button"
+                        role="menuitem"
+                        class="list-group-item look-unew"
+                        onClick={() => void makeNew(null)}
+                    >
                         {t('New shared look for every world…')}
                     </button>
-                </div>
+                </SharedLookMenu>
             </Show>
+        </div>
+    );
+}
+
+function SharedLookMenu(props: { opener: () => HTMLElement | undefined; onClose: () => void; children: JSX.Element }) {
+    let menu: HTMLDivElement | undefined;
+    float(() => menu, { anchor: props.opener, close: props.onClose, also: () => [props.opener()] });
+    return (
+        <div class="list-group look-upop" role="menu" ref={(el) => (menu = el)}>
+            {props.children}
         </div>
     );
 }
@@ -751,7 +774,7 @@ function EffectPanel(props: {
         <div class="look-fx">
             <Head title={t(EFFECT_LABELS[props.id])} state={props.state}>
                 <select
-                    class="look-scope"
+                    class="text_pole margin0 look-scope"
                     value={String(at())}
                     aria-label={t('Applies to')}
                     onChange={(event) => void moveTo(event.currentTarget.value)}
@@ -764,7 +787,7 @@ function EffectPanel(props: {
                     </Show>
                     <option value="__newuser">{t('New shared look for every world…')}</option>
                 </select>
-                <button type="button" class="look-rs2" onClick={reset}>
+                <button type="button" class="menu_button margin0 look-rs2" onClick={reset}>
                     {t('Reset')}
                 </button>
             </Head>
@@ -786,7 +809,8 @@ function EffectPanel(props: {
                                 <div class="look-seg">
                                     <button
                                         type="button"
-                                        classList={{ 'look-on': solid() }}
+                                        class="menu_button margin0"
+                                        classList={{ active: solid() }}
                                         onClick={() =>
                                             write('color', { mode: 'solid', color: stops()[0] ?? '#f6cf86' })
                                         }
@@ -795,7 +819,8 @@ function EffectPanel(props: {
                                     </button>
                                     <button
                                         type="button"
-                                        classList={{ 'look-on': !solid() }}
+                                        class="menu_button margin0"
+                                        classList={{ active: !solid() }}
                                         onClick={() =>
                                             write('color', {
                                                 mode: 'gradient',
@@ -935,7 +960,8 @@ function EffectPanel(props: {
                             {(style) => (
                                 <button
                                     type="button"
-                                    classList={{ 'look-on': controls('underline').style === style }}
+                                    class="menu_button margin0"
+                                    classList={{ active: controls('underline').style === style }}
                                     onClick={() => write('underline', { ...controls('underline'), style })}
                                 >
                                     {t(style === 'solid' ? 'Solid' : style === 'double' ? 'Double' : 'Wavy')}
@@ -984,7 +1010,8 @@ function EffectPanel(props: {
                     <div class="look-seg">
                         <button
                             type="button"
-                            classList={{ 'look-on': controls('letters').italic }}
+                            class="menu_button margin0"
+                            classList={{ active: controls('letters').italic }}
                             aria-pressed={controls('letters').italic}
                             onClick={() =>
                                 write('letters', { ...controls('letters'), italic: !controls('letters').italic })
@@ -994,7 +1021,8 @@ function EffectPanel(props: {
                         </button>
                         <button
                             type="button"
-                            classList={{ 'look-on': controls('letters').caps }}
+                            class="menu_button margin0"
+                            classList={{ active: controls('letters').caps }}
                             aria-pressed={controls('letters').caps}
                             onClick={() =>
                                 write('letters', { ...controls('letters'), caps: !controls('letters').caps })
@@ -1076,7 +1104,8 @@ function Typefaces(props: { view: Open; current: Controls['typeface']; onPick: (
     const button = (font: Open['fonts'][number]) => (
         <button
             type="button"
-            classList={{ 'look-on': props.current.font === font.id }}
+            class="menu_button margin0"
+            classList={{ active: props.current.font === font.id }}
             style={{ 'font-family': `"${font.family}"` }}
             onClick={() => props.onPick({ font: font.id, uploaded: font.uploaded })}
         >
@@ -1109,7 +1138,11 @@ function Typefaces(props: { view: Open; current: Controls['typeface']; onPick: (
                         <span class="look-fgl">{t('This world’s')}</span>
                         <div class="look-seg">
                             <For each={uploaded()}>{button}</For>
-                            <button type="button" class="look-addf" onClick={() => addFont(world())}>
+                            <button
+                                type="button"
+                                class="menu_button margin0 look-addf"
+                                onClick={() => addFont(world())}
+                            >
                                 {t('Add a font…')}
                             </button>
                         </div>
@@ -1136,7 +1169,7 @@ function CssPanel(props: { view: Open; state: LookState }) {
                 {cssText(controlled())}
             </pre>
             <textarea
-                class="look-cssta"
+                class="text_pole look-cssta"
                 spellcheck={false}
                 aria-label={t('Other declarations')}
                 value={cssText(rest())}
@@ -1167,7 +1200,11 @@ function MarkPanel(props: { view: Open; state: LookState }) {
         <div class="look-fx">
             <Head title={t('Mark on the words that brought it up')} state={props.state}>
                 <span class="look-fixed">{t('Every world')}</span>
-                <button type="button" class="look-rs2" onClick={() => set({ style: null, color: null, opacity: null })}>
+                <button
+                    type="button"
+                    class="menu_button margin0 look-rs2"
+                    onClick={() => set({ style: null, color: null, opacity: null })}
+                >
                     {t('Reset')}
                 </button>
             </Head>
@@ -1176,7 +1213,8 @@ function MarkPanel(props: { view: Open; state: LookState }) {
                     {([style, label]) => (
                         <button
                             type="button"
-                            classList={{ 'look-on': shown().style === style }}
+                            class="menu_button margin0"
+                            classList={{ active: shown().style === style }}
                             onClick={() => set({ style })}
                         >
                             <span class={`look-mark-sample look-mark-${style}`}>{t(label)}</span>

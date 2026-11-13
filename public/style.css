@@ -1153,7 +1153,8 @@ body .panelControlBar {
 }
 
 #options,
-.popup .popper-modal {
+.popup .popper-modal,
+.st-floating {
     display: flex;
     z-index: 29999;
     background-color: var(--SmartThemeBlurTintColor);
@@ -1163,6 +1164,32 @@ body .panelControlBar {
     flex-flow: column;
     border-radius: 10px;
     padding: 2px;
+}
+
+.st-floating {
+    color: var(--SmartThemeBodyColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+}
+
+.st-float {
+    position: fixed;
+    margin: 0;
+    overflow: visible;
+}
+
+.st-float:not(.st-floating) {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+}
+
+.st-float.st-floating {
+    overflow: auto;
+}
+
+.st-float:not(:popover-open) {
+    visibility: hidden;
 }
 
 .options-content {

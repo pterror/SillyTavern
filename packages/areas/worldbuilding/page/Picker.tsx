@@ -42,7 +42,7 @@ export function TargetPicker(props: {
     return (
         <div class={`wb-pick ${props.class ?? ''}`} role="dialog" aria-label={props.heading}>
             <div class="wb-pick-head">{props.heading}</div>
-            <label class="wb-pick-field">
+            <label class="wb-pick-field text_pole margin0">
                 <Icon name="search" size={15} />
                 <input
                     ref={(element) => (field = element)}
@@ -62,13 +62,13 @@ export function TargetPicker(props: {
                 />
             </label>
             <Show when={rows().length > 0}>
-                <div class="wb-pick-rows" role="listbox" aria-label={t('Entries')}>
+                <div class="wb-pick-rows list-group" role="listbox" aria-label={t('Entries')}>
                     <For each={rows()}>
                         {(row, index) => (
                             <button
                                 type="button"
                                 role="option"
-                                class="wb-pick-row"
+                                class="list-group-item wb-pick-row"
                                 classList={{ 'wb-on': index() === at() }}
                                 aria-selected={index() === at()}
                                 onPointerEnter={() => setAt(index())}

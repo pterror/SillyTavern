@@ -1,29 +1,14 @@
-import { onCleanup, onMount } from 'solid-js';
+import { float } from '@st/page/popover';
+import type { Align } from '@st/page/popover';
 
-// Calls `close` on a press outside `inside()` (and outside `also`, the button that opened it) or on Escape, which then
-// goes no further: the old page closes its drawers on Escape.
+// Floats `inside()` against the button that opened it (else against the element holding it) and calls `close` on a
+// press outside both or on Escape.
 export function dismissOn(
     inside: () => HTMLElement | undefined,
     close: () => void,
-    also?: () => HTMLElement | undefined,
+    opener?: () => HTMLElement | undefined,
+    options: { align?: Align; framed?: boolean } = {},
 ) {
-    onMount(() => {
-        const pressed = (event: PointerEvent) => {
-            const target = event.target as Node | null;
-            if (!target) return;
-            if (inside()?.contains(target) === true || also?.()?.contains(target) === true) return;
-            close();
-        };
-        const key = (event: KeyboardEvent) => {
-            if (event.key !== 'Escape') return;
-            event.stopPropagation();
-            close();
-        };
-        document.addEventListener('pointerdown', pressed, true);
-        window.addEventListener('keydown', key, true);
-        onCleanup(() => {
-            document.removeEventListener('pointerdown', pressed, true);
-            window.removeEventListener('keydown', key, true);
-        });
-    });
+    const anchor = () => opener?.() ?? inside()?.parentElement ?? undefined;
+    float(inside, { anchor, close, also: () => [anchor()], ...options });
 }

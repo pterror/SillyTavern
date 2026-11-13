@@ -155,14 +155,14 @@ export function WorldPage(props: {
                             <div class="wb-offer-acts">
                                 <button
                                     type="button"
-                                    class="wb-btn wb-btn-main"
+                                    class="menu_button menu_button_icon margin0 wb-btn"
                                     onClick={() => void wb.act('worldbuilding.markTitleKeysAsNames', { book: book() })}
                                 >
                                     {t('Mark those keys as names')}
                                 </button>
                                 <button
                                     type="button"
-                                    class="wb-btn"
+                                    class="menu_button menu_button_icon margin0 wb-btn"
                                     onClick={() => void wb.act('worldbuilding.declineNamesOffer', { book: book() })}
                                 >
                                     {t('Leave it')}
@@ -178,7 +178,7 @@ export function WorldPage(props: {
                     <div class="wb-offer-acts">
                         <button
                             type="button"
-                            class="wb-btn"
+                            class="menu_button menu_button_icon margin0 wb-btn"
                             onClick={() => void wb.act('worldbuilding.undoMarkTitleKeysAsNames', { book: book() })}
                         >
                             {t('Undo')}
@@ -195,7 +195,7 @@ export function WorldPage(props: {
                         <div class="wb-offer-acts">
                             <button
                                 type="button"
-                                class="wb-btn"
+                                class="menu_button menu_button_icon margin0 wb-btn"
                                 onClick={() =>
                                     void wb.act('worldbuilding.restoreEntry', {
                                         book: gone().book,

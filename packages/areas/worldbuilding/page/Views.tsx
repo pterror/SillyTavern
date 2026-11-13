@@ -37,28 +37,30 @@ function ShapeIcon(props: { shape: ViewShape }) {
 export function ViewTabs(props: { views: Shown; onShow: (view: string) => void; onAdd: () => void }) {
     const { t } = useUi();
     return (
-        <div class="wb-vtabs" role="tablist" aria-label={t('Views')}>
+        <div class="wb-vtabs tab-container" aria-label={t('Views')}>
             <For each={props.views.tabs}>
                 {(tab) => (
-                    <button
-                        type="button"
-                        role="tab"
-                        class="wb-vt"
-                        classList={{ 'wb-vt-cur': tab.id === props.views.current }}
-                        aria-selected={tab.id === props.views.current}
-                        onClick={() => {
-                            if (tab.id !== props.views.current) props.onShow(tab.id);
-                        }}
-                    >
-                        <ShapeIcon shape={tab.shape} />
-                        {tab.name}
-                        <Show when={tab.id === props.views.current && props.views.unsaved}>
-                            <span class="wb-vdot" title={t('Changed')} />
-                        </Show>
-                    </button>
+                    <label class="tab-title wb-vt">
+                        <input
+                            type="radio"
+                            class="invisible-radio"
+                            name="wb-view-tab"
+                            checked={tab.id === props.views.current}
+                            onChange={() => {
+                                if (tab.id !== props.views.current) props.onShow(tab.id);
+                            }}
+                        />
+                        <span class="wb-vt-words">
+                            <ShapeIcon shape={tab.shape} />
+                            {tab.name}
+                            <Show when={tab.id === props.views.current && props.views.unsaved}>
+                                <span class="wb-vdot" title={t('Changed')} />
+                            </Show>
+                        </span>
+                    </label>
                 )}
             </For>
-            <button type="button" class="wb-vt wb-vt-add" onClick={() => props.onAdd()}>
+            <button type="button" class="menu_button margin0 wb-vt-add" onClick={() => props.onAdd()}>
                 {t('+ View')}
             </button>
         </div>
@@ -67,10 +69,10 @@ export function ViewTabs(props: { views: Shown; onShow: (view: string) => void; 
 
 function Control(props: { label: string; children: JSX.Element }) {
     return (
-        <span class="wb-vctl">
-            <b>{props.label}</b>
+        <label class="wb-vctl">
+            <span>{props.label}</span>
             {props.children}
-        </span>
+        </label>
     );
 }
 
@@ -112,6 +114,7 @@ export function ViewBar(props: {
                     </Show>
                     <Control label={t('Inside, grouped by')}>
                         <select
+                            class="text_pole margin0"
                             aria-label={t('Inside, grouped by')}
                             value={view().groupBy ?? ''}
                             onChange={(event) =>
@@ -125,38 +128,37 @@ export function ViewBar(props: {
                         </select>
                     </Control>
                     <Control label={t('Order')}>
-                        <select aria-label={t('Order')} value="world">
+                        <select class="text_pole margin0" aria-label={t('Order')} value="world">
                             <option value="world">{t('World order')}</option>
                         </select>
                     </Control>
-                    <span class="wb-vseg" role="radiogroup" aria-label={t('Drawn as')}>
-                        <button
-                            type="button"
-                            role="radio"
-                            aria-checked={view().drawing === 'cards'}
-                            classList={{ 'wb-on': view().drawing === 'cards' }}
-                            onClick={() => {
-                                if (view().drawing !== 'cards') props.onChange({ drawing: 'cards' });
-                            }}
-                        >
-                            {t('Cards')}
-                        </button>
-                        <button
-                            type="button"
-                            role="radio"
-                            aria-checked={view().drawing === 'rows'}
-                            classList={{ 'wb-on': view().drawing === 'rows' }}
-                            onClick={() => {
-                                if (view().drawing === 'rows') return;
-                                props.onChange(
-                                    view().fields.length === 0
-                                        ? { drawing: 'rows', fields: [...ROW_FIELDS] }
-                                        : { drawing: 'rows' },
-                                );
-                            }}
-                        >
-                            {t('Rows')}
-                        </button>
+                    <span class="wb-vseg tab-container" aria-label={t('Drawn as')}>
+                        <label class="tab-title">
+                            <input
+                                type="radio"
+                                class="invisible-radio"
+                                name="wb-drawn-as"
+                                checked={view().drawing === 'cards'}
+                                onChange={() => props.onChange({ drawing: 'cards' })}
+                            />
+                            <span>{t('Cards')}</span>
+                        </label>
+                        <label class="tab-title">
+                            <input
+                                type="radio"
+                                class="invisible-radio"
+                                name="wb-drawn-as"
+                                checked={view().drawing === 'rows'}
+                                onChange={() =>
+                                    props.onChange(
+                                        view().fields.length === 0
+                                            ? { drawing: 'rows', fields: [...ROW_FIELDS] }
+                                            : { drawing: 'rows' },
+                                    )
+                                }
+                            />
+                            <span>{t('Rows')}</span>
+                        </label>
                     </span>
                     <Show when={view().drawing === 'rows'}>
                         <Fields chosen={view().fields} onChoose={(fields) => props.onChange({ fields })} />
@@ -164,15 +166,15 @@ export function ViewBar(props: {
                     <Show when={props.views.unsaved || tab()?.changed === true}>
                         <span class="wb-vchg">
                             <Show when={props.views.unsaved}>
-                                <button type="button" class="wb-vbtn" onClick={() => props.onSave()}>
+                                <button type="button" class="menu_button margin0" onClick={() => props.onSave()}>
                                     {t('Save')}
                                 </button>
-                                <button type="button" class="wb-vbtn wb-quietbtn" onClick={() => props.onDiscard()}>
+                                <button type="button" class="menu_button margin0" onClick={() => props.onDiscard()}>
                                     {t('Discard')}
                                 </button>
                             </Show>
                             <Show when={!props.views.unsaved && tab()?.changed === true}>
-                                <button type="button" class="wb-vbtn wb-quietbtn" onClick={() => props.onReset()}>
+                                <button type="button" class="menu_button margin0" onClick={() => props.onReset()}>
                                     {t('Reset to the world’s')}
                                 </button>
                             </Show>
@@ -192,7 +194,7 @@ function Fields(props: { chosen: RowField[]; onChoose: (fields: RowField[]) => v
         <span class="wb-fields">
             <button
                 type="button"
-                class="wb-vctl"
+                class="menu_button margin0 whitespacenowrap"
                 aria-expanded={open()}
                 ref={(element) => (button = element)}
                 onClick={() => setOpen(!open())}
@@ -221,10 +223,10 @@ function FieldsMenu(props: {
     let menu: HTMLDivElement | undefined;
     dismissOn(() => menu, props.onClose, props.opener);
     return (
-        <div class="wb-menu wb-fields-menu" role="menu" ref={(element) => (menu = element)}>
+        <div class="wb-menu list-group wb-fields-menu" role="menu" ref={(element) => (menu = element)}>
             <For each={ROW_FIELDS}>
                 {(field) => (
-                    <label class="wb-check">
+                    <label class="list-group-item checkbox_label" role="none">
                         <input
                             type="checkbox"
                             checked={props.chosen.includes(field)}

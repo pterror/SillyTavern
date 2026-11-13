@@ -42,7 +42,7 @@ test('a gradient color reads back as its stops and direction; going back to one 
 
 test('a tool draws its letter with the effect as the state shows it, or as it would be turned on', () => {
     expect(glyphDeclarations('glow', layer([]))).toEqual([
-        { property: 'color', value: '#e4e2dc' },
+        { property: 'color', value: 'currentColor' },
         { property: 'filter', value: 'drop-shadow(0 0 6px #f0965a)' },
     ]);
     expect(glyphDeclarations('color', layer([['color', 'teal']]))).toEqual([{ property: 'color', value: 'teal' }]);

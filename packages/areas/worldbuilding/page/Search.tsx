@@ -23,11 +23,11 @@ export function SearchBox(props: { typed: Typed; onType: (typed: Typed) => void 
     const { t } = useUi();
     const scope = () => props.typed.scope;
     return (
-        <label class="wb-search" classList={{ 'wb-searching': props.typed.query !== '' || scope() !== null }}>
+        <label class="wb-search text_pole" classList={{ 'wb-searching': props.typed.query !== '' || scope() !== null }}>
             <Icon name="search" />
             <Show when={scope()}>
                 {(shown) => (
-                    <span class="wb-scope">
+                    <span class="tag wb-scope">
                         {shown().label}
                         <button
                             type="button"

@@ -144,21 +144,19 @@ export function RowsHead(props: { fields: RowField[]; selection: Selected | null
     return (
         <div class="wb-tr wb-th" style={{ 'grid-template-columns': columnsOf(props.fields) }}>
             <span>
-                <button
-                    type="button"
+                <input
+                    type="checkbox"
                     class="wb-cb"
-                    classList={{ 'wb-on': all() }}
-                    role="checkbox"
-                    aria-checked={all()}
+                    checked={all()}
                     aria-label={t('Select all matching')}
-                    onClick={() =>
+                    onClick={(event) => {
+                        // The server's selection decides whether it is checked.
+                        event.preventDefault();
                         void wb.act(all() ? 'worldbuilding.selectNone' : 'worldbuilding.selectAllMatching', {
                             book: props.book,
-                        })
-                    }
-                >
-                    {all() ? '✓' : ''}
-                </button>
+                        });
+                    }}
+                />
             </span>
             <span>{t('Name')}</span>
             <For each={props.fields}>
@@ -268,17 +266,14 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
             onPointerEnter={() => props.context.enter(props.cell.entry)}
         >
             <span>
-                <button
-                    type="button"
+                <input
+                    type="checkbox"
                     class="wb-cb"
-                    classList={{ 'wb-on': selected() }}
-                    role="checkbox"
-                    aria-checked={selected()}
+                    checked={selected()}
                     aria-label={fill(t('Select ${0}'), props.cell.label.text)}
                     onPointerDown={(event) => props.context.press(props.cell.entry, event)}
-                >
-                    {selected() ? '✓' : ''}
-                </button>
+                    onClick={(event) => event.preventDefault()}
+                />
             </span>
             <button
                 type="button"
@@ -314,7 +309,7 @@ function ComesCell(props: { book: string; entry: string; facts: RowFacts }) {
                 }
             >
                 <select
-                    class="wb-cell-edit"
+                    class="wb-cell-edit text_pole margin0"
                     aria-label={t('Comes in')}
                     value={props.facts.comesIn}
                     ref={(element) => queueMicrotask(() => element.focus())}
@@ -347,7 +342,7 @@ function GoesCell(props: { book: string; entry: string; facts: RowFacts }) {
                 }
             >
                 <select
-                    class="wb-cell-edit"
+                    class="wb-cell-edit text_pole margin0"
                     aria-label={t('Goes')}
                     value={props.facts.position}
                     ref={(element) => queueMicrotask(() => element.focus())}
@@ -389,7 +384,7 @@ function NumberCell(props: {
                 }
             >
                 <input
-                    class="wb-cell-edit wb-num"
+                    class="wb-cell-edit wb-num text_pole margin0"
                     type="number"
                     aria-label={props.label}
                     value={props.value ?? ''}
@@ -442,10 +437,14 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
         });
     };
     return (
-        <div class="wb-bulk">
+        <div class="st-floating wb-bulk">
             <b>{selectedWords(props.selection, t)}</b>
             <span class="wb-bulk-slot">
-                <button type="button" class="wb-vctl" onClick={() => setMenu(menu() === 'set' ? null : 'set')}>
+                <button
+                    type="button"
+                    class="menu_button margin0 whitespacenowrap"
+                    onClick={() => setMenu(menu() === 'set' ? null : 'set')}
+                >
                     {t('Set')} ▾
                 </button>
                 <Show when={menu() === 'set'}>
@@ -458,7 +457,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                         <span class="wb-bulk-slot">
                             <button
                                 type="button"
-                                class="wb-vctl"
+                                class="menu_button margin0 whitespacenowrap"
                                 onClick={() => setMenu(menu() === 'moveTo' ? null : 'moveTo')}
                             >
                                 {t('Move to…')}
@@ -476,7 +475,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                         <span class="wb-bulk-slot">
                             <button
                                 type="button"
-                                class="wb-vctl"
+                                class="menu_button margin0 whitespacenowrap"
                                 onClick={() => setMenu(menu() === 'alsoPutIn' ? null : 'alsoPutIn')}
                             >
                                 {t('Also put in…')}
@@ -496,7 +495,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
             </Show>
             <button
                 type="button"
-                class="wb-vctl"
+                class="menu_button margin0 whitespacenowrap"
                 onClick={() =>
                     void (async () => {
                         const sure = await ask(
@@ -516,7 +515,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
             <span class="wb-fill" />
             <button
                 type="button"
-                class="wb-dim wb-bulk-clear"
+                class="menu_button margin0 wb-bulk-clear"
                 onClick={() => void wb.act('worldbuilding.selectNone', { book: props.selection.book })}
             >
                 {t('Clear')}
@@ -530,11 +529,16 @@ function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onClose: () 
     let menu: HTMLDivElement | undefined;
     dismissOn(() => menu, props.onClose);
     return (
-        <div class="wb-menu wb-bulk-menu" role="menu" ref={(element) => (menu = element)}>
+        <div class="wb-menu list-group wb-bulk-menu" role="menu" ref={(element) => (menu = element)}>
             <div class="wb-menu-head">{t('Comes in')}</div>
             <For each={COMES}>
                 {(one) => (
-                    <button type="button" role="menuitem" onClick={() => props.onSet(one.change)}>
+                    <button
+                        class="list-group-item"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => props.onSet(one.change)}
+                    >
                         {t(one.words)}
                     </button>
                 )}
@@ -543,7 +547,12 @@ function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onClose: () 
             <div class="wb-menu-head">{t('Goes')}</div>
             <For each={WHERES}>
                 {(where) => (
-                    <button type="button" role="menuitem" onClick={() => props.onSet({ position: where.position })}>
+                    <button
+                        class="list-group-item"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => props.onSet({ position: where.position })}
+                    >
                         {capitalized(t(where.words))}
                     </button>
                 )}
@@ -560,7 +569,7 @@ function BulkPicker(props: {
     onClose: () => void;
 }) {
     let holder: HTMLDivElement | undefined;
-    dismissOn(() => holder, props.onClose);
+    dismissOn(() => holder, props.onClose, undefined, { framed: false });
     return (
         <div ref={(element) => (holder = element)}>
             <TargetPicker
@@ -568,7 +577,7 @@ function BulkPicker(props: {
                 book={props.book}
                 kind={props.kind}
                 leaveOut={[]}
-                class="wb-bulk-pick"
+                class="wb-bulk-pick st-floating"
                 onPick={props.onPick}
             />
         </div>

@@ -40,7 +40,7 @@ export function Keys(props: { entry: OpenEntryView }) {
                 {(key) => (
                     <button
                         type="button"
-                        class="wb-key"
+                        class="tag wb-key"
                         classList={{ 'wb-open': open()?.key === key.text }}
                         aria-expanded={open()?.key === key.text}
                         aria-label={fill(key.isName ? t('“${0}”, a name') : t('“${0}”, a trigger'), key.text)}
@@ -61,7 +61,7 @@ export function Keys(props: { entry: OpenEntryView }) {
                     <>
                         <button
                             type="button"
-                            class="wb-key-add"
+                            class="menu_button margin0 wb-key-add"
                             onClick={() => {
                                 setOpen(null);
                                 setAdding('name');
@@ -71,7 +71,7 @@ export function Keys(props: { entry: OpenEntryView }) {
                         </button>
                         <button
                             type="button"
-                            class="wb-key-add"
+                            class="menu_button margin0 wb-key-add"
                             onClick={() => {
                                 setOpen(null);
                                 setAdding('trigger');
@@ -120,7 +120,7 @@ function NewKey(props: { label: string; onDone: (key: string | null) => void }) 
     return (
         <input
             ref={(element) => (field = element)}
-            class="wb-key-field"
+            class="text_pole margin0 wb-key-field"
             aria-label={props.label}
             placeholder={props.label}
             on:keydown={(event) => {
@@ -168,7 +168,7 @@ function KeyPopover(props: {
             <div class="wb-pop-head">“{props.shownKey.text}”</div>
             <button
                 type="button"
-                class="wb-opt"
+                class="list-group-item wb-opt"
                 classList={{ 'wb-on': props.shownKey.isName }}
                 aria-pressed={props.shownKey.isName}
                 onClick={() => setAs('name')}
@@ -177,7 +177,7 @@ function KeyPopover(props: {
             </button>
             <button
                 type="button"
-                class="wb-opt"
+                class="list-group-item wb-opt"
                 classList={{ 'wb-on': !props.shownKey.isName }}
                 aria-pressed={!props.shownKey.isName}
                 onClick={() => setAs('trigger')}
@@ -210,7 +210,7 @@ function KeyPopover(props: {
             </Show>
             <button
                 type="button"
-                class="wb-pop-remove"
+                class="list-group-item wb-pop-remove"
                 onClick={() => {
                     const key = at();
                     props.onClose();

@@ -120,7 +120,7 @@ test.describe('the worlds page', () => {
         await openEntry(page, 'The Tidegate');
         await pane(page).locator('.wb-rels-add').click();
         const asked = pane(page).getByRole('dialog', { name: 'New relation' });
-        await asked.getByRole('button', { name: 'in', exact: true }).click();
+        await asked.getByRole('tab', { name: 'in', exact: true }).click();
         await asked.getByLabel('Which entry').fill('Lantern');
         await asked.getByRole('option', { name: /The Lantern House/ }).click();
         await expect(pane(page).locator('.wb-rels')).toContainText('in:The Lantern House');

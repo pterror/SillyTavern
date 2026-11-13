@@ -129,7 +129,7 @@ export function hoverCards() {
                 >
                     <button
                         type="button"
-                        class="wb-hover"
+                        class="st-floating wb-hover"
                         onClick={() => {
                             setPointed(null);
                             wb.open(both().card.entry);

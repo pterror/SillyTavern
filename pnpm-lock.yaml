@@ -689,6 +689,9 @@ importers:
 
   packages/page:
     dependencies:
+      '@pterror/interact-list':
+        specifier: github:pterror/interact#c1b12ca8cdead4f3c5dffde0a0aef4c7fcbc5ac9&path:/packages/list
+        version: https://codeload.github.com/pterror/interact/tar.gz/c1b12ca8cdead4f3c5dffde0a0aef4c7fcbc5ac9#path:/packages/list
       '@st/protocol':
         specifier: workspace:*
         version: link:../protocol

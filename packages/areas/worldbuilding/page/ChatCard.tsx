@@ -81,7 +81,7 @@ export function chatCards(client: Client, open: (at: EntryAt) => void) {
                             style={{ left: `${both().at.left}px`, top: `${both().at.top}px` }}
                             onMouseLeave={(event) => unpeek(event.relatedTarget)}
                         >
-                            <div class="wb-chat-card">
+                            <div class="st-floating wb-chat-card">
                                 <For each={both().cards}>
                                     {(card, at) => (
                                         <>
@@ -136,7 +136,7 @@ function Sheet(props: {
         <div class="wb-chat-sheet-at">
             <div class="wb-chat-scrim" onClick={() => props.onClose()} />
             <div
-                class="wb-chat-sheet"
+                class="st-floating wb-chat-sheet"
                 role="dialog"
                 aria-label={props.cards[0]?.label.text}
                 onTouchStart={(event) => (pulledFrom = event.touches[0]?.clientY ?? null)}
