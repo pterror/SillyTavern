@@ -268,11 +268,15 @@ test.describe('the alternatives of a message', () => {
         await page.locator('#chat .mes[mesid="1"] .swipes-counter').click();
         await expect(rows(page)).toHaveCount(2);
         await expect(rows(page).nth(0).locator('.alternative-text')).toContainText(`Hi ${s}`);
-        await rows(page).nth(0).locator('.alternative-text').dblclick();
+        await page.evaluate(async () => {
+            const { power_user } = await import('/scripts/power-user.js');
+            power_user.click_to_edit = true;
+        });
+        await rows(page).nth(0).locator('.alternative-text').click();
         await expect(list(page).locator('textarea')).toHaveCount(0);
     });
 
-    test('a greeting\'s text edits on a double-click, and on a click when click to edit is on, at the word clicked; a link opens instead', async ({ page }) => {
+    test('a greeting\'s text edits on a click at the word clicked when click to edit is on, and on neither a click nor a double-click when it is off; a link opens instead', async ({ page }) => {
         const s = stamp();
         const g = [`Alpha bravo charlie ${s}.`, `Read [the guide](https://example.com/guide) first ${s}.`];
         const avatar = await createCharacter(page, `AltClickEdit-${s}`, g);
@@ -306,11 +310,9 @@ test.describe('the alternatives of a message', () => {
         await page.mouse.click(charlie.x, charlie.y);
         await expect(editor).toHaveCount(0);
         await page.mouse.dblclick(charlie.x, charlie.y);
-        await expect(editor).toBeFocused();
-        let caret = await editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart);
-        expect(caret).toBeGreaterThanOrEqual(start);
-        expect(caret).toBeLessThanOrEqual(start + 'charlie'.length);
-        await rows(page).nth(0).getByRole('button', { name: 'Cancel' }).click();
+        await expect.poll(() => page.evaluate(() => window.getSelection()?.toString().trim())).toBe('charlie');
+        await expect(editor).toHaveCount(0);
+        await page.evaluate(() => window.getSelection()?.removeAllRanges());
 
         await page.evaluate(async () => {
             const { power_user } = await import('/scripts/power-user.js');
@@ -318,7 +320,7 @@ test.describe('the alternatives of a message', () => {
         });
         await page.mouse.click(charlie.x, charlie.y);
         await expect(editor).toBeFocused();
-        caret = await editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart);
+        const caret = await editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart);
         expect(caret).toBeGreaterThanOrEqual(start);
         expect(caret).toBeLessThanOrEqual(start + 'charlie'.length);
         await rows(page).nth(0).getByRole('button', { name: 'Cancel' }).click();

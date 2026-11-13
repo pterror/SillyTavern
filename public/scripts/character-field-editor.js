@@ -757,7 +757,7 @@ export function initCharacterFieldEditor(dependencies) {
         toggleMaximize(this);
     });
 
-    $(document).on('click dblclick', '.field_preview', function (event) {
+    $(document).on('click', '.field_preview', function (event) {
         beginEditAtClick(this, event.originalEvent);
     });
 

@@ -761,7 +761,6 @@ function Dialog(props: {
                                         class="mes_text alternative-text"
                                         hidden={editing()?.id === item.id}
                                         onClick={(event) => editAt(item, event)}
-                                        onDblClick={(event) => editAt(item, event)}
                                     />
                                     <Show when={editing()?.id === item.id ? editing() : null}>
                                         {(edit) => (

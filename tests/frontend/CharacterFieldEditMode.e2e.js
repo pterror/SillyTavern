@@ -769,11 +769,13 @@ test.describe('character field edit mode', () => {
                             const words = f.preview.getByText('plain words');
                             if (clickToEdit) {
                                 await words.click();
+                                await expectEditMode(page, field);
+                                await f.cancel.click();
                             } else {
+                                await words.click();
+                                await expectPreviewMode(page, field);
                                 await words.dblclick();
                             }
-                            await expectEditMode(page, field);
-                            await f.cancel.click();
                             await expectPreviewMode(page, field);
                         } finally {
                             await setPowerUserSetting(page, 'click_to_edit', previous);
@@ -804,11 +806,13 @@ test.describe('character field edit mode', () => {
                             const words = f.preview.getByText('plain words');
                             if (clickToEdit) {
                                 await words.click();
+                                await expectEditMode(page, field);
+                                await f.cancel.click();
                             } else {
+                                await words.click();
+                                await expectPreviewMode(page, field);
                                 await words.dblclick();
                             }
-                            await expectEditMode(page, field);
-                            await f.cancel.click();
                             await expectPreviewMode(page, field);
                         } finally {
                             await setPowerUserSetting(page, 'click_to_edit', previous);

@@ -236,11 +236,11 @@ describe('chat text, a click on it', () => {
     /**
      * @param {string} html what the text is drawn as
      * @param {string} selector the element in it clicked
-     * @param {{ before?: (event: Event) => void, outside?: string }} [options] before: a handler the click reaches
-     * first; outside: markup the text is drawn inside, its slot an element with id slot
+     * @param {{ before?: (event: Event) => void, outside?: string, clickToEdit?: boolean }} [options] before: a
+     * handler the click reaches first; outside: markup the text is drawn inside, its slot an element with id slot
      * @returns {number | null} the edit the click starts
      */
-    function clicked(html, selector, { before, outside } = {}) {
+    function clicked(html, selector, { before, outside, clickToEdit = true } = {}) {
         const page = document.createElement('div');
         page.innerHTML = outside ?? '<div id="slot"></div>';
         const rendered = /** @type {HTMLElement} */ (page.querySelector('#slot'));
@@ -249,13 +249,17 @@ describe('chat text, a click on it', () => {
         if (before) target.addEventListener('click', before);
         /** @type {number | null | undefined} */
         let at;
-        rendered.addEventListener('click', event => { at = surface.editPosition(/** @type {MouseEvent} */ (event), rendered, true); });
+        rendered.addEventListener('click', event => { at = surface.editPosition(/** @type {MouseEvent} */ (event), rendered, clickToEdit); });
         target.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
         return /** @type {number | null} */ (at);
     }
 
     test('on text starts an edit', () => {
         expect(clicked('<p><b>text</b></p>', 'b')).not.toBeNull();
+    });
+
+    test('when click to edit is off starts none', () => {
+        expect(clicked('<p><b>text</b></p>', 'b', { clickToEdit: false })).toBeNull();
     });
 
     test('that a handler marked as handled starts none', () => {
