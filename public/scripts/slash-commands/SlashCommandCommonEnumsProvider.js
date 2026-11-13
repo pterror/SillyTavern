@@ -8,7 +8,7 @@ import { groups } from '../group-store.js';
 import { personaStore } from '../power-user.js';
 import { searchCharByName, getTagsList, tagsStore, getHeldAssignedTagIds, searchUsedTagOptions, searchTagOptions } from '../tags.js';
 import { onlyUniqueJson, sortIgnoreCaseAndAccents } from '../utils.js';
-import { world_names } from '../world-info.js';
+import { worldNames } from '../world-links.js';
 import { SlashCommandClosure } from './SlashCommandClosure.js';
 import { SlashCommandEnumValue, enumTypes } from './SlashCommandEnumValue.js';
 
@@ -344,7 +344,7 @@ export const commonEnumProviders = {
      *
      * @returns {SlashCommandEnumValue[]}
      */
-    worlds: () => world_names.map(worldName => new SlashCommandEnumValue(worldName, null, enumTypes.name, enumIcons.world)),
+    worlds: () => worldNames().map(worldName => new SlashCommandEnumValue(worldName, null, enumTypes.name, enumIcons.world)),
 
     /**
      * All existing injects for the current chat

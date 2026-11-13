@@ -8,7 +8,7 @@ import { useUi } from '@st/page/context';
 import { Name, nameClass } from '@st/page/name';
 import type { TextLink } from '../protocol.ts';
 
-export type Piece = { text: string; link: string | null };
+export type Piece = { text: string; link: null } | { text: string; link: string; picture: string | null };
 
 // The text as paragraphs (split at blank lines), each a run of plain pieces and linked names.
 export function paragraphsOf(text: string, links: TextLink[]): Piece[][] {
@@ -24,7 +24,7 @@ export function paragraphsOf(text: string, links: TextLink[]): Piece[][] {
             const linkFrom = Math.max(link.from, from);
             const linkTo = Math.min(link.to, to);
             if (linkFrom > at) pieces.push({ text: text.slice(at, linkFrom), link: null });
-            pieces.push({ text: text.slice(linkFrom, linkTo), link: link.entry });
+            pieces.push({ text: text.slice(linkFrom, linkTo), link: link.entry, picture: link.picture });
             at = linkTo;
         }
         if (at < to) pieces.push({ text: text.slice(at, to), link: null });
@@ -122,16 +122,17 @@ export function EntryText(props: {
                                                     class="wb-link"
                                                     href="#"
                                                     onMouseEnter={(event) =>
-                                                        props.onEnter(piece.link ?? '', event.currentTarget)
+                                                        props.onEnter(piece.link, event.currentTarget)
                                                     }
                                                     onMouseLeave={(event) => props.onLeave(event)}
                                                     onClick={(event) => {
                                                         event.preventDefault();
-                                                        props.onOpen(piece.link ?? '');
+                                                        props.onOpen(piece.link);
                                                     }}
                                                 >
                                                     <Name
                                                         named={{ thing: piece.link, text: piece.text, shownAs: 'name' }}
+                                                        picture={piece.picture}
                                                     />
                                                 </a>
                                             )

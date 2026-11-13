@@ -97,8 +97,32 @@ async function loadWorldEntries(directories, worldName) {
     }
     return Object.keys(data.entries)
         .map((x) => data.entries[x])
-        .map(({ uid, ...rest }) => ({ uid, world: worldName, ...rest }));
+        .map(entry => inWorld(worldName, entry));
 }
+
+/**
+ * @param {string} worldName
+ * @param {Record<string, any>} entry
+ */
+const inWorld = (worldName, { uid, ...rest }) => ({ uid, world: worldName, ...rest });
+
+/**
+ * An entry as activation reads it: its decorators parsed out of its text, and the hash its timed effects are kept by.
+ * @param {Record<string, any>} entry
+ */
+function candidate(entry) {
+    const [decorators, content] = parseDecorators(entry.content || '');
+    const parsed = { ...entry, decorators, content };
+    return { ...parsed, hash: getStringHash(JSON.stringify(parsed)) };
+}
+
+/**
+ * The hash a timed effect on `entry` of the world `worldName` is kept by, as activation reads that entry.
+ * @param {string} worldName
+ * @param {Record<string, any>} entry the entry as its world file has it
+ * @returns {number}
+ */
+export const timedEffectHash = (worldName, entry) => candidate(inWorld(worldName, entry)).hash;
 
 /**
  * @param {import('../users.js').UserDirectoryList} directories
@@ -231,13 +255,7 @@ export async function resolveWorldInfoCandidates(options) {
 
         entries = [...chatLore.sort(sortFn), ...personaLore.sort(sortFn), ...entries];
 
-        entries = entries.map((entry) => {
-            const [decorators, content] = parseDecorators(entry.content || '');
-            return { ...entry, decorators, content };
-        }).map((entry) => {
-            const hash = getStringHash(JSON.stringify(entry));
-            return { ...entry, hash };
-        });
+        entries = entries.map(candidate);
 
         return structuredClone(entries);
     } catch (e) {

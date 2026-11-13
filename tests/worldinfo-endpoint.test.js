@@ -32,10 +32,6 @@ beforeAll(async () => {
         req.user = user.user;
         next();
     });
-    app.use('/api/worldinfo/import', (/** @type {any} */ req, _res, next) => {
-        req.file = { originalname: req.body.importFilename || 'Imported.json' };
-        next();
-    });
     app.use('/api/worldinfo', worldinfo.router);
     app.use('/api/settings', (await import('../src/endpoints/settings.js')).router);
     server = app.listen(0, '127.0.0.1');
@@ -71,7 +67,7 @@ async function saveBook(body) {
 }
 
 async function getBook(name) {
-    return (await postJson('/api/worldinfo/get', { name })).json();
+    return worldInfoFiles.readWorldInfo(directories, name, true);
 }
 
 async function bookVersion(name) {
@@ -80,7 +76,7 @@ async function bookVersion(name) {
     return (await lib.entities([id]))[0]?.version;
 }
 
-describe('a book saved whole, and /get', () => {
+describe('a book saved whole', () => {
     test('a saved book reads back as it was saved, top-level fields and all', async () => {
         const data = { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') }, name: 'Book', extensions: { foo: 'bar' } };
         expect((await saveBook({ name: 'Book', data })).status).toBe(200);
@@ -101,26 +97,13 @@ describe('a book saved whole, and /get', () => {
         expect(await getBook('Book')).toEqual({ entries: { 1: makeEntry(1, 'Beta') } });
     });
 
-    test('/get returns the dummy object for a book that does not exist', async () => {
+    test('a book that does not exist reads as the dummy object', async () => {
         expect(await getBook('Nope')).toEqual({ entries: {} });
     });
 });
 
-describe('worldinfo /get book id', () => {
-    test('a book answers its id, which it keeps across a rename; a missing one answers none', async () => {
-        await saveBook({ name: 'Named', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
-        const first = await postJson('/api/worldinfo/get', { name: 'Named' });
-        const id = first.headers.get('X-ST-Book-Id');
-        expect(id).toMatch(/^\d+$/);
-        expect(await first.json()).toEqual({ entries: { 0: makeEntry(0, 'Alpha') } });
-        expect((await postJson('/api/worldinfo/rename', { name: 'Named', new_name: 'Renamed' })).status).toBe(200);
-        expect((await postJson('/api/worldinfo/get', { name: 'Renamed' })).headers.get('X-ST-Book-Id')).toBe(id);
-        expect((await postJson('/api/worldinfo/get', { name: 'Named' })).headers.get('X-ST-Book-Id')).toBeNull();
-    });
-});
-
 describe('readWorldInfoFile (upstream\'s synchronous export)', () => {
-    test('reads what /get reads; a missing book is the dummy object or null', async () => {
+    test('reads what the asynchronous read reads; a missing book is the dummy object or null', async () => {
         const data = { entries: { 0: makeEntry(0, 'Alpha') }, name: 'Sync' };
         await saveBook({ name: 'Sync', data });
         expect(worldInfoFiles.readWorldInfoFile(directories, 'Sync', false)).toEqual(await getBook('Sync'));
@@ -139,23 +122,7 @@ describe('readWorldInfoFile (upstream\'s synchronous export)', () => {
     });
 });
 
-describe('worldinfo /delete', () => {
-    test('deletes the book; a missing one fails', async () => {
-        await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
-        const res = await postJson('/api/worldinfo/delete', { name: 'Book' });
-        expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, characters_updated: [], chats_updated: [], settings: {} });
-        expect(await getBook('Book')).toEqual({ entries: {} });
-        const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
-        try {
-            expect((await postJson('/api/worldinfo/delete', { name: 'Book' })).status).toBe(500);
-        } finally {
-            errors.mockRestore();
-        }
-    });
-});
-
-describe('worldinfo /delete unlinks', () => {
+describe('deleting a book unlinks', () => {
     test('the characters and chats that link the book, and leaves no entry or deleted entry of it', async () => {
         const store = await stores.userStore(directories, 'u');
         const { lib, chats } = store;
@@ -170,9 +137,9 @@ describe('worldinfo /delete unlinks', () => {
         expect((await chats.metadata(tree, null)).world_info).toBe('Linked');
         const book = await lib.books.find('Linked');
 
-        const res = await postJson('/api/worldinfo/delete', { name: 'Linked' });
-        expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, characters_updated: ['linker.png'], chats_updated: [{ avatar: 'linker.png' }], settings: {} });
+        const gone = await lib.books.delete('Linked');
+        expect(await lib.store.libraryKeys(/** @type {any} */ (gone).characters)).toMatchObject([{ key: 'linker.png' }]);
+        expect(await lib.store.libraryKeys(/** @type {any} */ (gone).trees)).toMatchObject([{ key: 'linker.png' }]);
 
         expect((await chats.metadata(tree, null)).world_info).toBeUndefined();
         expect(/** @type {any} */ ((await lib.cards(['linker.png']))[0]).data.extensions.world).toBeUndefined();
@@ -185,180 +152,12 @@ describe('worldinfo /delete unlinks', () => {
     });
 });
 
-describe('overwriting a book', () => {
-    test('under a name of another case replaces its contents on the same book, and every character and chat link stays', async () => {
-        const store = await stores.userStore(directories, 'u');
-        const { lib, chats } = store;
-        await saveBook({ name: 'Overwritten', data: { entries: { 0: makeEntry(0, 'Old') } } });
-        const card = { spec: 'chara_card_v2', spec_version: '2.0', data: { name: 'Keeper', extensions: { world: 'Overwritten' } } };
-        await lib.writeCard(directories, 'keeper.png', JSON.stringify(card));
-        const [tree] = await lib.ids((await import('../src/library-codes.js')).TYPE.character, ['keeper.png']);
-        await chats.mergeMetadata({ tree, at: null, set: { world_info: 'Overwritten' }, unset: [], actor: { user: 'u' } });
-        const before = await lib.books.find('Overwritten');
-
-        const res = await postJson('/api/worldinfo/create', { name: 'overwritten', replaces: 'Overwritten', data: { entries: { 0: makeEntry(0, 'New') } } });
-        expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, name: 'overwritten', characters_updated: ['keeper.png'], unreachedLoops: [], settings: {} });
-
-        const after = await lib.books.find('overwritten');
-        expect(after?.id).toBe(before?.id);
-        expect(await lib.books.exists('Overwritten')).toBe(false);
-        expect(Object.values((await getBook('overwritten')).entries).map((/** @type {any} */ e) => e.content)).toEqual(['New']);
-        expect(/** @type {any} */ ((await lib.cards(['keeper.png']))[0]).data.extensions.world).toBe('overwritten');
-        expect(await lib.store.worldRead('linkers', { book: after?.id, limit: 10 })).toMatchObject({ ids: [tree] });
-        expect((await lib.store.worldRead('chatLinks', { book: after?.id, limit: 10 })).changes).toHaveLength(1);
-    });
-
-    test('under the same name replaces its contents on the same book; a missing book or a taken name is refused', async () => {
-        const { lib } = await stores.userStore(directories, 'u');
-        await saveBook({ name: 'Same', data: { entries: { 0: makeEntry(0, 'Old') } } });
-        const before = await lib.books.find('Same');
-        const res = await postJson('/api/worldinfo/create', { name: 'Same', replaces: 'Same', data: { entries: { 0: makeEntry(0, 'New') } } });
-        expect(await res.json()).toEqual({ ok: true, name: 'Same', characters_updated: [], unreachedLoops: [], settings: {} });
-        expect((await lib.books.find('Same'))?.id).toBe(before?.id);
-        expect(Object.values((await getBook('Same')).entries).map((/** @type {any} */ e) => e.content)).toEqual(['New']);
-
-        expect((await postJson('/api/worldinfo/create', { name: 'x', replaces: 'No Such Book', data: { entries: {} } })).status).toBe(404);
-        await saveBook({ name: 'Taken', data: { entries: {} } });
-        expect((await postJson('/api/worldinfo/create', { name: 'Taken', replaces: 'Same', data: { entries: {} } })).status).toBe(409);
-    });
-});
-
-describe('worldinfo /import', () => {
-    test('stores the book, and /get reads back what was imported', async () => {
-        const book = { entries: { 0: makeEntry(0, 'Imported content') }, name: 'Cool Book', extensions: { foo: 'bar' } };
-        const res = await postJson('/api/worldinfo/import', { importFilename: 'Cool Book.json', convertedData: JSON.stringify(book) });
-        expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ name: 'Cool Book', unreachedLoops: [] });
-        expect(await getBook('Cool Book')).toEqual(book);
-    });
-
-    test('re-importing over a stored book replaces it', async () => {
-        await saveBook({ name: 'Reimported', data: { entries: { 0: makeEntry(0, 'Old'), 1: makeEntry(1, 'Gone') } } });
-        const book = { entries: { 0: makeEntry(0, 'Fresh import') } };
-        await postJson('/api/worldinfo/import', { importFilename: 'Reimported.json', convertedData: JSON.stringify(book) });
-        expect(await getBook('Reimported')).toEqual(book);
-    });
-
-    test('rejects a file with no entries list', async () => {
-        const res = await postJson('/api/worldinfo/import', { importFilename: 'Bad.json', convertedData: JSON.stringify({ notEntries: true }) });
-        expect(res.status).toBe(400);
-    });
-});
-
 describe('a copy of a character\'s embedded lorebook', () => {
     const copy = { entries: { 0: makeEntry(0, 'Card lore') }, originalData: { name: 'Card book', entries: [{ id: 0, keys: ['key0'], content: 'Card lore', enabled: true, insertion_order: 100 }] } };
 
-    test('is not stored by /import, /create or a save', async () => {
-        const imported = await postJson('/api/worldinfo/import', { importFilename: 'Copy.json', convertedData: JSON.stringify(copy) });
-        expect(imported.status).toBe(400);
+    test('is not stored by /create', async () => {
         expect((await saveBook({ name: 'Copy', data: copy })).status).toBe(400);
         expect(await getBook('Copy')).toEqual({ entries: {} });
-
-        await saveBook({ name: 'Own', data: { entries: copy.entries } });
-        const applied = await postJson('/api/worldinfo/entries/apply', { name: 'Own', fields: [{ key: 'originalData', base_hash: null, value: copy.originalData }] });
-        expect(applied.status).toBe(400);
-        expect(await getBook('Own')).toEqual({ entries: copy.entries });
-    });
-});
-
-describe('worldinfo /entry/transplant', () => {
-    async function seedBooks() {
-        await saveBook({
-            name: 'Source',
-            data: { entries: { 0: makeEntry(0, 'Moved'), 1: makeEntry(1, 'Stays behind') } },
-        });
-        await saveBook({
-            name: 'Target',
-            data: { entries: { 5: { ...makeEntry(5, 'Already there'), displayIndex: 3 } } },
-        });
-    }
-
-    test('moves an entry: removed from source, present in target with a fresh uid and end-of-list displayIndex', async () => {
-        await seedBooks();
-        const res = await postJson('/api/worldinfo/entry/transplant', {
-            source_name: 'Source', target_name: 'Target', uid: 0, delete_original: true,
-        });
-        expect(res.status).toBe(200);
-        const body = await res.json();
-        expect(body.ok).toBe(true);
-        expect(body.entry.content).toBe('Moved');
-        expect(body.entry.uid).toBe(0);
-        expect(body.entry.displayIndex).toBe(4);
-
-        const source = await getBook('Source');
-        expect(source.entries['0']).toBeUndefined();
-        expect(source.entries['1'].content).toBe('Stays behind');
-        const target = await getBook('Target');
-        expect(target.entries['0']).toEqual(body.entry);
-        expect(target.entries['5'].content).toBe('Already there');
-    });
-
-    test('copies an entry (delete_original: false): present in both books afterward', async () => {
-        await seedBooks();
-        const res = await postJson('/api/worldinfo/entry/transplant', {
-            source_name: 'Source', target_name: 'Target', uid: 0, delete_original: false,
-        });
-        expect(res.status).toBe(200);
-        expect((await getBook('Source')).entries['0'].content).toBe('Moved');
-        expect(Object.values((await getBook('Target')).entries).some((/** @type {any} */ e) => e.content === 'Moved')).toBe(true);
-    });
-
-    test('rejects a nonexistent source uid, source or target book without touching either book', async () => {
-        await seedBooks();
-        for (const body of [
-            { source_name: 'Source', target_name: 'Target', uid: 999 },
-            { source_name: 'Ghost', target_name: 'Target', uid: 0 },
-            { source_name: 'Source', target_name: 'Ghost', uid: 0 },
-        ]) {
-            expect((await postJson('/api/worldinfo/entry/transplant', { ...body, delete_original: true })).status).toBe(404);
-        }
-        expect(Object.keys((await getBook('Source')).entries).sort()).toEqual(['0', '1']);
-        expect(Object.keys((await getBook('Target')).entries)).toEqual(['5']);
-    });
-
-    test('rejects source_name === target_name, and a missing uid', async () => {
-        await seedBooks();
-        expect((await postJson('/api/worldinfo/entry/transplant', { source_name: 'Source', target_name: 'Source', uid: 0 })).status).toBe(400);
-        expect((await postJson('/api/worldinfo/entry/transplant', { source_name: 'Source', target_name: 'Target' })).status).toBe(400);
-    });
-});
-
-describe('worldinfo /entry/create and /entry/edit', () => {
-    test('mints the lowest free uid and reserves it; two calls never collide', async () => {
-        await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
-        const first = await (await postJson('/api/worldinfo/entry/create', { name: 'Book' })).json();
-        const second = await (await postJson('/api/worldinfo/entry/create', { name: 'Book' })).json();
-        expect(first).toEqual({ ok: true, entry: { uid: 2 } });
-        expect(second).toEqual({ ok: true, entry: { uid: 3 } });
-        expect(Object.keys((await getBook('Book')).entries).sort()).toEqual(['0', '1', '2', '3']);
-    });
-
-    test('create takes the uid the page asks for while it is free, else the lowest free one', async () => {
-        await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
-        expect(await (await postJson('/api/worldinfo/entry/create', { name: 'Book', uid: 5 })).json()).toEqual({ ok: true, entry: { uid: 5 } });
-        expect(await (await postJson('/api/worldinfo/entry/create', { name: 'Book', uid: 5 })).json()).toEqual({ ok: true, entry: { uid: 1 } });
-        expect(Object.keys((await getBook('Book')).entries).sort()).toEqual(['0', '1', '5']);
-    });
-
-    test('create rejects a nonexistent book, a missing name and a uid that is no integer in range', async () => {
-        expect((await postJson('/api/worldinfo/entry/create', { name: 'Ghost' })).status).toBe(404);
-        expect((await postJson('/api/worldinfo/entry/create', {})).status).toBe(400);
-        await saveBook({ name: 'Book', data: { entries: {} } });
-        for (const uid of [-1, 1.5, '3', 1_000_000]) {
-            expect((await postJson('/api/worldinfo/entry/create', { name: 'Book', uid })).status).toBe(400);
-        }
-    });
-
-    test('edit writes one entry whole and keeps its uid', async () => {
-        await saveBook({ name: 'Book', data: { entries: { 0: makeEntry(0, 'Alpha'), 1: makeEntry(1, 'Beta') } } });
-        const res = await postJson('/api/worldinfo/entry/edit', { name: 'Book', uid: 1, data: { ...makeEntry(7, 'Changed') } });
-        const changed = { ...makeEntry(7, 'Changed'), uid: 1 };
-        expect(await res.json()).toEqual({ ok: true, entry: changed, unreachedLoops: [] });
-        expect(await getBook('Book')).toEqual({ entries: { 0: makeEntry(0, 'Alpha'), 1: changed } });
-        expect((await postJson('/api/worldinfo/entry/edit', { name: 'Book', uid: 9, data: {} })).status).toBe(404);
-        expect((await postJson('/api/worldinfo/entry/edit', { name: 'Ghost', uid: 0, data: {} })).status).toBe(404);
-        expect((await postJson('/api/worldinfo/entry/edit', { name: 'Book', uid: 0, data: [] })).status).toBe(400);
     });
 });
 
@@ -409,7 +208,7 @@ describe('worldinfo missing books', () => {
         return errorSpy.mock.calls.filter(([message]) => String(message).includes(`${name}.json`)).length;
     }
 
-    test('/get of a missing book answers an empty book every time and prints once, until the book is found again', async () => {
+    test('a read of a missing book answers an empty book every time and prints once, until the book is found again', async () => {
         const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
         for (let i = 0; i < 3; i++) {
             expect(await getBook('Ghost Get')).toEqual({ entries: {} });
@@ -418,7 +217,7 @@ describe('worldinfo missing books', () => {
         expect(printsFor(errors, 'Ghost Get')).toBe(1);
         await postJson('/api/worldinfo/create', { name: 'Ghost Get' });
         await getBook('Ghost Get');
-        await postJson('/api/worldinfo/delete', { name: 'Ghost Get' });
+        await (await stores.userStore(directories, 'u')).lib.books.delete('Ghost Get');
         await getBook('Ghost Get');
         expect(printsFor(errors, 'Ghost Get')).toBe(2);
     });
@@ -439,79 +238,6 @@ describe('lorebook actions', () => {
     let jsonHash;
     beforeAll(async () => {
         ({ jsonHash } = await import('../public/scripts/hash-utils.js'));
-    });
-
-    test('apply stores only the changes made against the version the page had, and reports the rest', async () => {
-        await writeBook('Apply', { 0: makeEntry(0, 'zero'), 1: makeEntry(1, 'one'), 2: makeEntry(2, 'two') }, { name: 'Apply' });
-        const loaded = await getBook('Apply');
-        const loadedHash = uid => jsonHash(loaded.entries[uid]);
-
-        await postJson('/api/worldinfo/entry/edit', { name: 'Apply', uid: 1, data: makeEntry(1, 'one, elsewhere') });
-        await postJson('/api/worldinfo/entries/apply', { name: 'Apply', entries: [{ uid: 3, base_hash: null, data: makeEntry(3, 'three, elsewhere') }] });
-
-        const res = await postJson('/api/worldinfo/entries/apply', {
-            name: 'Apply',
-            entries: [
-                { uid: 0, base_hash: loadedHash(0), data: makeEntry(0, 'zero, here') },
-                { uid: 1, base_hash: loadedHash(1), data: makeEntry(1, 'one, here') },
-                { uid: 2, base_hash: loadedHash(2), data: null },
-            ],
-            fields: [{ key: 'name', base_hash: jsonHash('Apply'), value: 'Applied' }],
-        });
-        expect(res.status).toBe(200);
-        const result = await res.json();
-        expect(Object.keys(result.entries)).toEqual(['0']);
-        expect(result.deleted).toEqual(['2']);
-        expect(result.fields).toEqual({ name: 'Applied' });
-        expect(result.conflicts).toEqual([{ uid: '1', current: makeEntry(1, 'one, elsewhere') }]);
-
-        const after = await getBook('Apply');
-        expect(Object.fromEntries(Object.entries(after.entries).map(([uid, entry]) => [uid, entry.content]))).toEqual({
-            0: 'zero, here', 1: 'one, elsewhere', 3: 'three, elsewhere',
-        });
-        expect(after.name).toBe('Applied');
-    });
-
-    test('a new entry whose uid was taken since is a conflict, and an unchanged apply writes nothing', async () => {
-        await writeBook('Taken', { 0: makeEntry(0, 'zero') });
-        const conflict = await (await postJson('/api/worldinfo/entries/apply', { name: 'Taken', entries: [{ uid: 0, base_hash: null, data: makeEntry(0, 'mine') }] })).json();
-        expect(conflict.conflicts).toEqual([{ uid: '0', current: makeEntry(0, 'zero') }]);
-
-        const before = await bookVersion('Taken');
-        const same = await (await postJson('/api/worldinfo/entries/apply', { name: 'Taken', entries: [{ uid: 0, base_hash: jsonHash(makeEntry(0, 'zero')), data: makeEntry(0, 'zero') }] })).json();
-        expect(same).toEqual({ ok: true, entries: {}, deleted: [], fields: {}, conflicts: [], unreachedLoops: [] });
-        expect(await bookVersion('Taken')).toBe(before);
-    });
-
-    test('apply: a missing book is 404 before a malformed change is 400', async () => {
-        expect((await postJson('/api/worldinfo/entries/apply', { name: 'Ghost', entries: [{ data: 1 }] })).status).toBe(404);
-        await writeBook('Checked', {});
-        expect((await postJson('/api/worldinfo/entries/apply', { name: 'Checked', entries: [{ uid: 0, data: 1 }] })).status).toBe(400);
-        expect((await postJson('/api/worldinfo/entries/apply', { name: 'Checked', entries: [{ data: {} }] })).status).toBe(400);
-        expect((await postJson('/api/worldinfo/entries/apply', { name: 'Checked', fields: [{ key: 'entries' }] })).status).toBe(400);
-    });
-
-    test('duplicate copies on the server and refuses a taken name', async () => {
-        await writeBook('Original', { 0: makeEntry(0, 'zero') });
-        expect((await postJson('/api/worldinfo/duplicate', { name: 'Original', new_name: 'Copy' })).status).toBe(200);
-        expect((await getBook('Copy')).entries['0'].content).toBe('zero');
-        expect((await postJson('/api/worldinfo/duplicate', { name: 'Original', new_name: 'Copy' })).status).toBe(409);
-        expect((await postJson('/api/worldinfo/duplicate', { name: 'Ghost', new_name: 'Copy 2' })).status).toBe(404);
-    });
-
-    test('rename moves the book; a taken name and a missing book are refused', async () => {
-        await writeBook('Old', { 0: makeEntry(0, 'zero') });
-
-        const res = await postJson('/api/worldinfo/rename', { name: 'Old', new_name: 'New' });
-        expect(res.status).toBe(200);
-        const result = await res.json();
-        expect(result).toEqual({ ok: true, name: 'New', characters_updated: [], characters_failed: [], settings: {} });
-        expect(await getBook('Old')).toEqual({ entries: {} });
-        expect((await getBook('New')).entries['0'].content).toBe('zero');
-
-        await writeBook('Taken2', { 0: makeEntry(0, 'x') });
-        expect((await postJson('/api/worldinfo/rename', { name: 'New', new_name: 'Taken2' })).status).toBe(409);
-        expect((await postJson('/api/worldinfo/rename', { name: 'Ghost', new_name: 'Elsewhere' })).status).toBe(404);
     });
 
     test('additional-books changes a character\'s links after the first, as an action, writing no settings', async () => {
@@ -541,7 +267,7 @@ describe('lorebook actions', () => {
         expect(await (await op({ op: 'remove', books: [] })).json()).toEqual({ result: 'ok', extraBooks: ['X'] });
     });
 
-    test('rename with relink_characters moves the characters\' links and answers them; without, they keep the old name', async () => {
+    test('a rename that relinks moves the characters\' links; without, they keep the old name', async () => {
         const { lib } = await stores.userStore(directories, 'u');
         const data = { name: 'Linker', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [] };
         const card = (/** @type {string} */ world) => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', ...data, data: { ...data, extensions: { world } } });
@@ -554,21 +280,18 @@ describe('lorebook actions', () => {
             return r;
         };
 
-        const moved = await (await postJson('/api/worldinfo/rename', { name: 'Linked', new_name: 'Linked 2', relink_characters: true })).json();
-        expect(moved.characters_updated).toEqual(['wi-linker.png']);
+        expect(await lib.books.rename('Linked', 'Linked 2', { relink: true })).toBe('ok');
         expect(await linkOf()).toMatchObject({ key: 'Linked 2', defined: true });
 
-        const kept = await (await postJson('/api/worldinfo/rename', { name: 'Linked 2', new_name: 'Linked 3' })).json();
-        expect(kept.characters_updated).toEqual([]);
+        expect(await lib.books.rename('Linked 2', 'Linked 3', { relink: false })).toBe('ok');
         expect(await linkOf()).toMatchObject({ key: 'Linked 2', defined: false });
     });
 });
 
-describe('charLore at the settings edges', () => {
-    test('/get fills it from the characters\' links, no hash covers it, and saves ignore it', async () => {
+describe('the worlds chosen at the settings edges', () => {
+    test('the page reads the worlds used in every chat and the characters\' extra links; no hash covers them and no save from the page changes them', async () => {
         const { lib } = await stores.userStore(directories, 'u');
-        const { readAllSettingsAsJson, readSettingsAtPaths, writeSettingsKeys } = await import('../src/settings-store.js');
-        const { getStringHash } = await import('../public/scripts/hash-utils.js');
+        const { readSettingsAtPaths, writeSettingsKeys } = await import('../src/settings-store.js');
         const data = { name: 'Lore', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [] };
         const card = JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', ...data, data: { ...data, extensions: { world: 'P' } } });
         for (const name of ['P', 'Q', 'R']) await lib.books.write(name, { entries: {} });
@@ -580,32 +303,50 @@ describe('charLore at the settings edges', () => {
         const settings = JSON.parse(got.settings);
         expect(settings.world_info_settings.world_info.charLore).toContainEqual({ name: 'wi-lore', extraBooks: ['Q', 'R'] });
         expect(settings.world_info_settings.world_info.globalSelect).toEqual(['P']);
-        expect(got.settingsHash).toBe(getStringHash(readAllSettingsAsJson(directories)));
-        expect(got.keyHashes['world_info_settings.world_info']).toBe(getStringHash(JSON.stringify({ globalSelect: ['P'] }, null, 4)));
+        expect(got.keyHashes['world_info_settings.world_info']).toBeUndefined();
         expect(got.keyHashes['world_info_settings.world_info.charLore']).toBeUndefined();
 
         const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        const ignored = (/** @type {any[]} */ calls) => calls.filter(c => String(c[0]).includes('charLore')).length;
         const settled = () => new Promise(resolve => setTimeout(resolve, 200));
         try {
             const other = { globalSelect: ['Q'], charLore: [{ name: 'wi-lore', extraBooks: ['P'] }] };
             expect((await postJson('/api/settings/save-partial', { keys: { 'world_info_settings.world_info': other } })).status).toBe(200);
+            expect((await postJson('/api/settings/save-partial', { keys: { world_info_settings: { world_info: other } } })).status).toBe(200);
             await settled();
-            expect(readSettingsAtPaths(directories, ['world_info_settings.world_info'])['world_info_settings.world_info']).toEqual({ globalSelect: ['Q'] });
-            expect(await lib.extraBookNames('wi-lore.png')).toEqual(['Q', 'R']);
-            expect(ignored(warn.mock.calls)).toBe(1);
-            const same = { world_info_settings: { world_info: { globalSelect: ['P'], charLore: [{ name: 'wi-lore', extraBooks: ['Q', 'R'] }] } } };
-            expect((await postJson('/api/settings/save-partial', { keys: same })).status).toBe(200);
-            expect((await postJson('/api/settings/save-partial', { keys: { 'world_info_settings.world_info.charLore': [] } })).status).toBe(200);
-            await settled();
-            expect(ignored(warn.mock.calls)).toBe(1);
-            expect(readSettingsAtPaths(directories, ['world_info_settings'])['world_info_settings']).toEqual({ world_info: { globalSelect: ['P'] } });
+            expect(readSettingsAtPaths(directories, ['world_info_settings.world_info'])['world_info_settings.world_info']).toEqual({ globalSelect: ['P'] });
             expect((await postJson('/api/settings/save', { ...settings, world_info_settings: { world_info: other } })).status).toBe(200);
             await settled();
-            expect(ignored(warn.mock.calls)).toBe(2);
-            expect(readSettingsAtPaths(directories, ['world_info_settings'])['world_info_settings']).toEqual({ world_info: { globalSelect: ['Q'] } });
+            expect(readSettingsAtPaths(directories, ['world_info_settings.world_info'])['world_info_settings.world_info']).toEqual({ globalSelect: ['P'] });
+            expect(await lib.extraBookNames('wi-lore.png')).toEqual(['Q', 'R']);
         } finally {
             warn.mockRestore();
         }
+    });
+});
+
+describe('the entry endpoints the slash commands use', () => {
+    test('create makes an entry with the fields asked for; get reads it with its timed effect hash; set changes fields; find finds it', async () => {
+        await saveBook({ name: 'Slash', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
+        const made = await (await postJson('/api/worldinfo/entry/create', { name: 'Slash', data: { key: ['beacon'], content: 'Bright' } })).json();
+        expect(made).toEqual({ ok: true, entry: { uid: 1 } });
+        const read = await (await postJson('/api/worldinfo/entry/get', { name: 'Slash', uid: 1 })).json();
+        expect(read.entry).toMatchObject({ uid: 1, key: ['beacon'], content: 'Bright' });
+        expect(typeof read.hash).toBe('number');
+        expect((await postJson('/api/worldinfo/entry/set', { name: 'Slash', uid: '1', fields: { content: 'Dim', characterFilter: { isExclude: true } } })).status).toBe(200);
+        const changed = await (await postJson('/api/worldinfo/entry/get', { name: 'Slash', uid: 1 })).json();
+        expect(changed.entry).toMatchObject({ content: 'Dim', characterFilter: { isExclude: true, names: [], tags: [] } });
+        expect(changed.hash).not.toBe(read.hash);
+        expect(await (await postJson('/api/worldinfo/entry/find', { name: 'Slash', field: 'key', text: 'beacon' })).json()).toEqual({ uid: 1 });
+        expect(await (await postJson('/api/worldinfo/entry/find', { name: 'Slash', field: 'content', text: 'nothing like it' })).json()).toEqual({ uid: null });
+    });
+
+    test('a missing book or entry is 404, a malformed ask 400', async () => {
+        await saveBook({ name: 'Slash', data: { entries: { 0: makeEntry(0, 'Alpha') } } });
+        expect((await postJson('/api/worldinfo/entry/get', { name: 'Nope', uid: 0 })).status).toBe(404);
+        expect((await postJson('/api/worldinfo/entry/get', { name: 'Slash', uid: 9 })).status).toBe(404);
+        expect((await postJson('/api/worldinfo/entry/set', { name: 'Slash', uid: 9, fields: { content: 'x' } })).status).toBe(404);
+        expect((await postJson('/api/worldinfo/entry/create', { name: 'Nope', data: {} })).status).toBe(404);
+        expect((await postJson('/api/worldinfo/entry/get', { name: 'Slash' })).status).toBe(400);
+        expect((await postJson('/api/worldinfo/entry/find', { name: 'Slash', field: 'nope', text: 'x' })).status).toBe(400);
     });
 });

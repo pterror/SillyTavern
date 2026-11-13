@@ -3234,42 +3234,36 @@ input[type="file"] {
 
 #rm_button_panel_pin,
 #lm_button_panel_pin,
-#WI_panel_pin,
 #charInfo_button_panel_pin {
     display: none;
 }
 
 #rm_button_panel_pin:checked+label,
 #lm_button_panel_pin:checked+label,
-#WI_panel_pin:checked+label,
 #charInfo_button_panel_pin:checked+label {
     display: inline;
 }
 
 #rm_button_panel_pin:checked+label .checked,
 #lm_button_panel_pin:checked+label .checked,
-#WI_panel_pin:checked+label .checked,
 #charInfo_button_panel_pin:checked+label .checked {
     display: inline;
 }
 
 #rm_button_panel_pin:checked+label .unchecked,
 #lm_button_panel_pin:checked+label .unchecked,
-#WI_panel_pin:checked+label .unchecked,
 #charInfo_button_panel_pin:checked+label .unchecked {
     display: none;
 }
 
 #rm_button_panel_pin:not(:checked)+label .checked,
 #lm_button_panel_pin:not(:checked)+label .checked,
-#WI_panel_pin:not(:checked)+label .checked,
 #charInfo_button_panel_pin:not(:checked)+label .checked {
     display: none;
 }
 
 #rm_button_panel_pin:not(:checked)+label .unchecked,
 #lm_button_panel_pin:not(:checked)+label .unchecked,
-#WI_panel_pin:not(:checked)+label .unchecked,
 #charInfo_button_panel_pin:not(:checked)+label .unchecked {
     display: inline;
 }
@@ -6431,7 +6425,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
 /*to prevent draggables from being made too small to see*/
 .fillRight,
 .fillLeft,
-#WorldInfo,
 #floatingPrompt {
     min-width: 100px !important;
     position: fixed;
@@ -6439,7 +6432,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
 
 .fillRight.openDrawer,
 .fillLeft.openDrawer,
-#WorldInfo,
 #floatingPrompt {
     min-height: 100px !important;
 }

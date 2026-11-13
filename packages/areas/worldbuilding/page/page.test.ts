@@ -9,19 +9,19 @@ import { paragraphsOf } from './Text.tsx';
 test('a text is drawn as its paragraphs, each its plain words and its linked names, the links cut at paragraph ends', () => {
     const text = 'Ilse keeps the Lantern House.\n\nThe Pale Choir sings.\nAt low water.';
     const links = [
-        { entry: '2', from: 15, to: 28 },
-        { entry: '1', from: 0, to: 4 },
-        { entry: '3', from: 31, to: 45 },
+        { entry: '2', from: 15, to: 28, picture: null },
+        { entry: '1', from: 0, to: 4, picture: '/look-images/a' },
+        { entry: '3', from: 31, to: 45, picture: null },
     ];
     expect(paragraphsOf(text, links)).toEqual([
         [
-            { text: 'Ilse', link: '1' },
+            { text: 'Ilse', link: '1', picture: '/look-images/a' },
             { text: ' keeps the ', link: null },
-            { text: 'Lantern House', link: '2' },
+            { text: 'Lantern House', link: '2', picture: null },
             { text: '.', link: null },
         ],
         [
-            { text: 'The Pale Choir', link: '3' },
+            { text: 'The Pale Choir', link: '3', picture: null },
             { text: ' sings.\nAt low water.', link: null },
         ],
     ]);

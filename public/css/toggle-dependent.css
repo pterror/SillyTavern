@@ -60,7 +60,7 @@ body.stackedDrawers .stackCovered {
         right: 0;
     }
 
-    body.drawerBarBottom:not(.forceMobileView) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight, #WorldInfo) {
+    body.drawerBarBottom:not(.forceMobileView) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight) {
         --drawerContainerTop: calc(100dvh - var(--topBarBlockSize));
     }
 
@@ -135,11 +135,11 @@ body.stackedDrawers .stackCovered {
         overflow: hidden;
     }
 
-    body.drawerBarLeft:not(.forceMobileView) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight, #WorldInfo) {
+    body.drawerBarLeft:not(.forceMobileView) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight) {
         --drawerContainerRight: calc(100dvw - var(--topBarBlockSize));
     }
 
-    body.drawerBarRight:not(.forceMobileView) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight, #WorldInfo) {
+    body.drawerBarRight:not(.forceMobileView) #top-settings-holder > .drawer > .drawer-content:not(.fillLeft, .fillRight) {
         --drawerContainerLeft: calc(100dvw - var(--topBarBlockSize));
     }
 }

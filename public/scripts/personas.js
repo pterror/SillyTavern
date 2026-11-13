@@ -55,7 +55,7 @@ import { groupsStore, selected_group } from './group-chats.js';
 import { getGroupRows } from './group-store.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
-import { openWorldInfoEditor, world_names } from './world-info.js';
+import { openWorld, worldNames } from './world-links.js';
 import { renderTemplateAsync } from './templates.js';
 import { saveMetadataDebounced } from './metadata-store.js';
 import { accountStorage } from './util/AccountStorage.js';
@@ -1477,7 +1477,7 @@ async function onPersonaLoreButtonClick({ shiftKey, altKey }) {
     }
 
     if (selectedLorebook && !shiftKey && !altKey) {
-        openWorldInfoEditor(selectedLorebook);
+        openWorld(selectedLorebook);
         return;
     }
 
@@ -1486,7 +1486,7 @@ async function onPersonaLoreButtonClick({ shiftKey, altKey }) {
     const worldSelect = template.find('select');
     drawName(template.find('.persona_name'), personaThing(user_avatar), personaName);
 
-    for (const worldName of world_names) {
+    for (const worldName of worldNames()) {
         const option = document.createElement('option');
         option.value = worldName;
         option.innerText = worldName;

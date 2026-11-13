@@ -117,19 +117,26 @@ test('the world opened is the one asked for, else the last opened, else the firs
 test('being used in every chat is the global selection, written by id and gone with its world', async () => {
     const [one, two, three] = await ports.readWorlds(uiUser);
     changes.length = 0;
-    assert.equal(await ports.setUsedInEveryChat(who, one.id, true), 'ok');
-    assert.equal(await ports.setUsedInEveryChat(who, two.id, true), 'ok');
-    assert.equal(await ports.setUsedInEveryChat(who, two.id, true), 'ok');
+    assert.equal(await ports.setUsedInEveryChat(who, [{ book: one.id, used: true }]), 'ok');
+    assert.equal(await ports.setUsedInEveryChat(who, [{ book: two.id, used: true }]), 'ok');
+    assert.equal(await ports.setUsedInEveryChat(who, [{ book: two.id, used: true }]), 'ok');
     assert.deepEqual((await ports.readWorlds(uiUser)).map(w => w.usedInEveryChat), [true, true, false]);
     assert.deepEqual(changes.map(c => c.length), [1, 1, 0]);
     assert.deepEqual(changes[0], [{ holder, slot: CHOICE.selected, type: TYPE.user, key: 'u' }]);
-    assert.equal(await ports.setUsedInEveryChat(who, one.id, false), 'ok');
+    assert.equal(await ports.setUsedInEveryChat(who, [{ book: one.id, used: false }]), 'ok');
     assert.deepEqual((await readChoices(lib, [holder])).get(holder)?.get(CHOICE.selected), [two.name]);
+    changes.length = 0;
+    assert.equal(await ports.setUsedInEveryChat(who, [{ book: two.id, used: false }, { book: three.id, used: true }]), 'ok');
+    assert.deepEqual((await readChoices(lib, [holder])).get(holder)?.get(CHOICE.selected), [three.name]);
+    assert.deepEqual(changes.map(c => c.length), [1], 'a batch is one write');
+    assert.equal(await ports.setUsedInEveryChat(who, [{ book: two.id, used: true }, { book: '999999', used: true }]), 'missing');
+    assert.deepEqual((await readChoices(lib, [holder])).get(holder)?.get(CHOICE.selected), [three.name], 'a batch naming a missing world writes nothing');
+    assert.equal(await ports.setUsedInEveryChat(who, [{ book: three.id, used: false }, { book: two.id, used: true }]), 'ok');
     changes.length = 0;
     assert.deepEqual(await ports.deleteWorld(who, two.id), { next: three.id });
     assert.ok(changes[0].some(c => c.holder === holder && c.slot === CHOICE.selected), 'the delete names the user as a chooser');
     assert.deepEqual((await readChoices(lib, [holder])).get(holder)?.get(CHOICE.selected) ?? [], []);
-    assert.equal(await ports.setUsedInEveryChat(who, two.id, true), 'missing');
+    assert.equal(await ports.setUsedInEveryChat(who, [{ book: two.id, used: true }]), 'missing');
 });
 
 test('upstream\'s last edited world, read when upstream\'s settings are converted, is the last opened', async () => {

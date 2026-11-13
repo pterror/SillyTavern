@@ -19,6 +19,8 @@ export const KEY_SHARERS_VIEW = 'worldbuilding.keySharers';
 export const CARD_VIEW = 'worldbuilding.card';
 
 export const FOUND_PER_QUERY = 20;
+// One `/world` command's worlds, set used in every chat or not in one request.
+export const WORLDS_CHANGED_AT_MOST = 1000;
 export const MENTIONS_PER_PAGE = 20;
 export const KEY_SHARERS_SHOWN = 20;
 export const SELECTION_COUNTED_UP_TO = 1000;
@@ -43,8 +45,9 @@ export const READS_PER_DRAWN_CARD = READS_PER_CARD + 2 * READS_PER_LOOK;
 export const READS_PER_LABEL = 4 + READS_PER_LOOK;
 export const READS_PER_LOOP_CHECK_VISIT = 2;
 // An entry checked for a mention reads its place (in the world's order, or in the index's list for a name), whether it
-// is in the world, and its text's head and record; one that mentions the entry, its label too.
-export const READS_PER_MENTION_CHECK = 4 + READS_PER_LABEL;
+// is in the world, and its text's head and record; one that mentions the entry, its label and its picture too.
+export const READS_PER_PICTURE = 1;
+export const READS_PER_MENTION_CHECK = 4 + READS_PER_LABEL + READS_PER_PICTURE;
 // The reads bounded by a count of labels: the targets found, the key's sharers, the loops of the last change and of
 // the jobs (each loop its entry, its target and the entries it names), and the world header's example.
 export const READS_OF_COUNTED_LABELS =
@@ -66,9 +69,11 @@ export const READS_PER_VIEW = READS_PER_REQUEST - READS_OF_COUNTED_LABELS - READ
 export const MAX_CARDS_PER_READ = Math.floor(READS_PER_VIEW / READS_PER_DRAWN_CARD);
 // The entry view reads the names its text writes and what mentions it, in halves. Looking for the names reads one key
 // per seek of the names index, per entry listed under a name found and per name checked one by one, and two (its case
-// and whole-word flags) per entry it names, whose look is one more.
-export const TEXT_LINK_READS_PER_READ = Math.floor(READS_PER_VIEW / 2 / (1 + READS_PER_LOOK / 2));
-export const READS_OF_TEXT_LINKS = TEXT_LINK_READS_PER_READ + Math.ceil(TEXT_LINK_READS_PER_READ / 2) * READS_PER_LOOK;
+// and whole-word flags) per entry it names, whose look and picture are one more each.
+const READS_PER_LINKED_ENTRY = READS_PER_LOOK + READS_PER_PICTURE;
+export const TEXT_LINK_READS_PER_READ = Math.floor(READS_PER_VIEW / 2 / (1 + READS_PER_LINKED_ENTRY / 2));
+export const READS_OF_TEXT_LINKS =
+    TEXT_LINK_READS_PER_READ + Math.ceil(TEXT_LINK_READS_PER_READ / 2) * READS_PER_LINKED_ENTRY;
 // An old answer that carries a chat's messages (its open, a reply, an edit, a swipe, messages shown later) looks through
 // them for the names of the entries of the chat's worlds, newest first, in one part's budget, besides the looks of the
 // chat's speakers and of the entries named: a read as the entry's text does, and for every two (an entry named) its
@@ -213,7 +218,7 @@ export type Sentence = { before: string; mention: string; after: string };
 // the read's MENTION_CHECKS_PER_READ with more to look through, not because it filled or the world ended.
 export type MentionsPage = {
     cursor: string | null;
-    entries: { from: Named; sentence: Sentence }[];
+    entries: { from: Named; picture: string | null; sentence: Sentence }[];
     next: string | null;
     lookedThrough: number;
     stoppedForBound: boolean;
@@ -226,8 +231,8 @@ export type MentionedIn = { pages: MentionsPage[] };
 
 // Where the entry's text names another entry: `from` and `to` are UTF-16 offsets into `text`, in order, never overlapping.
 // `linksComplete` is false when the read stopped at TEXT_LINK_READS_PER_READ before it had looked for every name, so
-// words it hadn't reached may be names it doesn't link.
-export type TextLink = { entry: string; from: number; to: number };
+// words it hadn't reached may be names it doesn't link. `picture` is the linked entry's own picture.
+export type TextLink = { entry: string; from: number; to: number; picture: string | null };
 
 export const TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet'] as const;
 
@@ -567,7 +572,13 @@ export const actions = {
     'worldbuilding.deleteWorld': v.object({ book: entityId }),
     'worldbuilding.importWorld': v.object(opensWorld),
     'worldbuilding.exportWorld': v.object({ book: entityId }),
-    'worldbuilding.setUsedInEveryChat': v.object({ book: entityId, used: v.boolean() }),
+    'worldbuilding.setUsedInEveryChat': v.object({
+        changes: v.pipe(
+            v.array(v.object({ book: entityId, used: v.boolean() })),
+            v.minLength(1),
+            v.maxLength(WORLDS_CHANGED_AT_MOST),
+        ),
+    }),
     'worldbuilding.markTitleKeysAsNames': v.object({ book: entityId }),
     'worldbuilding.declineNamesOffer': v.object({ book: entityId }),
     'worldbuilding.undoMarkTitleKeysAsNames': v.object({ book: entityId }),

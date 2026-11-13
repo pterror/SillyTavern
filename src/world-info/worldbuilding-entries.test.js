@@ -65,8 +65,8 @@ const FIRST = asked(null, 1);
 
 test('the entry view, its edits, a new entry after another, delete, restore and moving to another world, over the store', async () => {
     const entries = {
-        1: { uid: 1, key: ['Ilse', 'Varro'], comment: '', content: 'Ilse Varro keeps the lamp.', displayIndex: 0, depth: 2, extensions: { names: ['Varro'] } },
-        2: { uid: 2, key: ['Ilse', 'house'], comment: 'The Lantern House', content: 'A house. Ilse Varro lives here, mostly. Nobody else.', displayIndex: 1 },
+        1: { uid: 1, key: ['Ilse', 'Varro'], comment: '', content: 'Ilse Varro keeps the lamp.', displayIndex: 0, depth: 2, extensions: { names: ['Varro'], picture: 'p1' } },
+        2: { uid: 2, key: ['Ilse', 'house'], comment: 'The Lantern House', content: 'A house. Ilse Varro lives here, mostly. Nobody else.', displayIndex: 1, extensions: { picture: 'p2' } },
     };
     await lib.books.write('Entries', { relationKinds: [{ id: IN, name: 'in' }], entries });
     await lib.books.write('Elsewhere', { entries: {} });
@@ -87,6 +87,7 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
         cursor: null,
         entries: [{
             from: { thing: second, text: 'The Lantern House', shownAs: 'title' },
+            picture: '/look-images/p2',
             sentence: { before: '', mention: 'Ilse', after: ' Varro lives here, mostly.' },
         }],
         next: null,
@@ -102,11 +103,11 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
     assert.equal(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'Ilse', as: 'name' }), 'ok');
     let linked = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(linked && !linked.deleted);
-    assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 13 }, { entry: first, from: 14, to: 19 }], 'every name links where it is written');
+    assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 13, picture: '/look-images/p1' }, { entry: first, from: 14, to: 19, picture: '/look-images/p1' }], 'every name links where it is written, with the picture of what it names');
     assert.equal(await ports.editEntry(who, B, first, { change: 'addKey', key: 'Ilse Varro', as: 'name' }), 'ok');
     linked = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(linked && !linked.deleted);
-    assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 19 }], 'of names written over each other, the longest that starts first links');
+    assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 19, picture: '/look-images/p1' }], 'of names written over each other, the longest that starts first links');
     assert.equal(await ports.editEntry(who, B, first, { change: 'removeKey', key: 'Ilse Varro' }), 'ok');
     assert.equal(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'Ilse', as: 'trigger' }), 'ok');
 

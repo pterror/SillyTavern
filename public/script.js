@@ -28,23 +28,20 @@ import {
 } from './scripts/textgen-settings.js';
 
 import {
-    world_info,
-    getWorldInfoSettings,
-    setWorldInfoSettings,
-    bindWorldInfoSettings,
-    world_names,
-    openEmbeddedLoreEditor,
-    checkEmbeddedWorld,
     setWorldInfoButtonClass,
     updateCharacterWorldButton,
     getCharacterWorldLink,
-    initWorldInfo,
+    initWorldLinks,
     charUpdatePrimaryWorld,
     charSetAuxWorlds,
     sendAuxBooksOp,
     takeAuxBooks,
-    updateWorldInfoList,
-} from './scripts/world-info.js';
+    takeCharLore,
+    extraBooksOf,
+    renameCharLore,
+    worldNames,
+    openCharacterBook,
+} from './scripts/world-links.js';
 import { character_world_link } from './scripts/character-world-link.js';
 import { holdGroup } from './scripts/group-store.js';
 
@@ -137,7 +134,6 @@ import {
     isValidUrl,
     ensureImageFormatSupported,
     flashHighlight,
-    toggleDrawer,
     isElementInViewport,
     copyText,
     escapeHtml,
@@ -1105,6 +1101,16 @@ function seedSettingsHashes(value, key = '') {
 }
 
 /**
+ * Holds `value` as what the server stores at `key`, after the server changed it on its own and the page made the same
+ * change to its copy.
+ * @param {string} key
+ * @param {unknown} value
+ */
+export function settingsValueStored(key, value) {
+    seedSettingsHashes(value, key);
+}
+
+/**
  * @param {Record<string, number> | undefined} keyHashes
  * @param {string[] | null} tops
  * @returns {boolean}
@@ -1322,6 +1328,7 @@ async function firstLoadInit() {
         },
         alternatives: alternativesOldPage,
         activations: activationsOldPage,
+        worldbuilding: { showPane: () => ensureDrawerOpen('WI-SP-button') },
         shownCharacter: () => getCurrentCharacter()?.avatar ?? null,
     });
     await checkOpenRouterAuth();
@@ -1346,7 +1353,6 @@ async function firstLoadInit() {
     bindChatCompletionSettings(newUi().settings);
     bindTextGenSettings(newUi().settings);
     bindSharedSettings(newUi().settings);
-    bindWorldInfoSettings(newUi().settings);
     await initTokenizers();
     initAuthorsNote();
     await initPersonas();
@@ -1366,7 +1372,7 @@ async function firstLoadInit() {
         slashWanted: slashSuggestionsWanted,
     }).catch(error => console.error('The chat box could not be made:', error));
     initMacroAutoComplete();
-    initWorldInfo();
+    initWorldLinks();
     initHorde();
     initRossMods();
     initCfg();
@@ -5305,11 +5311,7 @@ export async function renameCharacter(name = null, { silent = false, renameChats
 
 
             // Additional lore books
-            const charLore = world_info.charLore?.find(x => x.name == oldName);
-            if (charLore) {
-                charLore.name = newName;
-                saveSettingsDebounced('world_info_settings');
-            }
+            renameCharLore(oldName, newName);
 
             // Char-bound Author's Notes
             const charNote = extension_settings.note.chara?.find(x => x.name == oldName);
@@ -5608,14 +5610,6 @@ export function takeChatOpenAnswer(body, answer) {
     return answer;
 }
 
-/**
- * @param {Record<string, unknown>} values
- * @param {number} [settingsHash]
- */
-export function takeServerSettings(values, settingsHash) {
-    for (const [key, value] of Object.entries(values)) seedSettingsHashes(value, key);
-    if (settingsHash != null) knownServerSettingsHash = settingsHash;
-}
 
 /**
  * @param {{ chat?: string|null, makeCurrent?: boolean, fresh?: boolean, opened?: ChatOpenAnswer|null }} [options]
@@ -6003,7 +5997,7 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
         //Load the active character and group
         setActiveCharacterAndGroupFromSettings(settings.active_character, settings.active_group);
 
-        setWorldInfoSettings(settings.world_info_settings ?? settings, data);
+        takeCharLore(settings.world_info_settings ?? settings);
 
         selected_button = settings.selected_button;
 
@@ -6033,7 +6027,6 @@ async function applySettings(data, initLoaderHandle = null, onStageChange = null
             amount_gen: amount_gen,
             max_context: max_context,
             main_api: main_api,
-            world_info_settings: getWorldInfoSettings(),
             textgenerationwebui_settings: textgen_settings,
             swipes: swipes,
             horde_settings: horde_settings,
@@ -6105,7 +6098,6 @@ function settingsPayload() {
         amount_gen: amount_gen,
         max_context: max_context,
         main_api: main_api,
-        world_info_settings: getWorldInfoSettings(),
         textgenerationwebui_settings: textgen_settings,
         swipes: swipes,
         horde_settings: horde_settings,
@@ -6793,7 +6785,6 @@ const PANEL_OPEN_STATE_KEYS = {
     'right-nav-panel': 'NavOpened',
     'char-info-panel': 'CharInfoNavOpened',
     'left-nav-panel': 'LNavOpened',
-    'WorldInfo': 'WINavOpened',
 };
 let panelOpenStatesRead = false;
 
@@ -7130,7 +7121,6 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     setGreetingsButton(character?.avatar ?? null);
     $('#set_character_world').data('avatar', character?.avatar ?? null);
     setWorldInfoButtonClass(avatar);
-    checkEmbeddedWorld(avatar);
 
     $('#name_div').removeClass('displayBlock');
     $('#name_div').addClass('displayNone');
@@ -7217,7 +7207,6 @@ function select_rm_create({ switchMenu = true, show = true } = {}) {
     $('#set_character_world').data('avatar', null);
     updateCharacterWorldButton();
     updateFavButtonState(false);
-    checkEmbeddedWorld();
 
     $('#form_create').attr('actiontype', 'createcharacter');
     _loadedCharacterFieldHashes.clear();
@@ -7771,7 +7760,8 @@ async function openCharacterWorldPopup() {
     const worldId = (menu_type == 'create' ? create_save.world : worldCharacter?.data?.extensions?.world) || '';
     const linksEmbeddedBook = menu_type != 'create' && getCharacterWorldLink(worldCharacter) === character_world_link.EMBEDDED;
     const embeddedBookValue = 'embedded';
-    const linksUnlistedName = worldId !== '' && !linksEmbeddedBook && !world_names.includes(worldId);
+    const names = worldNames();
+    const linksUnlistedName = worldId !== '' && !linksEmbeddedBook && !names.includes(worldId);
     const unlistedNameValue = 'unlisted';
     const template = $('#character_world_template .character_world').clone();
     drawName(template.find('.character_name'), menu_type == 'create' ? undefined : worldCharacter?.thing, charName);
@@ -7784,7 +7774,7 @@ async function openCharacterWorldPopup() {
             return;
         }
         const worldIndex = selectedValue !== '' ? Number(selectedValue) : NaN;
-        const name = !isNaN(worldIndex) ? world_names[worldIndex] : '';
+        const name = !isNaN(worldIndex) ? names[worldIndex] : '';
         await charUpdatePrimaryWorld(name);
     }
 
@@ -7792,7 +7782,7 @@ async function openCharacterWorldPopup() {
         const el = evt?.currentTarget ?? this;
         const selectedValues = $(el).val();
         const selected = Array.isArray(selectedValues) ? selectedValues : [];
-        const nextList = selected.map(i => world_names[i]).filter(Boolean);
+        const nextList = selected.map(i => names[i]).filter(Boolean);
         charSetAuxWorlds(fileName, nextList);
     }
 
@@ -7806,15 +7796,15 @@ async function openCharacterWorldPopup() {
         const label = worldCharacter?.shallow === true ? worldId : t`${worldId} (not found)`;
         primarySelect.append(new Option(label, unlistedNameValue, true, true));
     }
-    world_names.forEach((item, i) => {
+    names.forEach((item, i) => {
         primarySelect.append(new Option(item, String(i), item === worldId, item === worldId));
     });
 
     // Append to extras dropdown.
     const extrasSelect = template.find('.character_extra_world_info_selector');
-    const existingCharLore = world_info.charLore?.find((e) => e.name === fileName);
-    world_names.forEach((item, i) => {
-        const array = (menu_type == 'create' ? create_save.extra_books : existingCharLore?.extraBooks);
+    const extraBooks = menu_type == 'create' ? create_save.extra_books : extraBooksOf(fileName);
+    names.forEach((item, i) => {
+        const array = extraBooks;
         const isSelected = !!array?.includes(item);
         extrasSelect.append(new Option(item, String(i), isSelected, isSelected));
     });
@@ -9383,7 +9373,6 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
             const avatarFileName = `${data.file_name}.png`;
             if (Array.isArray(data.extra_books)) {
                 takeAuxBooks(data.file_name, data.extra_books);
-                await updateWorldInfoList();
                 toastr.success(t`Imported the lorebooks this character links to`);
             }
 
@@ -11023,7 +11012,6 @@ jQuery(async function () {
             '.popup',
             '.editorLayer',
             '.view_pill_popover',
-            '#world_popup',
             '.ui-widget',
             '.text_pole',
             '#toast-container',
@@ -11180,19 +11168,6 @@ jQuery(async function () {
         showMediaLightbox(url, image.alt || '');
     });
 
-    document.addEventListener('click', function (e) {
-        if (!(e.target instanceof HTMLElement)) return;
-        if (e.target.matches('#OpenAllWIEntries')) {
-            document.querySelectorAll('#world_popup_entries_list .inline-drawer').forEach((/** @type {HTMLElement} */ drawer) => {
-                delay(0).then(() => toggleDrawer(drawer, true));
-            });
-        } else if (e.target.matches('#CloseAllWIEntries')) {
-            document.querySelectorAll('#world_popup_entries_list .inline-drawer').forEach((/** @type {HTMLElement} */ drawer) => {
-                toggleDrawer(drawer, false);
-            });
-        }
-    });
-
     $(document).on('click', '.open_alternate_greetings', openGreetingsList);
     /* $('#set_character_world').on('click', openCharacterWorldPopup); */
 
@@ -11241,9 +11216,11 @@ jQuery(async function () {
                 case 'set_chat_character_settings':
                     await setCharacterSettingsOverrides();
                     break;
-                case 'edit_embedded_lore':
-                    await openEmbeddedLoreEditor();
+                case 'edit_embedded_lore': {
+                    const thing = charactersStore.get($('#set_character_world').data('avatar'))?.thing;
+                    if (thing) openCharacterBook(thing);
                     break;
+                }
                 case 'character_source': {
                     const source = getCharacterSource(getCurrentCharacter());
                     if (source && isValidUrl(source)) {

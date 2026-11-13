@@ -157,6 +157,20 @@ export function editedEntry(current, edit) {
  */
 
 /**
+ * The pictures' URLs of entries of the book, in their order; null for one with no picture or not in the book.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {bigint} book
+ * @param {bigint[]} entries
+ * @returns {Promise<(string | null)[]>}
+ */
+async function picturesOf(lib, book, entries) {
+    if (entries.length === 0) return [];
+    /** @type {(string | null)[]} */
+    const read = await lib.store.worldRead('worldbuildingPictures', { book, entities: entries });
+    return read.map(id => (id === null ? null : lookImageUrl(id)));
+}
+
+/**
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {bigint} book
  * @returns {Promise<string | null>}
@@ -204,13 +218,15 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
         const lib = await libOf(user);
         /** @type {(import('@st/worldbuilding/protocol').Named | null)[]} */
         const labels = sources.length === 0 ? [] : await lib.store.worldRead('worldbuildingLabels', { book, entities: sources });
+        const pictures = await picturesOf(lib, book, sources);
         let at = 0;
         return {
             pages: read.map(({ cursor: readAt, found, next, lookedThrough, stoppedForBound }) => ({
                 cursor: readAt,
                 entries: found.flatMap(({ text, span }) => {
+                    const picture = pictures[at];
                     const source = labels[at++];
-                    return source ? [{ from: source, sentence: sentenceAround(text, span) }] : [];
+                    return source ? [{ from: source, picture, sentence: sentenceAround(text, span) }] : [];
                 }),
                 next,
                 lookedThrough,
@@ -230,10 +246,12 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             const { placement, differs } = placementOf(stored && form ? entryAsWorld(stored, form.form) : {});
             const counts = await countTokens(user, [read.text]);
             const found = (await (await referencesOf(user)).links(b, e, read.text, { readsAtMost: textLinkReads })) ?? { links: [], complete: true };
+            const linked = [...new Set(found.links.map(link => link.entry))];
+            const linkedPictures = new Map((await picturesOf(lib, b, linked)).map((picture, i) => [linked[i], picture]));
             return {
                 ...read,
                 picture: read.picture === null ? null : lookImageUrl(read.picture),
-                links: found.links.map(link => ({ ...link, entry: String(link.entry) })),
+                links: found.links.map(link => ({ ...link, entry: String(link.entry), picture: linkedPictures.get(link.entry) ?? null })),
                 linksComplete: found.complete,
                 placement: /** @type {import('@st/worldbuilding/protocol').Placement} */ (placement),
                 placementDiffersFromDefaults: differs,

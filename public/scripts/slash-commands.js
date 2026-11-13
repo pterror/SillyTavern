@@ -20,6 +20,7 @@ import { registerMessageCommands } from './slash-commands/commands/message.js';
 import { registerGroupCommands } from './slash-commands/commands/group.js';
 import { registerGenerationCommands } from './slash-commands/commands/generation.js';
 import { registerFlowControlCommands } from './slash-commands/commands/flow-control.js';
+import { registerWorldInfoCommands } from './slash-commands/commands/world-info.js';
 import { registerInjectsCommands } from './slash-commands/commands/injects.js';
 import { registerUiCommands } from './slash-commands/commands/ui.js';
 import { registerTextUtilsCommands } from './slash-commands/commands/text-utils.js';
@@ -59,6 +60,7 @@ export function initDefaultSlashCommands() {
     registerInjectsCommands();
     registerUiCommands();
     registerTextUtilsCommands();
+    registerWorldInfoCommands();
 
     registerVariableCommands();
     registerActionLoaderSlashCommands();

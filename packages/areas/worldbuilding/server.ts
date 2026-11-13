@@ -205,7 +205,11 @@ export type Ports = {
     deleteWorld(who: Who, book: string): Promise<{ next: string | null } | 'missing' | { refused: string }>;
     importWorld(who: Who, file: Upload): Promise<NewWorld>;
     exportWorld(user: User, book: string): Promise<ExportedWorld | null | { refused: string }>;
-    setUsedInEveryChat(who: Who, book: string, used: boolean): Promise<'ok' | 'missing' | { refused: string }>;
+    // All of `changes` in one write, or none of them.
+    setUsedInEveryChat(
+        who: Who,
+        changes: { book: string; used: boolean }[],
+    ): Promise<'ok' | 'missing' | { refused: string }>;
     markTitleKeysAsNames(who: Who, book: string): Promise<NamesOfferChange>;
     declineNamesOffer(who: Who, book: string): Promise<NamesOfferChange>;
     undoMarkTitleKeysAsNames(who: Who, book: string): Promise<NamesOfferChange>;
@@ -1219,8 +1223,8 @@ export function worldbuildingArea(ports: Ports) {
                 if ('refused' in exported) return { refused: exported.refused };
                 return { changed: [], answer: exported };
             },
-            'worldbuilding.setUsedInEveryChat': async (context, { book, used }) => {
-                const done = await ports.setUsedInEveryChat(who(context), book, used);
+            'worldbuilding.setUsedInEveryChat': async (context, { changes }) => {
+                const done = await ports.setUsedInEveryChat(who(context), changes);
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 if (done !== 'ok') return { refused: done.refused };
                 return { changed: [WORLDS_VIEW, WORLD_VIEW] };

@@ -3220,6 +3220,14 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "worldbuildingPictures" => {
+            let (book, entities) = (req_integer(a, "book")?, integers(a, "entities")?);
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| crate::store::entry_page::pictures(view, book, &entities))
+                    .map(JsTree)
+            })
+        }
         "worldbuildingPlaceAfter" => {
             let (book, after) = (req_integer(a, "book")?, opt_integer(a, "after")?);
             Box::new(move |store| {

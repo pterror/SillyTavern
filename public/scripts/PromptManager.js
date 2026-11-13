@@ -838,9 +838,6 @@ class PromptManager {
             this.renderDebounced();
         });
 
-        // Re-render prompt manager on world settings update
-        eventSource.on(event_types.WORLDINFO_SETTINGS_UPDATED, () => this.renderDebounced());
-
         this.log('Initialized');
     }
 

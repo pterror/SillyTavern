@@ -22,6 +22,7 @@ import type {
     WorldView,
 } from '../protocol.ts';
 import type { CardActions } from './Cards.tsx';
+import type { Target } from './compat.ts';
 import { WbProvider } from './context.ts';
 import type { Wb } from './context.ts';
 import { EntryPage } from './Entry.tsx';
@@ -37,16 +38,18 @@ import { WorldPage } from './WorldPage.tsx';
 
 const POINTING_AT_SHOWN = 12;
 
+type Props = { shown: boolean; target: Target | null; onTargetTaken: () => void };
+
 // The page reads nothing until its pane is first shown.
-export function Worldbuilding(props: { shown: boolean; everShown: boolean }) {
+export function Worldbuilding(props: Props & { everShown: boolean }) {
     return (
         <Show when={props.everShown}>
-            <Page shown={props.shown} />
+            <Page shown={props.shown} target={props.target} onTargetTaken={props.onTargetTaken} />
         </Show>
     );
 }
 
-function Page(props: { shown: boolean }) {
+function Page(props: Props) {
     const { client, t } = useUi();
     const world = shownView<WorldView>(client, WORLD_VIEW);
     const overview = shownView<OverviewView>(client, OVERVIEW_VIEW);
@@ -143,9 +146,30 @@ function Page(props: { shown: boolean }) {
         const watch = new ResizeObserver(() => setWidth(element.clientWidth));
         watch.observe(element);
         onCleanup(() => watch.disconnect());
+        if (props.target) return;
         const held = shownOverview();
         void openWorld(held?.book ?? null, held ? held.groupBy : undefined);
     });
+    createEffect(
+        on(
+            () => props.target,
+            (target) => {
+                if (!target || !pane()) return;
+                props.onTargetTaken();
+                pane()?.scrollTo({ top: 0 });
+                if ('import' in target) void act('worldbuilding.importWorld', { overview: firstRead() }, target.import);
+                else if ('character' in target)
+                    void act('worldbuilding.openCharacterBook', { character: target.character, overview: firstRead() });
+                else
+                    void act('worldbuilding.openNamed', {
+                        world: target.world,
+                        uid: target.uid,
+                        overview: firstRead(),
+                        pointingAt: pointingAtShown(),
+                    });
+            },
+        ),
+    );
     createEffect(
         on(
             layout,

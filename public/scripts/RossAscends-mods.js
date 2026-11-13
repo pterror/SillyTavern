@@ -52,15 +52,12 @@ import { kai_settings } from './kai-settings.js';
 
 var RPanelPin = document.getElementById('rm_button_panel_pin');
 var LPanelPin = document.getElementById('lm_button_panel_pin');
-var WIPanelPin = document.getElementById('WI_panel_pin');
 var CharInfoPanelPin = document.getElementById('charInfo_button_panel_pin');
 
 var RightNavPanel = document.getElementById('right-nav-panel');
 var RightNavDrawerIcon = document.getElementById('rightNavDrawerIcon');
 var LeftNavPanel = document.getElementById('left-nav-panel');
 var LeftNavDrawerIcon = document.getElementById('leftNavDrawerIcon');
-var WorldInfo = document.getElementById('WorldInfo');
-var WIDrawerIcon = document.getElementById('WIDrawerIcon');
 var CharInfoPanel = document.getElementById('char-info-panel');
 var CharInfoDrawerIcon = document.getElementById('charInfoDrawerIcon');
 
@@ -617,25 +614,6 @@ export function initRossMods() {
         }
     });
 
-    $(WIPanelPin).on('click', async function () {
-        accountStorage.setItem('WINavLockOn', $(WIPanelPin).prop('checked'));
-        if ($(WIPanelPin).prop('checked') == true) {
-            console.debug('adding pin class to WI');
-            $(WorldInfo).addClass('pinnedOpen');
-            $(WIDrawerIcon).addClass('drawerPinnedOpen');
-        } else {
-            console.debug('removing pin class from WI');
-            $(WorldInfo).removeClass('pinnedOpen');
-            $(WIDrawerIcon).removeClass('drawerPinnedOpen');
-
-            if ($(WorldInfo).hasClass('openDrawer') && $('.openDrawer').length > 1) {
-                console.debug('closing WI after lock removal');
-                const toggle = $('#WI-SP-button>.drawer-toggle');
-                doNavbarIconClick.call(toggle);
-            }
-        }
-    });
-
     $(CharInfoPanelPin).on('click', function () {
         applyCharInfoPin();
         if (!power_user.stacked_drawers) {
@@ -650,7 +628,6 @@ export function initRossMods() {
             { panel: RightNavPanel, icon: RightNavDrawerIcon, pin: RPanelPin, lockKey: 'NavLockOn' },
             { panel: CharInfoPanel, icon: CharInfoDrawerIcon, pin: CharInfoPanelPin, lockKey: 'CharInfoNavLockOn' },
             { panel: LeftNavPanel, icon: LeftNavDrawerIcon, pin: LPanelPin, lockKey: 'LNavLockOn' },
-            { panel: WorldInfo, icon: WIDrawerIcon, pin: WIPanelPin, lockKey: 'WINavLockOn' },
         ];
         const rightPanelPinned = ['NavLockOn', 'CharInfoNavLockOn'].some(key => accountStorage.getItem(key) === 'true');
         for (const { panel, icon, pin, lockKey } of pinnable) {
@@ -945,7 +922,6 @@ export function initRossMods() {
             }
 
             if ($('.drawer-content')
-                .not('#WorldInfo')
                 .not('#left-nav-panel')
                 .not('#right-nav-panel')
                 .not('#floatingPrompt')
@@ -954,7 +930,6 @@ export function initRossMods() {
                 .not('#movingDivs > div')
                 .is(':visible')) {
                 let visibleDrawerContent = $('.drawer-content:visible')
-                    .not('#WorldInfo')
                     .not('#left-nav-panel')
                     .not('#right-nav-panel')
                     .not('#floatingPrompt')
@@ -977,11 +952,6 @@ export function initRossMods() {
 
             if ($('#floatingPrompt').is(':visible')) {
                 $('#ANClose').trigger('click');
-                return;
-            }
-
-            if ($('#WorldInfo').is(':visible')) {
-                $('#WIDrawerIcon').trigger('click');
                 return;
             }
 

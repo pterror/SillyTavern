@@ -49,9 +49,9 @@ const helpOldPage = {
 };
 
 /**
- * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], shownCharacter: () => string | null }} options
+ * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], worldbuilding: import('/ui/entry.js').StartOptions['worldbuilding'], shownCharacter: () => string | null }} options
  */
-export function startNewUi({ quietPrompt, currentChat, alternatives, activations, shownCharacter }) {
+export function startNewUi({ quietPrompt, currentChat, alternatives, activations, worldbuilding, shownCharacter }) {
     if (newUiStarted()) return newUi();
     const element = (/** @type {string} */ id) => {
         const found = document.getElementById(id);
@@ -70,6 +70,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
         currentChat,
         alternatives,
         activations,
+        worldbuilding,
         usageStats: {
             shownCharacter,
             failed: message => toastr.error(message),
@@ -89,6 +90,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
             tgTop: element('tg_top_fields'),
             tgSamplers: element('tg_sampler_fields'),
             tgCfg: element('tg_cfg_fields'),
+            worldInfoSettings: element('world_info_settings'),
             worldbuilding: element('Worldbuilding'),
             usageStats: { all: one('.user_stats_button'), character: one('.rm_stats_button') },
         },

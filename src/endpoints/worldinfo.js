@@ -1,19 +1,15 @@
-import fs from 'node:fs';
-import { pageSettingsHash } from '../settings-hash.js';
 import path from 'node:path';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
-import { readAllSettings } from '../settings-store.js';
-import { settingsDocumentOf } from '../settings-documents.js';
+import { LOOP_CHECK_VISITS_PER_WRITE } from '@st/worldbuilding/protocol';
 import { isPlainObject } from '../util.js';
 import { requestStore, storeRoute, userStore } from '../user-stores.js';
-import { MAX_UID } from '../world-info-engine.js';
-import { readWorldInfo } from '../world-info-files.js';
 import { bookKey } from '../world-info-keys.js';
-import { TYPE } from '../library-codes.js';
 import { sessionHeaderOf } from '../request-session.js';
-import { countWithConnection } from '../connection-counts.js';
+import { WORLD_FIELD, searchClauses } from '../search-clauses.js';
+import { timedEffectHash } from '../world-info/candidate-resolution.js';
+import { newWorldInfoEntryTemplate } from '../../public/scripts/world-info-entry-defaults.js';
 
 /**
  * World info is stored in the user's engine store (`lib.books`, `src/world-info-engine.js`); a book is found by the
@@ -22,45 +18,7 @@ import { countWithConnection } from '../connection-counts.js';
 
 const CARD_COPY = 'This is a copy of a character\'s embedded lorebook. The character keeps its own lorebook, so the copy isn\'t added to the list.';
 
-function sanitizeEntryUid(uid) {
-    const safe = sanitize(String(uid));
-    return safe ? safe : null;
-}
-
 export const router = express.Router();
-
-/**
- * The entries' contents counted as the chosen connection counts them, keyed by uid.
- * @param {import('express').Request} request
- * @param {Record<string, any>|null|undefined} entries
- * @returns {Promise<{ token_counts?: Record<string, number>, counted_with?: object|null }>}
- */
-async function entryCounts(request, entries) {
-    const listed = Object.entries(entries ?? {}).filter(([, entry]) => entry && typeof entry === 'object');
-    if (listed.length === 0) return {};
-    try {
-        const counted = await countWithConnection(request.user.directories, {}, listed.map(([, entry]) => String(entry.content ?? '')));
-        if (!counted) return {};
-        return { token_counts: Object.fromEntries(listed.map(([uid], i) => [uid, counted.counts[i]])), counted_with: counted.tokenizer };
-    } catch (error) {
-        console.error('Could not count the lorebook entries:', error);
-        return {};
-    }
-}
-
-router.post('/get', storeRoute('reading a World Info book', async (request, response) => {
-    if (!request.body?.name) {
-        return response.sendStatus(400);
-    }
-
-    const { lib } = await requestStore(request);
-    const found = await lib.books.find(request.body.name);
-    const file = await readWorldInfo(request.user.directories, request.body.name, true);
-
-    if (found?.defined) response.set('X-ST-Book-Id', String(found.id));
-    if (request.body.with_counts === true) return response.send({ ...file, ...await entryCounts(request, file.entries) });
-    return response.send(file);
-}));
 
 router.post('/additional-books', storeRoute('changing a character\'s additional World Info', async (request, response) => {
     const { characterAvatar, op, books } = request.body ?? {};
@@ -91,51 +49,6 @@ router.post('/additional-books', storeRoute('changing a character\'s additional 
     }
     return response.send({ result: 'ok', extraBooks });
 }));
-
-router.post('/delete', storeRoute('deleting a World Info book', async (request, response) => {
-    if (!request.body?.name) {
-        return response.sendStatus(400);
-    }
-
-    const worldInfoName = request.body.name;
-    const { lib } = await requestStore(request);
-    const { deleted, settings } = await withBookChoices(request, async () => {
-        const gone = await lib.books.delete(worldInfoName);
-        return { deleted: gone, choosers: gone?.choosers ?? [] };
-    });
-    if (!deleted) {
-        throw new Error(`World info file ${sanitize(`${worldInfoName}.json`)} doesn't exist.`);
-    }
-
-    const keysOf = (/** @type {bigint[]} */ ids) => (ids.length ? lib.store.libraryKeys(ids) : []);
-    const [characters, trees] = await Promise.all([keysOf(deleted.characters), keysOf(deleted.trees)]);
-    return response.send({
-        ok: true,
-        characters_updated: characters.filter(Boolean).map((/** @type {any} */ k) => k.key),
-        chats_updated: trees.filter(Boolean).map((/** @type {any} */ k) => (k.type === TYPE.group ? { group: k.key } : { avatar: k.key })),
-        ...settingsAnswer(request, settings),
-    });
-}));
-
-/**
- * @template {{ choosers: import('../settings-documents.js').BookChooser[] }} T
- * @param {any} request
- * @param {() => Promise<T>} change
- * @returns {Promise<T & { settings: Record<string, unknown> }>}
- */
-async function withBookChoices(request, change) {
-    const document = settingsDocumentOf(request.user.directories);
-    if (document) return document.booksChanged(change);
-    return { ...(await change()), settings: {} };
-}
-
-/**
- * @param {any} request
- * @param {Record<string, unknown>} settings
- */
-function settingsAnswer(request, settings) {
-    return { settings, ...(Object.keys(settings).length ? { settings_hash: pageSettingsHash(readAllSettings(request.user.directories)) } : {}) };
-}
 
 /**
  * @param {any} request
@@ -181,68 +94,6 @@ async function importWorldInfo(directories, desiredName, fileContents, actor = n
     return written === 'card copy' ? null : { name: worldName, unreachedLoops: written.unreachedLoops };
 }
 
-/**
- * @param {any} request
- * @param {any} response
- * @param {string} existingName
- * @param {string} name
- * @param {Record<string, unknown>} data
- */
-async function sendReplaced(request, response, existingName, name, data) {
-    const { lib } = await requestStore(request);
-    const { replaced, settings } = await withBookChoices(request, async () => {
-        const result = await lib.books.replace(existingName, name, data, actorOf(request));
-        return { replaced: result, choosers: typeof result === 'object' && result.renamed ? await lib.books.choosers(result.book) : [] };
-    });
-    if (replaced === 'card copy') return response.status(400).send({ error: CARD_COPY });
-    if (replaced === 'missing') return response.status(404).send({ error: `Lorebook '${existingName}' not found` });
-    if (replaced === 'taken') return response.status(409).send({ error: `World Info file '${name}' already exists` });
-    const keys = replaced.moved.length ? await lib.store.libraryKeys(replaced.moved) : [];
-    return response.send({
-        ok: true,
-        name: bookKey(name),
-        characters_updated: keys.filter(Boolean).map((/** @type {any} */ k) => k.key),
-        unreachedLoops: replaced.unreachedLoops,
-        ...settingsAnswer(request, settings),
-    });
-}
-
-router.post('/import', storeRoute('importing a World Info book', async (request, response) => {
-    if (!request.file) return response.sendStatus(400);
-
-    const filename = `${path.parse(sanitize(request.file.originalname)).name}.json`;
-
-    let fileContents = null;
-
-    if (request.body.convertedData) {
-        fileContents = request.body.convertedData;
-    } else {
-        const pathToUpload = path.join(request.file.destination, request.file.filename);
-        fileContents = fs.readFileSync(pathToUpload, 'utf8');
-        fs.unlinkSync(pathToUpload);
-    }
-
-    const replaces = request.body.replaces;
-    if (typeof replaces === 'string' && replaces !== '') {
-        let data;
-        try {
-            data = JSON.parse(fileContents);
-        } catch {
-            return response.status(400).send('Is not a valid world info file');
-        }
-        if (!isPlainObject(data) || !('entries' in data)) return response.status(400).send('File must contain a world info entries list');
-        return sendReplaced(request, response, replaces, path.parse(filename).name, data);
-    }
-
-    try {
-        const imported = await importWorldInfo(request.user.directories, filename, fileContents, actorOf(request));
-        if (imported === null) return response.status(400).send(CARD_COPY);
-        return response.send(imported);
-    } catch (err) {
-        return response.status(400).send(err instanceof Error ? err.message : 'Is not a valid world info file');
-    }
-}));
-
 router.post('/create', storeRoute('creating a World Info book', async (request, response) => {
     const { name, unique = true, replace = false, data } = request.body ?? {};
     if (name !== undefined && typeof name !== 'string') {
@@ -250,14 +101,6 @@ router.post('/create', storeRoute('creating a World Info book', async (request, 
     }
     if (data !== undefined && (!isPlainObject(data) || typeof data.entries !== 'object' || data.entries === null)) {
         return response.status(400).send({ error: 'data must be a World Info object with entries' });
-    }
-
-    const { replaces } = request.body ?? {};
-    if (replaces !== undefined) {
-        if (typeof replaces !== 'string' || !replaces || typeof name !== 'string' || !name.trim()) {
-            return response.status(400).send({ error: 'replaces and name must be names' });
-        }
-        return sendReplaced(request, response, replaces, name.trim(), data ?? { entries: {} });
     }
 
     const { lib } = await requestStore(request);
@@ -287,170 +130,97 @@ router.post('/create', storeRoute('creating a World Info book', async (request, 
     return response.send({ ok: true, name: finalName, unreachedLoops: written.unreachedLoops });
 }));
 
-const isBookField = (/** @type {unknown} */ key) => typeof key === 'string' && key !== '' && key !== 'entries' && key !== 'format';
+/**
+ * @param {any} body
+ * @returns {{ name: string, uid: string } | null}
+ */
+function entryNamed(body) {
+    const { name, uid } = body ?? {};
+    if (typeof name !== 'string' || !name || uid === undefined || uid === null || uid === '') return null;
+    return { name, uid: String(uid) };
+}
 
-router.post('/entries/apply', storeRoute('applying World Info changes', async (request, response) => {
-    const { name, entries: entryChanges = [], fields: fieldChanges = [] } = request.body ?? {};
-    if (typeof name !== 'string' || !name) {
-        return response.status(400).send({ error: 'name is required' });
-    }
-    if (!Array.isArray(entryChanges) || !Array.isArray(fieldChanges)) {
-        return response.status(400).send({ error: 'entries and fields must be arrays' });
-    }
-
-    const { lib } = await requestStore(request);
-    if (!(await lib.books.exists(name))) {
-        return response.status(404).send({ error: `Lorebook '${name}' not found` });
-    }
-    for (const change of entryChanges) {
-        const uid = change?.uid;
-        if ((typeof uid !== 'number' && typeof uid !== 'string') || !sanitizeEntryUid(uid)) {
-            return response.status(400).send({ error: 'every entry change needs a uid' });
-        }
-        if (change.data != null && !isPlainObject(change.data)) {
-            return response.status(400).send({ error: `entry ${String(uid)}: data must be an object or null` });
-        }
-    }
-    for (const change of fieldChanges) {
-        if (!isBookField(change?.key)) {
-            return response.status(400).send({ error: 'every field change needs a key other than entries and format' });
-        }
-    }
-
-    const result = await lib.books.apply(name, entryChanges, fieldChanges, actorOf(request));
-    if (result === 'card copy') {
-        return response.status(400).send({ error: CARD_COPY });
-    }
-    if (!result) {
-        return response.status(404).send({ error: `Lorebook '${name}' not found` });
-    }
-    return response.send({ ...result, ...await entryCounts(request, /** @type {any} */ (result).entries) });
-}));
-
-router.post('/duplicate', storeRoute('duplicating a World Info book', async (request, response) => {
-    const { name, new_name: newName } = request.body ?? {};
-    if (typeof name !== 'string' || !name || typeof newName !== 'string' || !newName.trim()) {
-        return response.status(400).send({ error: 'name and new_name are required' });
-    }
-    const { lib } = await requestStore(request);
-    const book = await lib.books.read(name);
-    if (!book) {
-        return response.status(404).send({ error: `Lorebook '${name}' not found` });
-    }
-    if (await lib.books.exists(newName)) {
-        return response.status(409).send({ error: `World Info file '${newName}' already exists` });
-    }
-    const written = await lib.books.write(newName, book, actorOf(request));
-    if (written === 'card copy') {
-        return response.status(400).send({ error: CARD_COPY });
-    }
-    return response.send({ ok: true, name: newName, unreachedLoops: written.unreachedLoops });
-}));
-
-router.post('/rename', storeRoute('renaming a World Info book', async (request, response) => {
-    const { name, new_name: newName, relink_characters: relinkCharacters = false } = request.body ?? {};
-    if (typeof name !== 'string' || !name || typeof newName !== 'string' || !newName.trim() || name === newName) {
-        return response.status(400).send({ error: 'name and a different new_name are required' });
-    }
-    const { lib } = await requestStore(request);
-    /** @type {bigint[]} */
-    const moved = [];
-    const { renamed, settings } = await withBookChoices(request, async () => {
-        const result = await lib.books.rename(name, newName, { relink: relinkCharacters === true, moved });
-        const found = result === 'ok' ? await lib.books.find(newName) : null;
-        return { renamed: result, choosers: found?.defined ? await lib.books.choosers(found.id) : [] };
-    });
-    if (renamed === 'missing') {
-        return response.status(404).send({ error: `Lorebook '${name}' not found` });
-    }
-    if (renamed === 'taken') {
-        return response.status(409).send({ error: `World Info file '${newName}' already exists` });
-    }
-
-    const keys = moved.length ? await lib.store.libraryKeys(moved) : [];
-    return response.send({
-        ok: true,
-        name: newName,
-        characters_updated: keys.filter(Boolean).map((/** @type {any} */ k) => k.key),
-        characters_failed: [],
-        ...settingsAnswer(request, settings),
-    });
-}));
-
-router.post('/entry/transplant', storeRoute('moving a World Info entry', async (request, response) => {
-    const { source_name, target_name, uid, delete_original } = request.body ?? {};
-
-    if (typeof source_name !== 'string' || !source_name) {
-        return response.status(400).send({ error: 'source_name is required' });
-    }
-    if (typeof target_name !== 'string' || !target_name) {
-        return response.status(400).send({ error: 'target_name is required' });
-    }
-    if (uid === undefined || uid === null || uid === '') {
-        return response.status(400).send({ error: 'uid is required' });
-    }
-    if (source_name === target_name) {
-        return response.status(400).send({ error: 'source_name and target_name must differ' });
-    }
-
-    const { lib } = await requestStore(request);
-    const result = await lib.books.transplant({ source: source_name, target: target_name, uid, deleteOriginal: delete_original !== false }, actorOf(request));
-    if (result === 'no source') {
-        return response.status(404).send({ error: `Source lorebook '${source_name}' not found` });
-    }
-    if (result === 'no target') {
-        return response.status(404).send({ error: `Target lorebook '${target_name}' not found` });
-    }
-    if (result === 'no entry') {
-        return response.status(404).send({ error: `Entry uid '${String(uid)}' not found in source lorebook '${source_name}'` });
-    }
-    if (result === 'full') {
-        return response.status(500).send({ error: `Could not allocate a free uid in target lorebook '${target_name}'` });
-    }
-    return response.send({ ok: true, entry: result.entry, unreachedLoops: result.unreachedLoops });
-}));
+/**
+ * @param {import('express').Response} response
+ * @param {string} name
+ * @param {string} uid
+ * @param {'missing' | 'no entry'} refusal
+ */
+function noEntry(response, name, uid, refusal) {
+    return response.status(404).send({ error: refusal === 'missing' ? `Lorebook '${name}' not found` : `Entry uid '${uid}' not found in lorebook '${name}'` });
+}
 
 router.post('/entry/create', storeRoute('creating a World Info entry', async (request, response) => {
-    const { name, uid } = request.body ?? {};
-
+    const { name, data: fields = {} } = request.body ?? {};
     if (typeof name !== 'string' || !name) {
         return response.status(400).send({ error: 'name is required' });
     }
-    if (uid !== undefined && !(Number.isInteger(uid) && uid >= 0 && uid < MAX_UID)) {
-        return response.status(400).send({ error: `uid must be an integer in [0, ${MAX_UID})` });
-    }
-
-    const { lib } = await requestStore(request);
-    const result = await lib.books.createEntry(name, uid);
-    if (result === 'missing') {
-        return response.status(404).send({ error: `Lorebook '${name}' not found` });
-    }
-    if (result === 'full') {
-        return response.status(500).send({ error: `Could not allocate a free uid in lorebook '${name}'` });
-    }
-    return response.send({ ok: true, entry: result.entry });
-}));
-
-router.post('/entry/edit', storeRoute('saving a World Info entry', async (request, response) => {
-    const { name, uid, data: entryData } = request.body ?? {};
-
-    if (typeof name !== 'string' || !name) {
-        return response.status(400).send({ error: 'name is required' });
-    }
-    if (uid === undefined || uid === null || uid === '') {
-        return response.status(400).send({ error: 'uid is required' });
-    }
-    if (!isPlainObject(entryData)) {
+    if (!isPlainObject(fields)) {
         return response.status(400).send({ error: 'data must be an object' });
     }
-
     const { lib } = await requestStore(request);
-    const result = await lib.books.editEntry(name, uid, entryData, actorOf(request));
-    if (result === 'missing') {
-        return response.status(404).send({ error: `Lorebook '${name}' not found` });
-    }
-    if (result === 'no entry') {
-        return response.status(404).send({ error: `Entry uid '${String(uid)}' not found in lorebook '${name}'` });
-    }
-    return response.send({ ok: true, entry: result.entry, unreachedLoops: result.unreachedLoops, ...await entryCounts(request, { [String(result.entry?.uid ?? uid)]: result.entry }) });
+    const found = await lib.books.find(name);
+    if (!found?.defined) return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    const entry = { ...structuredClone(newWorldInfoEntryTemplate), ...fields };
+    const made = await lib.books.createEntryIn(found.id, { after: null, entry, relation: null }, LOOP_CHECK_VISITS_PER_WRITE, actorOf(request));
+    if (made === 'missing') return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    if ('refused' in made) return response.status(400).send({ error: made.refused });
+    return response.send({ ok: true, entry: { uid: Number(made.uid) } });
+}));
+
+router.post('/entry/get', storeRoute('reading a World Info entry', async (request, response) => {
+    const named = entryNamed(request.body);
+    if (!named) return response.status(400).send({ error: 'name and uid are required' });
+    const { lib } = await requestStore(request);
+    const read = await lib.books.entryOfFile(named.name, named.uid);
+    if (typeof read === 'string') return noEntry(response, named.name, named.uid, read);
+    return response.send({ entry: read.entry, hash: timedEffectHash(bookKey(named.name), read.entry) });
+}));
+
+const NO_FILTER = Object.freeze({ isExclude: false, names: [], tags: [] });
+
+router.post('/entry/set', storeRoute('changing a World Info entry', async (request, response) => {
+    const named = entryNamed(request.body);
+    const { fields } = request.body ?? {};
+    if (!named || !isPlainObject(fields)) return response.status(400).send({ error: 'name, uid and fields are required' });
+    const { lib } = await requestStore(request);
+    const at = await lib.books.entryOf(named.name, named.uid);
+    if (typeof at === 'string') return noEntry(response, named.name, named.uid, at);
+    const done = await lib.books.editEntryById(at.book, at.id, (/** @type {Record<string, any>} */ current) => {
+        const next = { ...current };
+        for (const [field, value] of Object.entries(fields)) {
+            next[field] = field === 'characterFilter' && isPlainObject(value)
+                ? { ...NO_FILTER, ...(isPlainObject(current.characterFilter) ? current.characterFilter : {}), ...value }
+                : value;
+        }
+        return next;
+    }, actorOf(request));
+    if (done === 'ok') return response.send({ ok: true });
+    if (typeof done === 'string') return noEntry(response, named.name, named.uid, done);
+    return response.status(400).send({ error: done.refused });
+}));
+
+const FOUND_BY_FIELD = Object.freeze({
+    key: WORLD_FIELD.key,
+    comment: WORLD_FIELD.title,
+    content: WORLD_FIELD.text,
+    group: WORLD_FIELD.group,
+    keysecondary: WORLD_FIELD.secondary,
+    automationId: WORLD_FIELD.automationId,
+    uid: WORLD_FIELD.uid,
+});
+
+router.post('/entry/find', storeRoute('finding a World Info entry', async (request, response) => {
+    const { name, field = 'key', text } = request.body ?? {};
+    if (typeof name !== 'string' || !name || typeof text !== 'string') return response.status(400).send({ error: 'name and text are required' });
+    if (!Object.hasOwn(FOUND_BY_FIELD, field)) return response.status(400).send({ error: `An entry is found by one of: ${Object.keys(FOUND_BY_FIELD).join(', ')}` });
+    const { lib } = await requestStore(request);
+    const found = await lib.books.find(name);
+    if (!found?.defined) return response.status(404).send({ error: `Lorebook '${name}' not found` });
+    const clauses = searchClauses(text).map(clause => ({ ...clause, fields: [FOUND_BY_FIELD[/** @type {keyof typeof FOUND_BY_FIELD} */ (field)]] }));
+    /** @type {{ entries: { thing: string }[] }} */
+    const read = clauses.length ? await lib.store.worldRead('worldbuildingFind', { book: found.id, clauses, limit: 1 }) : { entries: [] };
+    const [first] = read.entries.length ? await lib.entities([BigInt(read.entries[0].thing)]) : [null];
+    const uid = first ? first.key.slice(first.key.indexOf(':') + 1) : null;
+    return response.send({ uid: uid === null ? null : Number(uid) });
 }));

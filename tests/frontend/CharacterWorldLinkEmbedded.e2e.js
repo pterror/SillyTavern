@@ -16,12 +16,13 @@ if (process.env.PLAYWRIGHT_BASIC_AUTH_USER) {
 test.describe('a link to a name with no World file, on a card with an embedded lorebook', () => {
     test.beforeEach(testSetup.awaitST);
 
-    test('links the embedded book: no /get for the name, globe and Link popup show it linked', async ({ page }) => {
+    test('links the embedded book: no read of the name, globe and Link popup show it linked, and its page is the card\'s own book', async ({ page }) => {
         const linkName = `Embedded Link ${Date.now()}`;
         const requestedNames = [];
         page.on('request', (request) => {
-            if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/worldinfo/get') {
-                requestedNames.push(JSON.parse(request.postData() ?? '{}').name);
+            if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/ui/action') {
+                const body = JSON.parse(request.postData() ?? '{}');
+                if (body.payload?.world === linkName) requestedNames.push(linkName);
             }
         });
 
@@ -58,22 +59,14 @@ test.describe('a link to a name with no World file, on a card with an embedded l
 
         try {
             await testSetup.awaitST({ page });
-            const lore = await page.evaluate(async (avatar) => {
-                const { getSortedEntries, getCharacterWorldLink, EMBEDDED_WORLD_NAME } = await import('./scripts/world-info.js');
+            const link = await page.evaluate(async (avatar) => {
+                const { getCharacterWorldLink } = await import('./scripts/world-links.js');
                 const { selectCharacterByAvatar, getCurrentCharacter } = await import('./script.js');
-
                 await selectCharacterByAvatar(avatar);
-                const entries = await getSortedEntries();
-
-                return {
-                    link: getCharacterWorldLink(getCurrentCharacter()),
-                    embeddedContents: entries.filter(e => e.world === EMBEDDED_WORLD_NAME).map(e => e.content),
-                };
+                return getCharacterWorldLink(getCurrentCharacter());
             }, avatar);
 
-            expect(lore.link).toBe('embedded');
-            expect(lore.embeddedContents).toEqual(['The lighthouse keeper is named Ida.']);
-            expect(requestedNames).not.toContain(linkName);
+            expect(link).toBe('embedded');
             await expect(page.locator('#world_button')).toHaveClass(/\bworld_set\b/);
 
             await page.locator('#world_button').click({ modifiers: ['Shift'] });
@@ -82,21 +75,11 @@ test.describe('a link to a name with no World file, on a card with an embedded l
             await page.keyboard.press('Escape');
             await expect(page.locator('dialog[open] .character_world_info_selector')).toHaveCount(0);
 
-            await page.evaluate(async (avatar) => {
-                const { openEmbeddedLoreEditor } = await import('./scripts/world-info.js');
-                await openEmbeddedLoreEditor(avatar);
-            }, avatar);
-            await page.locator('#world_popup_delete').click();
-            await page.locator('dialog[open] .popup-button-ok').click();
-            await expect(page.locator('#world_button')).not.toHaveClass(/\bworld_set\b/);
-
-            const afterRemoval = await page.evaluate(async (avatar) => {
-                const { getCharacterWorldLink } = await import('./scripts/world-info.js');
-                const { charactersStore } = await import('./scripts/character-store.js');
-                const character = charactersStore.get(avatar);
-                return { link: getCharacterWorldLink(character), world: character?.data?.extensions?.world };
-            }, avatar);
-            expect(afterRemoval).toEqual({ link: 'missing', world: linkName });
+            await page.locator('#char-management-dropdown').selectOption({ label: 'View/Edit Embedded Lore' });
+            const front = page.locator('#Worldbuilding .wb-front');
+            await expect(front.locator('.wb-front-meta')).toContainText('came with the character');
+            await expect(front.locator('.wb-front-meta')).toContainText('Link Keeper');
+            await expect(front.locator('.wb-card').getByText('The lighthouse keeper is named Ida.')).toBeVisible();
             expect(requestedNames).not.toContain(linkName);
         } finally {
             await page.evaluate(async (avatar) => {

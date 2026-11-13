@@ -397,19 +397,25 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
         async undoMarkTitleKeysAsNames({ user }, book) {
             return (await libOf(user)).books.undoMarkTitleKeysAsNames(BigInt(book));
         },
-        async setUsedInEveryChat({ user }, book, used) {
+        async setUsedInEveryChat({ user }, changes) {
             const lib = await libOf(user);
-            const id = BigInt(book);
-            if ((await lib.books.bookForm(id))?.form === 'card') return { refused: CARD_BOOK_REFUSAL };
-            const key = await worldKey(lib, id);
+            /** @type {Map<bigint, { key: string, used: boolean }>} */
+            const wanted = new Map();
+            for (const { book, used } of changes) {
+                const id = BigInt(book);
+                if ((await lib.books.bookForm(id))?.form === 'card') return { refused: CARD_BOOK_REFUSAL };
+                const key = await worldKey(lib, id);
+                if (key === null) return 'missing';
+                wanted.set(id, { key, used });
+            }
             const holder = await holderOf(lib, user.handle);
-            if (key === null) return 'missing';
             if (holder === null) throw new Error(`${user.handle} has no settings to choose worlds in`);
             await booksChanged(user, async () => {
                 const before = await chosen(lib, holder, CHOICE.selected);
-                if (before.some(b => b.id === id) === used) return { choosers: [] };
-                const keys = used ? [...before.map(b => b.key), key] : before.filter(b => b.id !== id).map(b => b.key);
-                await lib.store.commit([chooseRecord(holder, CHOICE.selected, keys)]);
+                const kept = before.filter(b => wanted.get(b.id)?.used !== false).map(b => b.key);
+                const added = [...wanted.entries()].filter(([id, w]) => w.used && !before.some(b => b.id === id)).map(([, w]) => w.key);
+                if (kept.length === before.length && added.length === 0) return { choosers: [] };
+                await lib.store.commit([chooseRecord(holder, CHOICE.selected, [...kept, ...added])]);
                 return { choosers: [{ holder, slot: CHOICE.selected, type: TYPE.user, key: user.handle }] };
             });
             return 'ok';

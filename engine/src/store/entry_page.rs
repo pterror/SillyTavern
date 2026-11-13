@@ -59,6 +59,18 @@ pub fn labels(view: &View, book: u64, entities: &[u64]) -> Result<Js, StoreError
     Ok(Js::Arr(out))
 }
 
+// Each entity's picture (an image id, or null) when it is an entry of the book, else null.
+pub fn pictures(view: &View, book: u64, entities: &[u64]) -> Result<Js, StoreError> {
+    let mut out = Vec::with_capacity(entities.len());
+    for &entity in entities {
+        out.push(match uid_in(view, book, entity)? {
+            Some(_) => entry_label::picture(view, entity)?,
+            None => Js::Null,
+        });
+    }
+    Ok(Js::Arr(out))
+}
+
 fn number_of_order_value(order_key: &tree::OrderKey) -> Option<f64> {
     let bits = u64::from_be_bytes(order_key[..8].try_into().expect("8 bytes"));
     let number = f64::from_bits(if bits >> 63 == 1 { bits & !(1 << 63) } else { !bits });

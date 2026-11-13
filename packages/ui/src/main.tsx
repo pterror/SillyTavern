@@ -22,6 +22,7 @@ import {
     TgCfg,
     TgSamplers,
     TgTop,
+    WorldInfoSettings,
     settingsCompat,
 } from '@st/settings/page';
 import type { Support } from '@st/settings/page';
@@ -34,6 +35,7 @@ import type { Buttons as UsageStatsButtons, OldPage as UsageStatsOldPage } from 
 import { Help, Hotkeys, helpCompat } from '@st/help/page';
 import { Worldbuilding, worldbuildingCompat } from '@st/worldbuilding/page';
 import type { OldPage as HelpOldPage } from '@st/help/page';
+import type { OldPage as WorldbuildingOldPage } from '@st/worldbuilding/page';
 import { render } from 'solid-js/web';
 import type { JSX } from 'solid-js';
 
@@ -46,6 +48,7 @@ export type StartOptions = {
     activations: ActivationsOldPage;
     usageStats: UsageStatsOldPage;
     help: HelpOldPage;
+    worldbuilding: WorldbuildingOldPage;
     containers: {
         backgrounds: HTMLElement;
         backgroundLayer: HTMLElement;
@@ -59,6 +62,7 @@ export type StartOptions = {
         tgTop: HTMLElement;
         tgSamplers: HTMLElement;
         tgCfg: HTMLElement;
+        worldInfoSettings: HTMLElement;
         worldbuilding: HTMLElement;
         usageStats: UsageStatsButtons;
     };
@@ -97,6 +101,7 @@ export function start(options: StartOptions) {
     mount(tgTop, () => <TgTop />);
     mount(tgSamplers, () => <TgSamplers />);
     mount(tgCfg, () => <TgCfg />);
+    mount(options.containers.worldInfoSettings, () => <WorldInfoSettings />);
 
     const [look, setLook] = createSignal<Look | null>(null);
     const alternativesHost = document.createElement('div');
@@ -117,9 +122,14 @@ export function start(options: StartOptions) {
     document.body.append(usageStatsHost);
     mount(usageStatsHost, () => <UsageStats buttons={options.containers.usageStats} old={options.usageStats} />);
 
-    const worldbuilding = worldbuildingCompat();
+    const worldbuilding = worldbuildingCompat(client, options.worldbuilding);
     mount(options.containers.worldbuilding, () => (
-        <Worldbuilding shown={worldbuilding.shown()} everShown={worldbuilding.everShown()} />
+        <Worldbuilding
+            shown={worldbuilding.shown()}
+            everShown={worldbuilding.everShown()}
+            target={worldbuilding.target()}
+            onTargetTaken={worldbuilding.targetTaken}
+        />
     ));
 
     const help = helpCompat(client);
@@ -143,11 +153,7 @@ export function start(options: StartOptions) {
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         alternatives: alternativesCompat(setLook),
         activations,
-        worldbuilding: {
-            paneShown: (open: boolean) => {
-                worldbuilding.paneShown(open);
-            },
-        },
+        worldbuilding,
         help: {
             open: (name: string) => help.open(name),
             /** @returns what takes the list off again */

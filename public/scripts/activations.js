@@ -1,7 +1,8 @@
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
 import { newUi } from './new-ui-page.js';
-import { openEmbeddedLoreEditor, openWorldInfoEntry } from './world-info.js';
+import { openCharacterBook, openWorldEntry } from './world-links.js';
+import { charactersStore } from './character-store.js';
 import { chat } from '/scripts/chat-state.js';
 import { power_user } from './power-user.js';
 import { loreMarkRanges } from './chat-text/lore-marks.js';
@@ -20,10 +21,11 @@ export const activationsOldPage = {
         return index === -1 ? null : index;
     },
     openEntry(book, uid) {
-        void openWorldInfoEntry(book, uid);
+        openWorldEntry(book, uid);
     },
     openCardBook(avatar) {
-        void openEmbeddedLoreEditor(avatar);
+        const thing = charactersStore.get(avatar)?.thing;
+        if (thing) openCharacterBook(thing);
     },
     panelShown(message) {
         panelReply = message;

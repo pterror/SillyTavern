@@ -1106,38 +1106,6 @@ export class WorldInfoEngine {
     }
 
     /**
-     * @param {string} existingName
-     * @param {string} name
-     * @param {Record<string, unknown>} data
-     * @param {Actor | null} [actor]
-     * @returns {Promise<{ book: bigint, renamed: boolean, moved: bigint[], unreachedLoops: UnreachedLoop[] } | 'missing' | 'taken' | 'card copy'>}
-     */
-    replace(existingName, name, data, actor = null) {
-        if (isCardBookCopy(data)) return Promise.resolve('card copy');
-        const [from, to] = [bookKey(existingName), bookKey(name)];
-        return this.lane([from, to], async () => {
-            const found = await this.find(existingName);
-            if (!found?.defined) return 'missing';
-            /** @type {object[]} */
-            const records = [];
-            /** @type {bigint[]} */
-            let moved = [];
-            if (from !== to) {
-                const there = await this.find(name);
-                if (there?.defined) return 'taken';
-                const renamed = await this.renameRecords(found.id, there, from, to, true);
-                pushAll(records, renamed.records);
-                moved = renamed.own;
-            }
-            /** @type {object[]} */
-            const keyed = [];
-            pushAll(records, await this.bookRecords(found.id, await this.stored(found.id, true), data, { world: true }, await this.stamper(actor, keyed)));
-            if (records.length > 0) await this.store.commit([...keyed, ...records]);
-            return { book: found.id, renamed: from !== to, moved, unreachedLoops: await this.unreachedLoops(found.id, records) };
-        });
-    }
-
-    /**
      * @param {bigint} id
      * @param {{ id: bigint } | null} there
      * @param {string} from
@@ -1643,6 +1611,28 @@ export class WorldInfoEngine {
         if (!found?.defined) return 'missing';
         const [id] = await this.lib.ids(TYPE.entry, [`${found.id}:${String(uid)}`]);
         return id === null ? 'no entry' : { book: found.id, id };
+    }
+
+    /**
+     * An entry of a world named by its file name, as a world file writes it: its relations name their targets by key.
+     * @param {string} name
+     * @param {string | number} uid
+     * @returns {Promise<{ book: bigint, id: bigint, entry: Record<string, unknown> } | 'missing' | 'no entry'>}
+     */
+    async entryOfFile(name, uid) {
+        const at = await this.entryOf(name, uid);
+        if (typeof at === 'string') return at;
+        const e = await this.entryIn(at.book, at.id);
+        if (!e) return 'no entry';
+        const object = /** @type {Record<string, unknown>} */ (entryObject(e, false));
+        const targets = (relationsListOf(object) ?? []).map(targetEntryOf).filter(target => target !== null);
+        /** @type {Map<string, string>} */
+        const keyOfEntity = new Map();
+        const stored = targets.length ? await this.lib.entities(targets.map(target => BigInt(target))) : [];
+        for (const t of stored) {
+            if (t && t.type === TYPE.entry && t.key.startsWith(`${at.book}:`)) keyOfEntity.set(String(t.id), t.key.slice(t.key.indexOf(':') + 1));
+        }
+        return { ...at, entry: /** @type {Record<string, unknown>} */ (relationsForFile(object, keyOfEntity)) };
     }
 
     /**

@@ -219,7 +219,6 @@ export const power_user = {
     trim_spaces: true,
     relaxed_api_urls: false,
     world_import_dialog: true,
-    wi_last_editor_book: '',
     enable_auto_select_input: false,
     enable_md_hotkeys: false,
     editor_toolbar: [],
@@ -2259,27 +2258,6 @@ export function fuzzySearchCharacters(searchValue, fuzzySearchCaches = null) {
         fuzzySearchCaches[fuzzySearchCategories.characters].resultMap.set(searchValue, results);
     }
     return results;
-}
-
-/**
- * Fuzzy search world info entries by a search term
- * @param {*[]} data - WI items data array
- * @param {string} searchValue - The search term
- * @param {Object.<string, { resultMap: Map<string, any> }>} [fuzzySearchCaches=null] - Optional fuzzy search caches
- * @returns {import('fuse.js').FuseResult<any>[]} Results as items with their score
- */
-export function fuzzySearchWorldInfo(data, searchValue, fuzzySearchCaches = null) {
-    const keys = [
-        { name: 'key', weight: 20 },
-        { name: 'group', weight: 15 },
-        { name: 'comment', weight: 10 },
-        { name: 'keysecondary', weight: 10 },
-        { name: 'content', weight: 3 },
-        { name: 'uid', weight: 1 },
-        { name: 'automationId', weight: 1 },
-    ];
-
-    return performFuzzySearch(fuzzySearchCategories.worldInfo, data, keys, searchValue, fuzzySearchCaches);
 }
 
 /**

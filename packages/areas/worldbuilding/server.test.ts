@@ -339,7 +339,13 @@ function world(
     // What mentions an entry: three pages, `p0` (read at null), `p1` and `p2`, each naming the entry `m<page>`.
     const mentionsPage = (at: number) => ({
         cursor: at === 0 ? null : `p${at}`,
-        entries: [{ from: named(`m${at}`, `name m${at}`), sentence: { before: '', mention: 'Ilse', after: '.' } }],
+        entries: [
+            {
+                from: named(`m${at}`, `name m${at}`),
+                picture: null,
+                sentence: { before: '', mention: 'Ilse', after: '.' },
+            },
+        ],
         next: at < 2 ? `p${at + 1}` : null,
         lookedThrough: at + 1,
         stoppedForBound: false,
@@ -356,7 +362,7 @@ function world(
             title: null,
             keys: [{ text: `name ${entry}`, isName: true, alsoBringsUp: 0 }],
             text: found.text,
-            links: entry === '7' ? [{ entry: '8', from: 0, to: 3 }] : [],
+            links: entry === '7' ? [{ entry: '8', from: 0, to: 3, picture: null }] : [],
             linksComplete: true,
             relations: [],
             placement: PLACEMENT,
@@ -485,10 +491,10 @@ function world(
             const found = worlds.get(book);
             return found ? { fileName: `${found.name}.json`, json: '{"entries":{}}' } : null;
         },
-        setUsedInEveryChat: async (_w, book, used) => {
-            const found = worlds.get(book);
-            if (!found) return 'missing';
-            found.usedInEveryChat = used;
+        setUsedInEveryChat: async (_w, changes) => {
+            if (changes.some(({ book }) => !worlds.has(book))) return 'missing';
+            for (const { book, used } of changes)
+                (worlds.get(book) as { usedInEveryChat: boolean }).usedInEveryChat = used;
             return 'ok';
         },
         readOverview: async (_u, q) => {
@@ -922,11 +928,11 @@ test('the worlds list opens by its own action and lists every world in name orde
             { id: '2', name: 'World 2', entries: 0, usedInEveryChat: false, picture: null },
         ],
     });
-    expect(await w.act('worldbuilding.setUsedInEveryChat', { book: '2', used: true })).toEqual({
+    expect(await w.act('worldbuilding.setUsedInEveryChat', { changes: [{ book: '2', used: true }] })).toEqual({
         changed: [WORLDS_VIEW, WORLD_VIEW],
     });
     expect((await w.view<WorldsView>(WORLDS_VIEW)).worlds[1]?.usedInEveryChat).toBe(true);
-    expect(await w.act('worldbuilding.setUsedInEveryChat', { book: '9', used: true })).toEqual({
+    expect(await w.act('worldbuilding.setUsedInEveryChat', { changes: [{ book: '9', used: true }] })).toEqual({
         refused: 'That world no longer exists.',
         changed: [WORLDS_VIEW],
     });
@@ -1108,7 +1114,7 @@ test('the world schemas take names trimmed and not empty, worlds by id, and the 
     expect(ok('worldbuilding.renameWorld', { book: 'Lore', name: 'x' })).toBe(false);
     expect(ok('worldbuilding.duplicateWorld', { book: '1', overview: drawn })).toBe(true);
     expect(ok('worldbuilding.importWorld', { overview: drawn })).toBe(true);
-    expect(ok('worldbuilding.setUsedInEveryChat', { book: '1', used: 'yes' })).toBe(false);
+    expect(ok('worldbuilding.setUsedInEveryChat', { changes: [{ book: '1', used: 'yes' }] })).toBe(false);
 });
 
 test('kind actions name their world: making one says which it made, renaming answers the kinds and the overview, an unused one is deleted', async () => {

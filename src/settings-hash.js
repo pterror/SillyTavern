@@ -3,6 +3,10 @@ import { getAtPath, getStringHash, setAtPath } from '../public/scripts/hash-util
 
 export const SERVER_OWNED_PATHS = ['background', ...FIELDS.filter(field => SERVER_FAMILIES.includes(field.family)).map(field => field.path)];
 
+// Settings only the server's own actions change, never a save from the page: the worlds used in every chat.
+const SERVER_WRITTEN_PATHS = ['world_info_settings.world_info'];
+const NOT_THE_PAGES = [...SERVER_OWNED_PATHS, ...SERVER_WRITTEN_PATHS];
+
 /**
  * @param {Record<string, any>} settings
  * @param {string} path
@@ -25,8 +29,8 @@ function deleteAtPath(settings, path) {
  * @returns {{ value: unknown } | null}
  */
 export function pageWrite(path, value, current) {
-    if (SERVER_OWNED_PATHS.some(owned => path === owned || path.startsWith(`${owned}.`))) return null;
-    const under = SERVER_OWNED_PATHS.filter(owned => owned.startsWith(`${path}.`));
+    if (NOT_THE_PAGES.some(owned => path === owned || path.startsWith(`${owned}.`))) return null;
+    const under = NOT_THE_PAGES.filter(owned => owned.startsWith(`${path}.`));
     if (under.length === 0 || value === null || typeof value !== 'object') return { value };
     const out = structuredClone(value);
     for (const owned of under) {
@@ -44,7 +48,7 @@ export function pageWrite(path, value, current) {
  */
 export function withServerOwned(saved, current) {
     const out = structuredClone(saved);
-    for (const owned of SERVER_OWNED_PATHS) {
+    for (const owned of NOT_THE_PAGES) {
         const kept = getAtPath(current, owned);
         if (kept === undefined) deleteAtPath(out, owned);
         else setAtPath(out, owned, structuredClone(kept));
@@ -64,6 +68,6 @@ export function pageSettingsHash(settings) {
  */
 export function pageSettings(settings) {
     const page = structuredClone(settings);
-    for (const owned of SERVER_OWNED_PATHS) deleteAtPath(page, owned);
+    for (const owned of NOT_THE_PAGES) deleteAtPath(page, owned);
     return page;
 }

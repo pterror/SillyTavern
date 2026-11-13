@@ -16,8 +16,7 @@ import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
 import { getTagsList } from './tags.js';
 import { groupsStore, selected_group } from './group-chats.js';
 import { getCurrentLocale, t } from './i18n.js';
-import { importWorldInfo } from './world-info.js';
-import { getStringHash } from './hash-utils.js';
+import { importWorld } from './world-links.js';
 import { compareIgnoreCaseAndAccents, equalsIgnoreCaseAndAccents, escapeRegex, isFalseBoolean, isTrueBoolean } from './util/string-args.js';
 
 
@@ -90,15 +89,6 @@ export const paginationDropdownChangeHandler = function (event, size) {
     let dropdown = $(event?.originalEvent?.currentTarget || event.delegateTarget).find('select');
     dropdown.find('[selected]').removeAttr('selected');
     dropdown.find(`[value=${size}]`).attr('selected', '');
-};
-
-/**
- * Navigation options for pagination.
- * @enum {number}
- */
-export const navigation_option = {
-    none: -2000,
-    previous: -1000,
 };
 
 /**
@@ -378,7 +368,7 @@ export function getFileText(file) {
  * Returns a promise that resolves to the file's array buffer.
  * @param {Blob} file The file to read.
  */
-export function getFileBuffer(file) {
+function getFileBuffer(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.readAsArrayBuffer(file);
@@ -940,120 +930,6 @@ export class Stopwatch {
 }
 
 /**
- * Extracts a JSON object from a PNG file.
- * Taken from https://github.com/LostRuins/lite.koboldai.net/blob/main/index.html
- * Adapted from png-chunks-extract under MIT license
- * @param {Uint8Array} data The PNG data to extract the JSON from.
- * @param {string} identifier The identifier to look for in the PNG tEXT data.
- * @returns {object} The extracted JSON object.
- */
-export function extractDataFromPng(data, identifier = 'chara') {
-    let uint8 = new Uint8Array(4);
-    let uint32 = new Uint32Array(uint8.buffer);
-
-    //check if png header is valid
-    if (!data || data[0] !== 0x89 || data[1] !== 0x50 || data[2] !== 0x4E || data[3] !== 0x47 || data[4] !== 0x0D || data[5] !== 0x0A || data[6] !== 0x1A || data[7] !== 0x0A) {
-        console.log('PNG header invalid');
-        return null;
-    }
-
-    let ended = false;
-    let chunks = [];
-    let idx = 8;
-
-    while (idx < data.length) {
-        // Read the length of the current chunk,
-        // which is stored as a Uint32.
-        uint8[3] = data[idx++];
-        uint8[2] = data[idx++];
-        uint8[1] = data[idx++];
-        uint8[0] = data[idx++];
-
-        // Chunk includes name/type for CRC check (see below).
-        let length = uint32[0] + 4;
-        let chunk = new Uint8Array(length);
-        chunk[0] = data[idx++];
-        chunk[1] = data[idx++];
-        chunk[2] = data[idx++];
-        chunk[3] = data[idx++];
-
-        // Get the name in ASCII for identification.
-        let name = (
-            String.fromCharCode(chunk[0]) +
-            String.fromCharCode(chunk[1]) +
-            String.fromCharCode(chunk[2]) +
-            String.fromCharCode(chunk[3])
-        );
-
-        // The IHDR header MUST come first.
-        if (!chunks.length && name !== 'IHDR') {
-            console.log('Warning: IHDR header missing');
-        }
-
-        // The IEND header marks the end of the file,
-        // so on discovering it break out of the loop.
-        if (name === 'IEND') {
-            ended = true;
-            chunks.push({
-                name: name,
-                data: new Uint8Array(0),
-            });
-            break;
-        }
-
-        // Read the contents of the chunk out of the main buffer.
-        for (let i = 4; i < length; i++) {
-            chunk[i] = data[idx++];
-        }
-
-        // Read out the CRC value for comparison.
-        // It's stored as an Int32.
-        uint8[3] = data[idx++];
-        uint8[2] = data[idx++];
-        uint8[1] = data[idx++];
-        uint8[0] = data[idx++];
-
-
-        // The chunk data is now copied to remove the 4 preceding
-        // bytes used for the chunk name/type.
-        let chunkData = new Uint8Array(chunk.buffer.slice(4));
-
-        chunks.push({
-            name: name,
-            data: chunkData,
-        });
-    }
-
-    if (!ended) {
-        console.log('.png file ended prematurely: no IEND header was found');
-    }
-
-    //find the chunk with the chara name, just check first and last letter
-    let found = chunks.filter(x => (
-        x.name == 'tEXt'
-        && x.data.length > identifier.length
-        && x.data.slice(0, identifier.length).every((v, i) => String.fromCharCode(v) == identifier[i])));
-
-    if (found.length == 0) {
-        console.log('PNG Image contains no data');
-        return null;
-    } else {
-        try {
-            let b64buf = '';
-            let bytes = found[0].data; //skip the chara
-            for (let i = identifier.length + 1; i < bytes.length; i++) {
-                b64buf += String.fromCharCode(bytes[i]);
-            }
-            let decoded = JSON.parse(atob(b64buf));
-            return decoded;
-        } catch (e) {
-            console.log('Error decoding b64 in image: ' + e);
-            return null;
-        }
-    }
-}
-
-/**
  * Sends a request to the server to sanitize a given filename
  *
  * @param {string} fileName - The name of the file to sanitize
@@ -1511,30 +1387,6 @@ export async function extractTextFromEpub(blob) {
 }
 
 /**
- * Sets a value in an object by a path.
- * @param {object} obj Object to set value in
- * @param {string} path Key path
- * @param {any} value Value to set
- * @returns {void}
- */
-export function setValueByPath(obj, path, value) {
-    const keyParts = path.split('.');
-    let currentObject = obj;
-
-    for (let i = 0; i < keyParts.length - 1; i++) {
-        const part = keyParts[i];
-
-        if (!Object.hasOwn(currentObject, part)) {
-            currentObject[part] = {};
-        }
-
-        currentObject = currentObject[part];
-    }
-
-    currentObject[keyParts[keyParts.length - 1]] = value;
-}
-
-/**
  * Flashes the given HTML element via CSS flash animation for a defined period
  * @param {JQuery<HTMLElement>} element - The element to flash
  * @param {number} timespan - A number in milliseconds how the flash should last (default is 2000ms.  Multiples of 1000ms work best, as they end with the flash animation being at 100% opacity)
@@ -1617,252 +1469,6 @@ export function sortIgnoreCaseAndAccents(a, b) {
  * @property {string} text - The text for this option
  * @property {number?} [count] - Optionally show the count how often that option was chosen already
  */
-
-/**
- * Returns a unique hash as ID for a select2 option text
- *
- * @param {string} option - The option
- * @returns {string} A hashed version of that option
- */
-export function getSelect2OptionId(option) {
-    return String(getStringHash(option));
-}
-
-/**
- * Modifies the select2 options by adding not existing one and optionally selecting them
- *
- * @param {JQuery<HTMLElement>} element - The "select" element to add the options to
- * @param {string[]|Select2Option[]} items - The option items to build, add or select
- * @param {object} [options] - Optional arguments
- * @param {boolean} [options.select=false] - Whether the options should be selected right away
- * @param {object} [options.changeEventArgs=null] - Optional event args being passed into the "change" event when its triggered because a new options is selected
- */
-export function select2ModifyOptions(element, items, { select = false, changeEventArgs = null } = {}) {
-    if (!items.length) return;
-    /** @type {Select2Option[]} */
-    const dataItems = items.map(x => typeof x === 'string' ? { id: getSelect2OptionId(x), text: x } : x);
-
-    const optionsToSelect = [];
-    const newOptions = [];
-
-    dataItems.forEach(item => {
-        // Set the value, creating a new option if necessary
-        if (element.find('option[value=\'' + item.id + '\']').length) {
-            if (select) optionsToSelect.push(item.id);
-        } else {
-            // Create a DOM Option and optionally pre-select by default
-            var newOption = new Option(item.text, item.id, select, select);
-            // Append it to the select
-            newOptions.push(newOption);
-            if (select) optionsToSelect.push(item.id);
-        }
-    });
-
-    element.append(newOptions);
-    if (optionsToSelect.length) element.val(optionsToSelect).trigger('change', changeEventArgs);
-}
-
-/**
- * Returns the ajax settings that can be used on the select2 ajax property to dynamically get the data.
- * Can be used on a single global array, querying data from the server or anything similar.
- *
- * @param {function():Select2Option[]} dataProvider - The provider/function to retrieve the data - can be as simple as "() => myData" for arrays
- * @return {{transport: (params, success, failure) => any}} The ajax object with the transport function to use on the select2 ajax property
- */
-export function dynamicSelect2DataViaAjax(dataProvider) {
-    function dynamicSelect2DataTransport(params, success, failure) {
-        var items = dataProvider();
-        // fitering if params.data.q available
-        if (params.data && params.data.q) {
-            items = items.filter(function (item) {
-                return includesIgnoreCaseAndAccents(item.text, params.data.q);
-            });
-        }
-        var promise = new Promise(function (resolve, reject) {
-            resolve({ results: items });
-        });
-        promise.then(success);
-        promise.catch(failure);
-    }
-    const ajax = {
-        transport: dynamicSelect2DataTransport,
-    };
-    return ajax;
-}
-
-/**
- * Checks whether a given control is a select2 choice element - meaning one of the results being displayed in the select multi select box
- * @param {JQuery<HTMLElement>|HTMLElement} element - The element to check
- * @returns {boolean} Whether this is a choice element
- */
-function isSelect2ChoiceElement(element) {
-    const $element = $(element);
-    return ($element.hasClass('select2-selection__choice__display') || $element.parents('.select2-selection__choice__display').length > 0);
-}
-
-/**
- * Subscribes a 'click' event handler to the choice elements of a select2 multi-select control
- *
- * @param {JQuery<HTMLElement>} control The original control the select2 was applied to
- * @param {function(HTMLElement):void} action - The action to execute when a choice element is clicked
- * @param {object} options - Optional parameters
- * @param {boolean} [options.buttonStyle=false] - Whether the choices should be styles as a clickable button with color and hover transition, instead of just changed cursor
- * @param {boolean} [options.closeDrawer=false] - Whether the drawer should be closed and focus removed after the choice item was clicked
- * @param {boolean} [options.openDrawer=false] - Whether the drawer should be opened, even if this click would normally close it
- */
-export function select2ChoiceClickSubscribe(control, action, { buttonStyle = false, closeDrawer = false, openDrawer = false } = {}) {
-    // Add class for styling (hover color, changed cursor, etc)
-    control.addClass('select2_choice_clickable');
-    if (buttonStyle) control.addClass('select2_choice_clickable_buttonstyle');
-
-    // Get the real container below and create a click handler on that one
-    const select2Container = control.next('span.select2-container');
-    select2Container.on('click', function (event) {
-        const isChoice = isSelect2ChoiceElement(event.target);
-        if (isChoice) {
-            event.preventDefault();
-
-            // select2 still bubbles the event to open the dropdown. So we close it here and remove focus if we want that
-            if (closeDrawer) {
-                control.select2('close');
-                setTimeout(() => select2Container.find('textarea').trigger('blur'), debounce_timeout.quick);
-            }
-            if (openDrawer) {
-                control.select2('open');
-            }
-
-            // Now execute the actual action that was subscribed
-            action(event.target);
-        }
-    });
-}
-
-/**
- * Applies syntax highlighting to a given regex string by generating HTML with classes
- *
- * @param {string} regexStr - The javascript compatible regex string
- * @returns {string} The html representation of the highlighted regex
- */
-export function highlightRegex(regexStr) {
-    // Function to escape special characters for safety or readability
-    const escape = (str) => str.replace(/[&<>"'\x01]/g, match => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;', '\x01': '\\x01',
-    })[match]);
-
-    // Replace special characters with their escaped forms
-    regexStr = escape(regexStr);
-
-    // Patterns that we want to highlight only if they are not escaped
-    function getPatterns() {
-        try {
-            return {
-                brackets: new RegExp('(?<!\\\\)\\[.*?\\]', 'g'),  // Non-escaped square brackets
-                quantifiers: new RegExp('(?<!\\\\)[*+?{}]', 'g'),  // Non-escaped quantifiers
-                operators: new RegExp('(?<!\\\\)[|.^$()]', 'g'),  // Non-escaped operators like | and ()
-                specialChars: new RegExp('\\\\.', 'g'),
-                flags: new RegExp('(?<=\\/)([gimsuy]*)$', 'g'),  // Match trailing flags
-                delimiters: new RegExp('^\\/|(?<![\\\\<])\\/', 'g'),  // Match leading or trailing delimiters
-            };
-        } catch (error) {
-            return {
-                brackets: new RegExp('(\\\\)?\\[.*?\\]', 'g'),  // Non-escaped square brackets
-                quantifiers: new RegExp('(\\\\)?[*+?{}]', 'g'),  // Non-escaped quantifiers
-                operators: new RegExp('(\\\\)?[|.^$()]', 'g'),  // Non-escaped operators like | and ()
-                specialChars: new RegExp('\\\\.', 'g'),
-                flags: new RegExp('/([gimsuy]*)$', 'g'),  // Match trailing flags
-                delimiters: new RegExp('^/|[^\\\\](/)', 'g'),  // Match leading or trailing delimiters
-            };
-        }
-    }
-
-    const patterns = getPatterns();
-
-    // Function to replace each pattern with a highlighted HTML span
-    const wrapPattern = (pattern, className) => {
-        regexStr = regexStr.replace(pattern, match => `<span class="${className}">${match}</span>`);
-    };
-
-    // Apply highlighting patterns
-    wrapPattern(patterns.brackets, 'regex-brackets');
-    wrapPattern(patterns.quantifiers, 'regex-quantifier');
-    wrapPattern(patterns.operators, 'regex-operator');
-    wrapPattern(patterns.specialChars, 'regex-special');
-    wrapPattern(patterns.flags, 'regex-flags');
-    wrapPattern(patterns.delimiters, 'regex-delimiter');
-
-    return `<span class="regex-highlight">${regexStr}</span>`;
-}
-
-/**
- * Confirms if the user wants to overwrite an existing data object (like character, world info, etc) if one exists.
- * If no data with the name exists, this simply returns true.
- *
- * @param {string} type - The type of the check ("World Info", "Character", etc)
- * @param {string[]} existingNames - The list of existing names to check against
- * @param {string} name - The new name
- * @param {object} options - Optional parameters
- * @param {boolean} [options.interactive=false] - Whether to show a confirmation dialog when needing to overwrite an existing data object
- * @param {string} [options.actionName='overwrite'] - The action name to display in the confirmation dialog
- * @param {(existingName:string)=>void} [options.deleteAction=null] - Optional action to execute wen deleting an existing data object on overwrite
- * @returns {Promise<boolean>} True if the user confirmed the overwrite or there is no overwrite needed, false otherwise
- */
-export async function checkOverwriteExistingData(type, existingNames, name, { interactive = false, actionName = 'Overwrite', deleteAction = null } = {}) {
-    const existing = existingNames.find(x => equalsIgnoreCaseAndAccents(x, name));
-    if (!existing) {
-        return true;
-    }
-
-    const overwrite = interactive && await Popup.show.confirm(`${type} ${actionName}`, `<p>A ${type.toLowerCase()} with the same name already exists:<br />${escapeHtml(existing)}</p>Do you want to overwrite it?`);
-    if (!overwrite) {
-        toastr.warning(`${type} ${actionName.toLowerCase()} cancelled. A ${type.toLowerCase()} with the same name already exists:<br />${escapeHtml(existing)}`, `${type} ${actionName}`, { escapeHtml: false });
-        return false;
-    }
-
-    toastr.info(`Overwriting Existing ${type}:<br />${escapeHtml(existing)}`, `${type} ${actionName}`, { escapeHtml: false });
-
-    // If there is an action to delete the existing data, do it, as the name might be slightly different so file name would not be the same
-    if (deleteAction) {
-        deleteAction(existing);
-    }
-
-    return true;
-}
-
-/**
- * Toggles the visibility of a drawer by changing the display style of its content.
- * This function skips the usual drawer animation.
- *
- * @param {HTMLElement} drawer - The drawer element to toggle
- * @param {boolean} [expand=true] - Whether to expand or collapse the drawer
- */
-export function toggleDrawer(drawer, expand = true) {
-    /** @type {HTMLElement} */
-    const icon = drawer.querySelector(':scope > .inline-drawer-header .inline-drawer-icon');
-    /** @type {HTMLElement} */
-    const content = drawer.querySelector(':scope > .inline-drawer-content');
-
-    if (!icon || !content) {
-        console.debug('toggleDrawer: No icon or content found in the drawer element.');
-        return;
-    }
-
-    if (expand) {
-        icon.classList.remove('down', 'fa-circle-chevron-down');
-        icon.classList.add('up', 'fa-circle-chevron-up');
-        content.style.display = 'block';
-    } else {
-        icon.classList.remove('up', 'fa-circle-chevron-up');
-        icon.classList.add('down', 'fa-circle-chevron-down');
-        content.style.display = 'none';
-    }
-
-    drawer.dispatchEvent(new CustomEvent('inline-drawer-toggle', { bubbles: true }));
-
-    // Set the height of "autoSetHeight" textareas within the inline-drawer to their scroll height
-    if (!CSS.supports('field-sizing', 'content')) {
-        content.querySelectorAll('textarea.autoSetHeight').forEach(resetScrollHeight);
-    }
-}
 
 /**
  * Sets or removes a dataset property on an HTMLElement
@@ -2345,7 +1951,7 @@ export async function importFromExternalUrl(url, { preserveFileName = null } = {
             await processDroppedFiles([file], extraData, { sourceUrls: new Map([[file, url]]) });
             break;
         case 'lorebook':
-            await importWorldInfo(file);
+            importWorld(file);
             break;
         default:
             toastr.warning('Unknown content type');

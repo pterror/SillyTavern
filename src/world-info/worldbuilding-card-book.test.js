@@ -85,7 +85,7 @@ test('the character\'s own book opens as a world, is never listed among them, an
         await ports.duplicateWorld(who, id),
         await ports.deleteWorld(who, id),
         await ports.exportWorld(uiUser, id),
-        await ports.setUsedInEveryChat(who, id, true),
+        await ports.setUsedInEveryChat(who, [{ book: id, used: true }]),
     ]) assert.deepEqual(refused, { refused: CARD_BOOK_REFUSAL });
     const [inn] = await entryIds(id);
     assert.deepEqual(await ports.moveEntryToWorld(who, id, inn, plain), { refused: CARD_ENTRY_STAYS });

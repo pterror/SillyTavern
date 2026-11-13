@@ -16,6 +16,10 @@ let directories;
 let settingsStore;
 /** @type {typeof import('../src/settings-hash.js')} */
 let settingsHash;
+/** @type {ReturnType<typeof import('../src/world-info/worldbuilding-worlds.js').worldbuildingWorldPorts>} */
+let worlds;
+/** @type {{ user: any, session: string }} */
+let who;
 
 beforeAll(async () => {
     user = await (await import('./converted-user.fixture.js')).emptyUser('st-worldinfo-choices-test-');
@@ -23,6 +27,13 @@ beforeAll(async () => {
     settingsStore = await import('../src/settings-store.js');
     settingsHash = await import('../src/settings-hash.js');
     await (await import('../src/settings-document.js')).openSettingsDocument(directories, 'u');
+    const { settingsDocumentOf } = await import('../src/settings-documents.js');
+    const { worldbuildingWorldPorts } = await import('../src/world-info/worldbuilding-worlds.js');
+    worlds = worldbuildingWorldPorts({
+        libOf: async () => user.store.lib,
+        booksChanged: (_user, change) => /** @type {any} */ (settingsDocumentOf(directories)).booksChanged(change),
+    });
+    who = { user: { handle: 'u', directories }, session: 's' };
     const express = (await import('express')).default;
     const app = express();
     app.use(express.json());
@@ -72,6 +83,14 @@ async function chooseBooks(globalSelect, lorebooks) {
     });
 }
 
+/**
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
+async function bookId(name) {
+    return String(/** @type {{ id: bigint }} */ (await user.store.lib.books.find(name)).id);
+}
+
 function chosen() {
     const shown = settingsStore.readSettingsAtPaths(directories, ['world_info_settings.world_info', 'power_user.persona_data']);
     return {
@@ -88,13 +107,10 @@ async function settingsVersions() {
 }
 
 describe('the settings choose lorebooks by id', () => {
-    test('a save keeps the names that are books and leaves the rest out', async () => {
+    test('the worlds used in every chat keep the names that are books and leave the rest out', async () => {
         await writeBook('Here');
-        const res = await postJson('/api/settings/save-partial', { keys: { 'world_info_settings.world_info': { globalSelect: ['Nowhere', 'Here'] } } });
-        expect(res.status).toBe(200);
-        const saved = await res.json();
+        await chooseBooks(['Nowhere', 'Here'], {});
         expect(chosen().globalSelect).toEqual(['Here']);
-        expect(saved.settingsHash).toBe(settingsHash.pageSettingsHash(settingsStore.readAllSettings(directories)));
     });
 
     test('a rename shows the new name everywhere the book is chosen, and writes no settings', async () => {
@@ -103,43 +119,23 @@ describe('the settings choose lorebooks by id', () => {
         await chooseBooks(['Old', 'Other'], { 'p.png': 'Old', 'q.png': 'Other' });
         const versions = await settingsVersions();
 
-        const result = await (await postJson('/api/worldinfo/rename', { name: 'Old', new_name: 'New' })).json();
+        expect(await worlds.renameWorld(who, await bookId('Old'), 'New')).toBe('ok');
         expect(chosen()).toEqual({ globalSelect: ['New', 'Other'], lorebooks: { 'p.png': 'New', 'q.png': 'Other' } });
-        expect(result.settings).toEqual(settingsStore.readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']));
-        expect(result.settings_hash).toBe(settingsHash.pageSettingsHash(settingsStore.readAllSettings(directories)));
         expect(await settingsVersions()).toEqual(versions);
         const { settingsDocumentOf } = await import('../src/settings-documents.js');
         expect(settingsDocumentOf(directories)?.settingsFor({ avatar: 'nobody.png', groupId: 'nogroup' }).world_info_settings.world_info.globalSelect).toEqual(['New', 'Other']);
 
-        await writeBook('Unchosen');
-        const none = await (await postJson('/api/worldinfo/rename', { name: 'Unchosen', new_name: 'Still unchosen' })).json();
-        expect(none.settings).toEqual({});
-        expect(none.settings_hash).toBeUndefined();
     });
 
-    test('an overwrite under a name of another case keeps the book chosen where it was, under the new name', async () => {
-        await writeBook('Kept Choice');
-        await writeBook('Beside');
-        await chooseBooks(['Kept Choice', 'Beside'], { 'p.png': 'Kept Choice', 'q.png': 'Beside' });
-        const result = await (await postJson('/api/worldinfo/create', { name: 'kept choice', replaces: 'Kept Choice', data: { entries: {} } })).json();
-        expect(chosen()).toEqual({ globalSelect: ['kept choice', 'Beside'], lorebooks: { 'p.png': 'kept choice', 'q.png': 'Beside' } });
-        expect(result.settings).toEqual(settingsStore.readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']));
-        expect(result.settings_hash).toBe(settingsHash.pageSettingsHash(settingsStore.readAllSettings(directories)));
-    });
-
-    test('a delete unchooses the book in the same commit, answers the settings it changed, and a save over that hash goes in', async () => {
+    test('a delete unchooses the book in the same commit, and a save over the settings as they are then goes in', async () => {
         await writeBook('Gone');
         await writeBook('Stays');
         await chooseBooks(['Gone', 'Stays'], { 'p.png': 'Gone', 'q.png': 'Stays' });
-        const result = await (await postJson('/api/worldinfo/delete', { name: 'Gone' })).json();
+        expect(await worlds.deleteWorld(who, await bookId('Gone'))).toMatchObject({ next: expect.any(String) });
         expect(chosen()).toEqual({ globalSelect: ['Stays'], lorebooks: { 'p.png': '', 'q.png': 'Stays' } });
-        expect(result).toEqual({
-            ok: true, characters_updated: [], chats_updated: [],
-            settings: settingsStore.readSettingsAtPaths(directories, ['world_info_settings', 'power_user.persona_data']),
-            settings_hash: settingsHash.pageSettingsHash(settingsStore.readAllSettings(directories)),
-        });
         const page = settingsStore.readAllSettings(directories);
-        const save = await postJson('/api/settings/save', { ...page, swipes: !page.swipes }, { 'X-Settings-Hash': String(result.settings_hash) });
+        const hash = settingsHash.pageSettingsHash(page);
+        const save = await postJson('/api/settings/save', { ...page, swipes: !page.swipes }, { 'X-Settings-Hash': String(hash) });
         expect(save.status).toBe(200);
 
         await writeBook('Gone');
@@ -149,5 +145,15 @@ describe('the settings choose lorebooks by id', () => {
         setSettingsDocument(directories, undefined);
         await openSettingsDocument(directories, 'u');
         expect(chosen()).toEqual({ globalSelect: ['Stays'], lorebooks: { 'p.png': '', 'q.png': 'Stays' } });
+    });
+
+    test('a save from the page, which holds no world choices, leaves them as they are', async () => {
+        await writeBook('Everywhere');
+        await chooseBooks(['Everywhere'], { 'p.png': 'Everywhere' });
+        const page = settingsStore.readAllSettings(directories);
+        const { world_info_settings: _held, ...sent } = page;
+        const save = await postJson('/api/settings/save', { ...sent, swipes: !page.swipes }, { 'X-Settings-Hash': String(settingsHash.pageSettingsHash(page)) });
+        expect(save.status).toBe(200);
+        expect(chosen().globalSelect).toEqual(['Everywhere']);
     });
 });

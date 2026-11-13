@@ -8,16 +8,15 @@ import { GENERATION_TYPE_TRIGGERS } from './constants.js';
  * @property {(value: any) => boolean} [arrayFilter] - Optional filter function for array fields to filter out unwanted values
  */
 
-export const world_info_logic = Object.freeze({
+const world_info_logic = Object.freeze({
     AND_ANY: 0,
     NOT_ALL: 1,
     NOT_ANY: 2,
     AND_ALL: 3,
 });
 
-export const DEFAULT_DEPTH = 4;
-export const DEFAULT_WEIGHT = 100;
-export const MAX_SCAN_DEPTH = 1000;
+const DEFAULT_DEPTH = 4;
+const DEFAULT_WEIGHT = 100;
 
 /**
  * Upstream's fields of a World Info entry, each with its default value and type.

@@ -156,8 +156,7 @@ function WorldsMenu(props: {
                                 onClick={() =>
                                     run(() =>
                                         wb.act('worldbuilding.setUsedInEveryChat', {
-                                            book: world.id,
-                                            used: !world.usedInEveryChat,
+                                            changes: [{ book: world.id, used: !world.usedInEveryChat }],
                                         }),
                                     )
                                 }

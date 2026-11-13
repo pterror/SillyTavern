@@ -230,7 +230,7 @@ function Mentions(props: {
                 <For each={rows()}>
                     {(row) => (
                         <div class="wb-mention">
-                            <span class="wb-mention-pic" aria-hidden="true" />
+                            <Picture url={row.picture} class="wb-mention-pic" />
                             <div class="wb-mention-words">
                                 <div class="wb-mention-from">
                                     <button type="button" onClick={() => wb.open(row.from.thing)}>
@@ -254,6 +254,7 @@ function Mentions(props: {
                                                 text: row.sentence.mention,
                                                 shownAs: 'name',
                                             }}
+                                            picture={props.entry.picture}
                                         />
                                     </a>
                                     {row.sentence.after}

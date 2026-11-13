@@ -250,6 +250,9 @@ export const HELP_SETTINGS_VIEWS = [HOTKEYS_VIEW];
 
 export const WORLD_LIST_VIEWS = ['worldbuilding.worlds', 'worldbuilding.world'];
 
+// The views that draw a world's entries, which a slash command's entry write changes.
+export const WORLD_ENTRY_VIEWS = ['worldbuilding.overview', 'worldbuilding.results', 'worldbuilding.entry', 'worldbuilding.pointingAt', 'worldbuilding.card'];
+
 /**
  * @param {import('@st/protocol').ChatOwner | null} owner
  */

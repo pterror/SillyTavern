@@ -79,8 +79,8 @@ jest.unstable_mockModule('../public/scripts/i18n.js', () => ({
     t: (strings, ...values) => strings.reduce((acc, s, i) => acc + s + (values[i] ?? ''), ''),
 }));
 
-jest.unstable_mockModule('../public/scripts/world-info.js', () => ({
-    importWorldInfo: jest.fn(),
+jest.unstable_mockModule('../public/scripts/world-links.js', () => ({
+    importWorld: jest.fn(),
 }));
 
 jest.unstable_mockModule('../public/scripts/hash-utils.js', () => ({

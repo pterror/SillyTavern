@@ -229,3 +229,31 @@ fn a_new_entrys_relation_goes_last_among_the_relations_of_its_kind_to_its_target
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn pictures_are_read_for_the_book_s_entries_only() {
+    let dir = temp_dir("pictures");
+    let store = Store::open_in(&dir, SMALL, pool()).unwrap();
+    book(&store, 1, "one");
+    history_user(&store);
+    let mut records = Vec::new();
+    for (entity, display_index) in [(101, 0.0), (102, 1.0)] {
+        records.extend(entry(entity, display_index));
+    }
+    records.push(rec(
+        "textValue",
+        vec![
+            Value::Sel(0, 101),
+            Value::Field(FieldRef::Key(entry_label::PICTURE_FIELD.to_vec())),
+            text("abc"),
+            Value::Absent,
+            Value::Absent,
+        ],
+    ));
+    store.commit_wait(records).unwrap();
+    assert_eq!(
+        read(&store, |view| entry_page::pictures(view, 1, &[101, 102, 999])),
+        Js::Arr(vec![Js::Text(b"abc".to_vec()), Js::Null, Js::Null])
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
