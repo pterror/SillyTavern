@@ -3,11 +3,10 @@ import type { Client } from '@st/page/client';
 import { HOTKEYS_VIEW } from '../protocol.ts';
 
 export function helpCompat(client: Client) {
-    const [reading, setReading] = createSignal(false);
+    const [shown, setShown] = createSignal(false);
     let raise: (() => void) | null = null;
     return {
-        /** whether the page reads the panel's view: from the first time help opens */
-        reading,
+        shown,
         onRaise(next: (() => void) | null) {
             raise = next;
         },
@@ -15,9 +14,13 @@ export function helpCompat(client: Client) {
         async open(name: string): Promise<string | null> {
             const answer = await client.send('help.open', { name });
             if (!answer.ok) return answer.error;
-            setReading(true);
+            setShown(true);
             raise?.();
             return null;
+        },
+        close() {
+            setShown(false);
+            void client.send('help.close', {});
         },
         async hotkeysRead() {
             if (client.version(HOTKEYS_VIEW) === 0) await client.reread(HOTKEYS_VIEW);

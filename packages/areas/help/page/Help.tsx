@@ -36,15 +36,18 @@ type Open = Extract<PanelView, { open: true }>;
 
 const BROWSERS: Partial<Record<Topic, Browser>> = { slash: 'slash', macros: 'macros' };
 
-export function Help(props: { reading: boolean; old: OldPage; onRaise: (raise: (() => void) | null) => void }) {
+type Handlers = { old: OldPage; onRaise: (raise: (() => void) | null) => void; onClose: () => void };
+
+/** `shown`: from the answer that opened help until the user closes it, whatever the server answers to the close. */
+export function Help(props: Handlers & { shown: boolean }) {
     return (
-        <Show when={props.reading}>
-            <Reader old={props.old} onRaise={props.onRaise} />
+        <Show when={props.shown}>
+            <Reader old={props.old} onRaise={props.onRaise} onClose={props.onClose} />
         </Show>
     );
 }
 
-function Reader(props: { old: OldPage; onRaise: (raise: (() => void) | null) => void }) {
+function Reader(props: Handlers) {
     const { client } = useUi();
     const panel = client.view<PanelView>(PANEL_VIEW);
     const hotkeys = client.view<HotkeysView>(HOTKEYS_VIEW);
@@ -59,6 +62,7 @@ function Reader(props: { old: OldPage; onRaise: (raise: (() => void) | null) => 
                 markdown={() => hotkeys()?.markdown === true}
                 old={props.old}
                 onRaise={props.onRaise}
+                onClose={props.onClose}
             />
         </Show>
     );
@@ -124,12 +128,7 @@ type Listed = { topic: Topic; count?: number };
 
 const EVERY_TOPIC: Listed[] = TOPICS.map((topic) => ({ topic }));
 
-function Panel(props: {
-    view: Accessor<Open>;
-    markdown: Accessor<boolean>;
-    old: OldPage;
-    onRaise: (raise: (() => void) | null) => void;
-}) {
+function Panel(props: Handlers & { view: Accessor<Open>; markdown: Accessor<boolean> }) {
     const { client, t } = useUi();
     const [navOpen, setNavOpen] = createSignal(false);
     const [typed, setTyped] = createSignal(untrack(() => props.view().query));
@@ -261,7 +260,7 @@ function Panel(props: {
     const layer = props.old.layer(panel, {
         className: 'helpLayer',
         closeTitle: t('Close help'),
-        requestClose: () => send('help.close', {}),
+        requestClose: () => props.onClose(),
     });
     props.onRaise(() => layer.raise());
     onCleanup(() => {

@@ -119,7 +119,12 @@ export function start(options: StartOptions) {
     const helpHost = document.createElement('div');
     document.body.append(helpHost);
     mount(helpHost, () => (
-        <Help reading={help.reading()} old={options.help} onRaise={(raise) => help.onRaise(raise)} />
+        <Help
+            shown={help.shown()}
+            old={options.help}
+            onRaise={(raise) => help.onRaise(raise)}
+            onClose={() => help.close()}
+        />
     ));
 
     return {

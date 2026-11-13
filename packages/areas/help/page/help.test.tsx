@@ -77,7 +77,12 @@ function stand(
     const dispose = render(
         () => (
             <UiProvider value={{ client, t: (text) => text }}>
-                <Help reading={compat.reading()} old={old} onRaise={(raise) => compat.onRaise(raise)} />
+                <Help
+                    shown={compat.shown()}
+                    old={old}
+                    onRaise={(raise) => compat.onRaise(raise)}
+                    onClose={() => compat.close()}
+                />
             </UiProvider>
         ),
         host,
@@ -253,20 +258,33 @@ test("the search box isn't overwritten by an earlier answer while what's typed i
     s.dispose();
 });
 
-test('the close button asks the server, and the layer goes when the view says help is closed', async () => {
+test('the close button closes the layer at once and tells the server afterwards; a refusal shows nothing', async () => {
     const s = stand();
     await s.compat.open('');
     const layer = s.layers[0];
     s.hold();
     layer?.requestClose();
-    expect(s.sent.at(-1)).toEqual({ type: 'help.close', payload: {} });
-    await flush();
-    expect(layer?.closed).toBe(false);
-    expect(s.panelElement()).not.toBeNull();
-    s.letGo();
-    await flush();
     expect(layer?.closed).toBe(true);
     expect(s.panelElement()).toBeNull();
+    expect(s.sent.at(-1)).toEqual({ type: 'help.close', payload: {} });
+    s.setPanel({ open: true, topic: 'slash', query: '' });
+    await flush();
+    expect(s.panelElement()).toBeNull();
+    s.letGo();
+    await flush();
+    expect(s.panelElement()).toBeNull();
+    expect(await s.compat.open('')).toBeNull();
+    expect(s.panelElement()).not.toBeNull();
+    expect(s.layers).toHaveLength(2);
+    s.dispose();
+});
+
+test('help the server says is closed closes here too', async () => {
+    const s = stand();
+    await s.compat.open('');
+    s.setPanel({ open: false });
+    expect(s.layers[0]?.closed).toBe(true);
+    expect(s.sent.filter((sent) => sent.type === 'help.close')).toHaveLength(0);
     s.dispose();
 });
 
