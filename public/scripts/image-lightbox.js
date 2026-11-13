@@ -11,6 +11,7 @@ export function initImageLightbox(show) {
  * @param {JQuery.ClickEvent} event
  */
 export function onLightboxImageClick(event) {
+    event.preventDefault();
     event.stopPropagation();
     showLightbox(this.src, this.alt || '');
 }

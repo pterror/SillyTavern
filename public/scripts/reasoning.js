@@ -1220,7 +1220,7 @@ function setReasoningEventHandlers() {
         updateMessage(messageId, { extra: withReasoning(message.extra, reasoning, type) });
     }
 
-    $(document).on('click', '.mes_reasoning_details', function (e) {
+    $(document).on('click', '.mes_reasoning_summary', function (e) {
         if (!e.target.closest('.mes_reasoning_actions') && !e.target.closest('.mes_reasoning_header')) {
             e.preventDefault();
         }

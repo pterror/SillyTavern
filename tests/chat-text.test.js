@@ -5,6 +5,7 @@ const window = new Window({ url: 'http://localhost:8000/' });
 globalThis.window = /** @type {any} */ (window);
 globalThis.document = /** @type {any} */ (window.document);
 globalThis.location = /** @type {any} */ (window.location);
+globalThis.Element = /** @type {any} */ (window.Element);
 
 jest.unstable_mockModule('../public/lib.js', async () => {
     const { default: createDOMPurify } = await import('dompurify');
@@ -228,6 +229,66 @@ describe('chat text, a place in it', () => {
         const value = shown.querySelector('.macro-value')?.firstChild;
         expect(value && surface.sourcePositionAt(value, 1)).toBe(source.indexOf('{{user}}'));
         expect(surface.sourcePositionAt(document.createTextNode('elsewhere'), 0)).toBeUndefined();
+    });
+});
+
+describe('chat text, a click on it', () => {
+    /**
+     * @param {string} html what the text is drawn as
+     * @param {string} selector the element in it clicked
+     * @param {{ before?: (event: Event) => void, outside?: string }} [options] before: a handler the click reaches
+     * first; outside: markup the text is drawn inside, its slot an element with id slot
+     * @returns {number | null} the edit the click starts
+     */
+    function clicked(html, selector, { before, outside } = {}) {
+        const page = document.createElement('div');
+        page.innerHTML = outside ?? '<div id="slot"></div>';
+        const rendered = /** @type {HTMLElement} */ (page.querySelector('#slot'));
+        rendered.innerHTML = html;
+        const target = /** @type {HTMLElement} */ (rendered.querySelector(selector));
+        if (before) target.addEventListener('click', before);
+        /** @type {number | null | undefined} */
+        let at;
+        rendered.addEventListener('click', event => { at = surface.editPosition(/** @type {MouseEvent} */ (event), rendered, true); });
+        target.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+        return /** @type {number | null} */ (at);
+    }
+
+    test('on text starts an edit', () => {
+        expect(clicked('<p><b>text</b></p>', 'b')).not.toBeNull();
+    });
+
+    test('that a handler marked as handled starts none', () => {
+        expect(clicked('<p><img src="x.png"></p>', 'img', { before: event => event.preventDefault() })).toBeNull();
+        expect(clicked('<p><span class="lore-mark">text</span></p>', 'span', { before: event => event.preventDefault() })).toBeNull();
+    });
+
+    test('on interactive content in the text starts none, wherever in it the click lands', () => {
+        const interactive = [
+            '<a href="u"><b>x</b></a>', '<audio controls><b>x</b></audio>', '<video controls><b>x</b></video>',
+            '<button><b>x</b></button>', '<details><summary><b>x</b></summary>body</details>', '<embed>', '<iframe></iframe>',
+            '<img usemap="#m">', '<input>', '<label><b>x</b></label>', '<select></select>', '<textarea></textarea>',
+        ];
+        for (const html of interactive) {
+            const selector = html.includes('<b>') ? 'b' : html.match(/^<(\w+)/)?.[1] ?? '';
+            expect([html, clicked(html, selector)]).toEqual([html, null]);
+        }
+    });
+
+    test('on what only looks interactive starts one', () => {
+        const inert = [
+            '<a><b>x</b></a>', '<audio><b>x</b></audio>', '<img src="x.png">', '<input type="hidden">',
+            '<details><summary>open</summary><b>body</b></details>',
+            '<details><summary>open</summary><summary><b>x</b></summary></details>',
+        ];
+        for (const html of inert) {
+            const selector = html.includes('<b>') ? 'b' : html.match(/^<(\w+)/)?.[1] ?? '';
+            expect([html, clicked(html, selector)]).not.toEqual([html, null]);
+        }
+    });
+
+    test('inside interactive content around the text starts one', () => {
+        expect(clicked('<p><b>text</b></p>', 'b', { outside: '<label><div id="slot"></div></label>' })).not.toBeNull();
     });
 });
 
