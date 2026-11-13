@@ -14,8 +14,9 @@ import { draftOwnerOf } from './chat-drafts.js';
  * @property {import('./users.js').UserDirectoryList} [directories]
  * @property {import('./pending-opening.js').PendingOpening | null} [opening] the opening the page sent that waits for what goes under it
  * @property {string} [openedAt] the node that opening was stored as
- * @property {import('./chat-drafts.js').DraftOwner | null} [draftSent] the draft whose text the request's action took,
- *   cleared by the write that stores what it sent
+ * @property {{ owner: import('./chat-drafts.js').DraftOwner, version: unknown } | null} [draftSent] the draft whose
+ *   text the request's action took and the version it was written over: the write that stores what it sent takes that
+ *   text out of the draft
  */
 
 /**
@@ -36,7 +37,10 @@ export async function chatContext(request, { avatar, group }) {
     /** @type {ChatContext} */
     const chat = { store, tree, treeSpeaker, session, avatar: groupId === null ? name : null, groupId, directories: request.user?.directories, ...(Array.isArray(replyChanges) ? { replyChanges } : {}) };
     const sent = request.body?.draft_sent;
-    if (sent !== undefined) chat.draftSent = await draftOwnerOf(chat, sent);
+    if (sent !== undefined) {
+        const owner = await draftOwnerOf(chat, sent);
+        chat.draftSent = owner === null ? null : { owner, version: sent?.version };
+    }
     return chat;
 }
 

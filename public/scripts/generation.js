@@ -328,7 +328,7 @@ export async function finishStreamedReplyPersistence({ assistantNodeId }) {
  */
 
 /**
- * @typedef {{ text: string, sent: import('./chat-box-ends.js').DraftOwner | null }} ChatBoxSend
+ * @typedef {{ text: string, sent: (import('./chat-box-ends.js').DraftOwner & { version: string }) | null }} ChatBoxSend
  */
 
 /**

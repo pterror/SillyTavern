@@ -210,7 +210,7 @@ import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { getMountedTextarea } from './scripts/live-editor/registry.js';
-import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxText, focusChatBox, forgetChatBoxChat, initChatBox, openingChatBox, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
+import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxText, focusChatBox, forgetChatBoxChat, initChatBox, openingChatBox, takeChatBoxPush, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
 import { endOwnerOf } from './scripts/chat-box-ends.js';
 import { chatBoxSetup } from './scripts/message-text.js';
 import { initChatEditors, loadChatEditor } from './scripts/chat-text/editors.js';
@@ -918,6 +918,10 @@ function setupCharacterChangeStream() {
             }
             if (message?.type === 'views-changed') {
                 void onSavedViewsChanged();
+                return;
+            }
+            if (message?.type === 'draft') {
+                takeChatBoxPush(message);
                 return;
             }
             if (message?.type === 'state') {

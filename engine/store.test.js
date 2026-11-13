@@ -374,12 +374,19 @@ for (const [name, engine] of Object.entries(bindings)) {
             { kind: 'draftValue', tree: 40n, greeting: 2, text: 'after greeting 2' },
             { kind: 'draftEdit', tree: 40n, greeting: 2, offset: 0, removed: 1, text: 'A' },
         ]);
-        assert.equal(await store.chatRead('draft', { message: 1n }), 'after reply one');
-        assert.equal(await store.chatRead('draft', { message: 0n }), null);
-        assert.equal(await store.chatRead('draft', { tree: 40n }), 'at the root');
-        assert.equal(await store.chatRead('draft', { tree: 40n, greeting: 2 }), 'After greeting 2');
+        const text = async (/** @type {object} */ owner) => (await store.chatRead('draft', owner)).text;
+        assert.equal(await text({ message: 1n }), 'after reply one');
+        assert.deepEqual(await store.chatRead('draft', { message: 0n }), { text: '', written: 0n, edits: 0n });
+        assert.equal(await text({ tree: 40n }), 'at the root');
+        const greeting = await store.chatRead('draft', { tree: 40n, greeting: 2 });
+        assert.equal(greeting.text, 'After greeting 2');
+        assert.equal(greeting.edits, 1n);
+        assert.equal((await store.chatRead('draft', { tree: 40n, greeting: 2, written: greeting.written, edits: 0n })).base, 'after greeting 2');
+        assert.equal((await store.chatRead('draft', { tree: 40n, greeting: 2, written: greeting.written + 1n, edits: 0n })).base, null);
         await store.commit([{ kind: 'draftValue', message: 1n, text: '' }]);
-        assert.equal(await store.chatRead('draft', { message: 1n }), null);
+        const cleared = await store.chatRead('draft', { message: 1n });
+        assert.equal(cleared.text, '');
+        assert.ok(cleared.written > 0n && cleared.edits === 0n, 'a clear is a version of its own');
         assert.deepEqual(await store.chatRead('ids', { space: 1, keys: ['0190a1b2-0000-7000-8000-00000000000a', 'nope'] }), [1n, null]);
         assert.deepEqual(await store.chatRead('keyStates', { space: 1, keys: ['0190a1b2-0000-7000-8000-00000000000a', 'nope'] }), [{ id: 1n }, null]);
         assert.deepEqual(await store.chatRead('nextIds', {}), { message: 3n, position: 10n, user: 2n, change: 2n });

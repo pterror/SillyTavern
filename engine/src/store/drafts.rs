@@ -2,11 +2,19 @@
 //! tree: the character or group), or a card greeting not yet stored (the card and the greeting's id). A draft is a
 //! value with edits, as a text field is, but it is no part of what it follows: writing it changes no message, card,
 //! version or feed.
+//!
+//! A draft's version is the log position its whole value was written at, plus one, and the number of edits since: it
+//! grows with every write, a clear too, so versions of one draft are ordered. The text at an earlier version of the same
+//! value is that value with that many edits. A draft never written is version (0, 0); a cleared one keeps the version
+//! of its clear, with no text, until what it follows goes. A version is the position as written, not where compaction
+//! moves the record.
 
 use super::StoreError;
 use super::chat::{opt_id, require_message};
 use super::derive::{Deriver, Loc, Out, View};
-use super::kinds::{Head, apply_edit, bytes, dead, full_text, id, key, loc_bytes, parse_loc};
+use super::kinds::{
+    Head, apply_edit, bytes, dead, full_text, id, key, loc_bytes, parse_loc, parse_varints, varints,
+};
 use super::{library, prune, sessions};
 use crate::keyspace::val::put_u64;
 use crate::log::format::{Ctx, Record, Value, encode, kind_by_name, wtf8_to_utf16};
@@ -15,6 +23,8 @@ use crate::log::format::{Ctx, Record, Value, encode, kind_by_name, wtf8_to_utf16
 pub const DRAFT: u64 = 306;
 /// A draft's edits, by owner and edit number
 pub const DRAFT_EDIT: u64 = 307;
+/// The position a draft's whole value or its clear was written at, plus one, by owner
+pub const DRAFT_WRITTEN: u64 = 308;
 
 const AT: usize = 0;
 const GREETING: usize = 1;
@@ -78,6 +88,10 @@ impl Owner {
         self.prefix(DRAFT)
     }
 
+    fn written_key(self) -> Vec<u8> {
+        self.prefix(DRAFT_WRITTEN)
+    }
+
     fn edits_prefix(self) -> Vec<u8> {
         self.prefix(DRAFT_EDIT)
     }
@@ -126,9 +140,14 @@ fn edits(view: &View, o: Owner, h: &Head) -> Result<Vec<(Vec<u8>, Loc)>, StoreEr
 }
 
 fn materialize(view: &View, o: Owner, h: &Head) -> Result<Vec<u8>, StoreError> {
+    materialize_to(view, o, h, h.edits())
+}
+
+/// The draft's value with its first `n` edits
+fn materialize_to(view: &View, o: Owner, h: &Head, n: u64) -> Result<Vec<u8>, StoreError> {
     let (full, _) = view.record(h.full.pos)?;
     let mut text = full_text(&full).to_vec();
-    for (_, l) in edits(view, o, h)? {
+    for (_, l) in edits(view, o, h)?.into_iter().take(n as usize) {
         let (e, _) = view.record(l.pos)?;
         text = apply_edit(
             &text,
@@ -149,7 +168,59 @@ pub fn draft(view: &View, o: Owner) -> Result<Option<Vec<u8>>, StoreError> {
     }
 }
 
+/// A draft's version: where its value was written (plus one) and how many edits it has had since; (0, 0) for no draft
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Version {
+    pub written: u64,
+    pub edits: u64,
+}
+
+impl Version {
+    pub const NONE: Version = Version {
+        written: 0,
+        edits: 0,
+    };
+}
+
+fn written(view: &View, o: Owner) -> Result<u64, StoreError> {
+    view.get(&o.written_key())?
+        .map_or(Ok(0), |b| Ok(parse_varints::<1>(&b)?[0]))
+}
+
+/// The draft kept after an owner and its version; empty when there is none
+pub fn draft_now(view: &View, o: Owner) -> Result<(Vec<u8>, Version), StoreError> {
+    let written = written(view, o)?;
+    match head(view, o)? {
+        Some(h) => Ok((
+            materialize(view, o, &h)?,
+            Version {
+                written,
+                edits: h.edits(),
+            },
+        )),
+        None => Ok((Vec::new(), Version { written, edits: 0 })),
+    }
+}
+
+/// The draft's text as it was at a version, while the draft still holds that version's history: its value is the one
+/// written then and it has had at least as many edits since. None once that history is gone (a whole value written
+/// since, the draft cleared since, or a version it never had).
+pub fn draft_at(view: &View, o: Owner, v: Version) -> Result<Option<Vec<u8>>, StoreError> {
+    if v == Version::NONE {
+        return Ok(Some(Vec::new()));
+    }
+    if written(view, o)? != v.written {
+        return Ok(None);
+    }
+    match head(view, o)? {
+        Some(h) if v.edits <= h.edits() => materialize_to(view, o, &h, v.edits).map(Some),
+        Some(_) => Ok(None),
+        None => Ok((v.edits == 0).then(Vec::new)),
+    }
+}
+
 fn drop_draft(view: &View, out: &mut Out, o: Owner) -> Result<(), StoreError> {
+    out.del(o.written_key());
     let Some(h) = head(view, o)? else {
         return Ok(());
     };
@@ -186,7 +257,7 @@ pub fn message_gone(view: &View, out: &mut Out, m: u64) -> Result<(), StoreError
 
 /// Drops the drafts at a tree's root and after each of a card's greetings, for an entity going away
 pub fn entity_gone(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError> {
-    let mut p = key::of(DRAFT);
+    let mut p = key::of(DRAFT_WRITTEN);
     put_u64(&mut p, 0);
     put_u64(&mut p, e);
     for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
@@ -249,6 +320,7 @@ impl Deriver for DraftValue {
         check_owner(view, o)?;
         sessions::check_actor(view, opt_id(rec, VALUE_SESSION), opt_id(rec, VALUE_USER))?;
         drop_draft(view, out, o)?;
+        out.put(o.written_key(), varints(&[at.pos + 1]));
         let text = bytes(rec, 2);
         if text.is_empty() {
             dead(out, at);

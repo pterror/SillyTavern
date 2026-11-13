@@ -2510,7 +2510,12 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
                 (None, Some(t), Some(g)) => Owner::Greeting(t, g),
                 _ => return Err(invalid("a draft is read by message, or by tree with or without greeting".into())),
             };
-            Box::new(move |s| s.chat_read(|v| cr::draft(v, owner)).map(JsTree))
+            let at = match (opt_integer(a, "written")?, opt_integer(a, "edits")?) {
+                (Some(written), Some(edits)) => Some(crate::store::drafts::Version { written, edits }),
+                (None, None) => None,
+                _ => return Err(invalid("a draft's earlier text is read at a version: written and edits".into())),
+            };
+            Box::new(move |s| s.chat_read(|v| cr::draft(v, owner, at)).map(JsTree))
         }
         "openingChoice" => {
             let (ses, tree, card) = (req_integer(a, "session")?, req_integer(a, "tree")?, opt_integer(a, "card")?);

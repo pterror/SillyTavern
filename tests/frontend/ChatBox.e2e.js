@@ -198,7 +198,7 @@ test.describe('the chat box\'s drafts', () => {
         await expect(chatBox(page)).toHaveCount(1, { timeout: 10000 });
         await chatBox(page).click();
         await page.keyboard.type('never saved');
-        const copies = () => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('FieldDraft:') && key.includes('ChatBox')).length);
+        const copies = () => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('ChatBoxCopy:')).length);
         expect(await copies()).toBe(1);
         let refused = 0;
         await page.route('**/api/chats/draft', route => (refused++, route.abort()));
@@ -211,5 +211,32 @@ test.describe('the chat box\'s drafts', () => {
         await openCharacter(page, first);
         await expect.poll(() => boxText(page)).toBe('never saved');
         await expect.poll(copies).toBe(0);
+    });
+
+    test('two tabs writing in one chat both keep what they wrote: a draft saved in one is laid under what the other is typing', async ({ page, context }) => {
+        test.setTimeout(90000);
+        await testSetup.awaitST({ page });
+        const avatar = await createCharacter(page, `Two tabs ${stamp()}`);
+        await openCharacter(page, avatar);
+        await expect(chatBox(page)).toHaveCount(1, { timeout: 10000 });
+        await chatBox(page).click();
+        await page.keyboard.type('Second tab typing. ');
+
+        const other = await context.newPage();
+        await other.goto(page.url());
+        await testSetup.awaitST({ page: other });
+        await openCharacter(other, avatar);
+        await expect(chatBox(other)).toHaveCount(1, { timeout: 10000 });
+        await chatBox(other).click();
+        await other.keyboard.type('First tab wrote this.');
+        const kept = other.waitForRequest(request => request.url().endsWith('/api/chats/draft'));
+        await other.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+        await (await kept).response();
+
+        await expect.poll(() => boxText(page), { timeout: 15000 }).toContain('First tab wrote this.');
+        expect(await boxText(page)).toContain('Second tab typing.');
+        await page.keyboard.type('More.');
+        expect(await boxText(page)).toContain('More.');
+        await other.close();
     });
 });

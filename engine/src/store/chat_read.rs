@@ -704,8 +704,26 @@ pub fn sent(view: &View, owner: u64, keys: &[Vec<u8>]) -> Result<Js, StoreError>
     Ok(Js::Arr(out))
 }
 
-pub fn draft(view: &View, o: super::drafts::Owner) -> Result<Js, StoreError> {
-    Ok(super::drafts::draft(view, o)?.map_or(Js::Null, Js::Text))
+/// A draft's text and version, and, when asked with a version, its text at that version (null once that history is
+/// gone)
+pub fn draft(
+    view: &View,
+    o: super::drafts::Owner,
+    at: Option<super::drafts::Version>,
+) -> Result<Js, StoreError> {
+    let (text, v) = super::drafts::draft_now(view, o)?;
+    let mut fields = vec![
+        ("text", Js::Text(text)),
+        ("written", Js::Big(v.written)),
+        ("edits", Js::Big(v.edits)),
+    ];
+    if let Some(at) = at {
+        fields.push((
+            "base",
+            super::drafts::draft_at(view, o, at)?.map_or(Js::Null, Js::Text),
+        ));
+    }
+    Ok(Js::Obj(fields))
 }
 
 pub fn conversation_name(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {

@@ -13,8 +13,9 @@ import { cardGreetingsOf } from './opening-state.js';
  */
 
 /**
- * A draft as an answer carries it: the end of the chat the answer leaves the page at, and the text written after it
- * @typedef {{ owner: WireDraftOwner, text: string }} DraftAnswer
+ * A draft as an answer carries it: the end of the chat the answer leaves the page at, the text written after it, and
+ * its version (`ChatEngine.draftOf`)
+ * @typedef {{ owner: WireDraftOwner, text: string, version: string }} DraftAnswer
  */
 
 /**
@@ -78,7 +79,7 @@ export async function wireOwnerOf(store, owner) {
 export async function endDraft(chat) {
     const owner = await chat.store.chats.endOwner({ tree: chat.tree, actor: chat.session.reader() });
     const wire = await wireOwnerOf(chat.store, owner);
-    return wire === null ? undefined : { owner: wire, text: await chat.store.chats.draftOf(owner) };
+    return wire === null ? undefined : { owner: wire, ...await chat.store.chats.draftOf(owner) };
 }
 
 /**
@@ -86,7 +87,7 @@ export async function endDraft(chat) {
  * @param {import('./user-stores.js').UserStore} store
  * @param {Record<string, any>[]} records
  * @param {bigint | null} session the tab's session; its own drafts aren't told back to it
- * @returns {Promise<{ type: 'draft', tree: { avatar: string } | { group: string }, owner: WireDraftOwner, text: string }[]>}
+ * @returns {Promise<{ type: 'draft', tree: { avatar: string } | { group: string }, owner: WireDraftOwner, text: string, version: string }[]>}
  */
 export async function draftFrames(store, records, session) {
     /** @type {Map<string, DraftOwner>} */
@@ -105,7 +106,7 @@ export async function draftFrames(store, records, session) {
         const treeId = 'message' in owner ? (await store.chats.stored([owner.message])).get(owner.message)?.owner : owner.tree;
         const [key] = wire === null || treeId === undefined ? [null] : await store.lib.store.libraryKeys([treeId]);
         if (wire === null || !key) continue;
-        frames.push({ type: /** @type {const} */ ('draft'), tree: key.type === TYPE.group ? { group: key.key } : { avatar: key.key }, owner: wire, text: await store.chats.draftOf(owner) });
+        frames.push({ type: /** @type {const} */ ('draft'), tree: key.type === TYPE.group ? { group: key.key } : { avatar: key.key }, owner: wire, ...await store.chats.draftOf(owner) });
     }
     return frames;
 }

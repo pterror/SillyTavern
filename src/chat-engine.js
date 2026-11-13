@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import zlib from 'node:zlib';
 
 import { textEdit } from './text-edit.js';
+import { mergeDraft, unionOf } from './draft-merge.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
 import { resolveAvatars, withoutShownAvatar } from './avatar-refs.js';
 import { ITEMIZED_PROMPT_FLAG } from './prompt-itemization.js';
@@ -334,8 +335,23 @@ const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], defaultId: null, de
 export const LAST = Object.freeze({ last: true });
 
 /**
+ * @param {unknown} version a draft's version as the page gives it back
+ * @returns {{ written: bigint, edits: bigint } | null} null when it is no version this gave
+ */
+export function draftVersionOf(version) {
+    const parts = typeof version === 'string' ? /^(\d+)\.(\d+)$/.exec(version) : null;
+    return parts ? { written: BigInt(parts[1]), edits: BigInt(parts[2]) } : null;
+}
+
+/**
  * The message a draft responds to: a stored message; a tree, its root; or a card entity and one of its greetings' ids
  * @typedef {{ message: bigint } | { tree: bigint, greeting?: number }} DraftOwner
+ */
+
+/**
+ * A draft's text and version. The version is the engine's (where its value was written, and how many edits since) as
+ * `written.edits`; `0.0` is no draft.
+ * @typedef {{ text: string, version: string }} Draft
  */
 
 export class PlaceError extends Error {}
@@ -1098,7 +1114,8 @@ export class ChatEngine {
      * @param {boolean} [p.regenerated]
      * @param {Place} [p.place] where the first new message goes among its alternatives
      * @param {Actor} p.actor
-     * @param {DraftOwner | null} [p.draftSent] the draft the append sends, cleared by it
+     * @param {{ owner: DraftOwner, version: unknown } | null} [p.draftSent] the draft the append sends and the version
+     *   it was written over: what it was then is taken out of the draft, and what others wrote since stays
      * @returns {Promise<{ ok: boolean, reason?: string, node_ids: string[], already_stored?: string[] }>}
      */
     appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], changes = [], author = AUTHOR.user, ref = null, regenerated = false, place = LAST, actor, draftSent = null }) {
@@ -1165,9 +1182,10 @@ export class ChatEngine {
             }
             const end = ids.at(-1);
             const made = end !== undefined && records.some(r => /** @type {any} */ (r).kind === 'messageAppend' && /** @type {any} */ (r).id === end) ? end : null;
-            await this.inDraftLanes(tree, made === null ? [] : [draftSent], async () => {
-                if (made !== null && draftSent !== null && await this.store.chatRead('draft', draftSent) !== null) {
-                    records.push({ kind: 'draftValue', ...draftSent, text: '', user, ...(session === null ? {} : { session }) });
+            await this.inDraftLanes(tree, made === null || draftSent === null ? [] : [draftSent.owner], async () => {
+                if (made !== null && draftSent !== null) {
+                    const { record } = await this.draftWritten(draftSent.owner, draftSent.version, '', { user, ...(session === null ? {} : { session }) });
+                    if (record !== null) records.push(record);
                 }
                 await this.claimConversation(records, tree, actor, { user, session });
                 if (records.length) await this.store.commit(records);
@@ -1266,35 +1284,55 @@ export class ChatEngine {
 
     /**
      * @param {DraftOwner} owner
-     * @returns {Promise<string>} the draft's text, '' when there is none
+     * @returns {Promise<Draft>} the draft, empty at version `0.0` when there is none
      */
     async draftOf(owner) {
-        return (await this.store.chatRead('draft', owner)) ?? '';
+        const now = await this.store.chatRead('draft', owner);
+        return { text: now.text, version: `${now.written}.${now.edits}` };
     }
 
     /**
-     * Keeps a draft as the text given, after what it names, only if the draft is still the one the text was written over:
-     * a draft kept since, which the writer never saw, is never written over. Kept as an edit of what is kept, the whole
-     * text when nothing is, none when it's empty.
-     * @param {{ tree: bigint, owner: DraftOwner, text: string, base: string, actor: Actor }} p tree: the chat it's
-     *   written in; base: the draft as the writer last had it
-     * @returns {Promise<{ kept: boolean, text: string }>} whether the draft is the text given, and the draft now
+     * The draft a text written over a version of it makes: the text itself over the draft as it still is; laid over
+     * what others changed since that version, as an editor rebases (`mergeDraft`); and both kept whole when that
+     * version's text is gone (`unionOf`)
+     * @param {DraftOwner} owner
+     * @param {unknown} version the version written over, as given
+     * @param {string} text
+     * @param {{ user: bigint, session?: bigint }} who
+     * @returns {Promise<{ draft: string, record: object | null }>} the draft, and the record that writes it, none when it is unchanged
      */
-    saveDraft({ tree, owner, text, base, actor }) {
+    async draftWritten(owner, version, text, who) {
+        const over = draftVersionOf(version);
+        const now = await this.store.chatRead('draft', { ...owner, ...(over ?? {}) });
+        const same = over !== null && now.written === over.written && now.edits === over.edits;
+        const draft = same ? text : over !== null && now.base !== null ? mergeDraft(now.base, now.text, text) : unionOf(now.text, text);
+        if (draft === now.text) return { draft, record: null };
+        return {
+            draft,
+            record: now.text === '' || draft === ''
+                ? { kind: 'draftValue', ...owner, text: draft, ...who }
+                : { kind: 'draftEdit', ...owner, ...textEdit(now.text, draft), ...who },
+        };
+    }
+
+    /**
+     * Keeps a text written over a version of a draft. When the draft has changed since that version, the text is laid
+     * over it: what the writer changed since the version, over what was changed since by others. When that version's
+     * text is gone (the draft written whole or cleared since), both texts are kept whole. Nothing written is lost.
+     * Kept as an edit of what is kept, the whole text when nothing is, none when it's empty.
+     * @param {{ tree: bigint, owner: DraftOwner, text: string, version: unknown, actor: Actor }} p tree: the chat it's
+     *   written in; version: the draft's version the text was written over, as given
+     * @returns {Promise<Draft & { merged: boolean }>} the draft now, and whether it is other than the text given
+     */
+    saveDraft({ tree, owner, text, version, actor }) {
         return this.serialized(tree, async () => {
             return await this.inDraftLanes(tree, [owner], async () => {
-                const before = await this.draftOf(owner);
-                if (before === text) return { kept: true, text };
-                if (before !== base) return { kept: false, text: before };
                 /** @type {object[]} */
                 const records = [];
                 const { user, session } = await this.actorIds(actor, records);
-                const who = { user, ...(session === null ? {} : { session }) };
-                records.push(before === '' || text === ''
-                    ? { kind: 'draftValue', ...owner, text, ...who }
-                    : { kind: 'draftEdit', ...owner, ...textEdit(before, text), ...who });
-                await this.store.commit(records);
-                return { kept: true, text };
+                const { draft, record } = await this.draftWritten(owner, version, text, { user, ...(session === null ? {} : { session }) });
+                if (record !== null) await this.store.commit([...records, record]);
+                return { ...await this.draftOf(owner), merged: draft !== text };
             });
         });
     }

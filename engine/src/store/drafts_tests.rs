@@ -221,3 +221,58 @@ fn a_draft_needs_what_it_follows_and_goes_with_it() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+fn now(s: &Store, o: Owner) -> (String, drafts::Version) {
+    let (t, v) = s.derived(|v| drafts::draft_now(v, o)).unwrap();
+    (String::from_utf8(t).unwrap(), v)
+}
+
+fn then(s: &Store, o: Owner, v: drafts::Version) -> Option<String> {
+    s.derived(|view| drafts::draft_at(view, o, v))
+        .unwrap()
+        .map(|b| String::from_utf8(b).unwrap())
+}
+
+#[test]
+fn every_write_is_a_new_version_and_an_earlier_one_reads_while_its_history_is_kept() {
+    let dir = temp_dir("versions");
+    let s = open(&dir);
+    s.commit_wait(vec![card(10)]).unwrap();
+    assert_eq!(now(&s, ROOT), (String::new(), drafts::Version::NONE));
+    assert_eq!(then(&s, ROOT, drafts::Version::NONE).as_deref(), Some(""));
+
+    let long = "a long draft that outweighs its small edits";
+    s.commit_wait(vec![value(ROOT, long)]).unwrap();
+    let (_, v0) = now(&s, ROOT);
+    assert_ne!(v0, drafts::Version::NONE);
+    s.commit_wait(vec![edit(ROOT, 0, 1, "A")]).unwrap();
+    let (_, v1) = now(&s, ROOT);
+    s.commit_wait(vec![edit(ROOT, 1, 1, " ")]).unwrap();
+    let (text, v2) = now(&s, ROOT);
+    assert_eq!(text, format!("A {}", &long[2..]));
+    assert!(v0 != v1 && v1 != v2 && v0.written == v2.written && v1.edits < v2.edits);
+    assert_eq!(then(&s, ROOT, v0).as_deref(), Some(long));
+    assert_eq!(then(&s, ROOT, v1).as_deref(), Some(&*format!("A{}", &long[1..])));
+    assert_eq!(then(&s, ROOT, v2).as_deref(), Some(&*text));
+    assert_eq!(then(&s, ROOT, drafts::Version { written: v2.written, edits: 9 }), None, "a version it never had");
+
+    s.commit_wait(vec![value(ROOT, "whole again")]).unwrap();
+    let (_, v3) = now(&s, ROOT);
+    assert_ne!(v3.written, v2.written, "a whole value is a new version");
+    assert_eq!(then(&s, ROOT, v1), None, "its history is gone");
+    s.commit_wait(vec![value(ROOT, "")]).unwrap();
+    let (text, cleared) = now(&s, ROOT);
+    assert_eq!(text, "", "a cleared draft has no text");
+    assert!(cleared.written > v3.written && cleared.edits == 0, "a clear is a later version");
+    assert_eq!(then(&s, ROOT, v3), None);
+    assert_eq!(then(&s, ROOT, cleared).as_deref(), Some(""));
+    s.commit_wait(vec![value(ROOT, "whole again")]).unwrap();
+    assert!(now(&s, ROOT).1.written > cleared.written, "the same text written again is a later version");
+    s.commit_wait(vec![rec("entityDelete", vec![Value::Id(10)])]).unwrap();
+    assert_eq!(now(&s, ROOT), (String::new(), drafts::Version::NONE), "the version goes with what it follows");
+    s.commit_wait(vec![card(11), value(Owner::Root(11), "x"), value(Owner::Root(11), "")]).unwrap();
+    s.commit_wait(vec![rec("entityDelete", vec![Value::Id(11)])]).unwrap();
+    assert_eq!(now(&s, Owner::Root(11)).1, drafts::Version::NONE, "a cleared draft's version goes with it too");
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
