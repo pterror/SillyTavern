@@ -376,3 +376,18 @@ test('a tab whose last stream closed is gone: its areas are told', async () => {
     second();
     expect(gone).toEqual([sessions.a1]);
 });
+
+test("a session taken over by another user is a new tab: the old one's areas are told it's gone", () => {
+    const gone: string[] = [];
+    const told = createUi(
+        [defineArea({ schemas: {}, views: {}, actions: {}, gone: (session) => void gone.push(session) })],
+        { userOf: () => alice, chatOf: async () => null },
+    );
+    told.attach(alice, sessions.a1, () => {});
+    told.attach(alice, sessions.a1, () => {});
+    expect(gone).toEqual([]);
+    const stop = told.attach(bob, sessions.a1, () => {});
+    expect(gone).toEqual([sessions.a1]);
+    stop();
+    expect(gone).toEqual([sessions.a1, sessions.a1]);
+});

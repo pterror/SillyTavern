@@ -23,19 +23,11 @@ export function topicNamed(name: string): Topic {
     return 'overview';
 }
 
-const OPEN_KEPT = 32;
-
 export function helpArea(ports: Ports) {
+    /** By session, until its tab is gone. */
     const open = new Map<string, { topic: Topic; query: string }>();
 
-    const show = (session: string, topic: Topic) => {
-        open.delete(session);
-        open.set(session, { topic, query: '' });
-        for (const old of open.keys()) {
-            if (open.size <= OPEN_KEPT) break;
-            open.delete(old);
-        }
-    };
+    const show = (session: string, topic: Topic) => void open.set(session, { topic, query: '' });
 
     const notOpen = { refused: 'Help is not open.', changed: [PANEL_VIEW] };
 

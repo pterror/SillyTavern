@@ -11,20 +11,10 @@ export type Ports = {
 
 const thingsOf = (labels: Label[]): string[] => labels.flatMap((label) => (label.thing === null ? [] : [label.thing]));
 
-const OPEN_KEPT = 32;
-
 export function activationsArea(ports: Ports) {
+    /** By session, until its tab is gone. */
     const open = new Map<string, string>();
     const peeked = new Map<string, string>();
-
-    const remember = (held: Map<string, string>, session: string, message: string) => {
-        held.delete(session);
-        held.set(session, message);
-        for (const old of held.keys()) {
-            if (held.size <= OPEN_KEPT) break;
-            held.delete(old);
-        }
-    };
 
     const reader =
         (held: Map<string, string>, view: string) =>
@@ -46,7 +36,7 @@ export function activationsArea(ports: Ports) {
         },
         actions: {
             'activations.open': async (context, { message }) => {
-                remember(open, context.session, message);
+                open.set(context.session, message);
                 return { changed: [VIEW] };
             },
             'activations.close': async (context) => {
@@ -54,7 +44,7 @@ export function activationsArea(ports: Ports) {
                 return { changed: [VIEW] };
             },
             'activations.peek': async (context, { message }) => {
-                remember(peeked, context.session, message);
+                peeked.set(context.session, message);
                 return { changed: [PEEK_VIEW] };
             },
         },

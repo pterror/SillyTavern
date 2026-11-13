@@ -87,6 +87,15 @@ test('a closed panel takes no search or topic, and its answer carries it closed'
     expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: false });
 });
 
+test('however many tabs open help, each keeps its panel until it closes it or is gone', async () => {
+    const { run, read } = stand();
+    const sessions = Array.from({ length: 100 }, (_, i) => `t${i}`);
+    for (const session of sessions) await run('help.open', tab(session), { name: 'slash' });
+    for (const session of sessions)
+        expect(await read(PANEL_VIEW, tab(session))).toEqual({ open: true, topic: 'slash', query: '' });
+    expect(await run('help.search', tab('t0'), { query: 'echo' })).toEqual({ changed: [PANEL_VIEW] });
+});
+
 test("a tab that's gone keeps no panel", async () => {
     const { area, run, read } = stand();
     await run('help.open', tab('a'), { name: 'slash' });

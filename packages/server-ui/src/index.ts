@@ -123,6 +123,7 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
     const tabOf = (user: User, session: string): Tab => {
         let tab = tabs.get(session);
         if (!tab || tab.user.directories.root !== user.directories.root) {
+            if (tab) for (const area of areas) area.gone(session);
             tab = { user, session, chat: null, open: new Set(openFromStart), streams: new Set() };
             tabs.set(session, tab);
         }
