@@ -2345,8 +2345,7 @@ async function tabStreamSession(request, store, send) {
     };
     const pushDrafts = async (/** @type {any[]} */ records) => {
         if (!records.some(r => r.kind === 'draftValue' || r.kind === 'draftEdit')) return;
-        sid ??= await chats.sessionId(session);
-        for (const frame of await draftFrames(store, records, sid)) send(frame);
+        for (const frame of await draftFrames(store, records)) send(frame);
     };
     return {
         session,

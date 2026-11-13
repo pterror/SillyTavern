@@ -1,6 +1,7 @@
 import { requestStore } from './user-stores.js';
 import { requestSession } from './request-session.js';
 import { draftOwnerOf } from './chat-drafts.js';
+import { baseOf } from './draft-merge.js';
 
 /**
  * @typedef {object} ChatContext
@@ -14,9 +15,9 @@ import { draftOwnerOf } from './chat-drafts.js';
  * @property {import('./users.js').UserDirectoryList} [directories]
  * @property {import('./pending-opening.js').PendingOpening | null} [opening] the opening the page sent that waits for what goes under it
  * @property {string} [openedAt] the node that opening was stored as
- * @property {{ owner: import('./chat-drafts.js').DraftOwner, version: unknown } | null} [draftSent] the draft whose
- *   text the request's action took and the version it was written over: the write that stores what it sent takes that
- *   text out of the draft
+ * @property {({ owner: import('./chat-drafts.js').DraftOwner } & import('./chat-engine.js').DraftSave) | null} [draftSent]
+ *   the draft whose text the request's action took, with the changes it was written with: the write that stores what it
+ *   sent takes that text out of the draft
  */
 
 /**
@@ -39,7 +40,7 @@ export async function chatContext(request, { avatar, group }) {
     const sent = request.body?.draft_sent;
     if (sent !== undefined) {
         const owner = await draftOwnerOf(chat, sent);
-        chat.draftSent = owner === null ? null : { owner, version: sent?.version };
+        chat.draftSent = owner === null || baseOf(sent?.text, sent?.changes) === null ? null : { owner, text: sent.text, changes: sent.changes };
     }
     return chat;
 }

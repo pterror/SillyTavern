@@ -43,6 +43,9 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
  * @typedef {object} ChatBoxEditor
  * @property {View} view
  * @property {(text: string) => void} placeholder
+ * @property {() => { text: string, changes: import('../chat-box-text.js').BoxChange[] }} unsaved the edits the text
+ *   heard last doesn't include, as replacements in that text's positions with what each removes, and that text
+ * @property {(base: string) => void} rebase keeps what the box shows, as edits over `base` in place of the text heard
  * @property {() => void} stop
  */
 
@@ -87,6 +90,19 @@ export function chatBoxEditor({ parent, text, setup, label, keys, slashParser, s
     parent.prepend(bar.element);
     return {
         view,
+        unsaved() {
+            const composed = made.unincluded();
+            /** @type {import('../chat-box-text.js').BoxChange[]} */
+            const changes = [];
+            const { text: base } = composed;
+            composed.changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+                changes.push({ from, to, insert: inserted.toString(), deleted: base.slice(from, to) });
+            });
+            return { text: base, changes };
+        },
+        rebase(base) {
+            text.rebased(base, made.rebase(base));
+        },
         placeholder(shown) {
             view.dispatch({ effects: placeholders.reconfigure(shown ? placeholderText(shown) : []) });
         },

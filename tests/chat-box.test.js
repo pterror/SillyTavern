@@ -5,12 +5,102 @@ import { endOwnerOf, sameOwner } from '../public/scripts/chat-box-ends.js';
 import { boxCopies, guardedStorage } from '../public/scripts/chat-box-copies.js';
 
 let tab = 'tab-a';
-jest.unstable_mockModule('../public/scripts/chat-text/editors.js', () => ({ loadChatEditor: () => new Promise(() => {}) }));
+jest.unstable_mockModule('../public/scripts/chat-text/editors.js', () => ({ loadChatEditor: () => Promise.resolve() }));
+jest.unstable_mockModule('../public/scripts/chat-text/chat-box-editor.js', () => ({ chatBoxEditor: (/** @type {any} */ options) => (shown = boxEditor(options.text)) }));
 jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({ getRequestHeaders: () => ({}) }));
 jest.unstable_mockModule('../public/scripts/tab-session.js', () => ({ tabToken: () => tab }));
 
 /** @type {typeof import('../public/scripts/chat-box.js')} */
 let box;
+/** @type {ReturnType<typeof boxEditor>} */
+let shown;
+
+/** @param {string} text */
+const doc = text => Text.of(text.split('\n'));
+
+/**
+ * One replacement of what differs between two texts
+ * @param {string} from
+ * @param {string} to
+ */
+function between(from, to) {
+    let start = 0;
+    while (start < from.length && start < to.length && from[start] === to[start]) start++;
+    let end = 0;
+    while (end < from.length - start && end < to.length - start && from[from.length - 1 - end] === to[to.length - 1 - end]) end++;
+    return ChangeSet.of(start === from.length && start === to.length ? [] : [{ from: start, to: from.length - end, insert: to.slice(start, to.length - end) }], from.length);
+}
+
+/**
+ * The chat box's editor as chat-box-editor.js makes it over interact's textEditor: edits handed on with ids, a text
+ * heard shown with the edits it doesn't include laid over it, the edits not included given with the text they're over,
+ * and another text taken as the one elsewhere
+ * @param {ReturnType<typeof boxText>} text
+ */
+function boxEditor(text) {
+    let current = text.port.get().text;
+    let confirmed = current;
+    /** @type {{ id: string, changes: ChangeSet }[]} */
+    let pending = [];
+    let n = 0;
+    text.bind(() => current);
+    text.port.watch(() => queueMicrotask(() => {
+        const heard = text.port.get();
+        const included = heard.includes === undefined ? 0 : pending.findIndex(p => p.id === heard.includes) + 1;
+        let base = doc(confirmed);
+        for (const p of pending.slice(0, included)) base = p.changes.apply(base);
+        let other = between(base.toString(), heard.text);
+        const rest = [];
+        for (const p of pending.slice(included)) {
+            rest.push({ id: p.id, changes: p.changes.map(other) });
+            other = other.map(p.changes, true);
+        }
+        pending = rest;
+        confirmed = heard.text;
+        current = other.apply(doc(current)).toString();
+    }));
+    const view = {
+        state: { doc: { toString: () => current, get length() { return current.length; } } },
+        /** @param {{ changes: { from: number, to: number, insert: string } }} transaction */
+        dispatch({ changes }) {
+            const made = ChangeSet.of([changes], current.length);
+            n += 1;
+            const id = `e:${n}`;
+            pending.push({ id, changes: made });
+            current = made.apply(doc(current)).toString();
+            text.edited([changes], id);
+        },
+        focus() {},
+    };
+    return {
+        view,
+        placeholder() {},
+        stop() {},
+        /** @param {string} typed what is typed at the end */
+        type: typed => view.dispatch({ changes: { from: current.length, to: current.length, insert: typed } }),
+        unsaved() {
+            let all = ChangeSet.empty(confirmed.length);
+            for (const p of pending) all = all.compose(p.changes);
+            /** @type {{ from: number, to: number, insert: string, deleted: string }[]} */
+            const changes = [];
+            all.iterChanges((from, to, _fromB, _toB, inserted) => changes.push({ from, to, insert: inserted.toString(), deleted: confirmed.slice(from, to) }));
+            return { text: confirmed, changes };
+        },
+        /** @param {string} base */
+        rebase(base) {
+            confirmed = base;
+            if (current === base) {
+                pending = [];
+                text.rebased(base, undefined);
+                return;
+            }
+            n += 1;
+            const id = `e:${n}`;
+            pending = [{ id, changes: between(base, current) }];
+            text.rebased(base, id);
+        },
+    };
+}
 
 beforeAll(async () => {
     globalThis.document = /** @type {any} */ ({ addEventListener: () => {}, visibilityState: 'visible' });
@@ -154,56 +244,56 @@ const refusing = {
 
 describe('the browser\'s copies of the chat box\'s text', () => {
     const ada = { avatar_url: 'Ada.png' };
+    const one = { text: 'from one', changes: [{ from: 0, to: 0, insert: 'from one', deleted: '' }] };
+    const two = { text: 'from two', changes: [{ from: 0, to: 0, insert: 'from two', deleted: '' }], change: 'p/e:1' };
 
     test('are each tab\'s own: two tabs never write over each other\'s', () => {
         const copies = boxCopies(memoryStorage());
-        copies.write(ada, { message: '1' }, 'one', { text: 'from one', version: '5.0' });
-        copies.write(ada, { message: '1' }, 'two', { text: 'from two', version: '5.0' });
-        expect(copies.read(ada, { message: '1' }, 'one')).toEqual({ text: 'from one', version: '5.0' });
-        expect(copies.read(ada, { message: '1' }, 'two')).toEqual({ text: 'from two', version: '5.0' });
-        expect(copies.of(ada)).toEqual([
-            { owner: { message: '1' }, tab: 'one', text: 'from one', version: '5.0' },
-            { owner: { message: '1' }, tab: 'two', text: 'from two', version: '5.0' },
-        ]);
+        copies.write(ada, { message: '1' }, 'one', one);
+        copies.write(ada, { message: '1' }, 'two', two);
+        expect(copies.read(ada, { message: '1' }, 'one')).toEqual(one);
+        expect(copies.read(ada, { message: '1' }, 'two')).toEqual(two);
+        expect(copies.of(ada)).toEqual([{ owner: { message: '1' }, tab: 'one', ...one }, { owner: { message: '1' }, tab: 'two', ...two }]);
     });
 
     test('a copy goes only when the server confirms the text it holds', () => {
         const copies = boxCopies(memoryStorage());
-        copies.write(ada, { message: '1' }, 'one', { text: 'typed on since', version: '5.0' });
+        copies.write(ada, { message: '1' }, 'one', one);
         copies.confirm(ada, { message: '1' }, 'one', 'what was sent');
-        expect(copies.read(ada, { message: '1' }, 'one')?.text).toBe('typed on since');
-        copies.confirm(ada, { message: '1' }, 'one', 'typed on since');
+        expect(copies.read(ada, { message: '1' }, 'one')?.text).toBe('from one');
+        copies.confirm(ada, { message: '1' }, 'one', 'from one');
         expect(copies.of(ada)).toEqual([]);
+    });
+
+    test('a copy set apart is kept as it is beside the next one', () => {
+        const copies = boxCopies(memoryStorage());
+        copies.write(ada, { message: '1' }, 'one', one);
+        copies.setApart(ada, { message: '1' }, 'one');
+        copies.write(ada, { message: '1' }, 'one', two);
+        copies.setApart(ada, { message: '1' }, 'one');
+        expect(copies.of(ada)).toEqual([{ owner: { message: '1' }, tab: 'one~1', ...one }, { owner: { message: '1' }, tab: 'one~2', ...two }]);
     });
 
     test('every copy of a chat that is gone goes with it', () => {
         const copies = boxCopies(memoryStorage());
-        copies.write(ada, { message: '2' }, 'one', { text: 'a', version: '0.0' });
-        copies.write(ada, { greeting: 0, avatar: 'Ada.png' }, 'two', { text: 'b', version: '0.0' });
-        copies.write({ group_id: 'g' }, { root: true }, 'one', { text: 'c', version: '0.0' });
+        copies.write(ada, { message: '2' }, 'one', one);
+        copies.write(ada, { greeting: 0, avatar: 'Ada.png' }, 'two', two);
+        copies.write({ group_id: 'g' }, { root: true }, 'one', one);
         copies.dropChat(ada);
         expect(copies.of(ada)).toEqual([]);
-        expect(copies.of({ group_id: 'g' })).toEqual([{ owner: { root: true }, tab: 'one', text: 'c', version: '0.0' }]);
-    });
-
-    test('know which tabs say they are open', () => {
-        const copies = boxCopies(memoryStorage());
-        copies.setOpen('one', true);
-        copies.setOpen('two', true);
-        copies.setOpen('one', false);
-        expect(copies.openTabs()).toEqual(['two']);
+        expect(copies.of({ group_id: 'g' })).toEqual([{ owner: { root: true }, tab: 'one', ...one }]);
     });
 
     test('with storage that refuses, keep nothing and never throw', () => {
         const copies = boxCopies(guardedStorage(() => /** @type {any} */ (refusing)));
-        expect(() => copies.write(ada, { message: '1' }, 'one', { text: 'hello', version: '0.0' })).not.toThrow();
+        expect(() => copies.write(ada, { message: '1' }, 'one', one)).not.toThrow();
         expect(copies.read(ada, { message: '1' }, 'one')).toBeNull();
         expect(copies.of(ada)).toEqual([]);
         expect(() => copies.confirm(ada, { message: '1' }, 'one', 'hello')).not.toThrow();
+        expect(() => copies.setApart(ada, { message: '1' }, 'one')).not.toThrow();
         expect(() => copies.dropChat(ada)).not.toThrow();
-        expect(() => copies.setOpen('one', true)).not.toThrow();
         const missing = boxCopies(guardedStorage(() => { throw new Error('no storage'); }));
-        expect(() => missing.write(ada, { message: '1' }, 'one', { text: 'hello', version: '0.0' })).not.toThrow();
+        expect(() => missing.write(ada, { message: '1' }, 'one', one)).not.toThrow();
         expect(missing.read(ada, { message: '1' }, 'one')).toBeNull();
     });
 });
@@ -213,170 +303,167 @@ describe('the chat box\'s drafts', () => {
     let end = { message: '1' };
     /** @type {{ avatar_url: string } | { group_id: string } | null} */
     let open = { avatar_url: 'Ada.png' };
-    let storage = memoryStorage();
+    const storage = memoryStorage();
     const copies = () => boxCopies(storage);
     const ada = { avatar_url: 'Ada.png' };
-    const kept = (/** @type {any} */ leaving, /** @type {string} */ text, /** @type {string} */ version) => [{ ...leaving, sent: leaving.text, left: 'kept', text, version }];
+    const insert = (/** @type {number} */ at, /** @type {string} */ text) => ({ from: at, to: at, insert: text, deleted: '' });
+    const kept = (/** @type {any} */ leaving, /** @type {string} */ text) => [{ ...leaving, sent: leaving.text, left: 'kept', text }];
+    /** @param {import('../public/scripts/chat-box-ends.js').DraftOwner} owner */
+    const pushed = (owner, /** @type {string} */ text, /** @type {object} */ from = {}) => ({ tree: { avatar: 'Ada.png' }, owner, text, ...from });
+    const leaving = () => {
+        const [left] = box.leavingChatBox() ?? [];
+        return left;
+    };
 
-    beforeAll(() => {
+    beforeAll(async () => {
         globalThis.localStorage = /** @type {any} */ (storage);
-        box.initChatBox(/** @type {any} */ ({ chat: () => open, endOwner: () => end }));
+        await box.initChatBox(/** @type {any} */ ({ chat: () => open, endOwner: () => end, setup: () => ({}) }));
     });
 
-    test('text written before any chat is open stays when one opens, and is copied for it', () => {
+    test('text written before any chat is open stays when one opens, and is copied for it', async () => {
         box.writeChatBox('early');
-        box.arriveChatBox(ada, { owner: { message: '1' }, text: '', version: '0.0' });
+        box.arriveChatBox(ada, { owner: { message: '1' }, text: '' });
+        await settle();
         expect(box.chatBoxText()).toBe('early');
-        expect(box.leavingChatBox()).toEqual([{ avatar_url: 'Ada.png', owner: { message: '1' }, text: 'early', version: '0.0', tab: 'tab-a' }]);
-        expect(copies().read(ada, { message: '1' }, 'tab-a')).toEqual({ text: 'early', version: '0.0' });
-        expect(copies().openTabs()).toContain('tab-a');
+        expect(leaving()).toMatchObject({ avatar_url: 'Ada.png', owner: { message: '1' }, text: 'early', changes: [insert(0, 'early')], tab: 'tab-a' });
+        expect(copies().read(ada, { message: '1' }, 'tab-a')).toMatchObject({ text: 'early', changes: [insert(0, 'early')] });
     });
 
-    test('each edit is copied; the copy goes only when the server says it kept the text', () => {
-        box.arriveChatBox(ada, { owner: { message: '2' }, text: 'kept for 2', version: '7.0' });
+    test('each edit is copied with its changes; the copy goes only when the server says it kept the text', async () => {
+        box.arriveChatBox(ada, { owner: { message: '2' }, text: 'kept for 2' });
+        await settle();
         expect(box.chatBoxText()).toBe('kept for 2');
         expect(box.leavingChatBox()).toBeUndefined();
-        box.writeChatBox('kept for 2, more');
-        expect(copies().read(ada, { message: '2' }, 'tab-a')).toEqual({ text: 'kept for 2, more', version: '7.0' });
-        const [leaving] = box.leavingChatBox() ?? [];
-        expect(leaving).toEqual({ avatar_url: 'Ada.png', owner: { message: '2' }, text: 'kept for 2, more', version: '7.0', tab: 'tab-a' });
+        shown.type(', more');
+        await settle();
+        expect(copies().read(ada, { message: '2' }, 'tab-a')).toMatchObject({ text: 'kept for 2, more', changes: [insert(10, ', more')] });
+        const left = leaving();
+        expect(left).toMatchObject({ avatar_url: 'Ada.png', owner: { message: '2' }, text: 'kept for 2, more', changes: [insert(10, ', more')], tab: 'tab-a' });
+        expect(left.change).toMatch(/\/e:\d+$/);
         box.chatBoxLeft(undefined);
-        box.chatBoxLeft([{ ...leaving, sent: leaving.text, left: null }]);
+        box.chatBoxLeft([{ ...left, sent: left.text, left: null }]);
         expect(copies().read(ada, { message: '2' }, 'tab-a')?.text).toBe('kept for 2, more');
-        box.chatBoxLeft(kept(leaving, 'kept for 2, more', '7.1'));
+        box.chatBoxLeft(kept(left, 'kept for 2, more'));
         expect(copies().read(ada, { message: '2' }, 'tab-a')).toBeNull();
-        expect(box.leavingChatBox()).toBeUndefined();
     });
 
-    test('a copy not confirmed goes with the next open of its chat, as do closed tabs\' copies; open tabs\' copies don\'t', () => {
-        box.writeChatBox('left unconfirmed');
-        box.arriveChatBox(ada, { owner: { message: '3' }, text: '', version: '0.0' });
-        copies().write(ada, { message: '3' }, 'closed-tab', { text: 'from a closed tab', version: '0.0' });
-        copies().write(ada, { message: '3' }, 'open-tab', { text: 'from an open tab', version: '0.0' });
-        copies().setOpen('open-tab', true);
+    test('a push arriving mid-typing is shown with what was typed laid over it; this tab\'s own save in it isn\'t laid twice', async () => {
+        box.arriveChatBox(ada, { owner: { message: '11' }, text: 'base' });
+        await settle();
+        shown.type(' mine');
+        box.takeChatBoxPush(pushed({ message: '11' }, 'other base'));
+        box.takeChatBoxPush({ ...pushed({ message: '11' }, 'not this chat'), tree: { avatar: 'Bo.png' } });
+        await settle();
+        expect(box.chatBoxText()).toBe('other base mine');
+        const left = leaving();
+        expect(left.changes).toEqual([insert(10, ' mine')]);
+        shown.type(' more');
+        box.takeChatBoxPush(pushed({ message: '11' }, 'other base mine', { tab: 'tab-a', change: left.change }));
+        await settle();
+        expect(box.chatBoxText()).toBe('other base mine more');
+        expect(leaving().changes).toEqual([insert(15, ' more')]);
+        box.takeChatBoxPush(pushed({ message: '11' }, 'yet other base mine', { tab: 'tab-a', change: 'another page/e:1' }));
+        await settle();
+        expect(box.chatBoxText()).toBe('yet other base mine more', 'an edit of another page of this tab is no edit of this one');
+    });
+
+    test('every copy of a chat goes with its next open, a crashed tab\'s and an open tab\'s too', async () => {
+        box.arriveChatBox(ada, { owner: { message: '3' }, text: '' });
+        await settle();
+        const crashed = { text: 'from a crashed tab', changes: [insert(0, 'from a crashed tab')] };
+        copies().write(ada, { message: '3' }, 'crashed-tab', crashed);
+        copies().write(ada, { message: '3' }, 'open-tab', { ...crashed, text: 'from an open tab', changes: [insert(0, 'from an open tab')], change: 'p/e:4' });
         expect(box.openingChatBox({ group_id: 'g' })).toBeUndefined();
-        const carried = box.openingChatBox(ada);
-        expect(carried).toEqual([
-            { avatar_url: 'Ada.png', owner: { message: '1' }, text: 'early', version: '0.0', tab: 'tab-a' },
-            { avatar_url: 'Ada.png', owner: { message: '2' }, text: 'left unconfirmed', version: '7.1', tab: 'tab-a' },
-            { avatar_url: 'Ada.png', owner: { message: '3' }, text: 'from a closed tab', version: '0.0', tab: 'closed-tab' },
-        ]);
-        box.chatBoxLeft([
-            { ...carried?.[0], sent: 'early', left: 'gone' },
-            { ...carried?.[1], sent: 'left unconfirmed', left: 'kept', text: 'kept for 2, more left unconfirmed', version: '7.2' },
-            { ...carried?.[2], sent: 'from a closed tab', left: 'kept', text: 'from a closed tab', version: '9.0' },
-        ]);
-        expect(copies().of(ada)).toEqual([{ owner: { message: '3' }, tab: 'open-tab', text: 'from an open tab', version: '0.0' }]);
-        copies().setOpen('open-tab', false);
-        copies().remove(ada, { message: '3' }, 'open-tab');
+        const carried = box.openingChatBox(ada) ?? [];
+        expect(carried).toEqual(expect.arrayContaining([
+            { avatar_url: 'Ada.png', owner: { message: '3' }, ...crashed, tab: 'crashed-tab' },
+            { avatar_url: 'Ada.png', owner: { message: '3' }, text: 'from an open tab', changes: [insert(0, 'from an open tab')], tab: 'open-tab', change: 'p/e:4' },
+        ]));
+        box.chatBoxLeft(carried.map(c => ({ ...c, sent: c.text, left: c.owner.message === '1' ? 'gone' : 'kept', text: 'merged' })));
+        expect(copies().of(ada)).toEqual([]);
     });
 
-    test('arriving at a draft shows this tab\'s copy written over that version; one over another version is left for the next open', () => {
-        copies().write(ada, { message: '5' }, 'tab-a', { text: 'unconfirmed for 5', version: '4.0' });
-        box.arriveChatBox(ada, { owner: { message: '5' }, text: 'kept for 5', version: '4.0' });
-        expect(box.chatBoxText()).toBe('unconfirmed for 5');
-        copies().write(ada, { message: '6' }, 'tab-a', { text: 'unconfirmed for 6', version: '4.0' });
-        box.arriveChatBox(ada, { owner: { message: '6' }, text: 'written elsewhere since', version: '8.0' });
-        expect(box.chatBoxText()).toBe('written elsewhere since');
-        expect(copies().read(ada, { message: '6' }, 'tab-a')).toBeNull();
-        expect(box.openingChatBox(ada)).toContainEqual({ avatar_url: 'Ada.png', owner: { message: '6' }, text: 'unconfirmed for 6', version: '4.0', tab: 'tab-a@4.0' });
-        copies().remove(ada, { message: '6' }, 'tab-a@4.0');
-        copies().remove(ada, { message: '5' }, 'tab-a');
+    test('arriving at a draft this tab has an unconfirmed copy of shows the draft, and sets the copy apart for the next open', async () => {
+        const unconfirmed = { text: 'unconfirmed for 5', changes: [insert(0, 'unconfirmed for 5')] };
+        copies().write(ada, { message: '5' }, 'tab-a', unconfirmed);
+        box.arriveChatBox(ada, { owner: { message: '5' }, text: 'kept for 5' });
+        await settle();
+        expect(box.chatBoxText()).toBe('kept for 5');
+        shown.type('!');
+        await settle();
+        expect(copies().read(ada, { message: '5' }, 'tab-a')?.text).toBe('kept for 5!');
+        expect(box.openingChatBox(ada)).toContainEqual({ avatar_url: 'Ada.png', owner: { message: '5' }, ...unconfirmed, tab: 'tab-a~1' });
+        copies().remove(ada, { message: '5' }, 'tab-a~1');
     });
 
-    test('a push is shown when the box is at its draft and it is later; one while a save is unanswered waits for the answer', () => {
-        box.arriveChatBox(ada, { owner: { message: '11' }, text: 'base', version: '8.0' });
-        box.takeChatBoxPush({ tree: { avatar: 'Ada.png' }, owner: { message: '11' }, text: 'older', version: '7.9' });
-        expect(box.chatBoxText()).toBe('base');
-        box.takeChatBoxPush({ tree: { avatar: 'Bo.png' }, owner: { message: '11' }, text: 'another chat', version: '9.0' });
-        expect(box.chatBoxText()).toBe('base');
-        box.takeChatBoxPush({ tree: { avatar: 'Ada.png' }, owner: { message: '11' }, text: 'base, from another tab', version: '8.1' });
-        expect(box.chatBoxText()).toBe('base, from another tab');
-        box.writeChatBox('mine');
-        const [leaving] = box.leavingChatBox() ?? [];
-        box.takeChatBoxPush({ tree: { avatar: 'Ada.png' }, owner: { message: '11' }, text: 'merged later', version: '8.3' });
-        expect(box.chatBoxText()).toBe('mine', 'held while the save is unanswered');
-        box.chatBoxLeft(kept(leaving, 'mine, merged', '8.2'));
-        expect(box.chatBoxText()).toBe('merged later', 'the later push, after the answer');
-    });
-
-    test('a send takes the text and names the draft and version it was; its copy stays until the chat ends past it', () => {
-        box.arriveChatBox(ada, { owner: { message: '2' }, text: '', version: '7.2' });
-        box.writeChatBox('hello');
+    test('a send takes the text with its changes; its copy stays until the chat ends past it', async () => {
+        box.arriveChatBox(ada, { owner: { message: '2' }, text: 'Hi Kit.' });
+        await settle();
         end = { message: '2' };
-        expect(box.takeChatBoxText()).toEqual({ text: 'hello', sent: { message: '2', version: '7.2' } });
+        expect(box.takeChatBoxText()).toEqual({ text: 'Hi Kit.', sent: { message: '2', text: 'Hi Kit.', changes: [] } });
         expect(box.chatBoxText()).toBe('');
-        expect(copies().read(ada, { message: '2' }, 'tab-a')?.text).toBe('hello');
+        shown.type('next');
+        await settle();
         end = { message: '3' };
         box.chatBoxFollowEnd();
+        await settle();
         expect(copies().read(ada, { message: '2' }, 'tab-a')).toBeNull();
+        expect(box.chatBoxText()).toBe('next');
+        expect(leaving()).toMatchObject({ owner: { message: '3' }, text: 'next', changes: [insert(0, 'next')] });
     });
 
-    test('the end moving by what was written keeps the text and its copy, now after the new end', () => {
-        box.writeChatBox('about the reply');
+    test('the end moving by what was written keeps the text, now written over the new end\'s draft', async () => {
+        shown.type(', about the reply');
         end = { message: '4' };
         box.chatBoxFollowEnd();
-        expect(box.leavingChatBox()).toEqual([{ avatar_url: 'Ada.png', owner: { message: '4' }, text: 'about the reply', version: '0.0', tab: 'tab-a' }]);
+        await settle();
+        expect(leaving()).toMatchObject({ owner: { message: '4' }, text: 'next, about the reply', changes: [insert(0, 'next, about the reply')] });
         expect(copies().read(ada, { message: '3' }, 'tab-a')).toBeNull();
-        expect(copies().read(ada, { message: '4' }, 'tab-a')).toEqual({ text: 'about the reply', version: '0.0' });
+        expect(copies().read(ada, { message: '4' }, 'tab-a')?.text).toBe('next, about the reply');
     });
 
-    test('a cut back to a message with a draft keeps the text, written over that draft', () => {
-        box.chatBoxFollowCut({ owner: { message: '1' }, text: 'what 1 had', version: '3.0' });
-        expect(box.leavingChatBox()).toEqual([{ avatar_url: 'Ada.png', owner: { message: '1' }, text: 'about the reply', version: '3.0', tab: 'tab-a' }]);
-        expect(copies().read(ada, { message: '1' }, 'tab-a')).toEqual({ text: 'about the reply', version: '3.0' });
+    test('a cut back to a message with a draft keeps the text, written over that draft', async () => {
+        box.chatBoxFollowCut({ owner: { message: '1' }, text: 'next, what 1 had' });
+        await settle();
+        expect(box.chatBoxText()).toBe('next, about the reply');
+        const { changes } = leaving();
+        let text = 'next, what 1 had';
+        for (const change of [...changes].reverse()) text = text.slice(0, change.from) + change.insert + text.slice(change.to);
+        expect(text).toBe('next, about the reply');
         expect(copies().read(ada, { message: '4' }, 'tab-a')).toBeNull();
     });
 
-    test('the end of another chat than the text\'s is never followed', () => {
-        box.arriveChatBox(ada, { owner: { message: '4' }, text: 'about the reply', version: '5.0' });
-        box.writeChatBox('still about 4');
+    test('the end of another chat than the text\'s is never followed', async () => {
         open = { group_id: 'g' };
         end = { root: true };
         box.chatBoxFollowEnd();
-        expect(box.leavingChatBox()).toEqual([{ avatar_url: 'Ada.png', owner: { message: '4' }, text: 'still about 4', version: '5.0', tab: 'tab-a' }]);
+        await settle();
+        expect(leaving()?.owner).toEqual({ message: '1' });
     });
 
-    test('arriving where the box already is keeps what it has', () => {
-        box.arriveChatBox({ group_id: 'g' }, { owner: { root: true }, text: 'at the root', version: '2.0' });
-        box.writeChatBox('at the root, edited');
-        box.arriveChatBox({ group_id: 'g' }, { owner: { root: true }, text: 'at the root', version: '2.0' });
+    test('arriving where the box already is keeps what it has', async () => {
+        box.arriveChatBox({ group_id: 'g' }, { owner: { root: true }, text: 'at the root' });
+        await settle();
+        shown.type(', edited');
+        box.arriveChatBox({ group_id: 'g' }, { owner: { root: true }, text: 'at the root' });
+        await settle();
         expect(box.chatBoxText()).toBe('at the root, edited');
     });
 
     test('a chat that is gone takes its copies with it', () => {
-        copies().write(ada, { message: '9' }, 'tab-a', { text: 'x', version: '0.0' });
+        copies().write(ada, { message: '9' }, 'tab-a', { text: 'x', changes: [insert(0, 'x')] });
         box.forgetChatBoxChat(ada);
         expect(copies().of(ada)).toEqual([]);
     });
 
-    test('another tab\'s copy of the same draft is its own: both are kept', () => {
-        box.arriveChatBox(ada, { owner: { message: '10' }, text: '', version: '0.0' });
-        box.writeChatBox('typed in tab a');
-        tab = 'tab-b';
-        box.writeChatBox('typed in tab b');
-        tab = 'tab-a';
-        expect(copies().read(ada, { message: '10' }, 'tab-b')?.text).toBe('typed in tab b');
-        expect(copies().read(ada, { message: '10' }, 'tab-a')?.text).toBe('typed in tab a');
-        box.forgetChatBoxChat(ada);
-    });
-
-    test('with storage that refuses, the box keeps its text and carries it as before', () => {
+    test('with storage that refuses, the box keeps its text and carries it as before', async () => {
         globalThis.localStorage = /** @type {any} */ (refusing);
-        box.arriveChatBox({ group_id: 'g' }, { owner: { message: '8' }, text: '', version: '0.0' });
+        box.arriveChatBox({ group_id: 'g' }, { owner: { message: '8' }, text: '' });
+        await settle();
         box.writeChatBox('no storage');
+        await settle();
         expect(box.chatBoxText()).toBe('no storage');
-        expect(box.openingChatBox({ group_id: 'h' })).toEqual([{ group_id: 'g', owner: { message: '8' }, text: 'no storage', version: '0.0', tab: 'tab-a' }]);
+        expect(box.openingChatBox({ group_id: 'h' })).toEqual([expect.objectContaining({ group_id: 'g', owner: { message: '8' }, text: 'no storage', changes: [insert(0, 'no storage')], tab: 'tab-a' })]);
         globalThis.localStorage = /** @type {any} */ (storage);
-    });
-});
-
-describe('draft versions', () => {
-    test('are ordered by where their value was written, then by edits', () => {
-        expect(box.laterVersion('5.1', '5.0')).toBe(true);
-        expect(box.laterVersion('6.0', '5.9')).toBe(true);
-        expect(box.laterVersion('5.0', '5.0')).toBe(false);
-        expect(box.laterVersion('0.0', '5.0')).toBe(false);
-        expect(box.laterVersion('x', '5.0')).toBe(false);
     });
 });

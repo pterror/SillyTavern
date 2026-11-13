@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import zlib from 'node:zlib';
 
 import { textEdit } from './text-edit.js';
-import { mergeDraft, unionOf } from './draft-merge.js';
+import { baseOf, draftAfterSend, mergeDraft } from './draft-merge.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
 import { resolveAvatars, withoutShownAvatar } from './avatar-refs.js';
 import { ITEMIZED_PROMPT_FLAG } from './prompt-itemization.js';
@@ -335,24 +335,49 @@ const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], defaultId: null, de
 export const LAST = Object.freeze({ last: true });
 
 /**
- * @param {unknown} version a draft's version as the page gives it back
- * @returns {{ written: bigint, edits: bigint } | null} null when it is no version this gave
- */
-export function draftVersionOf(version) {
-    const parts = typeof version === 'string' ? /^(\d+)\.(\d+)$/.exec(version) : null;
-    return parts ? { written: BigInt(parts[1]), edits: BigInt(parts[2]) } : null;
-}
-
-/**
  * The message a draft responds to: a stored message; a tree, its root; or a card entity and one of its greetings' ids
  * @typedef {{ message: bigint } | { tree: bigint, greeting?: number }} DraftOwner
  */
 
 /**
- * A draft's text and version. The version is the engine's (where its value was written, and how many edits since) as
- * `written.edits`; `0.0` is no draft.
- * @typedef {{ text: string, version: string }} Draft
+ * A text written over a draft: the text and the changes from the draft it was written over (its base) to it, which
+ * undone give that base (`baseOf`); `tab` and `change` name the tab it was written in and the latest of that tab's
+ * edits it holds, told with the draft it makes
+ * @typedef {{ text: string, changes: import('./draft-merge.js').DraftChange[], tab?: string, change?: string }} DraftSave
  */
+
+/**
+ * What wrote each draft record committed: the draft it made, and the tab and edit of the save it came from
+ * @type {WeakMap<object, { text: string, tab?: string, change?: string }>}
+ */
+const draftWrites = new WeakMap();
+
+/**
+ * @param {object} record a committed draft record
+ * @returns {{ text: string, tab?: string, change?: string } | undefined} the draft it made, and the save it came from
+ */
+export function draftWriteOf(record) {
+    return draftWrites.get(record);
+}
+
+/**
+ * The record that makes a draft what it is to be: an edit of what is kept, the whole text when nothing is, an empty
+ * value when it is to be empty; none when it is unchanged
+ * @param {DraftOwner} owner
+ * @param {string} now the draft as it is
+ * @param {string} next the draft it is to be
+ * @param {{ user: bigint, session?: bigint }} who
+ * @param {{ tab?: string, change?: string }} from the save it comes from
+ * @returns {object | null}
+ */
+function draftRecord(owner, now, next, who, { tab, change }) {
+    if (next === now) return null;
+    const record = now === '' || next === ''
+        ? { kind: 'draftValue', ...owner, text: next, ...who }
+        : { kind: 'draftEdit', ...owner, ...textEdit(now, next), ...who };
+    draftWrites.set(record, { text: next, ...(typeof tab === 'string' ? { tab } : {}), ...(typeof change === 'string' ? { change } : {}) });
+    return record;
+}
 
 export class PlaceError extends Error {}
 
@@ -1114,8 +1139,8 @@ export class ChatEngine {
      * @param {boolean} [p.regenerated]
      * @param {Place} [p.place] where the first new message goes among its alternatives
      * @param {Actor} p.actor
-     * @param {{ owner: DraftOwner, version: unknown } | null} [p.draftSent] the draft the append sends and the version
-     *   it was written over: what it was then is taken out of the draft, and what others wrote since stays
+     * @param {{ owner: DraftOwner } & DraftSave | null} [p.draftSent] the draft the append sends, with the changes it
+     *   was written with: what it sent is taken out of the draft, and what was written elsewhere stays
      * @returns {Promise<{ ok: boolean, reason?: string, node_ids: string[], already_stored?: string[] }>}
      */
     appendMessages({ tree, treeSpeaker, after, contents, sendKeys = [], changes = [], author = AUTHOR.user, ref = null, regenerated = false, place = LAST, actor, draftSent = null }) {
@@ -1184,7 +1209,9 @@ export class ChatEngine {
             const made = end !== undefined && records.some(r => /** @type {any} */ (r).kind === 'messageAppend' && /** @type {any} */ (r).id === end) ? end : null;
             await this.inDraftLanes(tree, made === null || draftSent === null ? [] : [draftSent.owner], async () => {
                 if (made !== null && draftSent !== null) {
-                    const { record } = await this.draftWritten(draftSent.owner, draftSent.version, '', { user, ...(session === null ? {} : { session }) });
+                    const base = baseOf(draftSent.text, draftSent.changes);
+                    const now = await this.draftOf(draftSent.owner);
+                    const record = base === null ? null : draftRecord(draftSent.owner, now, draftAfterSend(base, now, draftSent.text), { user, ...(session === null ? {} : { session }) }, draftSent);
                     if (record !== null) records.push(record);
                 }
                 await this.claimConversation(records, tree, actor, { user, session });
@@ -1284,55 +1311,31 @@ export class ChatEngine {
 
     /**
      * @param {DraftOwner} owner
-     * @returns {Promise<Draft>} the draft, empty at version `0.0` when there is none
+     * @returns {Promise<string>} the draft's text, '' when there is none
      */
     async draftOf(owner) {
-        const now = await this.store.chatRead('draft', owner);
-        return { text: now.text, version: `${now.written}.${now.edits}` };
+        return (await this.store.chatRead('draft', owner)) ?? '';
     }
 
     /**
-     * The draft a text written over a version of it makes: the text itself over the draft as it still is; laid over
-     * what others changed since that version, as an editor rebases (`mergeDraft`); and both kept whole when that
-     * version's text is gone (`unionOf`)
-     * @param {DraftOwner} owner
-     * @param {unknown} version the version written over, as given
-     * @param {string} text
-     * @param {{ user: bigint, session?: bigint }} who
-     * @returns {Promise<{ draft: string, record: object | null }>} the draft, and the record that writes it, none when it is unchanged
+     * Keeps a text written over a draft: what it changed since the draft it was written over is laid over the draft as
+     * it is (`mergeDraft`), so nothing written elsewhere since is lost, and a save already in it changes nothing
+     * @param {{ tree: bigint, owner: DraftOwner, save: DraftSave, actor: Actor }} p tree: the chat it's written in
+     * @returns {Promise<string | null>} the draft now; null when the save's changes don't fit its text
      */
-    async draftWritten(owner, version, text, who) {
-        const over = draftVersionOf(version);
-        const now = await this.store.chatRead('draft', { ...owner, ...(over ?? {}) });
-        const same = over !== null && now.written === over.written && now.edits === over.edits;
-        const draft = same ? text : over !== null && now.base !== null ? mergeDraft(now.base, now.text, text) : unionOf(now.text, text);
-        if (draft === now.text) return { draft, record: null };
-        return {
-            draft,
-            record: now.text === '' || draft === ''
-                ? { kind: 'draftValue', ...owner, text: draft, ...who }
-                : { kind: 'draftEdit', ...owner, ...textEdit(now.text, draft), ...who },
-        };
-    }
-
-    /**
-     * Keeps a text written over a version of a draft. When the draft has changed since that version, the text is laid
-     * over it: what the writer changed since the version, over what was changed since by others. When that version's
-     * text is gone (the draft written whole or cleared since), both texts are kept whole. Nothing written is lost.
-     * Kept as an edit of what is kept, the whole text when nothing is, none when it's empty.
-     * @param {{ tree: bigint, owner: DraftOwner, text: string, version: unknown, actor: Actor }} p tree: the chat it's
-     *   written in; version: the draft's version the text was written over, as given
-     * @returns {Promise<Draft & { merged: boolean }>} the draft now, and whether it is other than the text given
-     */
-    saveDraft({ tree, owner, text, version, actor }) {
+    saveDraft({ tree, owner, save, actor }) {
+        const base = baseOf(save.text, save.changes);
+        if (base === null) return Promise.resolve(null);
         return this.serialized(tree, async () => {
             return await this.inDraftLanes(tree, [owner], async () => {
                 /** @type {object[]} */
                 const records = [];
                 const { user, session } = await this.actorIds(actor, records);
-                const { draft, record } = await this.draftWritten(owner, version, text, { user, ...(session === null ? {} : { session }) });
+                const now = await this.draftOf(owner);
+                const draft = mergeDraft(base, now, save.text);
+                const record = draftRecord(owner, now, draft, { user, ...(session === null ? {} : { session }) }, save);
                 if (record !== null) await this.store.commit([...records, record]);
-                return { ...await this.draftOf(owner), merged: draft !== text };
+                return draft;
             });
         });
     }

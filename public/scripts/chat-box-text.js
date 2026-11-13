@@ -1,4 +1,9 @@
 /**
+ * A replacement in the positions of the text it applies to, with the text it removes
+ * @typedef {{ from: number, to: number, insert: string, deleted: string }} BoxChange
+ */
+
+/**
  * The chat box's text: the editor's edits are its edits; from outside it is replaced whole (`replace`, the editor's
  * edits so far dropped), or the server's draft is heard (`heard`), which the editor shows with the edits the draft
  * doesn't include laid over it
@@ -11,6 +16,8 @@
  * @property {(text: string) => void} replace
  * @property {(text: string, includes: string | undefined) => void} heard the draft as the server has it, and the latest
  *   of the editor's edits it includes
+ * @property {(text: string, id: string | undefined) => void} rebased the draft is `text` now, and the editor keeps
+ *   what it shows as its edit `id` over it
  * @property {(read: () => string) => void} bind reads the text from the editor that shows it
  */
 
@@ -58,6 +65,10 @@ export function boxText(initial = '', changed = () => {}) {
                     replaced = false;
                 });
             }
+        },
+        rebased(text, id) {
+            held = { text, includes: undefined };
+            latest = id ?? latest;
         },
         heard(text, includes) {
             held = { text, includes };

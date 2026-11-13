@@ -9,19 +9,20 @@ import { tabToken } from './tab-session.js';
  * The chat box. Its text is a view of the draft of the message the chat ends on, as the server has it: an action that
  * uses it takes it when the action is taken (`chatBoxText`, `takeChatBoxText`), and whatever puts text in it writes it
  * (`writeChatBox`). The text goes to the server only when the person leaves that end: in the request that moves them
- * (`leavingChatBox`, `openingChatBox`), or when the page is hidden. The server lays it over its draft by the version it
- * was written over, and answers with the draft as merged; drafts written in other tabs arrive pushed
- * (`takeChatBoxPush`). Either is shown with what was typed since laid over it, as the editor's text port does. Until the
- * server confirms a text, the browser keeps a copy of it, this tab's own, written on every edit
- * (`chat-box-copies.js`), so a crash or a lost request loses nothing.
+ * (`leavingChatBox`, `openingChatBox`), or when the page is hidden. A save carries its text and the changes from the
+ * draft it was written over, which the server merges into its draft. Every draft the server writes is pushed to every
+ * tab (`takeChatBoxPush`), and shown with what was typed since laid over it, as the editor's text port does. Until the
+ * server confirms a text, the browser keeps a copy of it, this tab's own, written on every edit (`chat-box-copies.js`),
+ * so a crash or a lost request loses nothing.
  */
 
 /**
  * @typedef {import('./chat-box-ends.js').DraftOwner} DraftOwner
+ * @typedef {import('./chat-box-text.js').BoxChange} BoxChange
  * @typedef {{ avatar_url: string } | { group_id: string }} ChatOf
- * @typedef {{ owner: DraftOwner, text: string, version: string }} Draft
- * @typedef {Partial<ChatOf> & { owner: DraftOwner, text: string, version: string, tab: string }} LeftDraft a draft as a
- *   request carries it to be kept
+ * @typedef {{ owner: DraftOwner, text: string }} Draft
+ * @typedef {Partial<ChatOf> & { owner: DraftOwner, text: string, changes: BoxChange[], tab: string, change?: string }} LeftDraft
+ *   a draft as a request carries it to be kept
  * @typedef {import('@codemirror/view').KeyBinding} KeyBinding
  */
 
@@ -37,72 +38,51 @@ import { tabToken } from './tab-session.js';
  * @property {(text: string) => boolean} slashWanted
  */
 
-/** A draft never written */
-const NO_VERSION = '0.0';
-
 const copies = boxCopies(guardedStorage(() => globalThis.localStorage));
 
+/** This page's own, so an edit id of an earlier page of this tab is never taken for one of its own */
+const PAGE = Math.random().toString(36).slice(2);
+
 /**
- * @type {{ chat: ChatOf, owner: DraftOwner, version: string, text: string } | null} the end the box's text responds
- *   to, and its draft as the server last told this page: the version and its text
+ * @type {{ chat: ChatOf, owner: DraftOwner, base: string } | null} the end the box's text responds to, and its draft
+ *   as this page last heard it
  */
 let here = null;
-/** @type {{ chat: ChatOf, owner: DraftOwner, text: string } | null} the text a send took, until the chat ends past what it responded to */
-let sending = null;
-/** @type {{ sent: string, includes: string | undefined } | null} a save of the box's text not answered yet, and the latest edit it holds */
-let saving = null;
-/** @type {{ text: string, version: string } | null} the newest draft pushed while a save was not answered */
-let heldPush = null;
-/** @type {string | null} the tab this one says is open */
-let saidOpen = null;
 
 const tab = () => tabToken();
 
-/**
- * @param {string | undefined} version
- * @returns {[string, string] | null} its two whole numbers, as written
- */
-const versionParts = (version) => {
-    const parts = /^(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version ?? '');
-    return parts ? [parts[1], parts[2]] : null;
+/** @returns {string | undefined} the latest edit, as a save and the push of what it made name it */
+const change = () => {
+    const latest = text.latest();
+    return latest === undefined ? undefined : `${PAGE}/${latest}`;
 };
 
 /**
- * @param {string} a a whole number as written, without leading zeros
- * @param {string} b
- * @returns {number} below, at or above 0 as `a` is less than, equal to or greater than `b`
+ * The edits the box has that its draft as heard doesn't: the text they were written over, and the changes to the box's
+ * text
+ * @returns {{ base: string, changes: BoxChange[] }}
  */
-const compareWhole = (a, b) => (a.length === b.length ? (a < b ? -1 : a > b ? 1 : 0) : a.length - b.length);
-
-/**
- * @param {string} a
- * @param {string} b
- * @returns {boolean} whether `a` is a later version of a draft than `b`
- */
-export function laterVersion(a, b) {
-    const x = versionParts(a);
-    const y = versionParts(b);
-    if (x === null || y === null) return false;
-    const written = compareWhole(x[0], y[0]);
-    return written > 0 || (written === 0 && compareWhole(x[1], y[1]) > 0);
-}
-
-function sayOpen() {
-    const now = tab();
-    if (saidOpen === now) return;
-    saidOpen = now;
-    copies.setOpen(now, true);
+function unsaved() {
+    const view = editor?.unsaved();
+    if (view) return { base: view.text, changes: view.changes };
+    const base = here?.base ?? '';
+    const written = text.text();
+    return { base, changes: written === base ? [] : [{ from: 0, to: base.length, insert: written, deleted: base }] };
 }
 
 const keepCopy = () => {
     if (!here) return;
-    sayOpen();
     const written = text.text();
-    if (written === here.text) copies.remove(here.chat, here.owner, tab());
-    else copies.write(here.chat, here.owner, tab(), { text: written, version: here.version });
+    const { base, changes } = unsaved();
+    if (written === base) {
+        copies.remove(here.chat, here.owner, tab());
+        return;
+    }
+    const latest = change();
+    copies.write(here.chat, here.owner, tab(), { text: written, changes, ...(latest ? { change: latest } : {}) });
 };
 
-const text = boxText('', keepCopy);
+const text = boxText('', () => queueMicrotask(keepCopy));
 /** @type {import('./chat-text/chat-box-editor.js').ChatBoxEditor | null} */
 let editor = null;
 let shownPlaceholder = '';
@@ -126,28 +106,14 @@ const isHere = (chat, owner) => here !== null && sameChat(here.chat, chat) && sa
 let page = null;
 
 /**
- * The server's draft of where the box is, with what the editor typed since its latest edit `includes` laid over it
- * @param {string} draft
- * @param {string} version
- * @param {string | undefined} includes
+ * The box's draft is `base` now, and the box keeps what it shows: what it has that `base` doesn't is its unsaved text
+ * @param {string} base
  */
-function hear(draft, version, includes) {
+function rebase(base) {
     if (!here) return;
-    here.text = draft;
-    here.version = version;
-    text.heard(draft, includes);
-    queueMicrotask(keepCopy);
-}
-
-/**
- * A save of the box's text is answered, or is not to be: a draft pushed meanwhile that is later than the one heard is
- * shown now
- */
-function settleSaving() {
-    saving = null;
-    const pushed = heldPush;
-    heldPush = null;
-    if (pushed && here && laterVersion(pushed.version, here.version)) hear(pushed.text, pushed.version, undefined);
+    here.base = base;
+    if (editor) editor.rebase(base);
+    else text.rebased(base, undefined);
 }
 
 /**
@@ -174,19 +140,11 @@ function follow(known) {
     if (!page || !here || !chat || !sameChat(chat, here.chat)) return;
     const owner = known?.owner ?? page.endOwner();
     const was = here;
-    if (sameOwner(owner, was.owner)) {
-        if (!known || known.version === was.version) return;
-        copies.confirm(was.chat, was.owner, tab(), text.text());
-    }
-    here = { chat: was.chat, owner, version: known?.version ?? NO_VERSION, text: known?.text ?? '' };
-    saving = null;
-    heldPush = null;
+    if (sameOwner(owner, was.owner)) return;
+    here = { chat: was.chat, owner, base: was.base };
+    rebase(known?.text ?? '');
     keepCopy();
-    if (!sameOwner(owner, was.owner)) copies.confirm(was.chat, was.owner, tab(), text.text());
-    if (sending && sameChat(sending.chat, was.chat) && !sameOwner(owner, sending.owner)) {
-        copies.confirm(sending.chat, sending.owner, tab(), sending.text);
-        sending = null;
-    }
+    copies.remove(was.chat, was.owner, tab());
 }
 
 /**
@@ -196,17 +154,10 @@ function follow(known) {
  */
 export async function initChatBox(dependencies) {
     page = dependencies;
-    const keep = () => {
+    document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') keepLeft();
-    };
-    document.addEventListener('visibilitychange', keep);
-    window.addEventListener('pagehide', () => {
-        keepLeft();
-        copies.setOpen(tab(), false);
-        saidOpen = null;
     });
-    window.addEventListener('pageshow', sayOpen);
-    sayOpen();
+    window.addEventListener('pagehide', () => keepLeft());
     await loadChatEditor();
     const { chatBoxEditor } = await import('./chat-text/chat-box-editor.js');
     editor = chatBoxEditor({
@@ -236,10 +187,9 @@ async function keepLeft() {
         const response = await fetch('/api/chats/draft', { method: 'POST', keepalive: true, headers: getRequestHeaders(), body: JSON.stringify(leaving) });
         if (!response.ok) throw new Error(`The draft save answered ${response.status}`);
         const answer = await response.json();
-        chatBoxLeft([{ ...leaving, sent: leaving.text, left: answer.left, text: answer.text, version: answer.version }]);
+        chatBoxLeft([{ ...leaving, sent: leaving.text, left: answer.left, text: answer.text }]);
     } catch (error) {
         console.warn('The chat box\'s text was not kept:', error);
-        settleSaving();
     }
 }
 
@@ -251,17 +201,16 @@ export function chatBoxText() {
 }
 
 /**
- * Takes the box's text for an action that sends it, leaving the box empty. The browser's copy of it stays until the
- * chat ends past what it responded to, which a stored send makes it.
- * @returns {{ text: string, sent: (DraftOwner & { version: string }) | null }} the text, and the draft it was and the
- *   version it was written over: what the send takes out of the draft
+ * Takes the box's text for an action that sends it, leaving the box empty. Text typed since is the box's own; the
+ * chat ending past what the text responded to, which a stored send makes it, moves it there.
+ * @returns {{ text: string, sent: (DraftOwner & { text: string, changes: BoxChange[] }) | null }} the text, and the draft
+ *   it was with the changes it was written with: what the send takes out of the draft
  */
 export function takeChatBoxText() {
     follow(null);
     const taken = text.text();
-    const sent = here ? { ...here.owner, version: here.version } : null;
-    if (here && taken !== '') sending = { chat: here.chat, owner: here.owner, text: taken };
-    if (taken !== '') text.replace('');
+    const sent = here ? { ...here.owner, text: taken, changes: unsaved().changes } : null;
+    if (taken !== '') writeChatBox('');
     return { text: taken, sent };
 }
 
@@ -281,35 +230,37 @@ export function writeChatBox(written) {
 
 /**
  * The draft an action that moves the person away from where their chat ends carries, when the server doesn't have
- * the text yet: with the chat it was written in, the version it was written over and this tab
+ * the text yet: with the chat it was written in, its changes, this tab and the latest edit it holds
  * @returns {LeftDraft[] | undefined}
  */
 export function leavingChatBox() {
+    if (!here) return undefined;
     const written = text.text();
-    if (!here || written === here.text) return undefined;
-    saving = { sent: written, includes: text.latest() };
-    return [{ ...here.chat, owner: here.owner, text: written, version: here.version, tab: tab() }];
+    const { base, changes } = unsaved();
+    if (written === base) return undefined;
+    const latest = change();
+    return [{ ...here.chat, owner: here.owner, text: written, changes, tab: tab(), ...(latest ? { change: latest } : {}) }];
 }
 
 /**
  * What a request that opens a chat carries: the text it leaves, and every copy the browser kept of text written in
- * that chat that the server hasn't confirmed, from this tab's earlier pages and from tabs closed since
+ * that chat that the server hasn't confirmed, from any tab. A copy already in the draft changes nothing when merged
+ * again, so one that a tab still open is writing goes too.
  * @param {ChatOf} chat the chat it opens
  * @returns {LeftDraft[] | undefined}
  */
 export function openingChatBox(chat) {
     const own = tab();
-    const open = new Set(copies.openTabs());
     const live = here;
-    const left = copies.of(chat).filter(copy => (copy.tab === own || !open.has(copy.tab)) && !(copy.tab === own && live && sameChat(live.chat, chat) && sameOwner(live.owner, copy.owner)));
-    const all = [...leavingChatBox() ?? [], ...left.map(copy => ({ ...chat, owner: copy.owner, text: copy.text, version: copy.version, tab: copy.tab }))];
+    const kept = copies.of(chat).filter(copy => !(copy.tab === own && live && sameChat(live.chat, chat) && sameOwner(live.owner, copy.owner)));
+    const all = [...leavingChatBox() ?? [], ...kept.map(copy => ({ ...chat, owner: copy.owner, text: copy.text, changes: copy.changes, tab: copy.tab, ...(copy.change ? { change: copy.change } : {}) }))];
     return all.length ? all : undefined;
 }
 
 /**
  * Hears what became of the drafts a request carried, as its answer names them: a copy of a text the server kept, or
  * won't keep because what it responds to is gone, is gone; one the server didn't answer for stays, to be carried again.
- * The box's own text, kept, is shown as the server merged it, with what was typed since laid over it.
+ * The draft the server made of it is shown when its push arrives.
  * @param {unknown} left the answer's `left`
  */
 export function chatBoxLeft(left) {
@@ -317,65 +268,47 @@ export function chatBoxLeft(left) {
     for (const draft of left) {
         if (!draft || typeof draft !== 'object' || typeof draft.sent !== 'string' || !draft.owner) continue;
         if (typeof draft.avatar_url !== 'string' && typeof draft.group_id !== 'string') continue;
-        const chat = chatIn(draft);
-        const from = typeof draft.tab === 'string' ? draft.tab : tab();
         if (draft.left !== 'kept' && draft.left !== 'gone') continue;
-        copies.confirm(chat, draft.owner, from, draft.sent);
-        if (from !== tab() || !isHere(chat, draft.owner) || !saving || saving.sent !== draft.sent) continue;
-        const { includes } = saving;
-        if (draft.left === 'kept' && typeof draft.text === 'string' && typeof draft.version === 'string') hear(draft.text, draft.version, includes);
-        settleSaving();
+        copies.confirm(chatIn(draft), draft.owner, typeof draft.tab === 'string' ? draft.tab : tab(), draft.sent);
     }
 }
 
 /**
- * A draft written in another tab or on another device: shown, with what was typed here since laid over it, when the
- * box is at it and it is later than what the box has
- * @param {{ tree?: { avatar?: string, group?: string }, owner?: DraftOwner, text?: unknown, version?: unknown }} frame
+ * A draft the server wrote, from any tab or device: shown when the box is at it, with the edits it doesn't hold laid
+ * over it. It holds this page's edits up to the one it names, when it came from a save of this page's.
+ * @param {{ tree?: { avatar?: string, group?: string }, owner?: DraftOwner, text?: unknown, tab?: unknown, change?: unknown }} frame
  */
 export function takeChatBoxPush(frame) {
     const tree = frame.tree;
-    if (!tree || !frame.owner || typeof frame.text !== 'string' || typeof frame.version !== 'string') return;
+    if (!tree || !frame.owner || typeof frame.text !== 'string' || !here) return;
     const chat = /** @type {ChatOf} */ (typeof tree.group === 'string' ? { group_id: tree.group } : { avatar_url: tree.avatar });
-    if (!isHere(chat, frame.owner) || !here) return;
-    if (saving) {
-        if (!heldPush || laterVersion(frame.version, heldPush.version)) heldPush = { text: frame.text, version: frame.version };
-        return;
-    }
-    if (laterVersion(frame.version, here.version)) hear(frame.text, frame.version, undefined);
+    const greeting = 'greeting' in frame.owner && 'greeting' in here.owner;
+    if (!(greeting ? sameOwner(here.owner, frame.owner) : isHere(chat, frame.owner))) return;
+    const own = frame.tab === tab() && typeof frame.change === 'string' && frame.change.startsWith(`${PAGE}/`);
+    here.base = frame.text;
+    text.heard(frame.text, own ? /** @type {string} */ (frame.change).slice(PAGE.length + 1) : undefined);
+    queueMicrotask(keepCopy);
 }
 
 /**
- * The person is at another end, or another chat: the box shows that end's draft, or this tab's copy of text written
- * over that same version and not kept yet. A copy written over another version is left for the next open of the chat
- * to carry. Text written before any chat was open stays, to be kept for the end it's sent after.
+ * The person is at another end, or another chat: the box shows that end's draft. Text written before any chat was
+ * open stays, to be kept for the end it's sent after. A copy this tab kept for that end, which the request that moved
+ * here didn't get kept, is set apart, so the box's own copy never writes over it; the next open of the chat carries it.
  * @param {ChatOf} chat
  * @param {Draft | undefined} draft the end's draft, as the answer that moved them carries it
  */
 export function arriveChatBox(chat, draft) {
     if (!draft) return;
-    if (here && isHere(chat, draft.owner)) {
-        if (laterVersion(draft.version, here.version) && !saving) hear(draft.text, draft.version, undefined);
-        return;
-    }
+    if (here && isHere(chat, draft.owner)) return;
     const first = here === null;
-    here = { chat, owner: draft.owner, version: draft.version, text: draft.text };
-    saving = null;
-    heldPush = null;
+    here = { chat, owner: draft.owner, base: draft.text };
+    copies.setApart(chat, draft.owner, tab());
     if (first && text.text() !== '' && draft.text === '') {
+        rebase('');
         keepCopy();
         return;
     }
-    const copy = copies.read(chat, draft.owner, tab());
-    if (copy && copy.version === draft.version) {
-        if (text.text() !== copy.text) text.replace(copy.text);
-        return;
-    }
-    if (copy) {
-        copies.remove(chat, draft.owner, tab());
-        copies.write(chat, draft.owner, `${tab()}@${copy.version}`, copy);
-    }
-    if (text.text() !== draft.text) text.replace(draft.text);
+    text.replace(draft.text);
 }
 
 /**

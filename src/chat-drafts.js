@@ -1,5 +1,6 @@
 import { TYPE } from './library-codes.js';
 import { cardGreetingsOf } from './opening-state.js';
+import { draftWriteOf } from './chat-engine.js';
 
 /**
  * What a draft follows, as the engine keys it: a stored message, a chat's root (its tree), or a card's greeting (the
@@ -13,9 +14,8 @@ import { cardGreetingsOf } from './opening-state.js';
  */
 
 /**
- * A draft as an answer carries it: the end of the chat the answer leaves the page at, the text written after it, and
- * its version (`ChatEngine.draftOf`)
- * @typedef {{ owner: WireDraftOwner, text: string, version: string }} DraftAnswer
+ * A draft as an answer carries it: the end of the chat the answer leaves the page at, and the text written after it
+ * @typedef {{ owner: WireDraftOwner, text: string }} DraftAnswer
  */
 
 /**
@@ -79,34 +79,30 @@ export async function wireOwnerOf(store, owner) {
 export async function endDraft(chat) {
     const owner = await chat.store.chats.endOwner({ tree: chat.tree, actor: chat.session.reader() });
     const wire = await wireOwnerOf(chat.store, owner);
-    return wire === null ? undefined : { owner: wire, ...await chat.store.chats.draftOf(owner) };
+    return wire === null ? undefined : { owner: wire, text: await chat.store.chats.draftOf(owner) };
 }
 
 /**
- * A frame for each tab of another session: the draft each committed draft record wrote, as it is now
+ * A frame for each draft the committed records wrote: the draft as that record made it, and the tab and edit of the
+ * save it came from, so that tab lays only its later edits over it
  * @param {import('./user-stores.js').UserStore} store
  * @param {Record<string, any>[]} records
- * @param {bigint | null} session the tab's session; its own drafts aren't told back to it
- * @returns {Promise<{ type: 'draft', tree: { avatar: string } | { group: string }, owner: WireDraftOwner, text: string, version: string }[]>}
+ * @returns {Promise<{ type: 'draft', tree: { avatar: string } | { group: string }, owner: WireDraftOwner, text: string, tab?: string, change?: string }[]>}
  */
-export async function draftFrames(store, records, session) {
-    /** @type {Map<string, DraftOwner>} */
-    const owners = new Map();
+export async function draftFrames(store, records) {
+    const frames = [];
     for (const r of records) {
-        if ((r.kind !== 'draftValue' && r.kind !== 'draftEdit') || (session !== null && r.session === session)) continue;
+        if (r.kind !== 'draftValue' && r.kind !== 'draftEdit') continue;
         /** @type {DraftOwner} */
         const owner = r.message !== undefined
             ? { message: r.message }
             : { tree: r.tree, ...(r.greeting === undefined ? {} : { greeting: r.greeting }) };
-        owners.set('message' in owner ? `m${owner.message}` : `t${owner.tree}:${/** @type {any} */ (owner).greeting ?? ''}`, owner);
-    }
-    const frames = [];
-    for (const owner of owners.values()) {
+        const written = draftWriteOf(r) ?? { text: await store.chats.draftOf(owner) };
         const wire = await wireOwnerOf(store, owner);
         const treeId = 'message' in owner ? (await store.chats.stored([owner.message])).get(owner.message)?.owner : owner.tree;
         const [key] = wire === null || treeId === undefined ? [null] : await store.lib.store.libraryKeys([treeId]);
         if (wire === null || !key) continue;
-        frames.push({ type: /** @type {const} */ ('draft'), tree: key.type === TYPE.group ? { group: key.key } : { avatar: key.key }, owner: wire, ...await store.chats.draftOf(owner) });
+        frames.push({ type: /** @type {const} */ ('draft'), tree: key.type === TYPE.group ? { group: key.key } : { avatar: key.key }, owner: wire, ...written });
     }
     return frames;
 }

@@ -38,6 +38,7 @@ import { pageSettingsHash } from '../settings-hash.js';
 import { PlaceError, placeOf, storedForm } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
 import { draftOwnerOf, endDraft } from '../chat-drafts.js';
+import { baseOf } from '../draft-merge.js';
 
 /**
  * @param {unknown} error
@@ -452,16 +453,16 @@ export const router = express.Router();
 router.use(requireSessionHeader);
 
 /**
- * What became of a draft the page asked to keep: kept, laid over whatever else was written in it since the version the
- * page had; not kept because what it follows is gone; null when it could not be kept now, to be asked again
+ * What became of a draft the page asked to keep: kept, laid over whatever else was written in it since the text it was
+ * written over; not kept because what it follows is gone; null when it could not be kept now, to be asked again
  * @typedef {'kept' | 'gone' | null} DraftLeft
  */
 
 /**
  * @param {import('express').Request} request
- * @param {unknown} given `{ owner, text, version }`, with `avatar_url` or `group_id` when it is another chat than the
- *   request's
- * @returns {Promise<{ left: DraftLeft, text?: string, version?: string }>} text and version: the draft now, when kept
+ * @param {unknown} given `{ owner, text, changes, tab?, change? }` (`DraftSave`), with `avatar_url` or `group_id` when
+ *   it is another chat than the request's
+ * @returns {Promise<{ left: DraftLeft, text?: string }>} text: the draft now, when kept
  */
 async function keepDraft(request, given) {
     if (given === null || typeof given !== 'object') return { left: null };
@@ -474,8 +475,13 @@ async function keepDraft(request, given) {
         const chat = await chatOf(request, from);
         const owner = chat ? await draftOwnerOf(chat, draft.owner) : null;
         if (!chat || !owner) return { left: 'gone' };
-        const saved = await chat.store.chats.saveDraft({ tree: chat.tree, owner, text: draft.text, version: draft.version, actor: chat.session.actor() });
-        return { left: 'kept', text: saved.text, version: saved.version };
+        const save = { text: draft.text, changes: draft.changes, ...(typeof draft.tab === 'string' ? { tab: draft.tab } : {}), ...(typeof draft.change === 'string' ? { change: draft.change } : {}) };
+        const saved = await chat.store.chats.saveDraft({ tree: chat.tree, owner, save, actor: chat.session.actor() });
+        if (saved === null) {
+            console.warn('A draft was not kept: its changes do not fit its text');
+            return { left: null };
+        }
+        return { left: 'kept', text: saved };
     } catch (error) {
         console.error('A draft was not kept:', error);
         return { left: null };
@@ -496,7 +502,7 @@ router.use(async function keepLeavingDrafts(request, response, next) {
         const kept = await keepDraft(request, draft);
         const named = draft && typeof draft === 'object' ? draft : {};
         const chat = typeof named.group_id === 'string' ? { group_id: named.group_id } : typeof named.avatar_url === 'string' ? { avatar_url: named.avatar_url } : {};
-        left.push({ ...chat, owner: named.owner, sent: named.text, ...(typeof named.tab === 'string' ? { tab: named.tab } : {}), ...kept });
+        left.push({ ...chat, owner: named.owner, sent: named.text, ...(typeof named.tab === 'string' ? { tab: named.tab } : {}), ...(typeof named.change === 'string' ? { change: named.change } : {}), ...kept });
     }
     response.locals.left = left;
     next();
@@ -1126,7 +1132,7 @@ router.post('/ancestry', async function (request, response) {
 });
 
 router.post('/draft', validateAvatarUrlMiddleware, async function (request, response) {
-    if (typeof request.body?.text !== 'string') return response.status(400).send({ error: 'text is required' });
+    if (baseOf(request.body?.text, request.body?.changes) === null) return response.status(400).send({ error: 'text, and changes that fit it, are required' });
     const kept = await keepDraft(request, request.body);
     if (kept.left === null) return response.status(500).send({ error: true });
     return response.send({ ok: true, ...kept });
