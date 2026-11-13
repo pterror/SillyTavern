@@ -53,8 +53,7 @@ function startLlamaCpp() {
  * @param {string} name
  * @param {string} book
  */
-async function createCharacterAndBook(page, name, book) {
-    const entry = { uid: 0, key: ['lantern'], keysecondary: [], comment: 'The lantern', content: 'The lantern never goes out.', position: 0, order: 10, disable: false };
+async function createCharacterAndBook(page, name, book, entry = { uid: 0, key: ['lantern'], keysecondary: [], comment: 'The lantern', content: 'The lantern never goes out.', position: 0, order: 10, disable: false }) {
     await makeWorld(page, book, { 0: entry });
     await page.locator('#WIDrawerIcon').click();
     await expect(page.locator('#Worldbuilding')).not.toBeVisible();
@@ -194,6 +193,53 @@ test('the words that brought an entry in are marked where they were written; poi
         await expect(page.locator('#Worldbuilding .wb-switch-name')).toHaveText(book);
         await expect(page.locator('.mes_editor')).toHaveCount(0);
     } finally {
+        await mock.close();
+    }
+});
+
+test('names and marks stay drawn when the theme or the chat\'s display changes', async ({ page }) => {
+    test.setTimeout(120000);
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const book = `Restyled-${stamp}`;
+    const mock = await startLlamaCpp();
+    /** @type {string | null} */
+    let theme = null;
+    try {
+        await testSetup.awaitST({ page });
+        theme = await page.evaluate(() => String(window['$']('#themes').val()));
+        const entry = { uid: 0, key: ['lantern', 'Old Bell'], keysecondary: [], comment: 'The lantern', content: 'The lantern never goes out.', position: 0, order: 10, disable: false, extensions: { names: ['Old Bell'] } };
+        const avatar = await createCharacterAndBook(page, `Restyler-${stamp}`, book, entry);
+        await openCharacter(page, avatar);
+        await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
+        await connectLlamaCpp(page, mock.url);
+        await page.waitForTimeout(2500);
+
+        await chatBox(page).fill('Where is the old lantern kept, by Old Bell?');
+        await page.locator('#send_but').click();
+        await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('It hangs by the door.', { timeout: 30000 });
+        const sent = page.locator('#chat .mes[mesid="1"] .mes_text');
+        const drawn = async () => {
+            await expect(sent.locator('.trigger-mark')).toHaveText(['lantern', 'Old Bell'], { timeout: 10000 });
+            await expect(sent.locator('.chat-name')).toHaveText('Old Bell');
+        };
+        await drawn();
+
+        await page.evaluate(() => { window['$']('#themes').val('Celestial Macaron').trigger('change'); });
+        await expect(page.locator('body')).toHaveClass(/bubblechat/);
+        await drawn();
+
+        await page.evaluate(() => { window['$']('#chat_display').val('0').trigger('change'); });
+        await expect(page.locator('body')).not.toHaveClass(/bubblechat/);
+        await drawn();
+
+        await page.reload();
+        await testSetup.awaitST({ page });
+        await openCharacter(page, avatar);
+        await expect(sent).toContainText('Old Bell', { timeout: 15000 });
+        await drawn();
+    } finally {
+        // The worker's later tests share its settings.
+        if (theme !== null) await page.evaluate((name) => { window['$']('#themes').val(name).trigger('change'); }, theme);
         await mock.close();
     }
 });
