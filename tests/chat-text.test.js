@@ -292,6 +292,52 @@ describe('chat text, a click on it', () => {
     });
 });
 
+describe('an image in chat text, clicked', () => {
+    /**
+     * @param {string} html the text, an image in it
+     * @returns {{ shown: string[], prevented: boolean, edit: number | null }} what the lightbox showed, whether the
+     *   browser was told not to act on the click, and the edit it starts
+     */
+    async function clickImage(html) {
+        const { initImageLightbox, onLightboxImageClick } = await import('../public/scripts/image-lightbox.js');
+        /** @type {string[]} */
+        const shown = [];
+        initImageLightbox(url => shown.push(url));
+        const rendered = document.createElement('div');
+        rendered.innerHTML = html;
+        const image = /** @type {HTMLImageElement} */ (rendered.querySelector('img'));
+        image.addEventListener('click', (event) => {
+            const jq = {
+                delegateTarget: rendered,
+                isDefaultPrevented: () => event.defaultPrevented,
+                preventDefault: () => event.preventDefault(),
+                stopPropagation: () => {},
+            };
+            onLightboxImageClick.call(image, /** @type {any} */ (jq));
+        });
+        /** @type {number | null} */
+        let edit = null;
+        rendered.addEventListener('click', event => { edit = surface.editPosition(/** @type {MouseEvent} */ (event), rendered, true); });
+        const event = new window.MouseEvent('click', { bubbles: true, cancelable: true });
+        image.dispatchEvent(event);
+        return { shown, prevented: event.defaultPrevented, edit };
+    }
+
+    test('opens it in the lightbox, starting no edit', async () => {
+        const { shown, prevented, edit } = await clickImage('<p><img src="http://localhost:8000/x.png"></p>');
+        expect(shown).toEqual(['http://localhost:8000/x.png']);
+        expect(prevented).toBe(true);
+        expect(edit).toBeNull();
+    });
+
+    test('in a link follows the link: no lightbox, no edit', async () => {
+        const { shown, prevented, edit } = await clickImage('<p><a href="http://example.com/"><img src="http://localhost:8000/x.png"></a></p>');
+        expect(shown).toEqual([]);
+        expect(prevented).toBe(false);
+        expect(edit).toBeNull();
+    });
+});
+
 describe('chat text, shown in a container', () => {
     test('a streamed reply redraws what it added, which fades in', () => {
         const container = document.createElement('div');

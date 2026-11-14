@@ -1,3 +1,5 @@
+import { handledInside } from './interactive-content.js';
+
 /** @type {(url: string, title: string) => void} */
 let showLightbox = null;
 
@@ -7,10 +9,12 @@ export function initImageLightbox(show) {
 }
 
 /**
+ * Shows a clicked image in the lightbox, unless what holds it handles the click (a link, a button)
  * @this {HTMLImageElement}
  * @param {JQuery.ClickEvent} event
  */
 export function onLightboxImageClick(event) {
+    if (event.isDefaultPrevented() || handledInside(this, event.delegateTarget)) return;
     event.preventDefault();
     event.stopPropagation();
     showLightbox(this.src, this.alt || '');

@@ -1,5 +1,6 @@
 import { GFM, htmlInMarkdown, markdownParser, reader } from '../../lib.js';
 import { EMOJIS } from '../emojis.js';
+import { handledInside } from '../interactive-content.js';
 import { fadeIn } from './fade-in.js';
 import { chatMarkdownExtensions } from './grammar.js';
 import { codeHighlighting } from './highlight.js';
@@ -108,14 +109,6 @@ function caretAt(event) {
 }
 
 /**
- * The elements whose click the browser acts on itself: HTML's interactive content, of which a details' summary is only
- * the first, the one that toggles it.
- * https://html.spec.whatwg.org/multipage/dom.html#interactive-content
- */
-const interactiveContent = 'a[href], audio[controls], video[controls], button, details > summary:first-of-type, embed, iframe, '
-    + 'img[usemap], input:not([type="hidden" i]), label, select, textarea';
-
-/**
  * Where in its source a click or double-click on read text starts an edit: the source position the reader drew there.
  * A click that something else handles starts none: one a handler marked with `preventDefault`, which it does before
  * this runs, or one on interactive content inside the text. Nor does a click when click to edit is off or text is
@@ -128,8 +121,7 @@ const interactiveContent = 'a[href], audio[controls], video[controls], button, d
 export function editPosition(event, rendered, clickToEdit) {
     if (event.defaultPrevented) return null;
     if (event.type === 'click' && (!clickToEdit || window.getSelection()?.toString())) return null;
-    const interactive = event.target instanceof Element ? event.target.closest(interactiveContent) : null;
-    if (interactive && interactive !== rendered && rendered.contains(interactive)) return null;
+    if (handledInside(event.target, rendered)) return null;
     const caret = caretAt(event);
     if (!caret || !rendered.contains(caret.node)) return 0;
     return sourcePositionAt(caret.node, caret.offset) ?? 0;
