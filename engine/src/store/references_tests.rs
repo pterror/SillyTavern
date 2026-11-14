@@ -788,6 +788,38 @@ fn the_entries_with_a_key_are_listed_by_id_without_the_entry_asking() {
 }
 
 #[test]
+fn the_keys_starting_with_what_is_typed_are_listed_with_their_counts() {
+    let dir = temp_dir("suggestions");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut m = Model::default();
+    setup(&s, &mut m);
+    let mut r = Vec::new();
+    for (e, key) in [(10, "ledger"), (11, "ledger"), (12, "lamp"), (13, "Ledger"), (14, "lamp post")] {
+        r.push(create(e, ENTRY, &format!("1:{e}")));
+        r.push(set_text(e, key_field(0, 0), key));
+    }
+    s.commit_wait(r).unwrap();
+    let typed = |text: &str, limit: usize| {
+        let Js::Arr(list) = read(&s, |v| references::key_suggestions(v, 1, text.as_bytes(), limit)) else { panic!() };
+        list.iter()
+            .map(|one| {
+                let (Js::Text(text), Js::Num(keys)) = (field(one, "text"), field(one, "keys")) else { panic!() };
+                (String::from_utf8(text.clone()).unwrap(), *keys as u64)
+            })
+            .collect::<Vec<_>>()
+    };
+    let pair = |text: &str, keys: u64| (text.to_string(), keys);
+    assert_eq!(typed("l", 10), vec![pair("lamp", 1), pair("lamp post", 1), pair("ledger", 2)]);
+    assert_eq!(typed("la", 10), vec![pair("lamp", 1), pair("lamp post", 1)]);
+    assert_eq!(typed("l", 2), vec![pair("lamp", 1), pair("lamp post", 1)]);
+    assert_eq!(typed("ledger", 10), vec![pair("ledger", 2)]);
+    s.commit_wait(vec![delete(11)]).unwrap();
+    assert_eq!(typed("led", 10), vec![pair("ledger", 1)]);
+    assert!(typed("zz", 10).is_empty());
+    assert_eq!(read(&s, |v| references::key_suggestions(v, 99, b"l", 3)), Js::Null);
+}
+
+#[test]
 fn recounting_from_nothing_gives_the_counts_the_writes_kept() {
     let dir = temp_dir("recount");
     let s = Store::open_in(&dir, SMALL, pool()).unwrap();

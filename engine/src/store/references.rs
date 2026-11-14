@@ -7,7 +7,7 @@ use super::books::{BOOK, OWNED};
 use super::derive::{Out, View};
 use super::kinds::{key, text_value};
 use super::library::{ITEM_BASE, LISTS, counter, entity_info};
-use crate::keyspace::val::{get_bytes, get_u64, put_bytes};
+use crate::keyspace::val::{counter_value, get_bytes, get_u64, put_bytes};
 use crate::log::format::FieldRef;
 use crate::search::query::docs_with_terms;
 use crate::search::text::tokens;
@@ -201,6 +201,27 @@ pub fn key_sharers(
         entries.push(super::entry_label::named(view, Some(list), other)?.js());
     }
     Ok(Js::Obj(vec![("entries", Js::Arr(entries)), ("more", Js::Bool(more))]))
+}
+
+/// The texts of the world's keys that start with `typed`, in byte order, each with the number of keys of the world with
+/// that text: the first `limit` of them. A text is stored by `put_bytes`, whose escaping of each byte is its own, so
+/// the escaped `typed` without the terminator is a prefix of every text that starts with it.
+pub fn key_suggestions(view: &View, book: u64, typed: &[u8], limit: usize) -> Result<Js, StoreError> {
+    if key_list(view, book)?.is_none() {
+        return Ok(Js::Null);
+    }
+    let head = key::id(KEY_ITEMS_BY_TEXT, book);
+    let mut prefix = head.clone();
+    put_bytes(&mut prefix, typed);
+    prefix.truncate(prefix.len() - 2);
+    let mut suggestions = Vec::new();
+    for (stored_key, value) in view.scan(&prefix, &key::prefix_end(&prefix), limit)? {
+        let count = counter_value(&value).ok_or_else(|| StoreError::Entry("a counter doesn't decode".into()))?;
+        let mut at = head.len();
+        let text = get_bytes(&stored_key, &mut at).ok_or_else(|| StoreError::Entry("a key's text doesn't decode".into()))?;
+        suggestions.push(Js::Obj(vec![("text", Js::Text(text)), ("keys", Js::Num(count as f64))]));
+    }
+    Ok(Js::Arr(suggestions))
 }
 
 /// JavaScript's `String.prototype.trim` white space.

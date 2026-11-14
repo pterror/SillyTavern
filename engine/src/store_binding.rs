@@ -3448,6 +3448,18 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                 .map(JsTree)
             })
         }
+        "worldbuildingKeySuggestions" => {
+            let (book, limit) = (req_integer(a, "book")?, req_integer(a, "limit")? as usize);
+            let typed = string(
+                "typed",
+                a.get::<Unknown>("typed")?
+                    .ok_or_else(|| invalid(format!("{op} needs a typed")))?,
+            )?;
+            Box::new(move |s| {
+                s.chat_read(|v| crate::store::references::key_suggestions(v, book, &typed, limit))
+                    .map(JsTree)
+            })
+        }
         "worldbuildingKeySharers" => {
             let (book, entry, limit) = (
                 req_integer(a, "book")?,
