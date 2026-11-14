@@ -994,6 +994,36 @@ impl ToNapiValue for LibraryEntities {
     }
 }
 
+pub struct CardPreview {
+    character: Option<library_read::Entity>,
+    book: Option<library_read::Entity>,
+    entries: Vec<(library_read::Entity, u64)>,
+}
+
+impl ToNapiValue for CardPreview {
+    unsafe fn to_napi_value(raw_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let env = Env::from_raw(raw_env);
+        let mut o = Object::new(&env)?;
+        match val.character {
+            Some(e) => o.set("character", entity_js(&env, e)?)?,
+            None => o.set("character", napi::bindgen_prelude::Null)?,
+        }
+        match val.book {
+            Some(e) => o.set("book", entity_js(&env, e)?)?,
+            None => o.set("book", napi::bindgen_prelude::Null)?,
+        }
+        let mut entries = Vec::with_capacity(val.entries.len());
+        for (e, position) in val.entries {
+            let mut eo = Object::new(&env)?;
+            eo.set("entity", entity_js(&env, e)?)?;
+            eo.set("position", position as f64)?;
+            entries.push(eo);
+        }
+        o.set("entries", entries)?;
+        unsafe { Object::to_napi_value(raw_env, o) }
+    }
+}
+
 pub struct BookReadJs(crate::store::books::BookRead);
 
 fn book_read_js<'env>(env: &'env Env, b: crate::store::books::BookRead) -> Result<Object<'env>> {
@@ -1840,6 +1870,51 @@ impl Store {
         derived(env, &self.store, move |s| {
             s.library_entities_with(&ids, only.as_ref())
                 .map(LibraryEntities)
+        })
+    }
+
+    /// A character and its own book of `slot` as they will be once `records` are committed.
+    #[napi(
+        ts_args_type = "records: object[], character: bigint | number, slot: string",
+        ts_return_type = "Promise<{ character: object | null, book: object | null, entries: { entity: object, position: number }[] }>"
+    )]
+    pub fn card_preview<'env>(
+        &self,
+        env: &'env Env,
+        records: Vec<Object>,
+        character: Unknown,
+        slot: String,
+    ) -> Result<Object<'env>> {
+        let records = records
+            .iter()
+            .map(record_from_js)
+            .collect::<Result<Vec<_>>>()?;
+        let character = integer("character", character)?;
+        derived(env, &self.store, move |s| {
+            s.preview(records, |v| {
+                use crate::store::{books, library};
+                let owner = library_read::entity(v, character)?;
+                let book_key = format!("{character}:{slot}");
+                let Some(book) = library::entity_by_key(v, books::OWNED, book_key.as_bytes())?
+                else {
+                    return Ok(CardPreview {
+                        character: owner,
+                        book: None,
+                        entries: Vec::new(),
+                    });
+                };
+                let mut entries = Vec::new();
+                for (id, position) in books::all_entries(v, book)? {
+                    if let Some(e) = library_read::entity(v, id)? {
+                        entries.push((e, position));
+                    }
+                }
+                Ok(CardPreview {
+                    character: owner,
+                    book: library_read::entity(v, book)?,
+                    entries,
+                })
+            })
         })
     }
 

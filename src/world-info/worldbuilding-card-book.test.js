@@ -153,6 +153,48 @@ test('the character\'s own book has relation kinds and relations, carried in the
     assert.deepEqual(shown.relations.map((/** @type {any} */ r) => r.kindName), ['is in']);
 });
 
+test('every write of the character\'s own book carries the card\'s identity hash and size in its own commit', async () => {
+    const card = { spec: 'chara_card_v2', spec_version: '2.0', name: 'Ivo', data: { name: 'Ivo', description: '', character_book: { entries: [{ id: 0, keys: ['harbour'], content: 'The harbour.', enabled: true, insertion_order: 100, extensions: {} }, { id: 1, keys: ['ferry'], content: 'The ferry.', enabled: true, insertion_order: 100, extensions: {} }] } } };
+    await lib.writeCard(user.directories, 'ivo', JSON.stringify(card));
+    const [ivo] = await lib.ids(TYPE.character, ['ivo']);
+    const ivoId = /** @type {bigint} */ (ivo);
+    const id = /** @type {string} */ (await ports.characterBook(uiUser, String(ivo)));
+    const [harbour, ferry] = await entryIds(id);
+    const { computeContentIdentityHash } = await import('../card-identity-hash.js');
+    const { calculateDataSize } = await import('../character-shallow.js');
+    const { getCharaCardV2 } = await import('../character-card-normalize.js');
+    /** @type {string[]} */
+    const apart = [];
+    let commits = 0;
+    const commit = lib.store.commit.bind(lib.store);
+    lib.store.commit = async (/** @type {object[]} */ records) => {
+        const done = await commit(records);
+        commits++;
+        const [e] = await lib.entities([ivoId]);
+        const now = /** @type {any} */ ((await lib.cards(['ivo']))[0]);
+        if (e?.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') !== computeContentIdentityHash(now)) apart.push(`hash after commit ${commits}`);
+        if (e?.dataSize !== calculateDataSize(getCharaCardV2(now, false).data ?? {})) apart.push(`size after commit ${commits}`);
+        return done;
+    };
+    try {
+        assert.equal(await ports.editEntry(who, id, harbour, { change: 'text', text: 'The old harbour.' }), 'ok');
+        assert.equal(await ports.editEntry(who, id, harbour, { change: 'title', title: 'Harbour' }), 'ok');
+        assert.equal(await ports.editEntry(who, id, harbour, { change: 'addKey', key: 'quay', as: 'trigger' }), 'ok');
+        assert.equal(await ports.editEntry(who, id, ferry, { change: 'placement', fields: { order: 3 } }), 'ok');
+        const made = await ports.createEntry(who, id, { after: ferry, name: 'Pier', relation: null }, 100);
+        assert.ok(typeof made === 'object' && 'entry' in made);
+        const kind = await lib.books.createRelationKind(BigInt(id), 'near');
+        assert.deepEqual(await lib.books.changeRelation(BigInt(id), { change: 'add', entry: BigInt(ferry), kind: /** @type {number} */ (kind), target: BigInt(harbour), after: null, before: null, weak: false }, 100), { unreachedLoops: [] });
+        assert.ok(typeof (await ports.deleteEntry(who, id, made.entry)) === 'object');
+        assert.deepEqual(await ports.restoreEntry(who, id, made.entry), { unreachedLoops: [] });
+        await lib.books.jobs.settled();
+    } finally {
+        lib.store.commit = commit;
+    }
+    assert.ok(commits >= 9);
+    assert.deepEqual(apart, []);
+});
+
 test('deleting the character\'s own book takes it off the card, with the figures that covered it, in one commit', async () => {
     const card = { spec: 'chara_card_v2', spec_version: '2.0', name: 'Oda', data: { name: 'Oda', description: '', character_book: { entries: [{ id: 0, keys: ['x'], content: 'X.', enabled: true, insertion_order: 100, extensions: {} }] } } };
     await lib.writeCard(user.directories, 'oda', JSON.stringify(card));

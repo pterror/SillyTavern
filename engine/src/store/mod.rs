@@ -541,6 +541,25 @@ impl Store {
         f(&view)
     }
 
+    /// Runs `f` over the store as it will be once `records` are committed, without committing them: what a commit's
+    /// own values are computed from when they depend on its other records. It holds the commit pipeline while it runs,
+    /// so it sees every commit made before it.
+    pub fn preview<T>(
+        &self,
+        records: Vec<Record>,
+        f: impl FnOnce(&View) -> StoreResult<T>,
+    ) -> StoreResult<T> {
+        if let Some(r) = records.iter().find(|r| r.kind.internal) {
+            return Err(StoreError::Refused(format!(
+                "{} records are written by the engine only",
+                r.kind.name
+            )));
+        }
+        self.inner.wait_ready()?;
+        let _g = self.inner.gate.read().unwrap();
+        self.inner.preview(records, f)
+    }
+
     pub fn fav(&self, entity: u64) -> StoreResult<Option<bool>> {
         self.derived(|v| {
             let Some(b) = v.get(&key::id(key::FAV, entity))? else {
@@ -1234,6 +1253,75 @@ impl Inner {
             log: &self.log,
             memo,
         }
+    }
+
+    fn preview<T>(
+        &self,
+        records: Vec<Record>,
+        f: impl FnOnce(&View) -> StoreResult<T>,
+    ) -> StoreResult<T> {
+        let p = self.pipe.lock().unwrap();
+        if let Some(why) = &p.failed {
+            return Err(StoreError::Failed(why.clone()));
+        }
+        if p.loading.is_some() {
+            return Err(StoreError::Refused(
+                "nothing is previewed while a load runs".into(),
+            ));
+        }
+        let mut layers_below: Vec<&BTreeMap<Vec<u8>, Val>> = vec![&p.open.entries];
+        let mut pending_below: Vec<&Pending> = vec![&p.open.records];
+        if let Some(s) = p.syncing.as_ref() {
+            layers_below.push(&s.entries);
+            pending_below.push(&s.records);
+        }
+        // Past the open group's file and the one it may move on to, so no position here is one of theirs; the
+        // records are laid out as the newest, as a commit's would be.
+        let mut layout = Layout::start(&self.cfg.log, Cursor::file_start(p.cursor.file + 2), true);
+        let memo = Memo::default();
+        let mut entries = BTreeMap::new();
+        let mut pending = Pending::new();
+        for rec in records {
+            let recs = {
+                let layers = [&entries]
+                    .into_iter()
+                    .chain(layers_below.iter().copied())
+                    .collect();
+                let below = [&pending]
+                    .into_iter()
+                    .chain(pending_below.iter().copied())
+                    .collect();
+                deriver(rec.kind).expand(rec, &self.view(layers, below, Some(&memo)))?
+            };
+            for rec in recs {
+                let (pos, len) = layout.record(&rec);
+                let mut out = Out::default();
+                {
+                    let layers = [&entries]
+                        .into_iter()
+                        .chain(layers_below.iter().copied())
+                        .collect();
+                    let below = [&pending]
+                        .into_iter()
+                        .chain(pending_below.iter().copied())
+                        .collect();
+                    let view = self.view(layers, below, Some(&memo));
+                    deriver(rec.kind).derive(&rec, Loc { pos, len }, &view, &mut out)?;
+                }
+                pending.insert(pos, (rec, len));
+                out.apply(&mut entries);
+            }
+        }
+        commit_checks::take(&mut entries);
+        let layers = [&entries]
+            .into_iter()
+            .chain(layers_below.iter().copied())
+            .collect();
+        let below = [&pending]
+            .into_iter()
+            .chain(pending_below.iter().copied())
+            .collect();
+        f(&self.view(layers, below, Some(&memo)))
     }
 
     fn tighten(&self, reports: &[crate::search::query::Tighten]) {

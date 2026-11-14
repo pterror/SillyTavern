@@ -214,6 +214,32 @@ fn a_text_value_is_written_whole_once_its_edits_reach_its_size() {
 }
 
 #[test]
+fn a_preview_reads_records_as_committed_and_writes_nothing() {
+    let dir = temp_dir("preview");
+    let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();
+    s.commit_wait(vec![set_text(1, 1, "héllo")]).unwrap();
+    let end = s.durable_end();
+    let seen = s
+        .preview(vec![edit(1, 1, 0, 1, "y"), set_text(2, 1, "new")], |v| {
+            Ok((
+                kinds::text_value(v, 1, &FieldRef::Code(1))?,
+                kinds::text_value(v, 2, &FieldRef::Code(1))?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(seen, (Some(text("yéllo")), Some(text("new"))));
+    assert!(matches!(
+        s.preview(vec![edit(1, 1, 40, 0, "x")], |_| Ok(())),
+        Err(StoreError::Refused(_))
+    ));
+    assert_eq!(s.durable_end(), end);
+    assert_eq!(s.text(1, &FieldRef::Code(1)).unwrap(), Some(text("héllo")));
+    assert_eq!(s.text(2, &FieldRef::Code(1)).unwrap(), None);
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn a_commit_that_cant_apply_writes_nothing() {
     let dir = temp_dir("refuse");
     let s = Store::open_in(&dir, SMALL, small_pool()).unwrap();

@@ -180,6 +180,18 @@ const CODE_NAMES = new Map(Object.entries(FIELD).map(([k, v]) => [v, k]));
 const LIST_NAMES = new Map(Object.entries(LIST).map(([k, v]) => [v, k]));
 
 /**
+ * The card a character's stored values and its own book make.
+ * @param {StoredEntity} entity
+ * @param {Record<string, unknown> | undefined} book
+ * @returns {object}
+ */
+function cardWithBook(entity, book) {
+    const parts = cardParts(entity);
+    if (book !== undefined) parts.extra.push({ path: 'data:character_book', value: JSON.stringify(book) });
+    return assembleCard(parts);
+}
+
+/**
  * @param {StoredEntity} entity
  * @returns {import('./character-card-storage.js').CardParts}
  */
@@ -1166,10 +1178,7 @@ export class LibraryEngine {
      * @param {StoredEntity} e
      */
     async assembled(e) {
-        const parts = cardParts(e);
-        const book = await this.books.owned(e.id, SLOT.characterBook);
-        if (book !== undefined) parts.extra.push({ path: 'data:character_book', value: JSON.stringify(book) });
-        return assembleCard(parts);
+        return cardWithBook(e, await this.books.owned(e.id, SLOT.characterBook));
     }
 
     /**
@@ -1183,25 +1192,27 @@ export class LibraryEngine {
     }
 
     /**
-     * Writes the character's identity hash and data size again from the card as stored, its own book included. Runs
-     * in the character's lane, after a write of its book.
+     * Commits `records`, which write the character's own book, together with the character's identity hash and data
+     * size as its card reads once they are written: one commit, so the figures never stand for another book. Runs in
+     * the character's lane.
      * @param {bigint} id
+     * @param {object[]} records
      */
-    async commitCardFigures(id) {
-        const [e] = await this.entities([id]);
-        if (!e || e.type !== TYPE.character) return;
-        const card = await this.assembled(e);
-        const records = [];
+    async commitWithCardFigures(id, records) {
+        const { character, book } = await this.books.ownedAfter(id, SLOT.characterBook, records);
+        if (!character || character.type !== TYPE.character) return this.store.commit(records);
+        const card = cardWithBook(character, book);
+        const figures = [];
         const hex = computeContentIdentityHash(card);
-        if (e.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') !== hex) records.push({ kind: 'cardHash', entity: e.id, which: HASH.identity, hash: Buffer.from(hex, 'hex') });
+        if (character.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') !== hex) figures.push({ kind: 'cardHash', entity: id, which: HASH.identity, hash: Buffer.from(hex, 'hex') });
         const { getCharaCardV2 } = await import('./character-card-normalize.js');
         const size = calculateDataSize(getCharaCardV2(card, false).data ?? {});
-        if (e.dataSize !== size) records.push({ kind: 'dataSize', entity: e.id, size });
-        if (records.length > 0) await this.store.commit(records);
+        if (character.dataSize !== size) figures.push({ kind: 'dataSize', entity: id, size });
+        return this.store.commit([...records, ...figures]);
     }
 
     /**
-     * Takes the character's own lorebook off its card, with the figures that covered it, in one commit.
+     * Takes the character's own lorebook off its card.
      * @param {bigint} id
      * @returns {Promise<'ok' | 'missing' | 'none'>}
      */
@@ -1213,13 +1224,7 @@ export class LibraryEngine {
             if (!e || e.type !== TYPE.character) return 'missing';
             const records = await this.books.ownedRecords(id, SLOT.characterBook, undefined);
             if (records.length === 0) return 'none';
-            const card = assembleCard(cardParts(e));
-            const hex = computeContentIdentityHash(card);
-            if (e.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') !== hex) records.push({ kind: 'cardHash', entity: id, which: HASH.identity, hash: Buffer.from(hex, 'hex') });
-            const { getCharaCardV2 } = await import('./character-card-normalize.js');
-            const size = calculateDataSize(getCharaCardV2(card, false).data ?? {});
-            if (e.dataSize !== size) records.push({ kind: 'dataSize', entity: id, size });
-            await this.store.commit(records);
+            await this.commitWithCardFigures(id, records);
             return 'ok';
         });
     }

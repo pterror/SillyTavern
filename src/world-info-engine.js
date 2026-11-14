@@ -1416,7 +1416,7 @@ export class WorldInfoEngine {
      * @returns {Promise<'ok' | 'missing' | 'no entry' | { refused: string }>}
      */
     editEntryById(book, entry, edit, actor = null) {
-        return this.inWorld(book, async form => {
+        return this.inWorld(book, async (form, commit) => {
             const e = await this.entryIn(book, entry);
             if (!e) return 'no entry';
             const current = entryAsWorld(e, form);
@@ -1435,7 +1435,7 @@ export class WorldInfoEngine {
             const records = valueRecords(e.id, e, entryValues(written, k, true, { targets, stored: e }), historyWrites(await this.stamper(actor, keyed)));
             const index = displayIndexOf(written, form);
             if (!Object.is(index, e.entryIndex)) records.push({ kind: 'entryIndex', entry: e.id, book, ...(index === undefined ? {} : { index }) });
-            if (records.length > 0) await this.store.commit([...keyed, ...records]);
+            if (records.length > 0) await commit([...keyed, ...records]);
             return 'ok';
         });
     }
@@ -1450,7 +1450,7 @@ export class WorldInfoEngine {
      * @returns {Promise<{ entry: bigint, uid: string, unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing'>}
      */
     createEntryIn(book, { after, entry, relation }, loopCheckLimit, actor = null) {
-        return this.inWorld(book, async form => {
+        return this.inWorld(book, async (form, commit) => {
             const numbers = await this.store.worldRead('numbers', { book });
             if (numbers.freeKey >= MAX_UID) return { refused: 'This world has no free entry number left.' };
             /** @type {{ refused: string } | { displayIndex: number, moved: { entry: bigint, displayIndex: number }[] }} */
@@ -1501,7 +1501,7 @@ export class WorldInfoEngine {
                 pushAll(records, valueRecords(e.id, e, entryValues(nexts[i], movedKey, form === 'card', { targets, stored: e }), historyWrites(stamp)));
                 records.push({ kind: 'entryIndex', entry: e.id, book, index: m.displayIndex });
             });
-            await this.store.commit(records);
+            await commit(records);
             return { entry: id, uid: k, unreachedLoops: await this.unreachedLoops(book, records, [], loopCheckLimit) };
         });
     }
@@ -1516,7 +1516,7 @@ export class WorldInfoEngine {
     async deleteEntryById(book, entry, actor = null) {
         const [bookEntity] = await this.lib.entities([book]);
         if (bookEntity && characterOfBook(bookEntity) !== null) {
-            return this.inWorld(book, async () => {
+            return this.inWorld(book, async (form, commit) => {
                 const e = await this.entryIn(book, entry);
                 if (!e) return 'no entry';
                 /** @type {object[]} */
@@ -1524,7 +1524,7 @@ export class WorldInfoEngine {
                 const stamp = await this.stamper(actor, records);
                 records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
                 const sources = await this.store.worldRead('worldbuildingSourcesTargeting', { book, entities: [e.id], limit: RELATION_CHANGES_PER_STEP });
-                await this.store.commit(records);
+                await commit(records);
                 this.jobs.start(book);
                 return { unreachedLoops: await this.unreachedLoops(book, records, sources) };
             });
@@ -1762,7 +1762,7 @@ export class WorldInfoEngine {
      * @returns {Promise<{ uid: string, entry: object, unreachedLoops: UnreachedLoop[] } | 'missing' | 'no entry' | 'full'>}
      */
     restoreIn(book, id, actor = null) {
-        return this.inWorld(book, async form => {
+        return this.inWorld(book, async (form, commit) => {
             const page = await this.store.worldRead('deleted', { book, after: id - 1n, limit: 1 });
             const d = page.entries[0];
             if (!d || d.id !== id) return 'no entry';
@@ -1789,7 +1789,7 @@ export class WorldInfoEngine {
                 { kind: 'itemPlace', entity: book, list: 0, item: id, position: position ?? (numbers.lastPosition ?? 0) + POSITION_GAP },
                 ...(d.index === null ? [] : [{ kind: 'entryIndex', entry: id, book, index: d.index }]),
             );
-            await this.store.commit(records);
+            await commit(records);
             this.jobs.start(book);
             const [e] = await this.lib.entities([id]);
             return { uid, entry: entryAsWorld(/** @type {import('./entity-values.js').StoredEntity} */ (e), form), unreachedLoops: await this.unreachedLoops(book, records, [id]) };
@@ -1955,10 +1955,11 @@ export class WorldInfoEngine {
     }
 
     /**
-     * Runs `write` in the book's lane: a world's, or for a character's own book its character's, after which the
-     * character's figures that cover its book (its identity hash and data size) are written again.
+     * Runs `write` in the book's lane: a world's, or for a character's own book its character's. `write` commits
+     * through the `commit` it is given, never the store's own: for a character's own book each commit carries the
+     * character's identity hash and data size as the card reads after it.
      * @param {bigint} book
-     * @param {(form: BookForm) => Promise<T>} write
+     * @param {(form: BookForm, commit: (records: object[]) => Promise<unknown>) => Promise<T>} write
      * @returns {Promise<T | 'missing'>}
      * @template T
      */
@@ -1971,15 +1972,13 @@ export class WorldInfoEngine {
             return this.lib.serialized(TYPE.character, character.key, async () => {
                 const [still] = await this.lib.entities([book]);
                 if (!still || still.key !== bookEntity?.key || still.type !== TYPE.ownedBook) return 'missing';
-                const done = await write('card');
-                await this.lib.commitCardFigures(owner);
-                return done;
+                return write('card', records => this.lib.commitWithCardFigures(owner, records));
             });
         }
         if (!bookEntity || bookEntity.type !== TYPE.book) return 'missing';
         return this.lane([bookEntity.key], async () => {
             const found = await this.find(bookEntity.key);
-            return found?.defined && found.id === book ? write('world') : 'missing';
+            return found?.defined && found.id === book ? write('world', records => this.store.commit(records)) : 'missing';
         });
     }
 
@@ -2011,9 +2010,9 @@ export class WorldInfoEngine {
      * @returns {Promise<number | 'missing'>}
      */
     createRelationKind(book, name) {
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async (form, commit) => {
             const id = 1 + (await this.relationKinds(book)).reduce((highest, kind) => Math.max(highest, kind.id), 0);
-            await this.store.commit([{ kind: 'textValue', entity: book, field: relationKindField(id), text: name }]);
+            await commit([{ kind: 'textValue', entity: book, field: relationKindField(id), text: name }]);
             return id;
         });
     }
@@ -2025,9 +2024,9 @@ export class WorldInfoEngine {
      * @returns {Promise<'ok' | 'missing' | 'no kind'>}
      */
     renameRelationKind(book, kind, name) {
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async (form, commit) => {
             if (!(await this.relationKinds(book)).some(existing => existing.id === kind)) return 'no kind';
-            await this.store.commit([{ kind: 'textValue', entity: book, field: relationKindField(kind), text: name }]);
+            await commit([{ kind: 'textValue', entity: book, field: relationKindField(kind), text: name }]);
             return 'ok';
         });
     }
@@ -2038,13 +2037,13 @@ export class WorldInfoEngine {
      * @returns {Promise<'ok' | 'missing' | 'no kind' | 'in use' | 'being merged'>}
      */
     deleteRelationKind(book, kind) {
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async (form, commit) => {
             const kinds = await this.relationKinds(book);
             const found = kinds.find(existing => existing.id === kind);
             if (!found) return 'no kind';
             if (found.mergingInto !== undefined || kinds.some(other => other.mergingInto === kind)) return 'being merged';
             if (await this.store.worldRead('worldbuildingRelationKindInUse', { book, kind })) return 'in use';
-            await this.store.commit([{ kind: 'valueDelete', entity: book, field: relationKindField(kind) }]);
+            await commit([{ kind: 'valueDelete', entity: book, field: relationKindField(kind) }]);
             return 'ok';
         });
     }
@@ -2056,14 +2055,14 @@ export class WorldInfoEngine {
      * @returns {Promise<'ok' | 'missing' | 'no kind' | 'same kind' | 'being merged'>}
      */
     mergeRelationKind(book, kind, into) {
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async (form, commit) => {
             if (kind === into) return 'same kind';
             const kinds = await this.relationKinds(book);
             const merged = kinds.find(existing => existing.id === kind);
             const kept = kinds.find(existing => existing.id === into);
             if (!merged || !kept) return 'no kind';
             if (merged.mergingInto !== undefined || kept.mergingInto !== undefined || kinds.some(other => other.mergingInto === kind)) return 'being merged';
-            await this.store.commit([{ kind: 'textValue', entity: book, field: relationKindMergeField(kind), text: String(into) }]);
+            await commit([{ kind: 'textValue', entity: book, field: relationKindMergeField(kind), text: String(into) }]);
             this.jobs.start(book);
             return 'ok';
         });
@@ -2084,12 +2083,12 @@ export class WorldInfoEngine {
      * @returns {Promise<'ok' | 'missing' | { refused: string }>}
      */
     changeNamesOffer(book, refusal, state) {
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async (form, commit) => {
             const refused = refusal(await this.namesOffer(book));
             if (refused !== null) return { refused };
-            await this.store.commit([{ kind: 'textValue', entity: book, field: NAMES_OFFER_FIELD, text: state }]);
+            await commit([{ kind: 'textValue', entity: book, field: NAMES_OFFER_FIELD, text: state }]);
             if (state === 'declined') return 'ok';
-            if (!(await this.namesOfferChunk(book)).ended) this.jobs.start(book);
+            if (!(await this.namesOfferChunk(book, commit)).ended) this.jobs.start(book);
             return 'ok';
         });
     }
@@ -2120,8 +2119,8 @@ export class WorldInfoEngine {
      * @returns {Promise<JobStep | 'missing'>}
      */
     namesOfferStep(book) {
-        return this.inWorld(book, async () => {
-            const { ran } = await this.namesOfferChunk(book);
+        return this.inWorld(book, async (form, commit) => {
+            const { ran } = await this.namesOfferChunk(book, commit);
             return { book, changedSources: [], touched: ran ? 'names' : 'relations' };
         });
     }
@@ -2129,9 +2128,10 @@ export class WorldInfoEngine {
     /**
      * Runs in the book's lane.
      * @param {bigint} book
+     * @param {(records: object[]) => Promise<unknown>} commit the lane's
      * @returns {Promise<{ ran: boolean, ended: boolean }>}
      */
-    async namesOfferChunk(book) {
+    async namesOfferChunk(book, commit) {
         /** @type {{ job: 'marking' | 'undoing' | null, entries: { entity: bigint, before: string | null, names: string[], marked: string[] }[] }} */
         const chunk = await this.store.worldRead('worldbuildingNamesOfferChunk', { book, limit: RELATION_CHANGES_PER_STEP });
         if (chunk.job === null) return { ran: false, ended: true };
@@ -2142,7 +2142,7 @@ export class WorldInfoEngine {
         const end = !ended ? [] : [chunk.job === 'marking'
             ? { kind: 'textValue', entity: book, field: NAMES_OFFER_FIELD, text: 'done' }
             : { kind: 'valueDelete', entity: book, field: NAMES_OFFER_FIELD }];
-        await this.store.commit([...written, ...marks, ...end]);
+        await commit([...written, ...marks, ...end]);
         return { ran: true, ended };
     }
 
@@ -2157,7 +2157,7 @@ export class WorldInfoEngine {
      * @returns {Promise<{ unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing'>}
      */
     startBulk(book, { selected, except }, action, loopCheckLimit, actor = null) {
-        return this.inWorld(book, async form => {
+        return this.inWorld(book, async (form, commit) => {
             if (form === 'card') return { refused: CARD_BOOK_BULK_REFUSAL };
             const [bookEntity] = await this.lib.entities([book]);
             const job = 1 + Math.max(0, ...bulkJobFields(bookEntity?.values ?? []).map(field => field.job));
@@ -2174,7 +2174,7 @@ export class WorldInfoEngine {
      * @returns {Promise<JobStep | 'missing'>}
      */
     bulkStep(book, job) {
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async (form, commit) => {
             const [bookEntity] = await this.lib.entities([book]);
             const found = bulkJobFields(bookEntity?.values ?? []).find(field => field.job === job);
             if (!found) return { book, changedSources: [], touched: 'entries' };
@@ -2279,21 +2279,21 @@ export class WorldInfoEngine {
         /** @type {{ merges: { book: bigint, kind: number, into: number }[], mergeRecordsDue: { book: bigint, kind: number }[], namesOffers: { book: bigint }[], bulkJobs: { book: bigint, job: number }[] }} */
         const pending = await this.store.worldRead('worldbuildingPendingJobs', {});
         for (const merge of pending.merges) {
-            const done = await this.inWorld(merge.book, async () => {
+            const done = await this.inWorld(merge.book, async (form, commit) => {
                 /** @type {RelationRewrites} */
                 const chunk = await this.store.worldRead('worldbuildingKindMergeRewrites', { book: merge.book, kind: merge.kind, into: merge.into, limit: RELATION_CHANGES_PER_STEP });
                 if (chunk.rewrites.length > 0) {
-                    await this.store.commit(await this.rewriteRecords(RELATIONS_FIELD, chunk.rewrites, await this.stamper(null, [])));
+                    await commit(await this.rewriteRecords(RELATIONS_FIELD, chunk.rewrites, await this.stamper(null, [])));
                     return { book: merge.book, changedSources: chunk.rewrites.map(rewrite => rewrite.entity), touched: /** @type {const} */ ('relations') };
                 }
-                await this.store.commit([{ kind: 'valueDelete', entity: merge.book, field: relationKindField(merge.kind) }]);
+                await commit([{ kind: 'valueDelete', entity: merge.book, field: relationKindField(merge.kind) }]);
                 return { book: merge.book, changedSources: [], touched: /** @type {const} */ ('relations') };
             });
             if (done !== 'missing') return done;
         }
         for (const due of pending.mergeRecordsDue) {
-            const done = await this.inWorld(due.book, async () => {
-                await this.store.commit([{ kind: 'valueDelete', entity: due.book, field: relationKindMergeField(due.kind) }]);
+            const done = await this.inWorld(due.book, async (form, commit) => {
+                await commit([{ kind: 'valueDelete', entity: due.book, field: relationKindMergeField(due.kind) }]);
                 return { book: due.book, changedSources: [], touched: /** @type {const} */ ('relations') };
             });
             if (done !== 'missing') return done;
@@ -2340,7 +2340,7 @@ export class WorldInfoEngine {
     changeRelations(book, edits, loopCheckLimit, actor = null) {
         const edit = edits[0];
         if (!edit || edits.some(one => one.entry !== edit.entry)) throw new Error('changeRelations changes one entry\'s relations.');
-        return this.inWorld(book, async () => {
+        return this.inWorld(book, async (form, commit) => {
             /** @type {{ before: string | null, json: string } | null} */
             let edited = null;
             for (const one of edits) {
@@ -2356,7 +2356,7 @@ export class WorldInfoEngine {
                 const [entryEntity] = await this.lib.entities([edit.entry]);
                 if (!entryEntity?.values.some(value => value.field === EXTENSIONS)) pushAll(records, writes.json(edit.entry, EXTENSIONS, '', undefined));
                 pushAll(records, writes.json(edit.entry, RELATIONS_FIELD, edited.json, edited.before ?? undefined));
-                await this.store.commit(records);
+                await commit(records);
             }
             return { unreachedLoops: await this.unreachedLoops(book, [], [edit.entry], loopCheckLimit) };
         });
@@ -2370,6 +2370,21 @@ export class WorldInfoEngine {
         const [id] = await this.lib.ids(TYPE.ownedBook, [`${owner}:${slot}`]);
         if (id === null) return undefined;
         return this.assemble(await this.stored(id, false), false);
+    }
+
+    /**
+     * The owner's entity and its own book of `slot` as they will be once `records` are committed.
+     * @param {bigint} owner
+     * @param {string} slot
+     * @param {object[]} records
+     * @returns {Promise<{ character: import('./entity-values.js').StoredEntity | null, book: Record<string, unknown> | undefined }>}
+     */
+    async ownedAfter(owner, slot, records) {
+        /** @type {{ character: any, book: any, entries: { entity: any, position: number }[] }} */
+        const read = await this.store.cardPreview(records, owner, slot);
+        if (!read.book) return { character: read.character, book: undefined };
+        const entries = new Map(read.entries.map(x => [x.entity.key.slice(x.entity.key.indexOf(':') + 1), x]));
+        return { character: read.character, book: this.assemble({ id: read.book.id, entity: read.book, entries, original: null }, false) };
     }
 
     /**

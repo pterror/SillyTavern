@@ -151,7 +151,7 @@ export function worldbuildingViewPorts({ libOf }) {
             const lib = await libOf(user);
             const id = BigInt(book);
             const empty = Object.keys(reader.changed).length === 0 && reader.own.length === 0;
-            const done = await lib.books.inWorld(id, () => lib.store.commit([empty
+            const done = await lib.books.inWorld(id, (form, commit) => commit([empty
                 ? { kind: 'valueDelete', entity: id, field: READER_VIEWS_FIELD }
                 : { kind: 'textValue', entity: id, field: READER_VIEWS_FIELD, text: JSON.stringify(reader) }]));
             return done === 'missing' ? 'missing' : 'ok';

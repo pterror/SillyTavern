@@ -220,16 +220,16 @@ export function looksPorts({ libOf }) {
      * @template T
      * @param {LibraryEngine} lib
      * @param {string | null} world
-     * @param {(holder: bigint | null, records: object[]) => Promise<T>} write
+     * @param {(holder: bigint | null, records: object[], commit: (records: object[]) => Promise<unknown>) => Promise<T>} write
      * @returns {Promise<T | 'missing'>}
      */
     const inHolder = (lib, world, write) => (world === null
         ? lib.serialized(TYPE.look, USER_LOOKS, async () => {
             const records = [];
             const { id } = await lookEntity(lib, USER_LOOKS, []);
-            return write(id, records);
+            return write(id, records, written => lib.store.commit(written));
         })
-        : lib.books.inWorld(BigInt(world), () => write(BigInt(world), [])));
+        : lib.books.inWorld(BigInt(world), (form, commit) => write(BigInt(world), [], commit)));
 
     /**
      * @param {LibraryEngine} lib
@@ -273,7 +273,7 @@ export function looksPorts({ libOf }) {
         if ('shared' in level) {
             const { id: look, world } = level.shared;
             const field = sharedField(world, look);
-            const done = await inHolder(lib, world, async (holder, records) => {
+            const done = await inHolder(lib, world, async (holder, records, commit) => {
                 if (holder === null) return 'missing';
                 const [entity] = await lib.entities([holder], { fields: [field], lists: [] });
                 const before = /** @type {{ name: string, look: unknown } | undefined} */ (jsonOf(entity, field));
@@ -281,7 +281,7 @@ export function looksPorts({ libOf }) {
                 const next = edit(before.look);
                 if ('refused' in next) return next;
                 records.push(...fieldRecords(holder, field, before, { name: before.name, look: next }, null));
-                if (records.length > 0) await lib.store.commit(records);
+                if (records.length > 0) await commit(records);
                 return 'ok';
             });
             return done;
@@ -330,7 +330,7 @@ export function looksPorts({ libOf }) {
             return done === 'ok' ? 'ok' : typeof done === 'object' ? done : 'missing';
         }
         if (!KINDS.has(entity.type)) return 'missing';
-        const write = async () => {
+        const write = async (/** @type {(records: object[]) => Promise<unknown>} */ commit) => {
             const records = [];
             const [stored] = await lib.entities([entity.id], { fields: [LOOK_FIELD], lists: [] });
             if (!stored) return 'missing';
@@ -339,11 +339,11 @@ export function looksPorts({ libOf }) {
             if ('refused' in next) return next;
             const writes = HISTORY_KEPT.has(entity.type) ? historyWrites(await lib.stamper(actor, records)) : null;
             records.push(...fieldRecords(entity.id, LOOK_FIELD, before, isEmptyLook(next) ? undefined : next, writes));
-            if (records.length > 0) await lib.store.commit(records);
+            if (records.length > 0) await commit(records);
             return /** @type {const} */ ('ok');
         };
-        if (entity.type === TYPE.book) return lib.books.inWorld(entity.id, write);
-        return lib.serialized(entity.type, entity.key, write);
+        if (entity.type === TYPE.book) return lib.books.inWorld(entity.id, (form, commit) => write(commit));
+        return lib.serialized(entity.type, entity.key, () => write(records => lib.store.commit(records)));
     }
 
     return {
@@ -453,34 +453,34 @@ export function looksPorts({ libOf }) {
         editLook,
         async makeShared(who, { id, world }, name) {
             const lib = await libOf(who.user);
-            return inHolder(lib, world, async (holder, records) => {
+            return inHolder(lib, world, async (holder, records, commit) => {
                 const at = holder ?? created(lib, null, USER_LOOKS, records);
                 records.push({ kind: 'jsonValue', entity: at, field: sharedField(world, id), json: JSON.stringify({ name, look: {} }) });
-                await lib.store.commit(records);
+                await commit(records);
                 return /** @type {const} */ ('ok');
             });
         },
         async renameShared(who, { id, world }, name) {
             const lib = await libOf(who.user);
             const field = sharedField(world, id);
-            return inHolder(lib, world, async (holder, records) => {
+            return inHolder(lib, world, async (holder, records, commit) => {
                 if (holder === null) return 'missing';
                 const [entity] = await lib.entities([holder], { fields: [field], lists: [] });
                 const before = /** @type {{ name: string, look: unknown } | undefined} */ (jsonOf(entity, field));
                 if (!before) return 'missing';
                 records.push(...fieldRecords(holder, field, before, { ...before, name }, null));
-                if (records.length > 0) await lib.store.commit(records);
+                if (records.length > 0) await commit(records);
                 return 'ok';
             });
         },
         async deleteShared(who, { id, world }) {
             const lib = await libOf(who.user);
             const field = sharedField(world, id);
-            return inHolder(lib, world, async (holder) => {
+            return inHolder(lib, world, async (holder, records, commit) => {
                 if (holder === null) return 'missing';
                 const [entity] = await lib.entities([holder], { fields: [field], lists: [] });
                 if (jsonOf(entity, field) === undefined) return 'missing';
-                await lib.store.commit([{ kind: 'valueDelete', entity: holder, field }]);
+                await commit([{ kind: 'valueDelete', entity: holder, field }]);
                 return 'ok';
             });
         },
@@ -490,7 +490,7 @@ export function looksPorts({ libOf }) {
             if (book === null) return 'ok';
             const from = sharedField(world, id);
             const into = sharedField(to, id);
-            return lib.books.inWorld(BigInt(book), () => lib.serialized(TYPE.look, USER_LOOKS, async () => {
+            return lib.books.inWorld(BigInt(book), (form, commit) => lib.serialized(TYPE.look, USER_LOOKS, async () => {
                 const records = [];
                 const { id: userLooks } = await lookEntity(lib, USER_LOOKS, []);
                 const fromHolder = world === null ? userLooks : BigInt(world);
@@ -505,7 +505,7 @@ export function looksPorts({ libOf }) {
                 const look = storedLook(shared.look, fonts).look ?? {};
                 records.push({ kind: 'valueDelete', entity: fromHolder, field: from });
                 records.push({ kind: 'jsonValue', entity: intoHolder, field: into, json: JSON.stringify({ name: shared.name, look }) });
-                await lib.store.commit(records);
+                await commit(records);
                 return 'ok';
             }));
         },
@@ -514,8 +514,8 @@ export function looksPorts({ libOf }) {
             if (file.size > FONT_BYTES_AT_MOST) return { refused: `A font is at most ${FONT_BYTES_AT_MOST / 1024 / 1024} MB.` };
             const id = await putFont(who.user.directories.root, await fs.promises.readFile(file.path));
             if (id === null) return { refused: 'That file is no font: send a WOFF2, WOFF, TTF or OTF file.' };
-            const done = await lib.books.inWorld(BigInt(world), async () => {
-                await lib.store.commit(fontRecords(BigInt(world), [{ id, name }]));
+            const done = await lib.books.inWorld(BigInt(world), async (form, commit) => {
+                await commit(fontRecords(BigInt(world), [{ id, name }]));
                 return 'ok';
             });
             return done === 'ok' ? { id } : 'missing';

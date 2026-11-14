@@ -190,7 +190,7 @@ export async function freeWorldName(lib, wanted) {
  * @param {{ id: string, name: string }[]} fonts
  */
 async function withFonts(lib, book, fonts) {
-    if (fonts.length > 0) await lib.books.inWorld(book, () => lib.store.commit(fontRecords(book, fonts)));
+    if (fonts.length > 0) await lib.books.inWorld(book, (form, commit) => commit(fontRecords(book, fonts)));
 }
 
 /**
@@ -269,7 +269,7 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
         async setWorldDescription({ user }, book, description) {
             const lib = await libOf(user);
             const id = BigInt(book);
-            const done = await lib.books.inWorld(id, () => lib.store.commit([description === ''
+            const done = await lib.books.inWorld(id, (form, commit) => commit([description === ''
                 ? { kind: 'valueDelete', entity: id, field: DESCRIPTION_FIELD }
                 : { kind: 'textValue', entity: id, field: DESCRIPTION_FIELD, text: description }]));
             return done === 'missing' ? 'missing' : 'ok';
@@ -285,7 +285,7 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
                 picture = stored.id;
             }
             if (entry === null) {
-                const done = await lib.books.inWorld(id, () => lib.store.commit([picture === null
+                const done = await lib.books.inWorld(id, (form, commit) => commit([picture === null
                     ? { kind: 'valueDelete', entity: id, field: WORLD_PICTURE_FIELD }
                     : { kind: 'textValue', entity: id, field: WORLD_PICTURE_FIELD, text: picture }]));
                 return done === 'missing' ? 'missing' : 'ok';
@@ -349,7 +349,7 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
                 const copy = BigInt(made.book);
                 await withFonts(lib, copy, fontsOfBook(original));
                 const picture = original?.values.find(v => v.field === WORLD_PICTURE_FIELD)?.text;
-                if (picture) await lib.books.inWorld(copy, () => lib.store.commit([{ kind: 'textValue', entity: copy, field: WORLD_PICTURE_FIELD, text: picture }]));
+                if (picture) await lib.books.inWorld(copy, (form, commit) => commit([{ kind: 'textValue', entity: copy, field: WORLD_PICTURE_FIELD, text: picture }]));
             }
             return made;
         },

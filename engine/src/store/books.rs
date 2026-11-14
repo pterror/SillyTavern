@@ -949,6 +949,18 @@ pub fn entries_page(
     ]))
 }
 
+/// Every entry of `book` as (its id, its place), in the book's order.
+pub fn all_entries(view: &View, book: u64) -> Result<Vec<(u64, u64)>, StoreError> {
+    let prefix = key::ids(key::ITEM, book, ENTRIES);
+    let mut out = Vec::new();
+    for (k, v) in view.scan(&prefix, &key::prefix_end(&prefix), usize::MAX)? {
+        let mut at = prefix.len();
+        let position = get_u64(&k, &mut at).ok_or_else(|| err("an entry place doesn't decode"))?;
+        out.push((library::parse_uvarint(&v)?, position));
+    }
+    Ok(out)
+}
+
 pub fn item_places(view: &View, entity: u64, list: u64, items: &[u64]) -> Result<Js, StoreError> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
