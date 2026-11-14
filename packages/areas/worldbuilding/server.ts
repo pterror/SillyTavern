@@ -5,6 +5,8 @@ import {
     CARD_TEXT_CHARACTERS,
     CARD_VIEW,
     ENTRY_VIEW,
+    CHARACTERS_FOUND_PER_QUERY,
+    CHARACTERS_FOUND_VIEW,
     FOUND_PER_QUERY,
     FOUND_VIEW,
     KEY_SHARERS_SHOWN,
@@ -51,6 +53,8 @@ import type {
     EntryCell,
     HoverCard,
     FoundEntry,
+    CharactersFoundView,
+    FilterItem,
     FoundView,
     ResultsView,
     EntryView,
@@ -144,7 +148,8 @@ export type EntryEdit =
     | { change: 'addKey'; key: string; as: 'name' | 'trigger' }
     | { change: 'setKeyAs'; key: string; as: 'name' | 'trigger' }
     | { change: 'removeKey'; key: string }
-    | { change: 'placement'; fields: Partial<Placement> };
+    | { change: 'placement'; fields: Partial<Omit<Placement, 'characterFilter'>> }
+    | { change: 'characterFilter'; filter: { exclude: boolean } | { add: FilterItem } | { remove: FilterItem } };
 
 export type EntryCreation = {
     after: string | null;
@@ -270,6 +275,11 @@ export type Ports = {
     labelEntries(user: User, book: string, entries: string[]): Promise<(Named | null)[]>;
     readResults(user: User, query: ResultsQuery): Promise<ResultsRead>;
     findEntries(user: User, query: { book: string; query: string; limit: number }): Promise<Found>;
+    // The user's characters and tags whose names have the words, for an entry's character filter.
+    findCharacters(
+        user: User,
+        query: { query: string; limit: number },
+    ): Promise<Omit<Extract<CharactersFoundView, { characters: unknown }>, 'query'>>;
     readLoopsLeftByJobs(user: User, book: string): Promise<UnreachedLoop[]>;
     // `walkSteps`: the keys a chips-only count's walk reads.
     readSelection(user: User, selection: HeldSelection, walkSteps: number): Promise<SelectionRead | null>;
@@ -455,6 +465,7 @@ type SessionState = {
     lastChange: LastChange;
     filter: ShownFilter | null;
     finding: { book: string; query: string } | null;
+    findingCharacters: string | null;
     selection: HeldSelection | null;
 };
 
@@ -467,6 +478,7 @@ const NO_SESSION_STATE: SessionState = {
     lastChange: NOTHING_CHANGED,
     filter: null,
     finding: null,
+    findingCharacters: null,
     selection: null,
 };
 
@@ -978,6 +990,12 @@ export function worldbuildingArea(ports: Ports) {
         return { ...finding, ...found };
     };
 
+    const readCharactersFoundView = async (context: ViewContext): Promise<CharactersFoundView> => {
+        const query = stateOf(context.session).findingCharacters;
+        if (query === null) return { query: null };
+        return { query, ...(await ports.findCharacters(context.user, { query, limit: CHARACTERS_FOUND_PER_QUERY })) };
+    };
+
     const namesOfferChanged = async (
         context: ActionContext,
         change: Promise<NamesOfferChange>,
@@ -1250,6 +1268,7 @@ export function worldbuildingArea(ports: Ports) {
             [RESULTS_VIEW]: readResultsView,
             [AXES_VIEW]: readAxesView,
             [FOUND_VIEW]: readFoundView,
+            [CHARACTERS_FOUND_VIEW]: readCharactersFoundView,
             [SELECTION_VIEW]: readSelectionView,
             [BULK_JOBS_VIEW]: async (context: ViewContext): Promise<BulkJobsView> => {
                 const book = overviewOf(context.session)?.book;
@@ -1597,6 +1616,12 @@ export function worldbuildingArea(ports: Ports) {
                 if (stored === undefined) return { refused: RESULTS_GONE, changed: [RESULTS_VIEW] };
                 remember(context.session, { filter: { ...shown, run: { from: stored, pages } } });
                 return { changed: [RESULTS_VIEW] };
+            },
+            'worldbuilding.changeCharacterFilter': (context, { book, entry, change }) =>
+                entryEdited(context, book, entry, { change: 'characterFilter', filter: change }),
+            'worldbuilding.findCharacters': async (context, { query }) => {
+                remember(context.session, { findingCharacters: query });
+                return { changed: [], opensViews: [CHARACTERS_FOUND_VIEW] };
             },
             'worldbuilding.findEntries': async (context, { book, query }) => {
                 remember(context.session, { finding: { book, query } });

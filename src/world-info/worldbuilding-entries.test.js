@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 
 import { PLACEMENT_DEFAULTS, editedEntry, placementOf, sentenceAround, worldbuildingEntryPorts } from './worldbuilding-entries.js';
 import { References } from './references.js';
+import { entryAsWorld } from '../world-info-engine.js';
 import { matchDefaultsOf } from './key-matching.js';
 import { worldInfoGlobalsOf } from '../../public/scripts/world-info-globals.js';
 import { GENERATION_TYPE_TRIGGERS } from '../../public/scripts/constants.js';
@@ -192,6 +193,32 @@ test('a run of mention pages looks through at most MENTION_CHECKS_PER_READ entri
     assert.equal(further.length, 1);
     assert.equal(further[0].entries.length, 1);
     assert.deepEqual([further[0].lookedThrough, further[0].stoppedForBound, further[0].next], [others, false, null]);
+});
+
+const asWorld = (/** @type {any} */ stored) => entryAsWorld(stored, 'world');
+
+test('an entry\'s character filter is stored in upstream\'s form and shown by the user\'s characters and tags', async () => {
+    const card = (/** @type {string} */ name) => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name, data: { name, tags: ['npc'] } });
+    await lib.writeCard(user.directories, 'Wren.png', card('Wren'));
+    const { tagIds: [npc] } = await lib.tags.seedCardTags('Wren.png');
+    await lib.books.write('Filtered', { entries: { 1: { uid: 1, key: ['x'], content: 'x', displayIndex: 0 } } });
+    const { id: book } = /** @type {{ id: bigint }} */ (await lib.books.find('Filtered'));
+    const [{ entity }] = await lib.books.storedEntries(book);
+    const [B, E] = [String(book), String(entity.id)];
+    for (const filter of [{ add: { character: 'Wren' } }, { add: { character: 'Gone' } }, { add: { tag: npc } }, { exclude: true }, { add: { character: 'Wren' } }]) {
+        assert.equal(await ports.editEntry(who, B, E, { change: 'characterFilter', filter }), 'ok');
+    }
+    assert.deepEqual(asWorld(await lib.books.entryIn(book, entity.id)).characterFilter, { isExclude: true, names: ['Gone', 'Wren'], tags: [npc] });
+    const read = /** @type {any} */ (await ports.readEntry(uiUser, B, E, FIRST));
+    assert.equal(read.characterFilter.exclude, true);
+    assert.deepEqual(read.characterFilter.characters.map((/** @type {any} */ c) => [c.key, c.named?.text ?? null]), [['Gone', null], ['Wren', 'Wren']]);
+    assert.deepEqual(read.characterFilter.tags, [{ key: npc, name: 'npc' }]);
+    assert.equal(read.characterFilter.more, 0);
+    assert.equal(await ports.editEntry(who, B, E, { change: 'characterFilter', filter: { remove: { character: 'Gone' } } }), 'ok');
+    assert.deepEqual(asWorld(await lib.books.entryIn(book, entity.id)).characterFilter.names, ['Wren']);
+    const found = await ports.findCharacters(uiUser, { query: 'wre', limit: 20 });
+    assert.deepEqual(found.characters.map(c => [c.key, c.named?.text]), [['Wren', 'Wren']]);
+    assert.deepEqual((await ports.findCharacters(uiUser, { query: 'np', limit: 20 })).tags, [{ key: npc, name: 'npc' }]);
 });
 
 after(async () => {

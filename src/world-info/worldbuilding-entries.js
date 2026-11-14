@@ -1,5 +1,6 @@
-import { MENTIONS_PER_PAGE } from '@st/worldbuilding/protocol';
-import { TYPE } from '../library-codes.js';
+import { FILTER_ITEMS_SHOWN, MENTIONS_PER_PAGE } from '@st/worldbuilding/protocol';
+import { FIELD, TYPE } from '../library-codes.js';
+import { thumbnailsOf } from '../thumbnail-urls.js';
 import { entryAsWorld, keysOfEntry } from '../world-info-engine.js';
 import { lookImageUrl } from '@st/looks/look';
 import { newWorldInfoEntryDefinition, newWorldInfoEntryTemplate } from '../../public/scripts/world-info-entry-defaults.js';
@@ -146,7 +147,85 @@ export function editedEntry(current, edit) {
             return keys.includes(edit.key) ? { ...current, key: keys.filter(k => k !== edit.key) } : { refused: NO_SUCH_KEY };
         case 'placement':
             return { ...current, ...edit.fields };
+        case 'characterFilter':
+            return { ...current, characterFilter: changedFilter(filterOf(current), edit.filter) };
     }
+}
+
+/**
+ * @param {Record<string, unknown>} entry
+ * @returns {{ isExclude: boolean, names: string[], tags: string[] }}
+ */
+function filterOf(entry) {
+    const stored = isPlainObject(entry.characterFilter) ? /** @type {Record<string, unknown>} */ (entry.characterFilter) : {};
+    const strings = (/** @type {unknown} */ v) => (Array.isArray(v) ? v.filter(x => typeof x === 'string') : []);
+    return { isExclude: stored.isExclude === true, names: strings(stored.names), tags: strings(stored.tags) };
+}
+
+/**
+ * @param {{ isExclude: boolean, names: string[], tags: string[] }} filter
+ * @param {{ exclude: boolean } | { add: import('@st/worldbuilding/protocol').FilterItem } | { remove: import('@st/worldbuilding/protocol').FilterItem }} change
+ */
+function changedFilter(filter, change) {
+    if ('exclude' in change) return { ...filter, isExclude: change.exclude };
+    const item = 'add' in change ? change.add : change.remove;
+    const [list, key] = 'character' in item ? /** @type {const} */ (['names', item.character]) : /** @type {const} */ (['tags', item.tag]);
+    const without = filter[list].filter(k => k !== key);
+    return { ...filter, [list]: 'add' in change ? [...without, key] : without };
+}
+
+/**
+ * Upstream names a character in a filter by its avatar file's name without the extension; this store keys a
+ * character by its avatar file, which a card always has as a PNG.
+ * @param {string} key
+ */
+const avatarOfFilterKey = key => `${key}.png`;
+
+/**
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {Record<string, unknown>} entry
+ * @returns {Promise<import('@st/worldbuilding/protocol').CharacterFilterShown>}
+ */
+async function shownFilter(lib, entry) {
+    const filter = filterOf(entry);
+    const names = filter.names.slice(0, FILTER_ITEMS_SHOWN);
+    const tags = filter.tags.slice(0, Math.max(0, FILTER_ITEMS_SHOWN - names.length));
+    const characters = await lib.entities(await lib.ids(TYPE.character, names.map(avatarOfFilterKey)));
+    const tagNames = await tagNamesOf(lib, tags);
+    return {
+        exclude: filter.isExclude,
+        characters: names.map((key, i) => ({ key, ...characterShown(characters[i]) })),
+        tags: tags.map(key => ({ key, name: tagNames.get(key) ?? null })),
+        more: filter.names.length + filter.tags.length - names.length - tags.length,
+    };
+}
+
+/**
+ * A tag merged into another is named by the one it went into.
+ * @param {import('../library-engine.js').LibraryEngine} lib
+ * @param {string[]} keys
+ * @returns {Promise<Map<string, string>>}
+ */
+async function tagNamesOf(lib, keys) {
+    if (keys.length === 0) return new Map();
+    const { tags, merged } = /** @type {{ tags: Record<string, unknown>[], merged: Record<string, string> }} */ (await lib.tags.byIds(keys));
+    const byKey = new Map(tags.flatMap(t => (typeof t.id === 'string' && typeof t.name === 'string' ? [[t.id, t.name]] : [])));
+    return new Map(keys.flatMap(key => {
+        const name = byKey.get(merged[key] ?? key);
+        return name === undefined ? [] : [[key, name]];
+    }));
+}
+
+/**
+ * @param {import('../entity-values.js').StoredEntity | null} entity
+ * @returns {{ named: import('@st/protocol/looks').Named | null, picture: string | null }}
+ */
+function characterShown(entity) {
+    if (!entity || entity.type !== TYPE.character) return { named: null, picture: null };
+    const value = entity.values.find(v => v.field === FIELD.name);
+    const name = value?.text ?? (value?.json === undefined ? '' : JSON.parse(value.json));
+    const shown = thumbnailsOf(entity, 'avatar');
+    return { named: { thing: String(entity.id), text: typeof name === 'string' ? name : '', shownAs: 'name' }, picture: shown.thumbnail_still ?? shown.thumbnail };
 }
 
 /**
@@ -183,7 +262,7 @@ async function worldKey(lib, book) {
 /**
  * The entry actions and the entry view of the worldbuilding area, over the store.
  * @param {EntryPortsWiring} wiring
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'readRowFacts' | 'readKeySharers' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'readRowFacts' | 'findCharacters' | 'readKeySharers' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld'>}
  */
 export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
     const actorOf = (/** @type {import('@st/worldbuilding/server').Who} */ who) => ({ user: who.user.handle, session: who.session });
@@ -266,7 +345,8 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             if (read === null) return null;
             if (read.deleted) return { deleted: true };
             const [stored, form] = await Promise.all([lib.books.entryIn(b, e), lib.books.bookForm(b)]);
-            const { placement, differs } = placementOf(stored && form ? entryAsWorld(stored, form.form) : {});
+            const asWorld = stored && form ? entryAsWorld(stored, form.form) : {};
+            const { placement, differs } = placementOf(asWorld);
             const counts = await countTokens(user, [read.text]);
             const found = (await (await referencesOf(user)).links(b, e, read.text, { readsAtMost: textLinkReads })) ?? { links: [], complete: true };
             const linked = [...new Set(found.links.map(link => link.entry))];
@@ -279,7 +359,21 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
                 placement: /** @type {import('@st/worldbuilding/protocol').Placement} */ (placement),
                 placementDiffersFromDefaults: differs,
                 tokens: counts?.[0] ?? null,
+                characterFilter: await shownFilter(lib, asWorld),
                 mentionedIn: await mentionsOf(user, b, e, mentions, mentionChecks),
+            };
+        },
+        async findCharacters(user, { query, limit }) {
+            const lib = await libOf(user);
+            const found = await lib.query({ search: query, limit, includeGroups: false, wantTotal: false, sortField: 'search', tieSortField: 'name', tieSortOrder: 'asc' });
+            const rows = found === 'invalid-cursor' ? [] : /** @type {{ type?: unknown, id?: unknown }[]} */ (found.rows ?? []);
+            const avatars = rows.flatMap(r => (r.type === 'character' && typeof r.id === 'string' && r.id.endsWith('.png') ? [r.id] : []));
+            const entities = await lib.entities(await lib.ids(TYPE.character, avatars));
+            const tags = await lib.tags.query({ sort: 'alphabetical', pageSize: limit, search: query });
+            const tagRows = tags === 'invalid-cursor' ? [] : tags.rows;
+            return {
+                characters: avatars.map((avatar, i) => ({ key: avatar.slice(0, -'.png'.length), ...characterShown(entities[i]) })),
+                tags: tagRows.flatMap(t => (typeof t.id === 'string' && typeof t.name === 'string' ? [{ key: t.id, name: t.name }] : [])),
             };
         },
         async readKeySharers(user, { book, entry, key, limit }) {

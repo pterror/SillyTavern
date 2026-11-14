@@ -10,6 +10,7 @@ import {
     cardsPerTopLevelEntry,
     ENTRY_VIEW,
     FOUND_PER_QUERY,
+    CHARACTERS_FOUND_VIEW,
     FOUND_VIEW,
     KEY_SHARERS_SHOWN,
     KEY_SHARERS_VIEW,
@@ -36,6 +37,7 @@ import {
     READS_PER_LOOP_CHECK_VISIT,
     READS_PER_MENTION_CHECK,
     READS_PER_PICTURE,
+    FILTER_ITEMS_SHOWN,
     READS_PER_REQUEST,
     READS_OF_ACTION,
     READS_PER_VIEW,
@@ -59,6 +61,7 @@ import type {
     SelectionView,
     EntryCell,
     EntryView,
+    CharactersFoundView,
     FoundView,
     ResultsView,
     LastChangeView,
@@ -166,6 +169,8 @@ const PLACEMENT = v.parse(v.object(placementFields), {
     characterFilter: { isExclude: false, names: [], tags: [] },
 });
 
+const NO_FILTER = { exclude: false, characters: [], tags: [], more: 0 };
+
 const LAYOUT: OverviewLayout = { regionsByNestingLevel: [{ columns: 3, rows: 2 }], cardTextCharacters: 300 };
 
 const card = (occurrence: string, topLevelRank: number): EntryCell & { topLevelRank: number } => ({
@@ -225,6 +230,8 @@ const READS_ASKED: Costs = {
             0,
         ),
     findEntries: (_u, q) => q.limit * (READS_PER_DRAWN_CARD + READS_PER_PICTURE),
+    // A character found reads its name and picture; a tag, its name.
+    findCharacters: (_u, q) => q.limit * 3,
     readSelection: (_u, selection, walkSteps) => selection.except.length + walkSteps,
     // The first chunk walks in the engine's own share (WALK_STEPS_PER_READ) before its loop check.
     startBulk: (_w, _s, _a, limit) => WALK_STEPS_PER_READ + loopCheck(limit),
@@ -233,7 +240,8 @@ const READS_ASKED: Costs = {
     readEntry: (_u, _b, _e, asked) =>
         asked.textLinkReads +
         Math.ceil(asked.textLinkReads / 2) * READS_PER_LOOK +
-        asked.mentionChecks * READS_PER_MENTION_CHECK,
+        asked.mentionChecks * READS_PER_MENTION_CHECK +
+        2 * FILTER_ITEMS_SHOWN,
     readKeySharers: (_u, q) => q.limit * READS_PER_LABEL,
     createEntry: (_w, _b, _c, limit) => loopCheck(limit),
     // These run the engine's loop check at its own limit.
@@ -404,6 +412,7 @@ function world(
             placement: PLACEMENT,
             placementDiffersFromDefaults: false,
             tokens: found.text.length,
+            characterFilter: NO_FILTER,
             mentionedIn: {
                 pages: Array.from({ length: pages }, (_, at) => at + (from === null ? 0 : Number(from.slice(1))))
                     .filter((at) => at <= 2)
@@ -654,6 +663,10 @@ function world(
                 })(),
             };
         },
+        findCharacters: async (_u, { query }) => ({
+            characters: query === 'wr' ? [{ key: 'Wren', named: named('40', 'Wren'), picture: null }] : [],
+            tags: [],
+        }),
         findEntries: async (_u, q) => {
             asked.found.push(q);
             return {
@@ -1764,7 +1777,9 @@ test('the entry schemas take worlds and entries by id, keys trimmed and not empt
     expect(ok('worldbuilding.setKeyAs', { ...at, key: 'Ilse', as: 'trigger' })).toBe(true);
     expect(ok('worldbuilding.setEntryTitle', { ...at, title: '' })).toBe(true);
     const placing = (fields: unknown) => ok('worldbuilding.setPlacement', { ...at, fields });
-    expect(placing(PLACEMENT)).toBe(true);
+    const { characterFilter: _filter, ...settable } = PLACEMENT;
+    expect(placing(settable)).toBe(true);
+    expect(placing(PLACEMENT)).toBe(false);
     expect(placing({})).toBe(false);
     expect(placing({ probability: 101 })).toBe(false);
     expect(placing({ probability: 12.5 })).toBe(true);
@@ -1779,7 +1794,7 @@ test('the entry schemas take worlds and entries by id, keys trimmed and not empt
     expect(placing({ delayUntilRecursion: 2 })).toBe(true);
     expect(placing({ triggers: ['normal', 'swipe'] })).toBe(true);
     expect(placing({ triggers: ['dream'] })).toBe(false);
-    expect(placing({ characterFilter: { isExclude: true, names: ['a.png'], tags: [] } })).toBe(true);
+    expect(placing({ characterFilter: { isExclude: true, names: ['a'], tags: [] } })).toBe(false);
     expect(placing({ key: ['Ilse'] })).toBe(false);
     expect(placing({ content: 'x' })).toBe(false);
     const make = { book: '1', after: null, name: null, relation: null, open: { pointingAt }, loopCheckLimit: 10 };
@@ -2874,4 +2889,41 @@ test('a card dropped in another cell changes the relations of the axes it crosse
         refused: expect.stringContaining('can’t be dropped'),
     });
     expect(changes()).toEqual([]);
+});
+
+test("an entry's character filter changes by one item or its sense per action, and the characters to add are found by name", async () => {
+    const w = world(3);
+    const at = { book: '1', entry: '7' };
+    expect(
+        await w.act('worldbuilding.changeCharacterFilter', { ...at, change: { add: { character: 'Wren' } } }),
+    ).toEqual({
+        changed: expect.any(Array),
+        own: [ENTRY_VIEW],
+    });
+    await w.act('worldbuilding.changeCharacterFilter', { ...at, change: { exclude: true } });
+    await w.act('worldbuilding.changeCharacterFilter', { ...at, change: { remove: { tag: 'npc' } } });
+    expect(w.asked.edits.map(({ edit }) => edit)).toEqual([
+        { change: 'characterFilter', filter: { add: { character: 'Wren' } } },
+        { change: 'characterFilter', filter: { exclude: true } },
+        { change: 'characterFilter', filter: { remove: { tag: 'npc' } } },
+    ]);
+    expect(await w.view<CharactersFoundView>(CHARACTERS_FOUND_VIEW)).toEqual({ query: null });
+    expect(await w.act('worldbuilding.findCharacters', { query: 'wr' })).toEqual({
+        changed: [],
+        opensViews: [CHARACTERS_FOUND_VIEW],
+    });
+    expect(await w.view<CharactersFoundView>(CHARACTERS_FOUND_VIEW)).toEqual({
+        query: 'wr',
+        characters: [{ key: 'Wren', named: named('40', 'Wren'), picture: null }],
+        tags: [],
+    });
+    const accepts = (type: string, payload: unknown) =>
+        v.safeParse(actions[type as keyof typeof actions] as v.GenericSchema, payload).success;
+    expect(
+        accepts('worldbuilding.setPlacement', {
+            ...at,
+            fields: { characterFilter: { isExclude: true, names: [], tags: [] } },
+        }),
+    ).toBe(false);
+    expect(accepts('worldbuilding.changeCharacterFilter', { ...at, change: { add: { character: '' } } })).toBe(false);
 });

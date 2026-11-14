@@ -13,6 +13,7 @@ export const WORLD_VIEW = 'worldbuilding.world';
 export const POINTING_AT_VIEW = 'worldbuilding.pointingAt';
 export const RESULTS_VIEW = 'worldbuilding.results';
 export const FOUND_VIEW = 'worldbuilding.found';
+export const CHARACTERS_FOUND_VIEW = 'worldbuilding.charactersFound';
 export const SELECTION_VIEW = 'worldbuilding.selection';
 export const BULK_JOBS_VIEW = 'worldbuilding.bulkJobs';
 export const KEY_SHARERS_VIEW = 'worldbuilding.keySharers';
@@ -21,6 +22,9 @@ export const VIEWS_VIEW = 'worldbuilding.views';
 export const AXES_VIEW = 'worldbuilding.axes';
 
 export const FOUND_PER_QUERY = 20;
+export const CHARACTERS_FOUND_PER_QUERY = 20;
+// Characters and tags an entry's filter names that its page labels; past them it says how many more.
+export const FILTER_ITEMS_SHOWN = 50;
 // One `/world` command's worlds, set used in every chat or not in one request.
 export const WORLDS_CHANGED_AT_MOST = 1000;
 export const MENTIONS_PER_PAGE = 20;
@@ -311,8 +315,26 @@ export type OpenEntryView = EntryAt & {
     placement: Placement;
     placementDiffersFromDefaults: boolean;
     tokens: number | null;
+    characterFilter: CharacterFilterShown;
     mentionedIn: MentionedIn;
 };
+
+// Upstream's filter names a character by its avatar file's name without the extension (`key`) and a tag by its key;
+// `named`/`name` is null for one this user has no character or tag for.
+export type FilteredCharacter = { key: string; named: Named | null; picture: string | null };
+export type FilteredTag = { key: string; name: string | null };
+export type CharacterFilterShown = {
+    exclude: boolean;
+    characters: FilteredCharacter[];
+    tags: FilteredTag[];
+    more: number;
+};
+
+export type CharactersFoundView =
+    | { query: string; characters: FilteredCharacter[]; tags: { key: string; name: string }[] }
+    | { query: null };
+
+export type FilterItem = { character: string } | { tag: string };
 
 export type DeletedEntryView = EntryAt & { deleted: true; label: Named | null };
 
@@ -490,7 +512,7 @@ export type RelationTo = { kind: string; target: string };
 
 export type BulkAction =
     | { delete: true }
-    | { set: Partial<Placement> }
+    | { set: Partial<Omit<Placement, 'characterFilter'>> }
     | { moveTo: RelationTo }
     | { alsoPutIn: RelationTo };
 
@@ -594,10 +616,12 @@ const viewChange = v.pipe(
     v.check((fields: ViewChange) => Object.keys(fields).length > 0, 'Name at least one setting.'),
 );
 const placementChange = v.pipe(
-    v.partial(v.strictObject(placementFields)),
+    v.partial(v.omit(v.strictObject(placementFields), ['characterFilter'])),
     v.check((fields: object) => Object.keys(fields).length > 0, 'Name at least one field.'),
 );
 const relationTo = v.object({ kind: kindId, target: entityId });
+const filterKey = v.pipe(v.string(), v.minLength(1), v.maxLength(512));
+const filterItem = v.union([v.strictObject({ character: filterKey }), v.strictObject({ tag: filterKey })]);
 const bulkAction = v.union([
     v.strictObject({ delete: v.literal(true) }),
     v.strictObject({ set: placementChange }),
@@ -667,6 +691,15 @@ export const actions = {
     'worldbuilding.removeKey': v.object({ ...entryNamed, key: keyText }),
     'worldbuilding.showKeySharers': v.object({ ...entryNamed, key: keyText }),
     'worldbuilding.setPlacement': v.object({ ...entryNamed, fields: placementChange }),
+    'worldbuilding.changeCharacterFilter': v.object({
+        ...entryNamed,
+        change: v.union([
+            v.strictObject({ exclude: v.boolean() }),
+            v.strictObject({ add: filterItem }),
+            v.strictObject({ remove: filterItem }),
+        ]),
+    }),
+    'worldbuilding.findCharacters': v.object({ query: v.string() }),
     'worldbuilding.createEntry': v.object({
         book: entityId,
         after: v.nullable(entityId),

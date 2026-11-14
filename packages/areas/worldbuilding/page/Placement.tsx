@@ -1,7 +1,9 @@
 import { For, Show, createSignal, onMount } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
-import type { Placement } from '../protocol.ts';
+import type { CharacterFilterShown, Placement } from '../protocol.ts';
+import { CharacterFilterSentence, filterIsSet } from './CharacterFilter.tsx';
+import type { FilterChange } from './CharacterFilter.tsx';
 import { dismissOn } from './dismiss.ts';
 import { count, fill } from './words.ts';
 
@@ -192,16 +194,22 @@ function Choices<T>(props: {
     );
 }
 
+const CHARACTERS_OFFER = 'Only for some characters';
+
 export function PlacementPopover(props: {
     placement: Placement;
+    characterFilter: CharacterFilterShown;
     tokens: number | null;
     opener: () => HTMLElement | undefined;
-    onSet: (fields: Partial<Placement>) => void;
+    onSet: (fields: Partial<Omit<Placement, 'characterFilter'>>) => void;
+    onFilter: (change: FilterChange) => void;
     onClose: () => void;
 }) {
     const { t } = useUi();
     const [list, setList] = createSignal<'comes' | 'where' | 'more' | null>(null);
     const [adding, setAdding] = createSignal<Extra | null>(null);
+    const [filtering, setFiltering] = createSignal(false);
+    const filterShown = () => filterIsSet(props.characterFilter) || filtering();
     let box: HTMLDivElement | undefined;
     dismissOn(() => box, props.onClose, props.opener);
     const p = () => props.placement;
@@ -327,7 +335,15 @@ export function PlacementPopover(props: {
                         </p>
                     )}
                 </For>
-                <Show when={offered().length > 0}>
+                <Show when={filterShown()}>
+                    <CharacterFilterSentence
+                        filter={props.characterFilter}
+                        adding={filtering()}
+                        onAdding={setFiltering}
+                        onChange={props.onFilter}
+                    />
+                </Show>
+                <Show when={offered().length > 0 || !filterShown()}>
                     <button
                         type="button"
                         class="menu_button margin0 whitespacenowrap wb-place-more"
@@ -352,6 +368,18 @@ export function PlacementPopover(props: {
                                     </button>
                                 )}
                             </For>
+                            <Show when={!filterShown()}>
+                                <button
+                                    type="button"
+                                    class="list-group-item wb-choice"
+                                    onClick={() => {
+                                        setList(null);
+                                        setFiltering(true);
+                                    }}
+                                >
+                                    {t(CHARACTERS_OFFER)}
+                                </button>
+                            </Show>
                         </span>
                     </Show>
                 </Show>

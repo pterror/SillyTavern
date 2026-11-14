@@ -26,6 +26,7 @@ const ENTRY: OpenEntryView = {
     placement: {} as OpenEntryView['placement'],
     placementDiffersFromDefaults: false,
     tokens: 96,
+    characterFilter: { exclude: false, characters: [], tags: [], more: 0 },
     mentionedIn: { pages: [] },
 };
 

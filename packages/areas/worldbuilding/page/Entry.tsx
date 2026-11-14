@@ -174,11 +174,15 @@ export function EntryPage(props: {
                         <Show when={placing()}>
                             <PlacementPopover
                                 placement={props.entry.placement}
+                                characterFilter={props.entry.characterFilter}
                                 tokens={props.entry.tokens}
                                 opener={() => placeButton}
                                 onClose={() => setPlacing(false)}
-                                onSet={(fields: Partial<Placement>) =>
+                                onSet={(fields: Partial<Omit<Placement, 'characterFilter'>>) =>
                                     void wb.act('worldbuilding.setPlacement', { ...at(), fields })
+                                }
+                                onFilter={(change) =>
+                                    void wb.act('worldbuilding.changeCharacterFilter', { ...at(), change })
                                 }
                             />
                         </Show>

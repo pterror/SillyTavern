@@ -940,6 +940,33 @@
     line-height: 1.5;
 }
 
+.wb-filter {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+}
+
+.wb .wb-filter-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.wb .wb-filter-remove {
+    color: var(--wb-ink-mid);
+    padding: 0 2px;
+}
+
+.wb .wb-filter-remove:hover {
+    color: var(--wb-ink);
+}
+
+.wb-filter-pick {
+    flex-basis: 100%;
+    line-height: 1.5;
+}
+
 .wb-choices-static {
     position: static;
     margin-top: 6px;
