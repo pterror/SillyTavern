@@ -23,6 +23,31 @@ choice made is marked as such.
   are, not only by names. The capability review falls out of the edges a transform adds, and the final composition
   can always be shown and explained. Custom code is an opaque node reached through the references it holds; changing
   what it decides inside takes replacing the node or patching its source, which the owner calls a non-issue.
+- **Option D: the order of transforms.** Asked of "the card's extensions run first, then the person's": "is that
+  fully general?" It wasn't. Every transform, a card's or the person's, declares "after" and "before" as conditions
+  over other transforms, and they go into one constraint graph. The person's first-match rules (cond.lua data, as
+  grant's preset rules) add to or replace any transform's constraints. "The card's run first" is one rule at the
+  lowest level, which the person's rules override. A cycle refuses the composition and names each constraint in it
+  and who made it; a tie goes by name, and the explanation lists it. The person's rules win because only the
+  person's install holds the references that write them and compose, not because they are applied last.
+- **Option D: the app's nodes.** "zero core". The app's piece is content like a card's: no kind of node is the
+  app's alone, and the rule "only the app's piece has host nodes" is gone. A reference enters a graph only as a need
+  node, which grant answers for that node's install (the app's piece's store and home included). An edge to another
+  install's node, the app's included, is a dependency, and the review describes it by the need nodes behind it
+  ("Can read and change everything chat keeps" for app/chat-store).
+- **Option D: which cards an extension runs with.** "need a fully general way to decide this". A transform declares
+  a scope as a condition, the same cond.lua data used everywhere, tested against where the chat is composed (the
+  card and its tags, the chat, the persona, the world, the device, anything a condition can test). The person's
+  rules widen, narrow or switch it off at any level of the cascade. The review shows the scope as a condition; the
+  chat's explanation says which rule decided it. A composition is kept by the card and the list of transforms that
+  run, so nothing is per card, and a changed rule recomposes open chats through watches on settings/.
+- **The settings cascade.** Owner: "depends on both settings cascade (device, session etc) + card stuff yes??? what
+  happened to the cascade stuff". The cascade from `settings-scopes.md` stands and now underlies which transforms run
+  and in what order. A setting resolves along one path, built from levels of context (tab, chat, character, device,
+  user, and any other level as data), containment (an entry, the groups it's in, its world) and the message tree (a
+  statement at a node holds for everything under it). Which chains a setting follows is its schema's path, and the
+  path is itself a setting. Tab and device statements are kept in latest; chat, character, person and world
+  statements are in the version store, so they branch and undo.
 - **Tabs and branch switches.** Settled by the tab sessions design: what a tab shows is that tab's session state, so
   tabs are independent. Owner: "isnt this fucking decided by fucking sessions design".
 - **Connection settings** wait for the state model: a connection is which adapter module holds which key.
