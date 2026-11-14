@@ -27,7 +27,7 @@ test.describe('live editor library bundle', () => {
         expect(result.modules).toEqual([
             'autocomplete', 'commands', 'formatKey', 'formatSteps', 'grammarLanguage', 'keyHints', 'keybinds',
             'lookChanged', 'lookDecorations', 'markdownFormat', 'markdownPaste',
-            'modifierHeld', 'overtype', 'search', 'state', 'suggestions', 'textEditor', 'toolbar', 'view',
+            'modifierHeld', 'overtype', 'search', 'state', 'suggestions', 'syntaxTree', 'textEditor', 'toolbar', 'view',
         ]);
     });
 

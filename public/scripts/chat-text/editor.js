@@ -85,7 +85,7 @@ let shortcutsShown;
 const PAGE_KEYS = new Set(['Mod-Enter']);
 
 /** @type {import('@codemirror/view').Command} */
-const shiftDelete = view => view.state.selection.ranges.every(range => range.empty) && deleteCharForward(view);
+export const shiftDelete = view => view.state.selection.ranges.every(range => range.empty) && deleteCharForward(view);
 
 /**
  * An icon for a toolbar button

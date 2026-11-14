@@ -9,7 +9,7 @@ import {
 } from '../../live-editor-lib.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
-import { BROWSER_TEXT_AIDS, commandKeys, drawnWith, editorPage, findTool, formatTools, macroTool, pasteFor, shownTools, toolbarFor } from './editor.js';
+import { BROWSER_TEXT_AIDS, commandKeys, drawnWith, editorPage, findTool, formatTools, macroTool, pasteFor, shiftDelete, shownTools, toolbarFor } from './editor.js';
 import { liveSearch } from './search.js';
 import { macroCursorTooltip, macroPills, macroValueRequests, openableMacros } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
@@ -82,7 +82,7 @@ export function chatBoxEditor({ parent, text, setup, macroValue, macroValues, la
             drawing.of(drawnWith(setup, pill)),
             EditorView.contentAttributes.of({ ...BROWSER_TEXT_AIDS, class: TEXT_CLASS, 'aria-multiline': 'true', 'aria-label': label }),
             history(),
-            keymap.of([...keys, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
+            keymap.of([...keys, { key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
             EditorView.lineWrapping,
             drawSelection(),
             caretInTextColor(),

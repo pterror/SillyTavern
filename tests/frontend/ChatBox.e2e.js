@@ -156,6 +156,17 @@ test.describe('the chat box', () => {
         await expect(chatBox(page)).toHaveAttribute('spellcheck', 'true');
     });
 
+    test('Shift+Delete deletes forward and never clears the box', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        await chatBox(page).click();
+        await page.keyboard.type('abc');
+        await page.keyboard.press('Home');
+        await page.keyboard.press('Shift+Delete');
+        expect(await boxText(page)).toBe('bc');
+        await emptyBox(page);
+    });
+
     test('Ctrl+F opens find and replace in the box', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openSeraphina(page);
