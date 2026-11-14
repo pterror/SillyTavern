@@ -1705,14 +1705,15 @@ textarea.autoSetHeight {
     pointer-events: none;
 }
 
-.cm-tooltip:has(> .macro-cursor-tooltip) {
-    background: transparent;
-    border: none;
-}
-
 .macro-cursor-tooltip {
     position: static;
     width: max-content;
+}
+
+div.cm-tooltip.macro-tooltip.macro-cursor-tooltip {
+    background: var(--ac-style-color-background, rgba(32 32 32 / 1));
+    border: 1px solid var(--ac-style-color-border, rgba(69 69 69 / 1));
+    color: var(--ac-style-color-text, rgba(204 204 204 / 1));
 }
 
 .macro-person-card {
@@ -7485,12 +7486,13 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     display: none;
 }
 
-:is(.chat-editor, .chat-box-editor) .cm-editor .cm-tooltip:has(.paste-picker) {
+div.cm-tooltip.paste-picker {
     background: transparent;
     border: none;
 }
 
 .paste-picker {
+    width: max-content;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -7499,6 +7501,7 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
 }
 
 .paste-picker button {
+    white-space: nowrap;
     font: inherit;
     color: var(--SmartThemeBodyColor);
     background: var(--SmartThemeBlurTintColor);
