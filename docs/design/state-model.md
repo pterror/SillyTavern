@@ -1711,17 +1711,17 @@ Three kinds of chain feed that order in the owner's designs, and here they are o
     { "id": "device",    "level": "device" },
     { "id": "user",      "level": "user" } ],
   "levels": {
-    "tab":       { "kept": "store",  "node": "tab",    "prefix": "settings/tab/" },
-    "chat":      { "kept": "store",  "node": "at",     "prefix": "settings/chat/" },
-    "bookmark":  { "kept": "store",  "node": "chat",   "of": "bookmark",  "prefix": "settings/bookmark/{id}/" },
-    "character": [ { "kept": "store", "node": "home",  "of": "character", "prefix": "settings/character/{id}/" },
+    "tab":       { "kept": "store",  "node": "tab",    "entity": "tab" },
+    "chat":      { "kept": "store",  "node": "at",     "entity": "chat" },
+    "bookmark":  { "kept": "store",  "node": "chat",   "of": "bookmark",  "entity": "id" },
+    "character": [ { "kept": "store", "node": "home",  "of": "character", "entity": "id" },
                    { "given": "card_settings", "name": "card" } ],
-    "world":     { "kept": "world",  "node": "home",   "of": "world",     "prefix": "world/{id}/settings/" },
-    "device":    { "kept": "store",  "node": "device", "prefix": "settings/device/" },
-    "user":      { "kept": "store",  "node": "home",   "prefix": "settings/user/" },
+    "world":     { "kept": "world",  "node": "home",   "of": "world",     "entity": "id" },
+    "device":    { "kept": "store",  "node": "device", "entity": "device" },
+    "user":      { "kept": "store",  "node": "home",   "entity": "home" },
     "declared":  { "given": "declared" },
-    "entry":     { "kept": "world",  "node": "home",   "of": "entry",     "prefix": "world/{world}/entry/{id}/" },
-    "theme":     { "kept": "store",  "node": "home",   "of": "theme",     "prefix": "settings/theme/{id}/" } },
+    "entry":     { "kept": "world",  "node": "home",   "of": "entry",     "entity": "id" },
+    "theme":     { "kept": "store",  "node": "home",   "of": "theme",     "entity": "id" } },
   "schemas": {
     "generation/preset": { "default": "Default" },
     "looks/text_size":  { "default": 16 },
@@ -1745,8 +1745,9 @@ An item of an order is { id, level, follow?, ancestry? }; the id names it in "or
   is the id of a shipped item, a table is an item of its own); the shipped items it leaves out
   follow in the shipped order.
 A level is data: where its statements are kept, and what of the context names its place.
-  A filter is data too: { "pinned": ["=", "mode", "pinned"] } is a cond over a bookmark's
-  own fields, declared in the app's piece; the store keeps one index per declared filter.
+  A filter is data too: { "pinned": ["=", "bookmark", "mode", "pinned"] } is a query over a
+  bookmark's own component, declared in the app's piece; the store keeps one index per
+  declared filter.
   A level is one source, or a list of them, nearest first: "character" is the character's
   statements kept in the store, then the card's own (the card is not a level of its own).
   kept    a reference the root hands settings.lua by that name: "store" or "world", both the
@@ -1754,10 +1755,12 @@ A level is data: where its statements are kept, and what of the context names it
   node    the context field naming the store node to read at; a tab and a device each have a
           node of their own
   of      the context field naming the level's subject (the speaking character, an entry, a
-          world, a bookmark, a theme); the subject's id is {id} in the prefix, and what a
-          "follow" or "ancestry" walks over
-  prefix  the keys' prefix; {x} is the context's x, and a level whose x the context lacks
-          isn't on the path (no chat open: no chat level)
+          world, a bookmark, a theme): "id" while that level is read, and what a "follow" or
+          "ancestry" walks over
+  entity  the context field naming the entity whose "settings" component holds the level's
+          statements, one field per setting name ("order/…" and "on/…" are names like any
+          other); a level whose node or entity the context lacks isn't on the path (no chat
+          open: no chat level). The person's statements are on the library node's own entity
   given   a table the context carries (what the card ships, what transforms declare); it
           belongs to the context's own subject, so a follow reads it at its start only
   name    what the source is called in "from" reports (default: the level)
@@ -1770,7 +1773,8 @@ A schema, which the module that owns the keys ships (the "setting schema" row at
                                              context field, default the level's "of"), then,
                                              depth first, of each target of each of kinds
                                              (a list of relation kinds, in priority order;
-                                             an entry's targets of a kind are in that
+                                             an entry's targets of a kind are the field of
+                                             that name in its "relations" component, in that
                                              relation's own order), at most most steps away.
                                              A kind is whatever the world calls it; none is
                                              special, and [] follows nothing: the start only.
@@ -1808,22 +1812,19 @@ A statement is a value, or { "$rules": [ { "when": a condition, "value": v }, ..
 The tree comes from the store: a statement at node 800 is a change at 800, so reading at
   any node below sees it, and a statement lower down shadows it from there on. A branch
   from above 800 doesn't see it. Undo and branching are the store's.
-Writes: settings.state(level, name, statement, ctx, field?) at the level's place; a level
-  that is not defined, or whose place the context can't name, is refused. nil takes a statement back. With field, the
-  change is kv.set_field, an op (old, { field, value }) -> old with that field set, so a
-  node's table of notes keeps the others and a revert restores the old table.
+Writes: settings.state(level, name, statement, ctx, field?) at the level's place: a change
+  of the field name of the subject's "settings" component; a level that is not defined, or
+  whose place the context can't name, is refused. nil takes a statement back. With field,
+  the change names the path { name, field }, so a node's table of notes keeps the others,
+  and a revert restores that one note.
 ```
 
 ```lua
 -- context_cond.lua: what a rule can test about where it's asked, as cond.lua operators
 return function(c)
-  local cond = c.cond                       -- a cond of its own; modules add operators the same way
-  local function has(list, x)
-    for _, v in ipairs(list or {}) do if v == x then return true end end
-    return false
-  end
-  cond.define("card", function(x, name) return x.card ~= nil and x.card.name == name end)
-  cond.define("card-tag", function(x, tag) return x.card ~= nil and has(x.card.tags, tag) end)
+  local cond, q = c.cond, c.query           -- a cond of its own; modules add operators the same way
+  cond.define("card", function(x, name) return x.card ~= nil and q.holds(x.at, x.card, { "=", "card", "name", name }) end)
+  cond.define("card-tag", function(x, tag) return x.card ~= nil and q.holds(x.at, x.card, { "to", "tags", tag }) end)
   cond.define("persona", function(x, name) return x.persona == name end)
   cond.define("world", function(x, world) return x.world == world end)
   cond.define("device", function(x, device) return x.device == device end)
@@ -1833,7 +1834,7 @@ return function(c)
   cond.define("until", function(x, n) return x.depth <= n end)
   cond.define("every", function(x, n) return (x.depth - x.note.set) % n == 0 end)
   cond.define("until-next-pin", function(x) return x.source == x.nearest_pin end)
-  cond.define("state", function(x, key, v) return c.state(x.at, key) == v end)   -- [host] one read at the position
+  cond.define("state", function(x, comp, field, v) return q.holds(x.at, x.chat, { "=", comp, field, v }) end)
   return cond
 end
 
@@ -1845,27 +1846,14 @@ return function(c)
   local ancestry = c.ancestry               -- (filter, message) -> { bookmark ids, nearest first }   [host]
   local S = {}
 
-  local function fill(s, ctx)               -- "{x}" replaced by ctx.x; nil when ctx has no x
-    local missing = false
-    local out = s:gsub("{(%w+)}", function(k)
-      if ctx[k] == nil then missing = true; return "" end
-      return tostring(ctx[k])
-    end)
-    if not missing then return out end
-  end
-
-  local function reader(spec, ctx)          -- read(key) at this source's place, or nil if ctx can't name it
+  local function reader(spec, ctx)          -- read(name, component?) at this source's place, or nil if ctx can't name it
     if spec.given then
       local t = ctx[spec.given]
-      return t and function(key) return t[key] end
+      return t and function(name, component) if component == nil then return t[name] end end
     end
-    local prefix, ref = fill(spec.prefix or "", ctx), kept[spec.kept]
-    if not prefix then return nil end
-    if spec.node then
-      local node = ctx[spec.node]
-      return node ~= nil and function(key) return ref:get(node, prefix .. key) end or nil   -- [host]
-    end
-    return function(key) return ref:get(prefix .. key) end                     -- [host]
+    local ref, node, e = kept[spec.kept], ctx[spec.node], ctx[spec.entity]
+    if node == nil or e == nil then return nil end
+    return function(name, component) return ref:get(node, e, component or "settings", name) end   -- [host]
   end
 
   local function sources(level)             -- a level is one source, or a list of them, nearest first; none for a level not defined
@@ -1937,7 +1925,7 @@ return function(c)
             local read = place(item, id, depth == 0)
             if not read or (f.most and depth >= f.most) then return end
             for _, kind in ipairs(f.kinds) do
-              for _, next_id in ipairs(read("relation/" .. kind) or {}) do visit(next_id, depth + 1) end
+              for _, next_id in ipairs(read(kind, "relations") or {}) do visit(next_id, depth + 1) end
             end
           end
           local start = ctx[f.start or of]
@@ -2114,12 +2102,10 @@ return function(c)
     local spec
     for _, src in ipairs(sources(level)) do if src.kept then spec = src; break end end
     local frame = setmetatable({ id = spec and spec.of and ctx[spec.of] }, { __index = ctx })
-    local prefix = spec and fill(spec.prefix or "", frame)
-    if not prefix then error(name .. " can't be stated at " .. level .. " here", 0) end
-    local change = { field == nil and { prefix .. name, kv.set, statement }
-                     or { prefix .. name, kv.set_field, { field, statement } } }
-    if spec.node then kept[spec.kept]:apply(ctx[spec.node], change)            -- [host]
-    else kept[spec.kept]:apply(change) end                                     -- [host]
+    local node, e = spec and frame[spec.node], spec and frame[spec.entity]
+    if node == nil or e == nil then error(name .. " can't be stated at " .. level .. " here", 0) end
+    kept[spec.kept]:apply(node, { { e, "settings", kv.set, statement,                -- [host]
+                                    field = field == nil and name or { name, field } } })
   end
 
   function S.narrow(prefix)                 -- the same, for names under prefix only
@@ -2134,9 +2120,9 @@ end
 ```
 levels of context: looks/text_size, which states no order, so every shipped item applies
 t=0      laptop: action { type = "state", level = "user", name = "looks/text_size", value = 15 }
-         store: settings/user/looks/text_size = 15 at home; every device reads 15
-t=1m     phone (device 3f0c…): the same at level "device", 17: settings/device/looks/text_size
-         at the device's node in the store; the phone's tabs read 17 (from "device"), the
+         store: the person's settings, field looks/text_size = 15, at home; every device reads 15
+t=1m     phone (device 3f0c…): the same at level "device", 17: the device's settings, field
+         looks/text_size, at the device's node in the store; the phone's tabs read 17 (from "device"), the
          laptop still 15
 t=2m     phone, tab 9a71…: level "tab", 20, at the tab's node; that tab reads 20 (from
          "tab"), the phone's other tabs 17. Undoing it at the tab's node brings 17 back
@@ -2179,7 +2165,7 @@ t5       phone: S.state("device", "order/generation/preset", ["scene","chat","us
            list leaves out follow the listed ones in the shipped order
            Chat-X (from chat)
            [scene (unknown), chat, user, tab, bookmarks, character, world, device]
-t6       an extension adds the level "scene" (statements at settings/scene/{id}/) and the item
+t6       an extension adds the level "scene" (statements on the scene's entity) and the item
            { id = "scene", level = "scene" } to the shipped order, placed second, after tab; scene
            "harbor" is open and states "Harbor-tuned". The statement of t5 was not touched
            Harbor-tuned (from scene harbor)
@@ -2272,7 +2258,8 @@ t=3m     way 2, a condition on the note, a cond.lua condition over the note and 
                                           yes, at 95 (25) no; set is in the note and depth
                                           is the store's, so no message is read
          { … when ["until", 150] }        while depth <= 150
-         { … when ["state", "scene/active", true] }  while that key, which a tracker or the
+         { … when ["state", "scene", "active", true] }  while that field of the chat's "scene",
+                                          which a tracker or the
                                           model writes, holds true at this position (one read)
          { … when ["until-next-pin"] }    while the note's source is the nearest pinned
                                           bookmark: scene so marked at P1 stops at 70, where
@@ -2309,12 +2296,14 @@ Cost: a lookup is at most (matching messages tried) × log depth; a chat with no
   one read; nothing is per message, per row or per card. How many matching messages share one
   parent in real chats I don't know; if it is large, a count of matches per subtree would be
   needed and the lookup would binary-search the jump pointers instead.
-Necessary: the store alone holds the ancestry. Assumes: the filter is a cond over the
-  bookmark's own fields. Rules out: a filter on the message's text or on another bookmark.
+Necessary: the store alone holds the ancestry. It is a declared index of the store's
+  ("Indexes under branching") of a kind of its own: over a field holding a message node
+  ("at"), answering for the messages above a node. Assumes: the filter is a query over the
+  bookmark's own component. Rules out: a filter on the message's text or on another bookmark.
   So: a filter is declared data, and the store keeps one index per filter.
 ```
 
-Every setting resolves this way, so a setting's levels, their order, the relation kinds it follows, how statements combine and where each level is kept are data: settings-scopes has no table of levels per kind, its "the order is a setting" is "order/<name>" with "on/<name>", and its levels are the levels list, which content can add to (a preset level, settings-reorganization's, is a level whose prefix names the preset the context carries and an item in the order; settings-scopes' group, after the speaking character, is the follow of "member of" on the character item). Every level is kept in the version store, a tab's and a device's under nodes of their own, so every statement at every level branches and undoes the same way; latest holds caches, progress, sessions and drafts, never a setting. Costs: a resolve is one read per place on its order (a follow, one per entry it passes and kind it follows), plus the reads of "order/" and "on/" for the name and each prefix of it, themselves resolved along the order of orders (a few steps, each one read of "order/" and "on/" per level); that is a constant number of reads per setting, never per card; a "rules" setting is one read per level; no setting costs anything per card, chat or row. Nothing here is a host module or a primitive, so both tests are only the assumptions:
+The examples above were run again under LuaJIT on a store of entities that folds every path, each level's statements a field of its subject's "settings" component and each relation kind a field of an entry's "relations", with the same results as stated (entities are written by name, mira, house-vell, for reading). Every setting resolves this way, so a setting's levels, their order, the relation kinds it follows, how statements combine and where each level is kept are data: settings-scopes has no table of levels per kind, its "the order is a setting" is "order/<name>" with "on/<name>", and its levels are the levels list, which content can add to (a preset level, settings-reorganization's, is a level whose prefix names the preset the context carries and an item in the order; settings-scopes' group, after the speaking character, is the follow of "member of" on the character item). Every level is kept in the version store, a tab's and a device's under nodes of their own, so every statement at every level branches and undoes the same way; latest holds caches, progress, sessions and drafts, never a setting. Costs: a resolve is one read per place on its order (a follow, one per entry it passes and kind it follows), plus the reads of "order/" and "on/" for the name and each prefix of it, themselves resolved along the order of orders (a few steps, each one read of "order/" and "on/" per level); that is a constant number of reads per setting, never per card; a "rules" setting is one read per level; no setting costs anything per card, chat or row. Nothing here is a host module or a primitive, so both tests are only the assumptions:
 
 ```
 settings.lua, context_cond.lua: content.
@@ -2383,7 +2372,8 @@ UI slots: named contracts. A contribution is data in the manifest; the app's pag
   reads the manifests of what is installed and the display handle draws it (the owner's):
     message.actions  { label, export }      pressed: one page action { type = "run",
                      install, export, at }; the reply carries the state it changed
-    settings         { label, keys, fields }  an editor over the module's own latest keys
+    settings         { label, settings, fields }  an editor over the module's own settings
+                     (the names under settings, resolved and stated through the cascade)
     commands         { name, export, args }   run from a page action, offered to the model
                      as a tool, or put in a step
   The root runs only exports a slot names. Which slots exist, and where each is drawn,
@@ -2398,7 +2388,7 @@ Values crossing a reference are copied, so a step from another module returns th
 ```json
 "slots": {
   "message.actions": [ { "label": "Recount time and affection", "export": "recount" } ],
-  "settings": { "label": "Tracker", "keys": "tracker/settings/", "fields": {
+  "settings": { "label": "Tracker", "settings": "tracker/settings/", "fields": {
       "note":  { "type": "boolean", "default": true, "label": "Tell the model the time and affection" },
       "depth": { "type": "number",  "default": 2,    "label": "Messages from the end where that goes" } } },
   "commands": [ { "name": "recount", "export": "recount", "args": [ "message" ] } ] }
@@ -2428,7 +2418,7 @@ end
 
 -- tracker.lua, as the person installs it: its needs are its manifest's (from crescent, below), plus prompt
 return function(c)
-  local store, chats, settings, model, kv = c.store, c.chats, c.settings, c.model, c.kv
+  local store, chats, cards, settings, model, kv = c.store, c.chats, c.cards, c.settings, c.model, c.kv
   local T = {}
 
   local function judge(text)
@@ -2438,31 +2428,33 @@ return function(c)
     })
   end
 
-  local function changes(who, r, last)      -- last: what this reply added before, on a recount
+  local function changes(at, chat, who, r, last)   -- last: what this reply added before, on a recount
     last = last or { 0, 0 }
     return {
-      { "tracker/time", kv.add, r.minutes_passed - last[1] },
-      { "tracker/affection/" .. who, kv.add_within, { r.affection_change - last[2], 0, 100 } },
-      { "tracker/last", kv.set, { r.minutes_passed, r.affection_change } },
+      { chat, "tracker", kv.add, r.minutes_passed - last[1], field = "minutes" },
+      { who, "tracker", kv.add_within, { r.affection_change - last[2], 0, 100 }, field = "affection" },
+      { at, "tracker", kv.set, { r.minutes_passed, r.affection_change }, field = "last" },
     }
   end
 
   function T.step(ctx)                      -- after the reply is stored at ctx.at
-    store:apply(ctx.at, changes(ctx.speaker, judge(ctx.reply)))                -- [host]
+    store:apply(ctx.at, changes(ctx.at, ctx.chat, ctx.speaker, judge(ctx.reply)))   -- [host]
   end
 
-  function T.recount(at)                    -- the message button: that reply judged again
-    local msg = chats:get(at, "chat/msg")                                     -- [host]
-    store:apply(at, changes(msg.name, judge(msg.text), store:get(at, "tracker/last")))   -- [host]
+  function T.recount(at, chat)              -- the message button: that reply judged again
+    local msg = chats:get(at, at, "chat.message")                             -- [host]
+    store:apply(at, changes(at, chat, msg.speaker, judge(msg.text),
+                            store:get(at, at, "tracker", "last")))            -- [host]
   end
 
   function T.note(ctx)                      -- the prompt's note, or nil
     if settings:get("tracker/settings/note") == false then return nil end     -- [host]
-    local m = store:get(ctx.at, "tracker/time") or 0                          -- [host]
-    local a = store:get(ctx.at, "tracker/affection/" .. ctx.speaker) or 0      -- [host]
+    local m = store:get(ctx.at, ctx.chat, "tracker", "minutes") or 0          -- [host]
+    local a = store:get(ctx.at, ctx.speaker, "tracker", "affection") or 0     -- [host]
+    local who = cards:get(ctx.at, ctx.speaker, "card").name                   -- [host]
     return { depth = settings:get("tracker/settings/depth") or 2, role = "system",       -- [host]
              text = string.format("[It is %02d:%02d. %s's affection is %d of 100.]",
-                                  math.floor(m / 60) % 24, m % 60, ctx.speaker, a) }
+                                  math.floor(m / 60) % 24, m % 60, who, a) }
   end
 
   return T
@@ -2480,7 +2472,7 @@ end
 
 -- ilse-lore.lua, brought by the card: only the person's own words bring entries up
 return function(c)
-  local lorebooks, cond = c.lorebooks, c.cond   -- lorebooks: lore's keys, read only
+  local lorebooks, cond = c.lorebooks, c.cond   -- lorebooks: lore's components, read only
   local L = {}
   function L.activate(ctx, books, depth)    -- the entries that came up, in book order
     local said = {}
@@ -2491,9 +2483,11 @@ return function(c)
     end
     local scan, came_up = { scanned = table.concat(said, "\n"), active = {}, speaker = ctx.speaker,
                             at = ctx.at }, {}
-    for _, book in ipairs(books) do
-      for _, e in ipairs(lorebooks:range(ctx.at, "lore/entry/" .. book .. "/")) do   -- [host]
-        if cond.holds(e.value.when, scan) then came_up[#came_up + 1] = e.value end
+    for _, book in ipairs(books or {}) do
+      local q = { "all", { "=", "lore.entry", "book", book } }
+      for _, row in ipairs(lorebooks:query(ctx.at, q, { order = { "lore.entry", "order" },   -- [host]
+                                                        read = { "lore.entry" } }).rows) do
+        if cond.holds(row.values["lore.entry"].when, scan) then came_up[#came_up + 1] = row.values["lore.entry"] end
       end
     end
     return came_up
@@ -2515,9 +2509,9 @@ end
       "cond":      { "what": "export", "of": "cond", "required": true } } } } }
 
 pressing the button, in every option:
-t=0      page: action { type = "run", install = "tracker", export = "recount", at = 822 }
-         root: recount is in tracker's message.actions; installed.tracker.recount(822)
-t=1.2s   store: tracker/time and tracker/affection/Ilse change at 822 and every node below it
+t=0      page: action { type = "run", install = "tracker", export = "recount", at = 822, chat = 790 }
+         root: recount is in tracker's message.actions; installed.tracker.recount(822, 790)
+t=1.2s   store: the chat's minutes and Ilse's affection change at 822 and every node below it
          reply to the action: { cursor = 99210 }; pages watching the chat get the batch
 ```
 
@@ -2760,7 +2754,7 @@ Decided by the owner (decisions of 11-14), superseding A, B and C. The root's wi
 ```json
 { "name": "app",
   "nodes": {
-    "store":           { "kind": "need", "what": "store", "prefix": "", "mode": "rw", "required": true },
+    "store":           { "kind": "need", "what": "store", "components": "all", "mode": "rw", "required": true },
     "home":            { "kind": "need", "what": "home", "required": true },
     "kv":              { "kind": "module", "pkg": "kv" },
     "cond":            { "kind": "module", "pkg": "cond" },
@@ -2769,16 +2763,17 @@ Decided by the owner (decisions of 11-14), superseding A, B and C. The root's wi
     "chat":            { "kind": "module", "pkg": "chat", "with": {
                          "store": { "$ref": "chat-store" }, "kv": { "$ref": "kv" } } },
     "chat-store":      { "kind": "call", "on": { "$ref": "store" }, "method": "narrow", "with": {
-                         "nodes": [ { "$ref": "home" } ], "prefix": "chat/", "mode": "rw" } },
+                         "nodes": [ { "$ref": "home" } ], "components": [ "chat", "chat.message" ], "mode": "rw" } },
     "parts":           { "kind": "module", "pkg": "parts", "with": { "chars": { "$ref": "chars-store" } } },
     "chars-store":     { "kind": "call", "on": { "$ref": "store" }, "method": "narrow", "with": {
-                         "nodes": [ { "$ref": "home" } ], "prefix": "chars/", "mode": "r" } },
+                         "nodes": [ { "$ref": "home" } ], "components": [ "card", "tags", "lore.books" ], "mode": "r" } },
     "cascade":         { "kind": "module", "pkg": "settings", "with": {
                          "cond": { "$ref": "context-cond" }, "kv": { "$ref": "kv" },
-                         "kept": { "latest": { "$ref": "settings-latest" }, "store": { "$ref": "settings-store" } } } },
-    "settings-latest": { "kind": "need", "what": "latest", "prefix": "settings/", "mode": "rw", "required": true },
+                         "kept": { "store": { "$ref": "settings-store" }, "world": { "$ref": "world-store" } } } },
     "settings-store":  { "kind": "call", "on": { "$ref": "store" }, "method": "narrow", "with": {
-                         "nodes": [ { "$ref": "home" } ], "prefix": "settings/", "mode": "rw" } },
+                         "nodes": [ { "$ref": "home" } ], "components": [ "settings" ], "mode": "rw" } },
+    "world-store":     { "kind": "call", "on": { "$ref": "store" }, "method": "narrow", "with": {
+                         "nodes": [ { "$ref": "home" } ], "components": [ "settings", "relations" ], "mode": "r" } },
     "connections":     { "kind": "module", "pkg": "connections", "with": {
                          "latest": { "$ref": "connections-latest" }, "kv": { "$ref": "kv" },
                          "switch": { "$ref": "switch" }, "default": "openai",
@@ -2796,9 +2791,9 @@ An edge is { "$ref": id }, with "export" to reach one of the node's exports, and
 edge out of a piece "why" (the module's words) and "required": false where it can do
 without. Anything else in a node is a value.
 Kinds, and what each node's value is (wiring.lua):
-  need    what grant minted for the piece's install: gap 7's needs, as nodes. "prefix"
-          asks for keys under it rather than the install's own; "home" is the node the
-          person's data is under, a name
+  need    what grant minted for the piece's install: gap 7's needs, as nodes. "components"
+          asks for those components (or "all") rather than the install's own; "home" is the
+          node the person's data is under, a name
   module  sandbox:load of the package, handed with
   call    fn(with), or on:method(with): a value made from other values
   steps   a function running steps in order, setting on ctx what each returns
@@ -2846,14 +2841,15 @@ end
 -- steps.lua: the turn's usual steps, each made from what it's handed (w)
 return function()
   local S = {}
-  function S.history(w)                     -- w.history: chat's; w.speaker
-    return function(ctx) return { history = w.history(ctx.at), speaker = w.speaker } end
+  function S.history(w)                     -- w.history: chat's; w.speaker, else the card the chat is with
+    return function(ctx) return { history = w.history(ctx.at), speaker = w.speaker or ctx.where.character } end
   end
-  function S.lore(w)                        -- w.library; w.books, w.depth; w.scan: functions giving text or nil
+  function S.lore(w)                        -- w.library; w.books: a store reading "lore.books"; w.depth; w.scan: functions giving text or nil
     return function(ctx)
       local also = {}
       for _, f in ipairs(w.scan or {}) do also[#also + 1] = f(ctx) end
-      return { came_up = w.library.activate(ctx, w.books, w.depth, also) }
+      local books = w.books:get(ctx.at, ctx.speaker, "lore.books")                             -- [host]
+      return { came_up = w.library.activate(ctx, books, w.depth, also) }
     end
   end
   function S.prompt(w)                      -- w.assemble, w.at_depth: prompt's; w.parts; w.notes: functions giving a note or nil
@@ -2869,7 +2865,7 @@ return function()
   function S.append(w)                      -- w.append: chat's; w.role
     return function(ctx)
       local user = w.role == "user"
-      return { at = w.append(ctx.at, { role = w.role, name = user and ctx.persona or ctx.speaker,
+      return { at = w.append(ctx.at, { role = w.role, speaker = user and ctx.persona or ctx.speaker,
                                        text = user and ctx.text or ctx.reply }) }
     end
   end
@@ -2880,7 +2876,7 @@ end
 return function(c)
   local P = {}
   function P.description(ctx)
-    return { { role = "system", content = c.chars:get(ctx.at, "chars/" .. ctx.speaker).description } }  -- [host]
+    return { { role = "system", content = c.chars:get(ctx.at, ctx.speaker, "card").description } }  -- [host]
   end
   function P.came_up(ctx)
     local out = {}
@@ -2983,6 +2979,7 @@ The root interprets the graph with wiring.lua, which is content: each kind is a 
     "main":     { "kind": "module", "pkg": "tracker", "with": {
                   "store": { "$ref": "store" }, "settings": { "$ref": "settings" }, "kv": { "$ref": "app/kv" },
                   "chats": { "$ref": "app/chat-store", "why": "Reads a reply again when you ask for a recount" },
+                  "cards": { "$ref": "app/chars-store", "why": "Names the character in its note" },
                   "model": { "$ref": "app/connections", "export": "model",
                              "why": "Asks the model how much time passed in each reply" } } },
     "store":    { "kind": "need", "what": "store", "mode": "rw", "required": true,
@@ -2995,9 +2992,8 @@ The root interprets the graph with wiring.lua, which is content: each kind is a 
                   "note":  { "type": "boolean", "default": true, "label": "Tell the model the time and affection" },
                   "depth": { "type": "number",  "default": 2,    "label": "Messages from the end where that goes" } } } },
   "schemas": {
-    "tracker/settings/note":  { "default": true, "path": [ [ "level", "tab" ], [ "level", "chat" ],
-                                [ "level", "character" ], [ "level", "device" ], [ "level", "user" ] ] },
-    "tracker/settings/depth": { "default": 2, "path": [ [ "level", "chat" ], [ "level", "character" ], [ "level", "user" ] ] } },
+    "tracker/settings/note":  { "default": true, "order": [ "tab", "chat", "character", "device", "user" ] },
+    "tracker/settings/depth": { "default": 2, "order": [ "chat", "character", "user" ] } },
   "edits": [
     { "op": "insert", "into": [ "kind", "steps" ],
       "after": [ "all", [ "holds", [ "pkg", "chat" ], "append" ], [ "given", "role", "assistant" ] ],
@@ -3288,23 +3284,24 @@ Custom code is an opaque node: the edits can't see into a module's source. It ca
 Whether a transform runs where a chat is composed, and what it runs next to, are rules: the person's first-match rules, the same cond.lua data as grant's preset rules, kept as the setting "compose" and resolved through the settings cascade, so they can be stated at any level of the cascade: a tab, a chat, a character, a device, the person, a card (its statements, ordering included, are statements at the card level) or a transform's declarations. Whether a card's statements outrank the person's depends only on the order of the path, which is itself the setting "path/compose". No ordering rule ships: order comes only from what transforms declare and what the person states, and a tie is broken by name, which the explanation lists.
 
 ```json
-{ "key": "settings/user/compose", "node": "home", "value": [
-    { "when": [ "all", [ "transform", "tracker" ], [ "card-tag", "no-tracker" ] ], "on": false },
+{ "node": 1, "entity": 1, "component": "settings", "field": "compose", "value": [
+    { "when": [ "all", [ "transform", "tracker" ], [ "card-tag", 44 ] ], "on": false },
     { "when": [ "transform", "summarize" ], "after": [ [ "transform", "tracker" ] ] },
     { "when": [ "transform", "tracker" ], "replace": true } ] }
-{ "key": "settings/device/compose", "node": "3f0c…", "value": [
+{ "node": "3f0c…", "entity": "3f0c…", "component": "settings", "field": "compose", "value": [
     { "when": [ "transform", "tracker" ], "on": false } ] }
-{ "key": "settings/chat/compose", "node": 790, "value": [
+{ "node": 790, "entity": 790, "component": "settings", "field": "compose", "value": [
     { "when": [ "transform", "tracker" ], "on": true } ] }
-{ "key": "settings/tab/compose", "node": "9a71…", "value": [
+{ "node": "9a71…", "entity": "9a71…", "component": "settings", "field": "compose", "value": [
     { "when": [ "transform", "summarize" ], "on": false } ] }
 ```
 
 ```
 A rule: { when, on?, after?, before?, replace? }. when is a condition about one transform,
   asked where the chat is composed: compose_order.lua's operators ("transform",
-  "transform-tag") and context_cond.lua's ("card", "card-tag", "persona",
-  "world", "device", and any a module adds).
+  "transform-tag", queries over the transform's "pkg" with store:match) and
+  context_cond.lua's ("card", "card-tag", "persona", "world", "device", and any a module
+  adds). 44 is the tag "no-tracker".
 The rules are settings' "compose", combined as "rules": every level's list, most specific
   first along the path "path/compose" gives (by default tab, chat, character, device,
   user, card, declared), each in its own order. "card" is what the card ships; a card that
@@ -3327,21 +3324,18 @@ A cycle refuses the composition and names each constraint in it and who made it.
 ```lua
 -- compose_order.lua: which transforms run here and in what order, from the rules settings resolved
 return function(c)
-  local cond = c.cond                       -- a cond of its own, with context_cond's operators
+  local cond, store = c.cond, c.store       -- a cond of its own, with context_cond's operators
   local unpack = unpack or table.unpack
-  local function has(list, x)
-    for _, v in ipairs(list or {}) do if v == x then return true end end
-    return false
-  end
-  cond.define("transform", function(x, name) return x.transform.name == name end)
-  cond.define("transform-tag", function(x, tag) return has(x.transform.tags, tag) end)
+  local function about_pkg(q, t) return store:match(q, { { pkg = t.pkg } })[1] end   -- [host] no read
+  cond.define("transform", function(x, name) return about_pkg({ "=", "pkg", "name", name }, x.transform) end)
+  cond.define("transform-tag", function(x, tag) return about_pkg({ "in", "pkg", "tags", { tag } }, x.transform) end)
 
   local function about(t, ctx) return setmetatable({ transform = t }, { __index = ctx }) end
   local function said(r)
     return r.rule.by and ("declared by " .. r.rule.by) or (r.level .. " rule " .. r.index)
   end
 
-  return function(transforms, rules, ctx)   -- transforms[name] = { name, tags, card }; rules: settings.get("compose", ctx)
+  return function(transforms, rules, ctx)   -- transforms[name] = { name, pkg, card }; rules: settings.get("compose", ctx)
     local names = {}
     for name in pairs(transforms) do names[#names + 1] = name end
     table.sort(names)
@@ -3425,11 +3419,11 @@ return function(c)
 end
 ```
 
-The person's rules have the last word because of who holds what, not because of an order or a rule about levels. The person's levels are keys under settings/ in the version store, and only the root's own settings.lua and app/cascade hold references that write them; an install reaches app/cascade only through an edge, which its review shows as "Can read and change your settings", these rules among them. A card's statements are in its package, read at the "card" level, and a transform's declarations at "declared"; where they stand against the person's is the order of "path/compose", a setting like any other, and the person can state it. The root alone composes, and it decides which transforms run and in what order before any edit runs, so no edit can change either. A card's transform can still edit what the person's transforms added if the order puts it after them; the explanation and the card's review say so, and that is the person's choice to make. No order is shipped for the card's transforms against the person's: with no constraint between two, the tie goes by name, and the explanation lists it.
+The person's rules have the last word because of who holds what, not because of an order or a rule about levels. The person's levels are fields of "settings" components in the version store, and only the root's own settings.lua and app/cascade hold references that write them; an install reaches app/cascade only through an edge, which its review shows as "Can read and change your settings", these rules among them. A card's statements are in its package, read at the "card" level, and a transform's declarations at "declared"; where they stand against the person's is the order of "path/compose", a setting like any other, and the person can state it. The root alone composes, and it decides which transforms run and in what order before any edit runs, so no edit can change either. A card's transform can still edit what the person's transforms added if the order puts it after them; the explanation and the card's review say so, and that is the person's choice to make. No order is shipped for the card's transforms against the person's: with no constraint between two, the tie goes by name, and the explanation lists it.
 
 A transform's scope is a condition like any other: the tracker declares ["all"], every chat; a rule that holds where the declared scope doesn't widens it ({ "when": ["all", ["transform", "tracker"], ["card-tag", "npc"]], "on": true }), one that holds within it narrows it ({ ..., "on": false }), and { "when": ["transform", "tracker"], "on": false } switches it off. The review shows the declared scope as a condition, in the app's words; which rule decided it for a card is in that chat's explanation.
 
-A composition is a pure function of the app's piece, the card's package, and the running transforms in order with their package hashes, so that list's hash is its key. Each action resolves the rules again: one read per level on the path (eight at most), and a condition check per rule and transform, and per constraint and pair of transforms; none of it is per card or per row, and every chat that resolves to the same list shares the composition, its values shared by node hash as before. A changed rule changes the key at the next action. Open chats learn of it at once: the root watches the node each open chat views under settings/ in the store, which covers the chat, character and user levels because they are at that node or above it, and the tab's and device's nodes; a batch makes the root resolve again for the chats it touches, and a chat whose key changed gets a new explanation.
+A composition is a pure function of the app's piece, the card's package, and the running transforms in order with their package hashes, so that list's hash is its key. Each action resolves the rules again: one read per level on the path (eight at most), and a condition check per rule and transform, and per constraint and pair of transforms, each a call to store:match with no read; none of it is per card or per row, and every chat that resolves to the same list shares the composition, its values shared by node hash as before. A changed rule changes the key at the next action. Open chats learn of it at once: the root watches the query ["has", "settings"] at the node each open chat views, which covers the chat, character and user levels because their changes are at that node or above it, and at the tab's and device's nodes; a batch makes the root resolve again for the chats it touches, and a chat whose key changed gets a new explanation.
 
 ```
 compose_order.lua, settings.lua, context_cond.lua: content the root loads.
@@ -3557,44 +3551,49 @@ Still restrictive:
   before ("Capabilities from crescent: needs in a manifest").
 ```
 
-This is the only change outside content, and it is to grant, a host module: grant:install took a manifest, and now takes the review the root derives; its need vocabulary gains "prefix" (keys under a prefix rather than the install's own) and "home", which name narrowings the host modules already make for the root. A need is one of the extension's need nodes (described by the host module that mints it, as before) or an edge from one of its nodes to another install's node (an export, described by the need nodes behind it, as a contract was through grant:provides). The app's piece is one more install here: an edge to app/store is a dependency on a node whose need is the whole store, and the review says so in the store's words. A change is an edit: what the edit adds is edges from other nodes to the extension's, and those are the calls that will reach its code. The capability review falls out of the edges a transform adds, so nothing in the extension's JSON says what to review, and nothing can be left out of it. A card's piece is reviewed the same way at import: its need nodes, its edges into the app's nodes, and its own extensions' edits.
+This is the only change outside content, and it is to grant, a host module: grant:install took a manifest, and now takes the review the root derives; its need vocabulary gains "components" (components other than the install's own, or "all") and "home", which name narrowings the host modules already make for the root. A need is one of the extension's need nodes (described by the host module that mints it, as before) or an edge from one of its nodes to another install's node (an export, described by the need nodes behind it, as a contract was through grant:provides). The app's piece is one more install here: an edge to app/store is a dependency on a node whose need is the whole store, and the review says so in the store's words. A change is an edit: what the edit adds is edges from other nodes to the extension's, and those are the calls that will reach its code. The capability review falls out of the edges a transform adds, so nothing in the extension's JSON says what to review, and nothing can be left out of it. A card's piece is reviewed the same way at import: its need nodes, its edges into the app's nodes, and its own extensions' edits.
 
 ```lua
 -- root.lua under D: each action's context picks the transforms; a composition is kept by what it's made of
 return function(caps)
   local store, home, latest, grant = caps.store, caps.home, caps.latest, caps.grant
-  local function pkg(name) return store:get(home, "pkg/" .. name) end      -- [host] { hash, source, piece, extension, ... }
+  local function installed() return store:get(home, home, "pkg.installed") end   -- [host] name -> the package's entity
+  local function pkg(name) return store:get(home, installed()[name], "pkg") end  -- [host] { hash, source, piece, extension, ... }
   local function lib(name, given) return caps.sandbox:load(pkg(name).source, "lua", given) end   -- [core]
   local json, kv = lib("json", {}), lib("kv", {})
   local sha256  = caps.sandbox:load(pkg("sha256").source, "wasm", {})      -- [core]
   local graph   = lib("graph", { json = json, sha256 = sha256 })
-  local function context_cond() return lib("context_cond", { cond = lib("cond", {}) }) end
+  local cards = store:narrow{ nodes = { home }, components = { "card", "tags" }, mode = "r" }   -- [host]
+  local function context_cond()
+    local cond = lib("cond", {})
+    return lib("context_cond", { cond = cond, query = lib("query", { store = cards, cond = cond }) })
+  end
   local compose = lib("compose", { graph = graph,
                                    match = lib("graph_match", { cond = lib("cond", {}), graph = graph }) })
-  local order   = lib("compose_order", { cond = context_cond() })
+  local order   = lib("compose_order", { cond = context_cond(), store = store })
   local explain = lib("explain", { graph = graph })
   local wire    = lib("wiring", { graph = graph, grant = grant, sandbox = caps.sandbox, pkg = pkg })
   local app     = pkg("app")                -- { hash, piece, levels, schemas, combiners, filters }
   local function schema(name)               -- the app's, or that of the install whose name it starts with
     if app.schemas[name] then return app.schemas[name] end
     local install = name:match("^([^/]+)/")
-    local x = install and latest:get("installed").names[install] and pkg(install).extension   -- [host]
+    local x = install and installed()[install] and pkg(install).extension
     return x and x.schemas and x.schemas[name]
   end
   local settings = lib("settings", { cond = context_cond(), kv = kv, levels = app.levels, schema = schema, combiners = app.combiners,
     ancestry = function(filter, at) return store:ancestry(app.filters[filter], at) end,   -- [host]
-    kept = { store  = store:narrow{ nodes = { home }, prefix = "settings/", mode = "rw" },   -- [host]
-             world  = store:narrow{ nodes = { home }, prefix = "world/", mode = "r" } } })   -- [host]
+    kept = { store  = store:narrow{ nodes = { home }, components = { "settings" }, mode = "rw" },   -- [host]
+             world  = store:narrow{ nodes = { home }, components = { "settings", "relations" }, mode = "r" } } })   -- [host]
 
   local function transforms(card)           -- what could run with this card: its own, and what the person installed
     local all = {}
     for name, x in pairs(card and card.extensions or {}) do
       local id = card.name .. "." .. name
-      all[id] = { name = id, tags = x.tags, card = true, hash = card.hash, t = x }
+      all[id] = { name = id, pkg = { name = id, tags = x.tags }, card = true, hash = card.hash, t = x }
     end
-    for name, hash in pairs(latest:get("installed").names) do                  -- [host]
-      local x = pkg(name).extension
-      all[name] = { name = name, tags = x.tags, hash = hash, t = x }
+    for name in pairs(installed()) do
+      local p = pkg(name)
+      if p.extension then all[name] = { name = name, pkg = p, hash = p.hash, t = p.extension } end
     end
     return all
   end
@@ -3614,12 +3613,13 @@ return function(caps)
 
   local composed = {}                       -- by the hash of what each is made of, in memory only
   local function for_action(action)
-    local card = action.chat and pkg(store:get(action.chat, "chat/card"))   -- [host]
+    local card_e = action.chat and store:get(action.chat, action.chat, "chat").card   -- [host] the card's entity
+    local card = card_e and store:get(home, card_e, "pkg")                    -- [host] what the card ships
     local all = transforms(card)
     local ctx = { home = home, tab = action.tab, device = action.device, persona = action.persona,
+                  chat = action.chat,
                   at = action.at or (action.reply and store:parents(action.reply)[1]) or action.chat,   -- [host]
-                  character = card and card.name, world = card and card.world,
-                  card = card and { name = card.name, tags = store:get(home, "tags/card/" .. card.name) or {} },  -- [host]
+                  character = card_e, card = card_e, world = card and card.world,
                   card_settings = card and card.settings, declared = declared(all) }
     local picked, refused = order(all, settings.get("compose", ctx), ctx)
     if not picked then return { key = table.concat(refused, "\n"), problems = refused }, nil, ctx end
@@ -3639,25 +3639,27 @@ return function(caps)
   local function explained(chat, picked)
     return { explained = chat.graph and explain(chat.graph, picked), problems = chat.problems }
   end
-  local following = {}                      -- conn -> { action, key, watch }: what its page was last told
+  local following = {}                      -- conn -> { action, key, watches }: what its page was last told
   local function recheck(conn)
     local f = following[conn]
     local chat, picked = for_action(f.action)
     if chat.key ~= f.key then f.key = chat.key; conn:send(explained(chat, picked)) end   -- [host]
   end
   local function follow(conn, action, at, chat)   -- the chat's page is shown at at; tell it when its composition changes
+    local function stop(f) for _, w in ipairs(f.watches) do w:stop() end end
     local f = following[conn]
-    if f then f.watch:stop() else
-      task.spawn(function() conn:closed(); following[conn].watch:stop(); following[conn] = nil end)   -- [core], [host]
+    if f then stop(f) else
+      task.spawn(function() conn:closed(); stop(following[conn]); following[conn] = nil end)   -- [core], [host]
     end
     local a = {}
     for k, v in pairs(action) do a[k] = v end
     a.at, a.reply = at, nil
-    f = { action = a, key = chat.key }
-    f.watch = store:watch(at, "settings/", nil, { push = function() recheck(conn) end })   -- [host]
+    f = { action = a, key = chat.key, watches = {} }
+    for _, n in ipairs{ at, action.tab, action.device } do                    -- every level's node: the path's, the tab's, the device's
+      f.watches[#f.watches + 1] = store:watch(n, { "has", "settings" }, nil, { push = function() recheck(conn) end })   -- [host]
+    end
     following[conn] = f
   end
-  latest:watch("settings/", nil, { push = function() for conn in pairs(following) do recheck(conn) end end })   -- [host]
 
   caps.page:on(function(action, conn)                                       -- [host]
     local chat, picked, ctx = for_action(action)
@@ -3680,7 +3682,7 @@ return function(caps)
     elseif action.type == "run" then
       local item = chat.run.item(action.item)
       if not item then error(action.item .. " isn't in this chat's slots", 0) end
-      item.run(action.at)
+      item.run(action.at, action.chat)
       conn:send{}                                                           -- [host]
     end
   end)
@@ -3723,10 +3725,9 @@ The composed graph is a value, made by a pure function of the app's piece, the c
     "user":      { "kind": "call", "fn": { "$ref": "app/steps", "export": "append" }, "with": {
                    "append": { "$ref": "app/chat", "export": "append" }, "role": "user" } },
     "history":   { "kind": "call", "name": "history", "fn": { "$ref": "app/steps", "export": "history" }, "with": {
-                   "history": { "$ref": "app/chat", "export": "history" }, "speaker": "Ilse" } },
+                   "history": { "$ref": "app/chat", "export": "history" } } },
     "lore":      { "kind": "call", "name": "lore", "fn": { "$ref": "app/steps", "export": "lore" }, "with": {
-                   "library": { "$ref": "library" },
-                   "books": [ "bestiary", "places", "capital", "story" ], "depth": 4 } },
+                   "library": { "$ref": "library" }, "books": { "$ref": "app/chars-store" }, "depth": 4 } },
     "prompt":    { "kind": "call", "name": "prompt", "fn": { "$ref": "app/steps", "export": "prompt" }, "with": {
                    "assemble": { "$ref": "app/prompt", "export": "assemble" },
                    "at_depth": { "$ref": "app/prompt", "export": "at_depth" },
@@ -3754,15 +3755,16 @@ local function here(ctx)                    -- where its settings resolve: the t
 end
 function T.note(ctx)                        -- the prompt's note, or nil
   if settings.get("note", here(ctx)) == false then return nil end
-  local m = store:get(ctx.at, "tracker/time") or 0                            -- [host]
-  local a = store:get(ctx.at, "tracker/affection/" .. ctx.speaker) or 0        -- [host]
+  local m = store:get(ctx.at, ctx.where.chat, "tracker", "minutes") or 0      -- [host]
+  local a = store:get(ctx.at, ctx.speaker, "tracker", "affection") or 0       -- [host]
+  local who = cards:get(ctx.at, ctx.speaker, "card").name                     -- [host]
   return { depth = settings.get("depth", here(ctx)), role = "system",
            text = string.format("[It is %02d:%02d. %s's affection is %d of 100.]",
-                                math.floor(m / 60) % 24, m % 60, ctx.speaker, a) }
+                                math.floor(m / 60) % 24, m % 60, who, a) }
 end
 function T.step(ctx)                        -- inserted after the step that stores a character's reply
   if ctx.stopped then return end            -- a reply the person stopped isn't judged
-  store:apply(ctx.at, changes(ctx.speaker, judge(ctx.reply)))                  -- [host]
+  store:apply(ctx.at, changes(ctx.at, ctx.where.chat, ctx.speaker, judge(ctx.reply)))   -- [host]
 end
 function T.scan(ctx)                        -- the note's text, for lorebooks to scan too
   local n = T.note(ctx)
@@ -3795,9 +3797,10 @@ install  page: action { type = "install", pkg = { "$blob": "sha256:91d4…" } }
          prompt the app's prompt step builds", "Adds text for lorebooks to scan in the app's
          lore step", "Adds a button to messages", "Adds a section to settings", "Runs in
          every chat", "Runs after summarize"), each why as the tracker's words. Allowed;
-         decisions kept under tracker@sha256:91d4…; latest "installed" gains tracker
+         decisions kept under tracker@sha256:91d4…; the package is an entity at home, and
+         home's "pkg.installed" gains tracker
 t=0      page: action { type = "open", chat = 790, tab = "9a71…", device = "c2e8…" }
-         root: chat/card at 790 is ilse; the rules resolved there are the declared level's:
+         root: 790's "chat" names Ilse's card; the rules resolved there are the declared level's:
          summarize's and the tracker's; both run, tracker after summarize
          (declared by tracker); no composition for that list: compose app and ilse, then
          summarize, then tracker; nothing unmatched
@@ -3814,9 +3817,10 @@ The person's rules, as stated in "which transforms run" above, one action each:
 
 ```
 t=2m     laptop: action { type = "state", level = "user", name = "compose", value =
-         [ { when = ["all", ["transform", "tracker"], ["card-tag", "no-tracker"]], on = false } ] }
-         store: settings/user/compose at home; chat 790's watch fires (home is above the
-         node it views); resolved again: Ilse isn't tagged, the list is the same, nothing sent
+         [ { when = ["all", ["transform", "tracker"], ["card-tag", 44]], on = false } ] }
+         store: the person's settings, field compose, at home; chat 790's watch fires (home is
+         above the node it views); resolved again: Ilse isn't tagged, the list is the same,
+         nothing sent
 t=3m     open chat 812 with Maren, tagged no-tracker: tracker off ("user rule 1"); the list
          is summarize alone, a composition without the tracker's nodes. Every card tagged
          no-tracker shares it
@@ -3828,7 +3832,7 @@ t=5m     rule 3, { when = ["transform", "tracker"], replace = true }: the tracke
          "after summarize" no longer counts; order tracker, summarize (user rule 2); a new
          list, a new composition, a new explanation sent
 t=6m     phone (device 3f0c…): level "device", [ { when = ["transform", "tracker"], on = false } ]
-         settings/device/compose at the device's node; its watch fires; on the phone the
+         the device's settings, field compose, at its node; its watch fires; on the phone the
          tracker is off ("device rule 1"), the laptop's chats keep it
 t=7m     phone, in chat 790: level "chat" at node 790, [ { when = ["transform", "tracker"],
          on = true } ]: chat is before device in compose's path, so in 790 the tracker runs
@@ -3840,17 +3844,19 @@ t=8m     phone, tab 9a71…: level "tab", [ { when = ["transform", "summarize"],
 
 Each of these is the same mechanism: a rule list at one level of the cascade, the levels in compose's path order, a condition over the transform and the context in each rule. The tracker's own settings resolve the same way: its note and depth are settings with its own schemas, so "no note on this device" is a device-level statement of tracker/settings/note, and tracker.lua reads it where the turn is.
 
-Ilse's lore library is a node of her piece, handed to the app's lore step through an edge, so the person's extensions reach it as they reach any card's: the tracker's scan text goes into its scan list because the step is made from app/steps.lore, which the match names, not because Ilse named anything. Her piece names her steps (history, lore, prompt, reply, store), which B needed and D doesn't.
+Ilse's lore library is a node of her piece, handed to the app's lore step through an edge, so the person's extensions reach it as they reach any card's: the tracker's scan text goes into its scan list because the step is made from app/steps.lore, which the match names, not because Ilse named anything. Her piece names her steps (history, lore, prompt, reply, store), which B needed and D doesn't. Her books are her card's "lore.books", read where the step runs, and the speaker is the card the chat is with, so her piece names no entity.
 
 ```json
 "lore": { "kind": "call", "name": "lore", "fn": { "$ref": "library", "export": "step" }, "with": {
-          "books": [ "bestiary", "places", "capital", "story" ], "depth": 4 } }
+          "books": { "$ref": "app/chars-store" }, "depth": 4 } }
 ```
 
 ```lua
 -- ilse-lore.lua 4.1: the same activation, handed out as a step of its own
 function L.step(w)
-  return function(ctx) return { came_up = L.activate(ctx, w.books, w.depth) } end
+  return function(ctx)
+    return { came_up = L.activate(ctx, w.books:get(ctx.at, ctx.speaker, "lore.books"), w.depth) }   -- [host]
+  end
 end
 ```
 
