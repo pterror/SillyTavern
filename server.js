@@ -9,6 +9,10 @@ if (!process.features.typescript) {
     process.exit(1);
 }
 
+// process.report.getReport() reverse-resolves the peer of every open socket, which blocks the whole process for
+// seconds per socket when the resolver doesn't answer; @reflink/reflink calls it when it first loads.
+process.report.excludeNetwork = true;
+
 // config.yaml will be set when parsing command line arguments
 const cliArgs = new CommandLineParser().parse(process.argv);
 globalThis.DATA_ROOT = cliArgs.dataRoot;

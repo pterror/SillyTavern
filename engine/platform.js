@@ -20,14 +20,29 @@ import { ENGINE_DIR } from './source-hash.js';
 export const TARGETS = JSON.parse(fs.readFileSync(path.join(ENGINE_DIR, 'targets.json'), 'utf8'));
 
 /**
+ * Without excludeNetwork the report reverse-resolves the peer of every open socket, blocking for seconds per socket
+ * when the resolver doesn't answer.
+ * @returns {boolean}
+ */
+function glibcRuntime() {
+    const { excludeNetwork } = process.report;
+    process.report.excludeNetwork = true;
+    try {
+        // @ts-ignore - header is untyped
+        return Boolean(process.report.getReport().header.glibcVersionRuntime);
+    } finally {
+        process.report.excludeNetwork = excludeNetwork;
+    }
+}
+
+/**
  * @returns {string|null}
  */
 export function currentPlatform() {
     const { platform, arch } = process;
     let key;
     if (platform === 'linux') {
-        // @ts-ignore - header is untyped
-        const libc = process.report.getReport().header.glibcVersionRuntime ? 'gnu' : 'musl';
+        const libc = glibcRuntime() ? 'gnu' : 'musl';
         key = arch === 'arm' ? `linux-arm-${libc}eabihf` : `linux-${arch}-${libc}`;
     } else if (platform === 'win32') {
         key = `win32-${arch}-msvc`;
