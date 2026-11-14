@@ -577,13 +577,20 @@ export function storedMark(raw: unknown): StoredMark {
     return mark;
 }
 
-// Each state is its own settings over the states below it.
+// The state each state's settings go over; MARK_STATES lists every state after the one it goes over.
+const MARK_OVER: Record<MarkState, MarkState | null> = {
+    rest: null,
+    earlierReply: 'rest',
+    messagePointed: 'rest',
+    wordPointed: 'messagePointed',
+};
+
+// Each state is its own settings over the state it goes over.
 export function resolveMark(mark: StoredMark): ResolvedMark {
-    let below: MarkLayer = MARK_AT_REST;
     const out = {} as ResolvedMark;
     for (const state of MARK_STATES) {
-        below = { ...below, ...mark[state] };
-        out[state] = below;
+        const over = MARK_OVER[state];
+        out[state] = { ...(over === null ? MARK_AT_REST : out[over]), ...mark[state] };
     }
     return out;
 }

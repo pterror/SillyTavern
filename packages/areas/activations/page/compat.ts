@@ -3,17 +3,13 @@ import type { Accessor, Setter } from 'solid-js';
 import type { Client } from '@st/page/client';
 import { PEEK_VIEW } from '../protocol.ts';
 import type { PanelView } from '../protocol.ts';
-import type { Look, OldPage } from './Activations.tsx';
+import type { Look } from './Activations.tsx';
 
-export function activationsCompat(client: Client, setLook: Setter<Look | null>, old: OldPage) {
+export function activationsCompat(client: Client, setLook: Setter<Look | null>) {
     let peekView: Accessor<PanelView | undefined> | null = null;
     const held = (message: string) => {
         const now = peekView?.();
         return now && now.message === message ? (structuredClone(unwrap(now)) as PanelView) : null;
-    };
-    const show = (look: Look | null) => {
-        setLook(look);
-        old.panelShown(look?.message ?? null);
     };
     const peek = async (message: string): Promise<PanelView | null> => {
         const known = held(message);
@@ -24,10 +20,10 @@ export function activationsCompat(client: Client, setLook: Setter<Look | null>, 
     };
     return {
         open: (message: string) => {
-            show({ message });
+            setLook({ message });
         },
         close: () => {
-            show(null);
+            setLook(null);
         },
         peek,
     };

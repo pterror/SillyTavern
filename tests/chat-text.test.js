@@ -196,7 +196,8 @@ describe('chat text, with ranges drawn over it', () => {
                 },
             },
         };
-        const ranges = lore.loreMarkRanges(reply, 'm', text);
+        const marks = lore.loreMarksOf([reply], 'r');
+        const ranges = lore.loreMarkRanges(marks, 'm', text);
         const shown = surface.drawnText(text, { ...setup(), overlays: () => [overlayOf(ranges)] });
         expect([...shown.querySelectorAll('.lore-mark')].map(mark => [mark.textContent, mark.getAttribute('data-lore')])).toEqual([
             ['old ', '0'],
@@ -204,7 +205,23 @@ describe('chat text, with ranges drawn over it', () => {
             ['harbour', '1'],
         ]);
         expect(shown.querySelector('em')?.textContent).toBe('old lantern');
-        expect(lore.loreMarkRanges(reply, 'm', `${text} more`)).toEqual([]);
+        expect(lore.loreMarkRanges(marks, 'm', `${text} more`)).toEqual([]);
+    });
+
+    test('every reply marks the words that brought its entries in; a part two replies matched is the later one\'s', () => {
+        const text = 'The lantern by the harbour.';
+        const at = (/** @type {string} */ word) => [text.indexOf(word), text.indexOf(word) + word.length];
+        const of = hashes.getStringHash(text);
+        const replyOf = (/** @type {string} */ node_id, /** @type {number[][]} */ spans) => ({
+            node_id,
+            extra: { activations: { entries: [{ keys: [{ in: [{ node: 'm', of, spans }] }] }] } },
+        });
+        const marks = lore.loreMarksOf([replyOf('a', [at('lantern'), at('harbour')]), replyOf('b', [at('harbour')])], 'b');
+        expect(lore.loreMarkRanges(marks, 'm', text).map(range => [text.slice(range.from, range.to), range.class, range.attributes?.['data-lore-reply']])).toEqual([
+            ['lantern', 'lore-mark trigger-mark trigger-mark-earlier', 'a'],
+            ['harbour', 'lore-mark trigger-mark', 'b'],
+        ]);
+        expect(lore.loreMarkRanges(marks, 'other', text)).toEqual([]);
     });
 
     test('search matches are drawn over the parts matched, across the elements they cross', () => {

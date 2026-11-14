@@ -19,8 +19,9 @@ export type ResolvedLook = {
     fonts: FontFace[];
 };
 
-// A mark is never selected.
-export const MARK_STATES = ['rest', 'messagePointed', 'wordPointed'] as const;
+// A mark is never selected. `earlierReply`: at rest, a mark that brought an entry into a reply other than the chat's
+// latest; the states that point at it draw it like the latest reply's.
+export const MARK_STATES = ['rest', 'earlierReply', 'messagePointed', 'wordPointed'] as const;
 export type MarkState = (typeof MARK_STATES)[number];
 export const MARK_STYLES = ['dotted', 'dashed', 'large-dots', 'none'] as const;
 export type MarkStyle = (typeof MARK_STYLES)[number];
@@ -29,6 +30,8 @@ export type MarkLayer = { style: MarkStyle; color: string; opacity: number };
 export type ResolvedMark = Record<MarkState, MarkLayer>;
 
 export const TRIGGER_MARK_CLASS = 'trigger-mark';
+// With the mark's class, on a mark of a reply other than the chat's latest.
+export const TRIGGER_MARK_EARLIER_CLASS = 'trigger-mark-earlier';
 
 // A style's id is made from its content, so it always means the same look. `things` lists every thing drawn, those with
 // no look under NO_LOOK_STYLE, so a newer view that draws a thing without a look replaces an older view's rules for it.
@@ -140,6 +143,8 @@ export function markSelector(state: MarkState): string {
     switch (state) {
         case 'rest':
             return `:where(${mark})`;
+        case 'earlierReply':
+            return `:where(${mark}.${TRIGGER_MARK_EARLIER_CLASS})`;
         case 'messagePointed':
             return `:where(.${LOOK_SCOPE_CLASS}:hover, .${LOOK_SCOPE_CLASS}:focus-within, .${LOOK_SHOWS_MESSAGE_POINTED_CLASS}) :where(${mark})`;
         case 'wordPointed':

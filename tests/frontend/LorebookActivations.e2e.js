@@ -48,13 +48,16 @@ function startLlamaCpp() {
     }));
 }
 
+const LANTERN = { uid: 0, key: ['lantern'], keysecondary: [], comment: 'The lantern', content: 'The lantern never goes out.', position: 0, order: 10, disable: false };
+
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} name
  * @param {string} book
+ * @param {Record<number, object>} [entries]
  */
-async function createCharacterAndBook(page, name, book, entry = { uid: 0, key: ['lantern'], keysecondary: [], comment: 'The lantern', content: 'The lantern never goes out.', position: 0, order: 10, disable: false }) {
-    await makeWorld(page, book, { 0: entry });
+async function createCharacterAndBook(page, name, book, entries = { 0: LANTERN }) {
+    await makeWorld(page, book, entries);
     await page.locator('#WIDrawerIcon').click();
     await expect(page.locator('#Worldbuilding')).not.toBeVisible();
     return page.evaluate(async ({ name, book }) => {
@@ -197,6 +200,65 @@ test('the words that brought an entry in are marked where they were written; poi
     }
 });
 
+test('every reply marks the words that brought its entries in, each from its own record, after a reload too', async ({ page }) => {
+    test.setTimeout(120000);
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const book = `Both-${stamp}`;
+    const mock = await startLlamaCpp();
+    try {
+        await testSetup.awaitST({ page });
+        const avatar = await createCharacterAndBook(page, `Twice-${stamp}`, book, {
+            0: LANTERN,
+            1: { uid: 1, key: ['harbour'], keysecondary: [], comment: 'The harbour', content: 'The harbour is frozen.', position: 0, order: 10, disable: false },
+        });
+        await openCharacter(page, avatar);
+        await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
+        await connectLlamaCpp(page, mock.url);
+        await page.waitForTimeout(2500);
+
+        await chatBox(page).fill('Where is the lantern?');
+        await page.locator('#send_but').click();
+        await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('It hangs by the door.', { timeout: 30000 });
+        await chatBox(page).fill('And what of the harbour?');
+        await page.locator('#send_but').click();
+        await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('It hangs by the door.', { timeout: 30000 });
+
+        const marked = async () => {
+            const first = page.locator('#chat .mes[mesid="1"] .mes_text .trigger-mark');
+            const second = page.locator('#chat .mes[mesid="3"] .mes_text .trigger-mark');
+            await expect(first).toHaveText(['lantern'], { timeout: 15000 });
+            await expect(second).toHaveText(['harbour'], { timeout: 15000 });
+            await expect(first).toHaveClass(/trigger-mark-earlier/);
+            await expect(second).not.toHaveClass(/trigger-mark-earlier/);
+            const replies = await page.evaluate(() => {
+                // @ts-ignore
+                const { chat } = stTest.context();
+                return [chat[2].node_id, chat[4].node_id];
+            });
+            await expect(first).toHaveAttribute('data-lore-reply', replies[0]);
+            await expect(second).toHaveAttribute('data-lore-reply', replies[1]);
+            await expect(first).toHaveCSS('text-decoration-style', 'dotted');
+            await expect(second).toHaveCSS('text-decoration-style', 'dotted');
+            await first.hover();
+            const card = page.locator('.wb-chat-card');
+            await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “lantern” in that reply', { timeout: 5000 });
+            await second.hover();
+            await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “harbour” in the last reply', { timeout: 5000 });
+            await page.mouse.move(0, 0);
+            await expect(card).toBeHidden();
+        };
+        await marked();
+
+        await page.reload();
+        await testSetup.awaitST({ page });
+        await openCharacter(page, avatar);
+        await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('It hangs by the door.', { timeout: 15000 });
+        await marked();
+    } finally {
+        await mock.close();
+    }
+});
+
 test('names and marks stay drawn when the theme or the chat\'s display changes', async ({ page }) => {
     test.setTimeout(120000);
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -208,7 +270,7 @@ test('names and marks stay drawn when the theme or the chat\'s display changes',
         await testSetup.awaitST({ page });
         theme = await page.evaluate(() => String(window['$']('#themes').val()));
         const entry = { uid: 0, key: ['lantern', 'Old Bell'], keysecondary: [], comment: 'The lantern', content: 'The lantern never goes out.', position: 0, order: 10, disable: false, extensions: { names: ['Old Bell'] } };
-        const avatar = await createCharacterAndBook(page, `Restyler-${stamp}`, book, entry);
+        const avatar = await createCharacterAndBook(page, `Restyler-${stamp}`, book, { 0: entry });
         await openCharacter(page, avatar);
         await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
         await connectLlamaCpp(page, mock.url);

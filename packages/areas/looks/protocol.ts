@@ -127,6 +127,7 @@ const markLayerChange = v.partial(
 );
 const markChange = {
     rest: markLayerChange,
+    earlierReply: markLayerChange,
     messagePointed: markLayerChange,
     wordPointed: markLayerChange,
 } satisfies Record<MarkState, unknown>;

@@ -269,6 +269,7 @@ test("a small picture shows a crop of the thing's own picture, or another image,
 test('the trigger mark is dotted in the text color at rest, and each state is its own settings over those below', () => {
     expect(resolveMark({})).toEqual({
         rest: { style: 'dotted', color: 'currentColor', opacity: 1 },
+        earlierReply: { style: 'dotted', color: 'currentColor', opacity: 1 },
         messagePointed: { style: 'dotted', color: 'currentColor', opacity: 1 },
         wordPointed: { style: 'dotted', color: 'currentColor', opacity: 1 },
     });
@@ -279,6 +280,10 @@ test('the trigger mark is dotted in the text color at rest, and each state is it
     const word = resolveMark({ rest: { style: 'dashed', color: '#ff0000' }, wordPointed: { style: 'large-dots' } });
     expect(word.messagePointed).toEqual({ style: 'dashed', color: '#ff0000', opacity: 1 });
     expect(word.wordPointed).toEqual({ style: 'large-dots', color: '#ff0000', opacity: 1 });
+    expect(word.earlierReply).toEqual(word.rest);
+    const earlier = resolveMark({ rest: { color: '#ff0000' }, earlierReply: { style: 'dashed', opacity: 0.5 } });
+    expect(earlier.earlierReply).toEqual({ style: 'dashed', color: '#ff0000', opacity: 0.5 });
+    expect(earlier.messagePointed).toEqual(earlier.rest);
 });
 
 test("a stored mark keeps only a mark's settings: its styles, a color the sanitizer lets in, an opacity from 0 to 1", () => {
@@ -294,8 +299,9 @@ test("a stored mark keeps only a mark's settings: its styles, a color the saniti
 
 test("the mark's rules are the mark class's, at no specificity, the states in order; none draws no line", () => {
     const css = markCss(resolveMark({ rest: { style: 'none' }, messagePointed: { style: 'dashed', opacity: 0.5 } }));
-    const [rest, message, word] = css.split('\n');
+    const [rest, earlier, message, word] = css.split('\n');
     expect(rest).toBe(':where(.trigger-mark) { text-decoration-line: none; }');
+    expect(earlier).toBe(':where(.trigger-mark.trigger-mark-earlier) { text-decoration-line: none; }');
     expect(message).toMatch(
         /^:where\(\.look-scope:hover, \.look-scope:focus-within, \.look-shows-message-pointed\) :where\(\.trigger-mark\) \{/,
     );

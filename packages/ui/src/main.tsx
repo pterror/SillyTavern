@@ -3,7 +3,7 @@ import type { ChatOwner, ViewPush } from '@st/protocol';
 
 export type { ViewFrame } from '@st/protocol';
 export { SERVER_OWNED } from '@st/settings/page';
-export { TRIGGER_MARK_CLASS } from '@st/protocol/looks';
+export { TRIGGER_MARK_CLASS, TRIGGER_MARK_EARLIER_CLASS } from '@st/protocol/looks';
 export * from '@st/occlusion';
 import { createClient } from '@st/page/client';
 import { documentLookSheet } from '@st/page/looks';
@@ -114,7 +114,7 @@ export function start(options: StartOptions) {
     ));
 
     const [activationsLook, setActivationsLook] = createSignal<ActivationsLook | null>(null);
-    const activations = activationsCompat(client, setActivationsLook, options.activations);
+    const activations = activationsCompat(client, setActivationsLook);
     const activationsHost = document.createElement('div');
     document.body.append(activationsHost);
     mount(activationsHost, () => (

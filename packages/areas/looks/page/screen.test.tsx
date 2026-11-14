@@ -95,6 +95,7 @@ const VIEW: LookView = {
         stored: {},
         shown: {
             rest: { style: 'dotted', color: 'currentColor', opacity: 1 },
+            earlierReply: { style: 'dotted', color: 'currentColor', opacity: 1 },
             messagePointed: { style: 'dotted', color: 'currentColor', opacity: 1 },
             wordPointed: { style: 'dotted', color: 'currentColor', opacity: 1 },
         },

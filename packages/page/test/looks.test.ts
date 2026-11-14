@@ -122,6 +122,7 @@ test('the client holds the looks each view carries under its key, patches adding
 
 const markOf = (style: 'dotted' | 'dashed' | 'none'): ResolvedMark => ({
     rest: { style, color: 'currentColor', opacity: 1 },
+    earlierReply: { style, color: 'currentColor', opacity: 1 },
     messagePointed: { style, color: 'currentColor', opacity: 1 },
     wordPointed: { style, color: 'currentColor', opacity: 1 },
 });

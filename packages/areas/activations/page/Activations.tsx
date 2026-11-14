@@ -10,7 +10,6 @@ export type OldPage = {
     messageNumber(nodeId: string): number | null;
     openEntry(book: string, uid: number): void;
     openCardBook(avatar: string): void;
-    panelShown(message: string | null): void;
 };
 
 export type Look = { message: string };

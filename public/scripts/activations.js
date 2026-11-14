@@ -4,11 +4,8 @@ import { newUi } from './new-ui-page.js';
 import { openCharacterBook, openWorldEntry } from './world-links.js';
 import { charactersStore } from './character-store.js';
 import { chat } from '/scripts/chat-state.js';
-import { loreMarkRanges } from './chat-text/lore-marks.js';
+import { loreMarkRanges, loreMarksOf } from './chat-text/lore-marks.js';
 import { linkedEntry } from './chat-links.js';
-
-/** @type {string | null} */
-let panelReply = null;
 
 /** @type {Map<() => void, Element>} each listener of a message's marks, and the element its text is shown in */
 const listeners = new Map();
@@ -26,26 +23,34 @@ export const activationsOldPage = {
         const thing = charactersStore.get(avatar)?.thing;
         if (thing) openCharacterBook(thing);
     },
-    panelShown(message) {
-        panelReply = message;
-        syncLoreMarks();
-    },
 };
 
 /**
- * @returns {Record<string, any> | null}
+ * @param {Record<string, any> | undefined} message
+ * @returns {boolean}
  */
-function markingReply() {
-    if (panelReply !== null) {
-        const shown = chat.findLast(message => message?.node_id === panelReply);
-        if (shown?.extra?.activations) return shown;
+const isReply = message => !!message && !message.is_user && !message.is_system;
+
+/** @returns {string | null} the chat's latest reply, when it is stored */
+function latestReply() {
+    const nodeId = chat.findLast(isReply)?.node_id;
+    return typeof nodeId === 'string' && isStoredNodeId(nodeId) ? nodeId : null;
+}
+
+/** @type {import('./chat-text/lore-marks.js').LoreMarks | null} */
+let marking = null;
+
+/**
+ * The marks of every reply in the chat, from the activation record each reply came with. Made once for the messages
+ * drawn in one run of the page's code, as the chat can change between runs.
+ * @returns {import('./chat-text/lore-marks.js').LoreMarks}
+ */
+function chatMarks() {
+    if (!marking) {
+        marking = loreMarksOf(chat.filter(message => isReply(message) && message.extra?.activations && isStoredNodeId(message.node_id)), latestReply());
+        queueMicrotask(() => { marking = null; });
     }
-    for (let i = chat.length - 1; i >= 0; i--) {
-        const message = chat[i];
-        if (!message || message.is_user || message.is_system) continue;
-        return message.extra?.activations ? message : null;
-    }
-    return null;
+    return marking;
 }
 
 /**
@@ -63,7 +68,7 @@ export function loreMarks(shownIn, message) {
             if (typeof nodeId !== 'string' || !isStoredNodeId(nodeId)) return [];
             const text = read(from, to);
             if (from !== 0 || text !== shown.mes) return [];
-            return loreMarkRanges(markingReply(), nodeId, text);
+            return loreMarkRanges(chatMarks(), nodeId, text);
         },
         watch(listener) {
             listeners.set(listener, shownIn);
@@ -126,17 +131,6 @@ function broughtUp(mark) {
     return [...found.values()];
 }
 
-/**
- * The reply the chat's marks are of, and whether it is the last.
- * @returns {{ reply: string | null, latest: boolean }}
- */
-function markedReply() {
-    const reply = markingReply();
-    const nodeId = typeof reply?.node_id === 'string' && isStoredNodeId(reply.node_id) ? reply.node_id : null;
-    const last = chat.findLast(message => message && !message.is_user && !message.is_system);
-    return { reply: nodeId, latest: nodeId !== null && last?.node_id === nodeId };
-}
-
 /** Whether the page has mobile-styles.css's layout, where a word is tapped for its card rather than pointed at. */
 const isPhone = () => window.matchMedia('screen and (max-width: 1000px)').matches;
 
@@ -146,13 +140,15 @@ const isPhone = () => window.matchMedia('screen and (max-width: 1000px)').matche
  * @returns {{ entries: { book: string, entry: string }[], reply: string | null, latest: boolean } | null}
  */
 function peekOf(word) {
-    const { reply, latest } = markedReply();
+    const latest = latestReply();
     if (word.matches('.chat-name')) {
         const thing = word.querySelector('[data-thing]')?.getAttribute('data-thing');
         const world = thing ? linkedEntry(thing)?.world : null;
-        return thing && world ? { entries: [{ book: world, entry: thing }], reply, latest } : null;
+        const reply = latest !== null && chat.findLast(isReply)?.extra?.activations ? latest : null;
+        return thing && world ? { entries: [{ book: world, entry: thing }], reply, latest: reply !== null } : null;
     }
-    return { entries: broughtUp(word), reply: markOf(word).reply, latest: markOf(word).reply === reply && latest };
+    const { reply } = markOf(word);
+    return { entries: broughtUp(word), reply, latest: reply === latest };
 }
 
 /**
