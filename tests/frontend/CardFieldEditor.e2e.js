@@ -325,4 +325,12 @@ test.describe('card fields edit in the editor', () => {
         expect(asked[0]).toContain('{{char}}');
         await page.locator('.field_edit_cancel[data-for="scenario_pole"]').click();
     });
+
+    test('the browser checks the spelling of what is typed in it', async ({ page }) => {
+        await createAndOpen(page, { personality: 'kind' });
+        await openInfoTab(page, 'personality');
+        await page.locator('.field_edit_toggle[data-for="personality_textarea"]').click();
+        await expect(page.locator('#charInfoTab_personality .cm-content')).toHaveAttribute('spellcheck', 'true');
+        await page.locator('.field_edit_cancel[data-for="personality_textarea"]').click();
+    });
 });

@@ -150,6 +150,12 @@ test.describe('the chat box', () => {
         await emptyBox(page);
     });
 
+    test('the browser checks the spelling of what is typed in it', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        await expect(chatBox(page)).toHaveAttribute('spellcheck', 'true');
+    });
+
     test('Ctrl+F opens find and replace in the box', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openSeraphina(page);

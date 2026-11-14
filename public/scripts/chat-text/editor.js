@@ -72,6 +72,9 @@ const KEYS = [
     { id: 'macros', keys: `${MOD}+shift+m` },
 ];
 
+/** What a text box has of the browser's, which CodeMirror turns off: spelling checks, correction, capitals */
+export const BROWSER_TEXT_AIDS = { spellcheck: 'true', autocorrect: 'on', autocapitalize: 'sentences' };
+
 /** Find and replace, which an editor may not have */
 const SEARCH_TOOLS = ['find'];
 
@@ -353,7 +356,7 @@ export function chatEditor({ parent, setup, macroValue, macroValues, speaker, pe
             overtype(),
             pasteFor(setup),
             suggestions([macroSuggestions(macroValue, page.t), mentionSuggestions(person)]),
-            EditorView.contentAttributes.of({ 'aria-multiline': 'true', ...(label ? { 'aria-label': label } : {}) }),
+            EditorView.contentAttributes.of({ ...BROWSER_TEXT_AIDS, 'aria-multiline': 'true', ...(label ? { 'aria-label': label } : {}) }),
             ...(placeholder ? [placeholderText(placeholder)] : []),
         ],
     });
