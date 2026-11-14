@@ -48,17 +48,23 @@ A relation is a field whose value is a `Ref`, named by its field ("in", "works a
 m5): a world with none is a set of entries. Mentions and what refers to an entry are derived from the index, so
 they're never core (owner, m6).
 
-Being **in** an entry is the one structural relation: a group, a region, the world are entries others are in. An entry
-can be in several, and each keeps the order of what is in it (an ordered list, `ordered-lists.md`).
+No relation kind is built in or privileged. Each world's author names its kinds ("in", "works at", "belongs to", "part
+of"), and a relation can target several entries, in the order of that relation (an ordered list, `ordered-lists.md`).
+A group or a region is an entry that others are related to by whatever kind the person groups by; the worlds page groups
+by any kind the person picks.
 
 ## The cascade
 
 ```ts
-resolve(e, field) = e.fields[field] ?? first(parents(e), p => resolve(p, field)) ?? defaults[field]
+resolve(e, field) = combine(field, statements(path(field), e)) ?? defaults[field]
 ```
 
-`parents(e)` are the entries it's in, in its own order. That one rule covers looks (`looks.md`) and every other field.
-Where a value comes from is part of the answer, so the page can always say which entry set it.
+`path(field)` is that field's resolution path, data: which levels it reads and which relation kinds it is inherited
+along (none, one, or several in priority order; each relation's targets in its own order). It is set per world or per
+setting (`state-model.md`, "Settings: one cascade along a path"), and the app ships none: a value applies to exactly
+what it is set on until a world's path names a kind. How statements combine (first wins, merge, union, a pure function)
+is part of the field's schema. One rule covers looks (`looks.md`) and every other field. Where a value comes from is
+part of the answer, so the page can always say which entry set it.
 
 - Checked against: settings "ergonomic for all cases: one entry, many entries, the whole world" (owner, m16). Setting
   a value on a group or the world sets it for every member that doesn't state its own; setting it on many entries is

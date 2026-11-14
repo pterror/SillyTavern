@@ -198,7 +198,7 @@ screen.
 
 ### The cascade
 
-A look resolves through a fixed order, most specific last:
+A look resolves through an order, most specific last (the app's default; the order is the look's path, a setting):
 
 1. the **theme**
 2. the thing's **world**, when it has one
@@ -213,7 +213,9 @@ at the level where it is defined, using the cascade's own levels:
 
 Where it lives is chosen while making it ("New shared look in this world…" or "New shared look for every world…"), with
 no extra step. It can be moved between the two levels later. The user's own shared looks are also listed and managed in
-the theme settings. Resolution only follows the ids. Looks never pass along relations.
+the theme settings. Resolution follows the ids. Whether a look also passes along relations, and along which kinds, is
+each world's own setting (`state-model.md`, "Settings: one cascade along a path"); the app ships none, so a look applies
+to exactly what it is set on unless a world opts in.
 
 ### States
 

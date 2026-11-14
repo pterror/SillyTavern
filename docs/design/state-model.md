@@ -943,22 +943,21 @@ Assumes: an entry lives until it's deleted.
   Rules out: caches and drafts that go away by themselves.
   So: expires and evictable, per change.
 Assumes: one copy for every device.
-  Rules out: a preference that belongs to one device (text size on a phone).
+  Rules out: state that belongs to one device (an upload's progress on a phone).
   So: every host has its own.
 
 Still restrictive:
   no history: what needs undo or branches goes in the version store;
   a page's offline writes meant for the server are content's to send and merge.
 
-{ "key": "settings/lore/scan_depth", "value": 4 }
 { "key": "drafts/chat/790", "value": { "text": "Where do drag" }, "expires": 1765700000000 }
 { "key": "cache/tokens/llama3/sha256:9f2c…", "value": 1287, "evictable": true }
 { "key": "viewing/790", "value": 821 }
 on a page's own latest:
-{ "key": "prefs/text_size", "value": 17 }
+{ "key": "progress/upload/42", "value": 0.4 }
 ```
 
-Caches, sessions, progress, drafts, and a tab's and a device's settings are one host module, narrowed by prefix with narrow.lua, so each module sees only its own keys; settings that branch and undo (a chat's, a character's, the person's) are in the store, and settings.lua resolves both ("Settings: one cascade along a path"). It is a host module rather than content because nothing else holds a value without keeping its history. Costs: one write per change, no history; a module has to choose for each piece of state whether it belongs in the version store (follows branches, can be undone) or here (doesn't). Where a module's settings are edited is a UI slot (gap 5), and the editor is drawn through the display handle; both are the owner's.
+Caches, sessions, progress and drafts are one host module, narrowed by prefix with narrow.lua, so each module sees only its own keys. No setting is kept here: settings at every level are in the version store, so they all branch and undo the same way ("Settings: one cascade along a path"). It is a host module rather than content because nothing else holds a value without keeping its history. Costs: one write per change, no history; a module has to choose for each piece of state whether it belongs in the version store (follows branches, can be undone) or here (doesn't). Where a module's settings are edited is a UI slot (gap 5), and the editor is drawn through the display handle; both are the owner's.
 
 ## Gap 2, state without history: secrets
 
@@ -1210,27 +1209,34 @@ A page keeps its state only by applying the server's batches, and the cursor mak
 A setting's value is the first statement found along a path of places, most specific first, and the default when none states it. Three kinds of chain feed that path in the owner's designs, and here they are one mechanism:
 
 - **Levels of context.** `settings-scopes.md`: "One order for every setting, closest first: tab, chat, character (in a group: the speaking character, then the group), device, user, default", and "The order of the levels is itself a setting, resolved through the cascade like any other". `settings-reorganization.md`'s level slider adds a preset level ("default · preset · you · character · chat").
-- **Containment.** `world-model.md`: "`parents(e)` are the entries it's in, in its own order. That one rule covers looks (`looks.md`) and every other field", with `resolve(e, field) = e.fields[field] ?? first(parents(e), p => resolve(p, field)) ?? defaults[field]`; "Being **in** an entry is the one structural relation: a group, a region, the world are entries others are in". `looks.md` and `worldbuilding.md` resolve a look "theme → world → shared looks → thing, most specific wins". The two disagree: `worldbuilding.md` also says "Resolution only follows the ids. Looks never pass along relations", which rules out a look passing from a group to its members. Below, which of the two holds is a line in the look's schema, the owner's choice.
-- **The message tree.** The Author's Note panel says "Bookmarks inherit the Note from their parent, and can be changed individually after that" (`public/index.html:5832`, upstream's text with checkpoints renamed). The owner's "it'd only inherit from pinned bookmarks right?" is in neither `docs/` nor the git history, so it isn't taken as a requirement here; what it would take is under "still restrictive".
+- **Relations.** `world-model.md`: no relation kind is built in or privileged; a value is inherited along the relation kinds its resolution path names. A world's relation kinds are named by its author ("in", "works at", "belongs to", "part of"…), so which kinds a setting follows is data, stated per world. `looks.md` and `worldbuilding.md` resolve a look "theme → world → shared looks → thing, most specific wins"; whether a look also passes along relations is the world's statement of the look's path, and the app ships none (a look applies to exactly what it is set on). A path may follow several kinds, in priority order, and an entry may have several targets for one kind.
+- **The message tree.** The Author's Note panel says "Bookmarks inherit the Note from their parent, and can be changed individually after that" (`public/index.html:5832`, upstream's text with checkpoints renamed). The owner: "single author's note feels restrictive", "ANs are the wrong mental model", "idk why we cant have multiple authors note/characters note". So there is no single note: a note is a prompt part (text, a position or depth, a role, an optional condition), the same shape as a constant lorebook entry, and the notes are one setting, "prompt/notes", a table of notes by id merged across the path. A value set at a message holds for everything under it. A bookmark is a position with a mode (`engine/src/store/chat.rs`: FOLLOWING moves to each new message, PINNED stays on its message; `bookmarks_at(view, m)` lists the bookmarks at a message), and the owner's rule is that a setting stated on a bookmark is inherited down the message tree only from PINNED bookmarks on the path to it, not from every message and not from following bookmarks. A position without statements of its own, a following bookmark included, resolves a bookmark-level setting from the nearest pinned bookmarks above it.
 
 ```json
 { "levels": {
-    "tab":       { "kept": "latest", "prefix": "settings/tab/{tab}/" },
+    "tab":       { "kept": "store",  "node": "tab",    "prefix": "settings/tab/" },
     "chat":      { "kept": "store",  "node": "at",   "prefix": "settings/chat/" },
     "character": { "kept": "store",  "node": "home", "prefix": "settings/character/{character}/" },
-    "device":    { "kept": "latest", "prefix": "settings/device/{device}/" },
+    "device":    { "kept": "store",  "node": "device", "prefix": "settings/device/" },
+    "bookmark":  { "kept": "store",  "node": "chat",   "prefix": "settings/bookmark/{id}/" },
     "user":      { "kept": "store",  "node": "home", "prefix": "settings/user/" },
     "card":      { "given": "card_settings" },
     "declared":  { "given": "declared" },
     "entry":     { "kept": "world",  "node": "home", "prefix": "world/{world}/entry/{id}/" },
+    "world":     { "kept": "world",  "node": "home", "prefix": "world/{world}/settings/" },
     "theme":     { "kept": "store",  "node": "home", "prefix": "settings/theme/{theme}/" } },
   "schemas": {
     "looks/text_size":  { "default": 16, "path": [ [ "level", "tab" ], [ "level", "device" ], [ "level", "user" ] ] },
-    "look/name_color":  { "default": "#dddddd",
-                          "path": [ [ "follow", "entry", "entry", "in" ], [ "level", "theme" ] ] },
-    "prompt/note":      { "default": "",
-                          "path": [ [ "level", "tab" ], [ "level", "chat" ], [ "level", "character" ], [ "level", "user" ] ] },
-    "path/":            { "path": [ [ "level", "tab" ], [ "level", "device" ], [ "level", "user" ] ] },
+    "look/name":        { "default": { "color": "#dddddd" }, "combine": "merge",
+                          "path": [ [ "follow", "entry", "entry", [] ], [ "level", "theme" ] ] },
+    "tags":             { "default": [], "combine": "union",
+                          "path": [ [ "follow", "entry", "entry", [] ], [ "level", "world" ] ] },
+    "prompt/notes":     { "default": {}, "combine": "merge",
+                          "path": [ [ "level", "tab" ], [ "follow", "bookmark", "bookmark", [] ], [ "level", "chat" ],
+                                    [ "ancestry", "bookmark", "at", "pinned" ],
+                                    [ "level", "character" ], [ "level", "card" ], [ "level", "user" ] ] },
+    "path/":            { "path": [ [ "level", "tab" ], [ "level", "chat" ], [ "level", "character" ], [ "level", "device" ],
+                                    [ "level", "user" ], [ "level", "world" ], [ "level", "card" ], [ "level", "declared" ] ] },
     "compose":          { "combine": "rules",
                           "path": [ [ "level", "tab" ], [ "level", "chat" ], [ "level", "character" ], [ "level", "device" ],
                                     [ "level", "user" ], [ "level", "card" ], [ "level", "declared" ] ] } } }
@@ -1238,24 +1244,51 @@ A setting's value is the first statement found along a path of places, most spec
 
 ```
 A level is data: where its statements are kept, and what of the context names its place.
-  kept    a reference the root hands settings.lua by that name: "latest", "store", "world"
-  node    the context field naming the store node to read at
+  A filter is data too: { "pinned": ["=", "mode", "pinned"] } is a cond over a bookmark's
+  own fields, declared in the app's piece; the store keeps one index per declared filter.
+  kept    a reference the root hands settings.lua by that name: "store" or "world", both the
+          version store, so every level has history and branches
+  node    the context field naming the store node to read at; a tab and a device each have a
+          node of their own
   prefix  the keys' prefix; {x} is the context's x, and a level whose x the context lacks
           isn't on the path (no chat open: no chat level)
   given   a table the context carries (what the card ships, what transforms declare)
 A schema, which the module that owns the keys ships (the "setting schema" row at the end):
   path    segments, most specific first:
             ["level", name]                  that level's place
-            ["follow", level, start, field, most?]  the place of the context's start, then,
-                                             depth first, of each id its field lists, each
-                                             once, at most most steps away
+            ["follow", level, start, kinds, most?]  the place of the context's start, then,
+                                             depth first, of each target of each of kinds
+                                             (a list of relation kinds, in priority order;
+                                             an entry's targets of a kind are in that
+                                             relation's own order), at most most steps away.
+                                             A kind is whatever the world calls it; none is
+                                             special, and [] follows nothing: the start only.
+                                             Cycles stop at the repeat; an entry reached two
+                                             ways is one place, at its first position.
+                                             Several follow segments give several priority
+                                             tiers, each walked in full before the next
+            ["ancestry", level, start, filter]  the places of the bookmarks matching the
+                                             named filter on the context's start message
+                                             and on each message above it, nearest first
+                                             (several on one message, in the bookmark
+                                             index's order); the store answers it from
+                                             an index declared for that filter, below
           The path a setting resolves along is itself the setting "path/<name>" (or
           "path/<a prefix of name>/", or "path/"), stated along the schema's own path; the
           schema's path is the default. Which levels a setting may use is which levels its
-          path names: settings-scopes' table is these paths.
-  combine "first" (the default): the first place that states it. "rules": every place's
-          list of rules, most specific first, for the module that reads them to apply.
-  default the value when no place states it.
+          path names: settings-scopes' table is these paths. Which relation kinds a
+          setting follows is therefore data, and a world states it at its own level.
+  combine how the statements found along the path become the value, a property of the
+          setting:
+            "first" (the default)  the first place that states it
+            "merge"   statements are tables; each field comes from the first place that
+                      states that field, and the source is kept per field
+            "union"   statements are lists; the places' lists in path order, each value once
+            { "fn": name }  a pure function the content provides (like an op) of the list
+                      of { value, level } and the default; it returns the value
+            "rules"   every place's list of rules, most specific first, for the module that
+                      reads them to apply
+  default the value when no place states it (under merge and union, the last place).
 A statement is a value, or { "$rules": [ { "when": a condition, "value": v }, ... ] }: the
   first rule whose condition holds against the context states v; if none holds, this
   place states nothing and the path goes on. One kind of condition, cond.lua's, with
@@ -1263,8 +1296,10 @@ A statement is a value, or { "$rules": [ { "when": a condition, "value": v }, ..
 The tree comes from the store: a statement at node 800 is a change at 800, so reading at
   any node below sees it, and a statement lower down shadows it from there on. A branch
   from above 800 doesn't see it. Undo and branching are the store's.
-Writes: settings.state(level, name, statement, ctx) at the level's place; a level the
-  setting's path doesn't name is refused. nil takes a statement back.
+Writes: settings.state(level, name, statement, ctx, field?) at the level's place; a level
+  the setting's path doesn't name is refused. nil takes a statement back. With field, the
+  change is kv.set_field, an op (old, { field, value }) -> old with that field set, so a
+  node's table of notes keeps the others and a revert restores the old table.
 ```
 
 ```lua
@@ -1280,12 +1315,21 @@ return function(c)
   cond.define("persona", function(x, name) return x.persona == name end)
   cond.define("world", function(x, world) return x.world == world end)
   cond.define("device", function(x, device) return x.device == device end)
+  -- note conditions: x.note is the note, x.depth the position's depth, x.source the id of
+  -- the place its statement was found at, x.nearest_pin the nearest pinned bookmark's
+  cond.define("since", function(x, n) return x.depth - x.note.set < n end)
+  cond.define("until", function(x, n) return x.depth <= n end)
+  cond.define("every", function(x, n) return (x.depth - x.note.set) % n == 0 end)
+  cond.define("until-next-pin", function(x) return x.source == x.nearest_pin end)
+  cond.define("state", function(x, key, v) return c.state(x.at, key) == v end)   -- [host] one read at the position
   return cond
 end
 
--- settings.lua: a setting's value, the first statement along its path, most specific first
+-- settings.lua: a setting's value, from the statements along its path, most specific first
 return function(c)
   local cond, kv, kept, levels, schema_of = c.cond, c.kv, c.kept, c.levels, c.schema   -- schema_of(name): a schema, or nil
+  local combiners = c.combiners or {}       -- name -> pure function(list, default) -> value
+  local ancestry = c.ancestry               -- (filter, message) -> { bookmark ids, nearest first }   [host]
   local S = {}
 
   local function fill(s, ctx)               -- "{x}" replaced by ctx.x; nil when ctx has no x
@@ -1312,23 +1356,36 @@ return function(c)
   end
 
   local function places(path, ctx)          -- { { name, read } }, most specific first
-    local out = {}
+    local out, emitted = {}, {}
+    local function place(level, id)         -- the level's place for id, once, at its first position
+      local read = reader(levels[level], setmetatable({ id = id }, { __index = ctx }))
+      local name = level .. " " .. id
+      if read and not emitted[name] then
+        emitted[name] = true
+        out[#out + 1] = { name = name, read = read }
+      end
+      return read
+    end
     for _, seg in ipairs(path) do
       if seg[1] == "level" then
         local read = reader(levels[seg[2]], ctx)
         if read then out[#out + 1] = { name = seg[2], read = read } end
       elseif seg[1] == "follow" then
-        local seen, most = {}, seg[5]
+        local kinds, most, seen = seg[4], seg[5], {}
         local function visit(id, depth)
-          if seen[id] then return end
-          seen[id] = true
-          local read = reader(levels[seg[2]], setmetatable({ id = id }, { __index = ctx }))
-          if not read then return end
-          out[#out + 1] = { name = seg[2] .. " " .. id, read = read }
-          if most and depth >= most then return end
-          for _, next_id in ipairs(read(seg[4]) or {}) do visit(next_id, depth + 1) end
+          if seen[id] and (not most or seen[id] <= depth) then return end   -- a repeat, or no nearer than before
+          seen[id] = depth
+          local read = place(seg[2], id)
+          if not read or (most and depth >= most) then return end
+          for _, kind in ipairs(kinds) do
+            for _, next_id in ipairs(read("relation/" .. kind) or {}) do visit(next_id, depth + 1) end
+          end
         end
         if ctx[seg[3]] ~= nil then visit(ctx[seg[3]], 0) end
+      elseif seg[1] == "ancestry" then
+        if ctx[seg[3]] ~= nil then
+          for _, id in ipairs(ancestry(seg[4], ctx[seg[3]])) do place(seg[2], id) end
+        end
       end
     end
     return out
@@ -1366,29 +1423,64 @@ return function(c)
     return s.path
   end
 
-  function S.get(name, ctx)                 -- the value, and where it came from: { level, rule }
+  local function has(list, x)
+    for _, v in ipairs(list) do if v == x then return true end end
+    return false
+  end
+
+  function S.get(name, ctx)                 -- the value, and where it came from
     local s = schema(name)
     local ps = places(path_of(name, s, ctx), ctx)
-    if s.combine == "rules" then
+    local how = s.combine or "first"
+    if how == "rules" then
       local rules = {}
       for _, p in ipairs(ps) do
         for i, r in ipairs(p.read(name) or {}) do rules[#rules + 1] = { rule = r, level = p.name, index = i } end
       end
       return rules
     end
+    local found = {}
     for _, p in ipairs(ps) do
       local yes, v, i = stated(p.read(name), ctx)
-      if yes then return v, { level = p.name, rule = i } end
+      if yes then
+        found[#found + 1] = { value = v, level = p.name, rule = i }
+        if how == "first" then break end
+      end
     end
-    return s.default, { level = "default" }
+    if how == "first" then
+      local f = found[1]
+      if f then return f.value, { level = f.level, rule = f.rule } end
+      return s.default, { level = "default" }
+    elseif how == "merge" then              -- { level = per field }
+      local out, from = {}, {}
+      for _, f in ipairs(found) do
+        for k, v in pairs(f.value) do if out[k] == nil then out[k], from[k] = v, f.level end end
+      end
+      for k, v in pairs(s.default or {}) do if out[k] == nil then out[k], from[k] = v, "default" end end
+      return out, { level = from }
+    elseif how == "union" then              -- { level = per value, parallel to the list }
+      local out, from = {}, {}
+      for _, f in ipairs(found) do
+        for _, v in ipairs(f.value) do
+          if not has(out, v) then out[#out + 1], from[#from + 1] = v, f.level end
+        end
+      end
+      for _, v in ipairs(s.default or {}) do
+        if not has(out, v) then out[#out + 1], from[#from + 1] = v, "default" end
+      end
+      return out, { level = from }
+    end
+    local fn = combiners[how.fn] or error("no combiner " .. tostring(how.fn), 0)
+    return fn(found, s.default), { levels = found }
   end
 
-  function S.state(level, name, statement, ctx)
+  function S.state(level, name, statement, ctx, field)   -- field: set only that field of the table already there
     local s, spec, named = schema(name), levels[level], false
     for _, seg in ipairs(s.path) do if seg[2] == level then named = true end end
     local prefix = named and spec and spec.kept and fill(spec.prefix or "", ctx)
     if not prefix then error(name .. " can't be stated at " .. level .. " here", 0) end
-    local change = { { prefix .. name, kv.set, statement } }
+    local change = { field == nil and { prefix .. name, kv.set, statement }
+                     or { prefix .. name, kv.set_field, { field, statement } } }
     if spec.node then kept[spec.kept]:apply(ctx[spec.node], change)            -- [host]
     else kept[spec.kept]:apply(change) end                                     -- [host]
   end
@@ -1406,34 +1498,107 @@ end
 levels of context: looks/text_size, path tab, device, user
 t=0      laptop: action { type = "state", level = "user", name = "looks/text_size", value = 15 }
          store: settings/user/looks/text_size = 15 at home; every device reads 15
-t=1m     phone (device 3f0c…): the same at level "device", 17: latest settings/device/3f0c…/
-         looks/text_size; the phone's tabs read 17 (from "device"), the laptop still 15
-t=2m     phone, tab 9a71…: level "tab", 20; that tab reads 20 (from "tab"), the phone's
-         other tabs 17
+t=1m     phone (device 3f0c…): the same at level "device", 17: settings/device/looks/text_size
+         at the device's node in the store; the phone's tabs read 17 (from "device"), the
+         laptop still 15
+t=2m     phone, tab 9a71…: level "tab", 20, at the tab's node; that tab reads 20 (from
+         "tab"), the phone's other tabs 17. Undoing it at the tab's node brings 17 back
 t=3m     a "state" at level "chat" for it is refused: its path names no chat level
 
-containment: look/name_color, path ["follow", "entry", "entry", "in"], then theme
-         world vell: aldric "in" [ house-vell ]; house-vell "in" [ vell ]; mira "in" [ vell ]
-         house-vell states #77aa33, vell states #3355aa
-         aldric: aldric states nothing, house-vell does: #77aa33, from "entry house-vell"
-         mira: mira, then vell: #3355aa, from "entry vell"
-         worldbuilding.md's reading ("Looks never pass along relations") is one statement
-         at user level: path/look/ = [ ["follow", "entry", "entry", "in", 0], ["level",
-         "theme"] ]; aldric then reads the theme's, or the default #dddddd
+relations: look/name, merged; which relations it follows is each world's own statement
+         The app ships path look/name = follow nothing, then theme: a look applies to exactly
+         what it is set on. A world opts in by stating path/look/ at its world level; no
+         relation kind is named anywhere in the app.
+         world vell, whose author calls its relations "in" and "belongs to":
+           aldric: in [ house-vell ]; belongs to [ pale-choir ]; states nothing
+           house-vell: in [ vell ]; states { color = #77aa33 }
+           pale-choir: in [ vell ]; states { color = #aa3355, italic = true }
+           vell: states { color = #3355aa, font = serif }
+           world level, path/look/: [ ["follow","entry","entry",["in"]],
+             ["follow","entry","entry",["belongs to"]], ["level","theme"] ]
+         places for aldric: entry aldric, house-vell, vell (the "in" chain), then pale-choir
+           (aldric is already a place; its "belongs to" is still followed), then theme
+         look/name = { color #77aa33 (entry house-vell), font serif (entry vell), italic
+           true (entry pale-choir) }; the "belongs to" segment first would make the color
+           #aa3355; one segment ["in","belongs to"] visits house-vell, vell, then pale-choir
+         world coast, whose author calls the relation "part of": mira: part of [ reef ] and
+           in [ harbor ]; reef states { color = #2288aa }; harbor states { color = #aa2222 };
+           path/look/: [ ["follow","entry","entry",["part of"]], ["level","theme"] ]
+           mira reads #2288aa from "entry reef"; "in" means nothing here and harbor is ignored
+         world tide states no path: mira reads only its own look and the theme's, then the
+           default { color = #dddddd }
+         tags (union): aldric's list, then house-vell's, vell's and pale-choir's, each tag once
 
-the message tree: prompt/note, path tab, chat, character, user
-         chat 790: 799 under 790, 800 under 799, 815 under 800, 822 under 815; 830 under 799
-t=0      level "chat" at node 800 (a bookmark): "Keep it light."
-         at 822: "Keep it light.", from "chat", because 800 is above 822
-t=1m     level "chat" at 815: "Ilse is tired now."; 815, 822 and what comes under them read
-         it; 800 still reads "Keep it light."; 830, a branch from 799, reads neither
-t=2m     a revert of the change at 815 brings 822 back to "Keep it light." (the store's undo)
-a rule:  level "user": { "$rules": [ { "when": ["card-tag", "npc"], "value": "Stay terse." } ] }
-         with a card tagged npc and no chat statement: "Stay terse." (user, rule 1); with
-         any other card the user level states nothing and the default "" holds
+notes: prompt/notes, merged by note id; path tab, the bookmark's own, chat, the pinned
+         bookmarks above, character, card, user. A note is { text, depth or position, role,
+         set (the depth it was stated at), when? }, a prompt part; notes from every place
+         apply together, and one id stated nearer replaces that id alone. false switches an
+         id off. A bookmark's statements are kept by the bookmark under the chat's node, so
+         they stay with it when it moves. The chat level outranks the pinned ones because the
+         path says so; the order is data.
+         chat 790: positions 40 … 60 … 70 … 85 … 120 on the main line (a position is its depth
+         in the chat's path, which the store knows); 62 under 60 and 105 under 100 are branches
+t=0      P1, pinned at 40, states { scene = { text "The Drowned Coast, night.", depth 4, set 40 },
+         tone = { text "Keep it light.", depth 2, set 40 } } (level "bookmark", id P1)
+         F, a following bookmark at 85, states nothing; the pinned bookmarks at or above 85
+         are P1: scene and tone, both from "bookmark P1". Position 62, on the branch from 60,
+         reads the same: 40 is above it
+t=1m     P2, pinned at 70, states { tone = { text "Ilse is tired now.", depth 2, set 70 } }
+         F at 85: scene from "bookmark P1", tone from "bookmark P2" (nearest). 62 still reads
+         P1's tone: 70 isn't above it
+t=2m     way 1, a statement at a later message: at 120 the chat level states { scene = false },
+         a change whose op sets that one id in the table the node already has (the store's
+         ops run on the current value). Positions 40 to 119 get scene; 120 and everything
+         under it do not, and tone from P2 still applies. A branch from 100 (105) still gets
+         scene: it isn't under 120. Reverting the change at 120 brings scene back
+t=3m     way 2, a condition on the note, a cond.lua condition over the note and the context:
+         { tone … when ["since", 20] }    applies while depth - set < 20: at 85 (15 after 70)
+                                          yes, at 95 (25) no; set is in the note and depth
+                                          is the store's, so no message is read
+         { … when ["until", 150] }        while depth <= 150
+         { … when ["state", "scene/active", true] }  while that key, which a tracker or the
+                                          model writes, holds true at this position (one read)
+         { … when ["until-next-pin"] }    while the note's source is the nearest pinned
+                                          bookmark: scene so marked at P1 stops at 70, where
+                                          P2 is nearest
+         { … when ["every", 3] }          the old interval: when (depth - set) % 3 == 0
+         A note whose condition fails doesn't apply and its id stays taken: a lower place's
+         note of that id doesn't show through. Character and card notes are the same notes
+         stated at those levels (the character's note is a note stated at the character
+         level); nothing is a separate feature
+t=4m     P2 is unpinned: the index drops it; 85 reads P1's tone again. P2's statements are
+         still kept under P2, and read again if it is pinned again
+a rule:  level "user": { "$rules": [ { "when": ["card-tag", "npc"],
+           "value": { terse = { text = "Stay terse.", depth = 1 } } } ] }
+         with a card tagged npc: the notes gain terse (user, rule 1); with any other card the
+         user level states nothing
 ```
 
-Every setting resolves this way, so a setting's levels, their order and where each is kept are data: settings-scopes' table is the paths, its "the order is a setting" is "path/<name>", and its levels are the levels list, which content can add to (a preset level, settings-reorganization's, is a level whose prefix names the preset the context carries; settings-scopes' group, after the speaking character, is a follow from the character through the groups it's in). Where each level is kept follows from the store's and latest's own rules: the chat, the character, the person and a world are in the store, so they branch and undo with it; a tab and a device are in latest, so they don't. Costs: a resolve is one read per place on its path (a follow, one per entry it passes); a "rules" setting is one read per level; no setting costs anything per card, chat or row. Nothing here is a host module or a primitive, so both tests are only the assumptions:
+The ancestry lookup, [host] in the store, because only the store knows which messages are above which:
+
+```
+store:ancestry(filter, at) -> { bookmark ids at `at` and above it matching the filter, nearest first }
+
+Kept per declared filter, only for the bookmarks that match, never per message:
+  FILTER_AT (filter, m, b)       the bookmarks matching at message m (bookmarks_at, filtered)
+  FILTER_UP (filter, m)          for a message that has one: the nearest message above it
+                                 that has one too, or none
+  FILTER_KIDS (filter, m, k)     the messages whose FILTER_UP is m; (filter, none, k) the tops
+A lookup starts at the tops, and each step goes to the one message that is above `at`
+  (the store's ancestry check, jump pointers, about log depth steps), then to its FILTER_KIDS;
+  it ends when none is. Pinning or unpinning at message x re-points only the matching
+  messages whose nearest was x's: no message in between is written. A following bookmark's
+  move writes nothing here (it does not match); a pinned bookmark's move is an unpin and a pin.
+Cost: a lookup is at most (matching messages tried) × log depth; a chat with no match costs
+  one read; nothing is per message, per row or per card. How many matching messages share one
+  parent in real chats I don't know; if it is large, a count of matches per subtree would be
+  needed and the lookup would binary-search the jump pointers instead.
+Necessary: the store alone holds the ancestry. Assumes: the filter is a cond over the
+  bookmark's own fields. Rules out: a filter on the message's text or on another bookmark.
+  So: a filter is declared data, and the store keeps one index per filter.
+```
+
+Every setting resolves this way, so a setting's levels, their order, the relation kinds it follows, how statements combine and where each level is kept are data: settings-scopes' table is the paths, its "the order is a setting" is "path/<name>", and its levels are the levels list, which content can add to (a preset level, settings-reorganization's, is a level whose prefix names the preset the context carries; settings-scopes' group, after the speaking character, is a follow from the character through whichever relation kinds name its groups). Every level is kept in the version store, a tab's and a device's under nodes of their own, so every statement at every level branches and undoes the same way; latest holds caches, progress, sessions and drafts, never a setting. Costs: a resolve is one read per place on its path (a follow, one per entry it passes and kind it follows); a "rules" setting is one read per level; no setting costs anything per card, chat or row. Nothing here is a host module or a primitive, so both tests are only the assumptions:
 
 ```
 settings.lua, context_cond.lua: content.
@@ -1444,9 +1609,17 @@ Assumes: a fixed set of levels (tab, chat, character, device, user, default).
   entry's container, a session.
   So: levels are data: where each is kept and what of the context names its place.
 Assumes: one order of levels for every setting.
-  Rules out: settings-scopes' "my preset over characters' presets", or looks that do or
-  don't pass along relations.
+  Rules out: settings-scopes' "my preset over characters' presets", or a world whose looks
+  pass along its relations next to one whose looks don't.
   So: each setting has a path, and the path is itself a setting.
+Assumes: one relation kind is the one a value is inherited along.
+  Rules out: a world that names it differently, or inherits along several kinds, or none.
+  So: a path names the relation kinds it follows, as data a world states.
+Assumes: the first place that states a value decides it.
+  Rules out: a look assembled from parts set at different entries, a list of tags from all
+  of them.
+  So: the setting's schema says how statements combine: first, merge, union or a pure
+  function.
 Assumes: inheritance down the message tree is copying the parent's value.
   Rules out: a change at a bookmark reaching what's already under it, and undo of it.
   So: a statement is a change at a node, and the store's resolution is the inheritance.
@@ -1455,19 +1628,14 @@ Assumes: a statement is a value.
   So: a statement can be first-match rules over the context.
 
 Still restrictive:
-  "only pinned bookmarks" (a statement counting only from some ancestors) isn't
-  expressible: the store's resolution counts every ancestor's change, and walking the
-  path to choose some would cost a read per message; it would take statements written by
-  pinning and reverted by unpinning, or an index of pinned nodes. Not found in the docs,
-  so not designed;
-  settings-scopes gives every level history ("a delete is a change in history"), and
-  latest keeps none: a tab's or a device's statements have no undo here. Keeping them in
-  the store under a node per device and per session would give them history, and is the
-  owner's call;
-  which path resolves the paths is the "path/" schema's own (tab, device, user): data,
-  but settings-scopes left it undecided, so its value is the owner's;
+  a filter reads only a bookmark's own fields (above);
+  every level has history, so a tab's and a device's statements are at nodes of their own
+  in the store; what keeps those nodes from piling up for every tab ever opened is not
+  designed here;
+  which path resolves the paths is the "path/" schema's own, which names every level;
+  the order is data, and which level outranks which is only the order of that path;
   a "follow" that loops (an entry in itself, through others) stops at the repeat, with
-  no error.
+  no error, and an entry reached two ways is one place at its first position.
 ```
 
 ## Gap 5, joining: what every option shares
@@ -2385,32 +2553,32 @@ Custom code is an opaque node: the edits can't see into a module's source. It ca
 
 ## Gap 5, joining, option D: which transforms run, and in what order
 
-Whether a transform runs where a chat is composed, and what it runs next to, are rules: the person's first-match rules, the same cond.lua data as grant's preset rules, kept as the setting "compose" and resolved through the settings cascade, so they can be stated for a tab, a chat, a character, a device or the person, and a card's or a transform's declarations are rules at the levels below those. Nothing about the card's transforms or the person's is built in: "the card's run first" is one rule the app ships at the lowest level, which any of the person's levels can override.
+Whether a transform runs where a chat is composed, and what it runs next to, are rules: the person's first-match rules, the same cond.lua data as grant's preset rules, kept as the setting "compose" and resolved through the settings cascade, so they can be stated at any level of the cascade: a tab, a chat, a character, a device, the person, a card (its statements, ordering included, are statements at the card level) or a transform's declarations. Whether a card's statements outrank the person's depends only on the order of the path, which is itself the setting "path/compose". No ordering rule ships: order comes only from what transforms declare and what the person states, and a tie is broken by name, which the explanation lists.
 
 ```json
-{ "app": { "rules": [
-    { "by": "app", "when": [ "from-card" ], "before": [ [ "not", [ "from-card" ] ] ] } ] } }
-
 { "key": "settings/user/compose", "node": "home", "value": [
     { "when": [ "all", [ "transform", "tracker" ], [ "card-tag", "no-tracker" ] ], "on": false },
     { "when": [ "transform", "summarize" ], "after": [ [ "transform", "tracker" ] ] },
     { "when": [ "transform", "tracker" ], "replace": true } ] }
-{ "key": "settings/device/3f0c…/compose", "value": [
+{ "key": "settings/device/compose", "node": "3f0c…", "value": [
     { "when": [ "transform", "tracker" ], "on": false } ] }
 { "key": "settings/chat/compose", "node": 790, "value": [
     { "when": [ "transform", "tracker" ], "on": true } ] }
-{ "key": "settings/tab/9a71…/compose", "value": [
+{ "key": "settings/tab/compose", "node": "9a71…", "value": [
     { "when": [ "transform", "summarize" ], "on": false } ] }
 ```
 
 ```
 A rule: { when, on?, after?, before?, replace? }. when is a condition about one transform,
   asked where the chat is composed: compose_order.lua's operators ("transform",
-  "transform-tag", "from-card") and context_cond.lua's ("card", "card-tag", "persona",
+  "transform-tag") and context_cond.lua's ("card", "card-tag", "persona",
   "world", "device", and any a module adds).
 The rules are settings' "compose", combined as "rules": every level's list, most specific
-  first (tab, chat, character, device, user, card, declared), each in its own order.
-  "declared" is the app's rules, then two for each transform, from its declarations:
+  first along the path "path/compose" gives (by default tab, chat, character, device,
+  user, card, declared), each in its own order. "card" is what the card ships; a card that
+  states "path/compose" at its level changes the order only as far as that level's place
+  in the path allows, and a person who wants otherwise states it earlier in the path.
+  "declared" is two rules for each transform, from its declarations:
   { by, when = ["all", ["transform", it], its scope], on = true, after, before } and
   { by, when = ["transform", it], on = false }.
 Whether it runs: the first rule that holds for it and sets on.
@@ -2435,7 +2603,6 @@ return function(c)
   end
   cond.define("transform", function(x, name) return x.transform.name == name end)
   cond.define("transform-tag", function(x, tag) return has(x.transform.tags, tag) end)
-  cond.define("from-card", function(x) return x.transform.card == true end)
 
   local function about(t, ctx) return setmetatable({ transform = t }, { __index = ctx }) end
   local function said(r)
@@ -2526,20 +2693,20 @@ return function(c)
 end
 ```
 
-The person's rules have the last word because of who holds what, not because of an order. The levels the person states rules at are keys under settings/ in latest and the store, and only the root's own settings.lua and app/cascade hold references that write them; an install reaches app/cascade only through an edge, which its review shows as "Can read and change your settings", these rules among them; a card's statements are in its package, read at the "card" level, and a transform's declarations at "declared", both below the person's levels in compose's path. That path is itself a setting, "path/compose", which the "path/" schema lets only the tab, device and user levels state, so a card can't raise its level. The root alone composes, and it decides which transforms run and in what order before any edit runs, so no edit can change either. A card's transform can still edit what the person's transforms added if the person's rules put it after them; the explanation and the card's review say so, and that is the person's choice to make. With the app's rule as shipped, the card's transforms run first and see only the app's piece and the card's.
+The person's rules have the last word because of who holds what, not because of an order or a rule about levels. The person's levels are keys under settings/ in the version store, and only the root's own settings.lua and app/cascade hold references that write them; an install reaches app/cascade only through an edge, which its review shows as "Can read and change your settings", these rules among them. A card's statements are in its package, read at the "card" level, and a transform's declarations at "declared"; where they stand against the person's is the order of "path/compose", a setting like any other, and the person can state it. The root alone composes, and it decides which transforms run and in what order before any edit runs, so no edit can change either. A card's transform can still edit what the person's transforms added if the order puts it after them; the explanation and the card's review say so, and that is the person's choice to make. No order is shipped for the card's transforms against the person's: with no constraint between two, the tie goes by name, and the explanation lists it.
 
 A transform's scope is a condition like any other: the tracker declares ["all"], every chat; a rule that holds where the declared scope doesn't widens it ({ "when": ["all", ["transform", "tracker"], ["card-tag", "npc"]], "on": true }), one that holds within it narrows it ({ ..., "on": false }), and { "when": ["transform", "tracker"], "on": false } switches it off. The review shows the declared scope as a condition, in the app's words; which rule decided it for a card is in that chat's explanation.
 
-A composition is a pure function of the app's piece, the card's package, and the running transforms in order with their package hashes, so that list's hash is its key. Each action resolves the rules again: one read per level on the path (seven at most), and a condition check per rule and transform, and per constraint and pair of transforms; none of it is per card or per row, and every chat that resolves to the same list shares the composition, its values shared by node hash as before. A changed rule changes the key at the next action. Open chats learn of it at once: the root watches the node each open chat views under settings/ in the store, which covers the chat, character and user levels because they are at that node or above it, and settings/ in latest for the tab and device levels; a batch makes the root resolve again for the chats it touches, and a chat whose key changed gets a new explanation.
+A composition is a pure function of the app's piece, the card's package, and the running transforms in order with their package hashes, so that list's hash is its key. Each action resolves the rules again: one read per level on the path (eight at most), and a condition check per rule and transform, and per constraint and pair of transforms; none of it is per card or per row, and every chat that resolves to the same list shares the composition, its values shared by node hash as before. A changed rule changes the key at the next action. Open chats learn of it at once: the root watches the node each open chat views under settings/ in the store, which covers the chat, character and user levels because they are at that node or above it, and the tab's and device's nodes; a batch makes the root resolve again for the chats it touches, and a chat whose key changed gets a new explanation.
 
 ```
 compose_order.lua, settings.lua, context_cond.lua: content the root loads.
 Necessary: none of it.
 
-Assumes: the card's extensions run first, then the person's.
-  Rules out: a transform of the person's that has to run under the card's (a filter
-  before a card's own cleanup).
-  So: one rule at the lowest level; the person's rules override it.
+Assumes: the card's extensions run before or after the person's.
+  Rules out: either order being wrong for some transform of the person's or a card's.
+  So: nothing ships; order comes from declared constraints and the person's statements,
+  and a tie is broken by name and listed.
 Assumes: ordering names other installs ("after": [ "summarize" ]).
   Rules out: running next to a kind of transform (every one tagged "lore"), or a card's,
   whose names the person's transform doesn't know.
@@ -2675,16 +2842,16 @@ return function(caps)
   local order   = lib("compose_order", { cond = context_cond() })
   local explain = lib("explain", { graph = graph })
   local wire    = lib("wiring", { graph = graph, grant = grant, sandbox = caps.sandbox, pkg = pkg })
-  local app     = pkg("app")                -- { hash, piece, rules, levels, schemas }
+  local app     = pkg("app")                -- { hash, piece, levels, schemas, combiners, filters }
   local function schema(name)               -- the app's, or that of the install whose name it starts with
     if app.schemas[name] then return app.schemas[name] end
     local install = name:match("^([^/]+)/")
     local x = install and latest:get("installed").names[install] and pkg(install).extension   -- [host]
     return x and x.schemas and x.schemas[name]
   end
-  local settings = lib("settings", { cond = context_cond(), kv = kv, levels = app.levels, schema = schema,
-    kept = { latest = lib("narrow", {})(latest, "settings/", "rw"),
-             store  = store:narrow{ nodes = { home }, prefix = "settings/", mode = "rw" },   -- [host]
+  local settings = lib("settings", { cond = context_cond(), kv = kv, levels = app.levels, schema = schema, combiners = app.combiners,
+    ancestry = function(filter, at) return store:ancestry(app.filters[filter], at) end,   -- [host]
+    kept = { store  = store:narrow{ nodes = { home }, prefix = "settings/", mode = "rw" },   -- [host]
              world  = store:narrow{ nodes = { home }, prefix = "world/", mode = "r" } } })   -- [host]
 
   local function transforms(card)           -- what could run with this card: its own, and what the person installed
@@ -2700,9 +2867,8 @@ return function(caps)
     return all
   end
 
-  local function declared(all)              -- the "declared" level: the app's rules, then each transform's
+  local function declared(all)              -- the "declared" level: each transform's
     local rules, names = {}, {}
-    for _, r in ipairs(app.rules) do rules[#rules + 1] = r end
     for name in pairs(all) do names[#names + 1] = name end
     table.sort(names)
     for _, name in ipairs(names) do
@@ -2900,7 +3066,7 @@ install  page: action { type = "install", pkg = { "$blob": "sha256:91d4…" } }
          decisions kept under tracker@sha256:91d4…; latest "installed" gains tracker
 t=0      page: action { type = "open", chat = 790, tab = "9a71…", device = "c2e8…" }
          root: chat/card at 790 is ilse; the rules resolved there are the declared level's:
-         the app's, summarize's and the tracker's; both run, tracker after summarize
+         summarize's and the tracker's; both run, tracker after summarize
          (declared by tracker); no composition for that list: compose app and ilse, then
          summarize, then tracker; nothing unmatched
          reply: the chat's values and the explanation above, slots included, in one response
@@ -2930,7 +3096,7 @@ t=5m     rule 3, { when = ["transform", "tracker"], replace = true }: the tracke
          "after summarize" no longer counts; order tracker, summarize (user rule 2); a new
          list, a new composition, a new explanation sent
 t=6m     phone (device 3f0c…): level "device", [ { when = ["transform", "tracker"], on = false } ]
-         latest settings/device/3f0c…/compose; the latest watch fires; on the phone the
+         settings/device/compose at the device's node; its watch fires; on the phone the
          tracker is off ("device rule 1"), the laptop's chats keep it
 t=7m     phone, in chat 790: level "chat" at node 790, [ { when = ["transform", "tracker"],
          on = true } ]: chat is before device in compose's path, so in 790 the tracker runs
@@ -3475,12 +3641,12 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 | input handler | A module that takes a file or URL from a page action, parses it, and writes through its store capability; export is the reverse |
 | rewrite step | A step that rewrites ctx.reply or ctx.messages, or a wrapper around a part |
 | command | A function a module exports: run from a page action, offered to the model as a tool by a tools module, or put in a turn’s steps |
-| setting schema | Data a module ships about its own keys: the default, and the path the value resolves along (which levels, containment it follows, in what order); settings.lua resolves it, and whatever edits it reads it |
+| setting schema | Data a module ships about its own keys: the default, how statements combine, and the path the value resolves along (which levels and which relation kinds it follows, in what order); settings.lua resolves it, and whatever edits it reads it |
 | backend adapter | A module holding a net capability for one host (openai.lua) |
 | Chats, swipes, branches | chat.lua: nodes; a swipe or branch is another child of the same node |
 | Characters, personas | Keys under chars/ on the library node, read by a card’s parts |
 | World info | lore.lua over cond.lua |
-| Author’s note, character’s note | A part returning a message placed where it’s wanted; several notes are several parts |
+| Notes (author’s, character’s, any number) | The setting prompt/notes: a table of notes by id, each a prompt part (text, depth or position, role, optional when) merged across the path, from the chat, pinned bookmarks, character and card alike; the prompt step turns the ones whose condition holds into parts. The interval and delay are conditions on depth |
 | Presets, prompt manager | Data a card’s composition reads: its parts, their order, the parameters |
 | Regex, reply cleanups | Rewrite steps |
 | Macros | A library function parts call on their text |
@@ -3490,7 +3656,7 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 | Summarize, vectors, TTS, image generation, trackers | Modules, each with only its own capabilities (condense.lua, tracker.lua; TTS holds net for its service) |
 | Extensions | Modules, the same as everything above |
 | Stop button, time limits, streamed replies | A task's cancel; async.lua; stream.lua, with net and the store pushing to sinks |
-| Settings per tab, chat, character, device, person, world entry | settings.lua: the first statement along a path of levels, containment and the message tree, each level kept in latest or the store |
+| Settings per tab, chat, character, device, person, world entry | settings.lua: the statements along a path of levels, followed relations and the message tree, combined as the setting says, each level kept in the version store |
 | Drafts, caches | latest, narrowed per module by prefix; a page's own latest stays on its device |
 | API keys and other secrets | secrets.lua over latest and net: no read, added to requests by a signer, scrubbed from replies |
 | Captions, embeddings, translations, classifications | derived.lua: entries by input hash in latest, stated none, pending, done or failed |
@@ -3516,7 +3682,7 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 
 ## Questions still open
 
-Decided: modules are Lua, run by LuaJIT on the server and compiled to JavaScript on the page, which the browser's engine JITs, with the compiler deciding every name code can reach; the pure-computation libraries (regex, Unicode, tokenizers, zip, PDF) are wasm, one build for both sides (gap 8). Question 5, how installed extensions and a card's own join a card's turn, is answered by option D: the composition is data, a graph the root interprets, which a card ships a piece of and an extension transforms (gap 5); which transforms run where, and in what order, are the person's rules resolved through the settings cascade, which is one mechanism for levels of context, containment and the message tree ("Settings: one cascade along a path").
+Decided: modules are Lua, run by LuaJIT on the server and compiled to JavaScript on the page, which the browser's engine JITs, with the compiler deciding every name code can reach; the pure-computation libraries (regex, Unicode, tokenizers, zip, PDF) are wasm, one build for both sides (gap 8). Question 5, how installed extensions and a card's own join a card's turn, is answered by option D: the composition is data, a graph the root interprets, which a card ships a piece of and an extension transforms (gap 5); which transforms run where, and in what order, are the person's rules resolved through the settings cascade, which is one mechanism for levels of context, followed relations and the message tree ("Settings: one cascade along a path").
 
 2. **How does someone who doesn’t program build things?** a. Libraries in a module language that read data, as cond.lua reads ["all", …] · b. A declarative form the core itself evaluates, so it can index and explain it without running code. This puts a language in the core, which then has to pass both tests above. Option D (gap 5) already makes a card's composition data the root explains without running it, with no language in the core; what a code node does inside is still code
 

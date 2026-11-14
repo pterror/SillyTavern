@@ -26,8 +26,8 @@ choice made is marked as such.
 - **Option D: the order of transforms.** Asked of "the card's extensions run first, then the person's": "is that
   fully general?" It wasn't. Every transform, a card's or the person's, declares "after" and "before" as conditions
   over other transforms, and they go into one constraint graph. The person's first-match rules (cond.lua data, as
-  grant's preset rules) add to or replace any transform's constraints. "The card's run first" is one rule at the
-  lowest level, which the person's rules override. A cycle refuses the composition and names each constraint in it
+  grant's preset rules) add to or replace any transform's constraints. No ordering rule ships: order comes from
+  declared constraints and the person's statements. Owner on the shipped "card's run first": "wtf is that". A cycle refuses the composition and names each constraint in it
   and who made it; a tie goes by name, and the explanation lists it. The person's rules win because only the
   person's install holds the references that write them and compose, not because they are applied last.
 - **Option D: the app's nodes.** "zero core". The app's piece is content like a card's: no kind of node is the
@@ -44,14 +44,42 @@ choice made is marked as such.
 - **The settings cascade.** Owner: "depends on both settings cascade (device, session etc) + card stuff yes??? what
   happened to the cascade stuff". The cascade from `settings-scopes.md` stands and now underlies which transforms run
   and in what order. A setting resolves along one path, built from levels of context (tab, chat, character, device,
-  user, and any other level as data), containment (an entry, the groups it's in, its world) and the message tree (a
+  user, and any other level as data), relations (the kinds a world names, as data) and the message tree (a
   statement at a node holds for everything under it). Which chains a setting follows is its schema's path, and the
-  path is itself a setting. Tab and device statements are kept in latest; chat, character, person and world
-  statements are in the version store, so they branch and undo.
+  path is itself a setting. Statements at every level are in the version store, a tab's and a device's
+  under nodes of their own, so they branch and undo.
 - **Tabs and branch switches.** Settled by the tab sessions design: what a tab shows is that tab's session state, so
   tabs are independent. Owner: "isnt this fucking decided by fucking sessions design".
 - **Connection settings** wait for the state model: a connection is which adapter module holds which key.
 - **Overview updates slowing with scroll** wait for the state model (`store:watch`).
+
+- **No relation is special; settings follow whichever relations a path names.** Owner: "what the FUCK is 'in'". "in" is
+  only the name the example world uses, next to "works at" and "owes"; relation kinds are named by each world's author.
+  Outcome: no kind is built in or privileged. Which relations a value is inherited along is part of that value's
+  resolution path, data set per world or per setting; the app ships none (a look applies to exactly what it is set on
+  until a world opts in). Grouping on the worlds page already groups by any kind the person picks. Owner: "what about
+  various relations as cascade". A path can follow several kinds in priority order, one segment can follow several
+  kinds, a relation can have several targets in its own order, and how statements combine (first, merge, union, a pure
+  function) is part of the setting's schema. Cycles stop at the repeat; an entry reached two ways counts once, at its
+  first position.
+- **Every level of the cascade keeps history the same way.** Owner: "why inconsistency". Settings at every level (tab,
+  device, chat, character, card, world, user) are in the version store, a tab and a device under nodes of their own, so
+  all undo and branch alike; latest holds caches, progress, sessions and drafts, never a setting.
+- **A card is one more level.** Its statements, ordering included, are statements at the card level; whether they
+  outrank the person's depends only on the path's order, which is itself a setting. The person's authority is that only
+  their install holds the references that write their levels, not a rule about levels.
+- **Bookmarks.** A setting stated on a bookmark is inherited down the message tree only from pinned bookmarks on the path
+  (`engine/src/store/chat.rs`: FOLLOWING moves to each new message, PINNED stays); a following bookmark or any position
+  resolves from the nearest pinned bookmarks above it. The store keeps an index of the bookmarks matching a declared
+  filter, not one per message.
+- **Notes are prompt parts, any number.** Owner: "single author's note feels restrictive", "ANs are the wrong mental
+  model", "idk why we cant have multiple authors note/characters note". A note is a prompt part (text, a position or
+  depth, a role, an optional condition), the same shape as a constant lorebook entry. Notes are one setting merged by
+  note id across the chat, pinned bookmarks, character and card; a nearer place changes or switches off one note by id.
+  The interval and the character's note are conditions and sources, not separate features. Owner: "what about an AN that
+  stops applying at some point". Two ways, both existing mechanisms: a statement at a later message switching the note
+  off by id (it holds for everything under that message, on that branch only), and a condition on the note ("for N
+  messages after it was set", "until message N", "while a state key is true", "until the next pinned bookmark").
 
 ## Worldbuilding
 
