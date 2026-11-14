@@ -83,10 +83,12 @@ export function HoverItem(props: { card: HoverCard; reply: 'latest' | 'other' })
     );
 }
 
-type Pointed = { asked: CardAsked; word: HTMLElement; left: number; top: number; above: boolean };
+// `card`: pointed at from an entry's card, whose own click opens the entry.
+type Pointed = { asked: CardAsked; word: HTMLElement; card: boolean; left: number; top: number; above: boolean };
 
 // The card of a linked name, shown while the name or the card is pointed at; each name pointed at asks for its card.
-// The card's box reaches the name, so moving the pointer from one to the other never leaves both.
+// The card's box reaches the name, so moving the pointer from one to the other never leaves both. The card of an entry's
+// card is only shown: the pointer passes through it to whatever is under it, and leaving the entry's card closes it.
 // Pointing shows no card on a phone, where a tap opens instead, nor while a card is dragged, where it would cover what
 // the drag points at; a card pointed at before either goes with the change.
 export function hoverCards() {
@@ -103,7 +105,7 @@ export function hoverCards() {
     phone.addEventListener('change', layoutChanged);
     onCleanup(() => phone.removeEventListener('change', layoutChanged));
     let box: HTMLElement | undefined;
-    const enter = (book: string, entry: string, word: HTMLElement) => {
+    const enter = (book: string, entry: string, word: HTMLElement, from: 'word' | 'card' = 'word') => {
         if (onPhone() || wb.drag.held() !== null || pointed()?.word === word) return;
         const host = word.closest('.wb-hover-host');
         const pane = word.closest('.wb-pane');
@@ -115,12 +117,14 @@ export function hoverCards() {
         const above = at.bottom + CARD_HEIGHT_GUESS > seen.bottom;
         const top = above ? at.top - frame.top : at.bottom - frame.top;
         const asked: CardAsked = { entries: [{ book, entry } satisfies EntryAt], reply: null };
-        setPointed({ asked, word, left, top, above });
+        setPointed({ asked, word, card: from === 'card', left, top, above });
         void wb.act('worldbuilding.showCard', asked);
     };
     const leave = (event: MouseEvent) => {
         const to = event.relatedTarget;
-        if (to instanceof Node && (box?.contains(to) === true || pointed()?.word.contains(to) === true)) return;
+        const at = pointed();
+        if (to instanceof Node && ((at?.card !== true && box?.contains(to) === true) || at?.word.contains(to) === true))
+            return;
         setPointed(null);
     };
     const shown = () => {
@@ -134,7 +138,7 @@ export function hoverCards() {
                 <div
                     ref={(element) => (box = element)}
                     class="wb-hover-at"
-                    classList={{ 'wb-hover-above': both().at.above }}
+                    classList={{ 'wb-hover-above': both().at.above, 'wb-hover-shown-only': both().at.card }}
                     style={{ left: `${both().at.left}px`, top: `${both().at.top}px` }}
                     onMouseLeave={leave}
                 >

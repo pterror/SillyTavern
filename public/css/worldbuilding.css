@@ -1150,6 +1150,11 @@
     padding-top: 8px;
 }
 
+.wb-hover-at.wb-hover-shown-only,
+.wb-hover-at.wb-hover-shown-only * {
+    pointer-events: none;
+}
+
 .wb-hover-above {
     transform: translateY(-100%);
     padding-top: 0;

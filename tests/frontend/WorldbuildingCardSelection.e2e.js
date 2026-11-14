@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
-import { deleteWorld, heldWorlds, makeWorld } from './worlds.js';
+import { deleteWorld, makeWorld } from './worlds.js';
 
 const unique = (/** @type {string} */ name) => `${name} ${Date.now()}${Math.floor(Math.random() * 1000)}`;
 const SHOTS = process.env.WB_SHOTS ?? null;
@@ -28,33 +28,17 @@ async function openCoast(page) {
 }
 
 /**
- * Sends an action as the tab, and hands the tab the views it answers with.
- * @param {import('@playwright/test').Page} page
- * @param {string} type
- * @param {unknown} payload
- */
-async function act(page, type, payload) {
-    return page.evaluate(async ({ type, payload }) => {
-        const { getRequestHeaders } = await import('/scripts/request-headers.js');
-        const { takeViews } = await import('/scripts/new-ui.js');
-        const sent = await fetch('/api/ui/action', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ type, payload }) });
-        const answers = (await sent.text()).split('\n').filter(line => line.trim() !== '').map(line => JSON.parse(line));
-        for (const answer of answers) takeViews(answer.views);
-        return answers[0];
-    }, { type, payload });
-}
-
-/**
- * Clicks a card with keys held, from the pointer's resting place, so no hover card stands over it.
+ * Clicks a card with keys held.
  * @param {import('@playwright/test').Page} page
  * @param {string} title
  * @param {('Shift' | 'ControlOrMeta')[]} modifiers
  */
 async function clickCard(page, title, modifiers) {
-    await page.mouse.move(0, 0);
-    await expect(pane(page).locator('.wb-hover')).toHaveCount(0);
     await card(page, title).locator('.wb-card-open').click({ modifiers });
 }
+
+/** @param {import('@playwright/test').Page} page */
+const toast = page => page.locator('#toast-container .toast');
 
 test.describe('selecting cards', () => {
     test.beforeEach(testSetup.awaitST);
@@ -106,22 +90,44 @@ test.describe('selecting cards', () => {
         await deleteWorld(page, name);
     });
 
-    test('the bulk bar deletes the selected cards after asking, and each can be restored', async ({ page }) => {
+    test('the bulk bar deletes the selected cards after asking, and the toast\'s Undo brings back just those', async ({ page }) => {
         const name = await openCoast(page);
-        const ids = await Promise.all(['Ilse Varro', 'The Tidegate'].map(title => card(page, title).getAttribute('data-entry')));
         await clickCard(page, 'Ilse Varro', ['ControlOrMeta']);
         await clickCard(page, 'The Tidegate', ['ControlOrMeta']);
         await bar(page).getByRole('button', { name: 'Delete' }).click();
         await expect(page.locator('dialog[open]')).toContainText('Delete 2 entries?');
+        await expect(page.locator('dialog[open]')).toContainText('You can undo it.');
         await page.locator('dialog[open] .popup-button-ok').click();
         await expect(pane(page).locator('.wb-card')).toHaveCount(TITLES.length - 2);
-        await expect(card(page, 'Ilse Varro')).toHaveCount(0);
         await expect(bar(page)).toHaveCount(0);
-
-        const book = (await heldWorlds(page))[name].id;
-        for (const entry of ids) expect(await act(page, 'worldbuilding.restoreEntry', { book, entry })).toMatchObject({ ok: true });
+        const said = toast(page).filter({ hasText: 'Deleted 2 entries' });
+        await said.getByRole('button', { name: 'Undo' }).click();
         await expect(card(page, 'Ilse Varro')).toHaveCount(1);
         await expect(card(page, 'The Tidegate')).toHaveCount(1);
+        await expect(pane(page).locator('.wb-card')).toHaveCount(TITLES.length);
+        await deleteWorld(page, name);
+    });
+
+    test('one card deleted says its name, and Undo restores it', async ({ page }) => {
+        const name = await openCoast(page);
+        await box(page, 'Season of fog').click();
+        await bar(page).getByRole('button', { name: 'Delete' }).click();
+        await page.locator('dialog[open] .popup-button-ok').click();
+        await expect(card(page, 'Season of fog')).toHaveCount(0);
+        await toast(page).filter({ hasText: 'Deleted Season of fog' }).getByRole('button', { name: 'Undo' }).click();
+        await expect(card(page, 'Season of fog')).toHaveCount(1);
+        await deleteWorld(page, name);
+    });
+
+    test('a card\'s hover card closes when the pointer goes to another card, and never stands in its way', async ({ page }) => {
+        const name = await openCoast(page);
+        await card(page, 'The Lantern House').hover();
+        const hover = pane(page).locator('.wb-hover');
+        await expect(hover).toContainText('The Lantern House');
+        await card(page, 'Harbormaster Quell').locator('.wb-card-open').click({ modifiers: ['ControlOrMeta'] });
+        await expect(bar(page)).toContainText('1 selected');
+        await expect(box(page, 'Harbormaster Quell')).toBeChecked();
+        await expect(hover).not.toContainText('The Lantern House');
         await deleteWorld(page, name);
     });
 });

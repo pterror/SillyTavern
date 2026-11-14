@@ -51,7 +51,7 @@ export function WorldPage(props: {
     const actions: CardActions = {
         ...props.actions,
         hover: {
-            enter: (entry, element) => hover.enter(book(), entry, element),
+            enter: (entry, element) => hover.enter(book(), entry, element, 'card'),
             leave: hover.leave,
             hide: hover.hide,
         },

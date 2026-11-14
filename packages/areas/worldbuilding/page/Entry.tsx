@@ -228,7 +228,7 @@ export function EntryPage(props: {
                         actions={{
                             ...props.actions,
                             hover: {
-                                enter: (entry, element) => hover.enter(props.entry.book, entry, element),
+                                enter: (entry, element) => hover.enter(props.entry.book, entry, element, 'card'),
                                 leave: hover.leave,
                                 hide: hover.hide,
                             },
