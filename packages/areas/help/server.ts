@@ -25,9 +25,9 @@ export function topicNamed(name: string): Topic {
 
 export function helpArea(ports: Ports) {
     /** By session, until its tab is gone. */
-    const open = new Map<string, { topic: Topic; query: string }>();
+    const open = new Map<string, { topic: Topic }>();
 
-    const show = (session: string, topic: Topic) => void open.set(session, { topic, query: '' });
+    const show = (session: string, topic: Topic) => void open.set(session, { topic });
 
     const notOpen = { refused: 'Help is not open.', changed: [PANEL_VIEW] };
 
@@ -52,12 +52,6 @@ export function helpArea(ports: Ports) {
             'help.show': async (context, { topic }) => {
                 if (!open.has(context.session)) return notOpen;
                 show(context.session, topic);
-                return { changed: [PANEL_VIEW] };
-            },
-            'help.search': async (context, { query }) => {
-                const panel = open.get(context.session);
-                if (!panel) return notOpen;
-                panel.query = query;
                 return { changed: [PANEL_VIEW] };
             },
             'help.close': async (context) => {

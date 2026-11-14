@@ -59,29 +59,25 @@ test('help is closed until opened, and open in the tab that opened it only', asy
     expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: false });
     const opened = await run('help.open', tab('a'), { name: 'macro' });
     expect(opened).toEqual({ changed: [], opensViews: [PANEL_VIEW, HOTKEYS_VIEW] });
-    expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: true, topic: 'macros', query: '' });
+    expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: true, topic: 'macros' });
     expect(await read(PANEL_VIEW, tab('b'))).toEqual({ open: false });
 });
 
-test('searching keeps the topic; showing a topic or opening again ends the search', async () => {
+test('showing a topic or opening again shows that topic', async () => {
     const { run, read } = stand();
     await run('help.open', tab('a'), { name: 'format' });
-    expect(await run('help.search', tab('a'), { query: 'bold' })).toEqual({ changed: [PANEL_VIEW] });
-    expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: true, topic: 'format', query: 'bold' });
-    await run('help.show', tab('a'), { topic: 'hotkeys' });
-    expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: true, topic: 'hotkeys', query: '' });
-    await run('help.search', tab('a'), { query: 'ctrl' });
+    expect(await run('help.show', tab('a'), { topic: 'hotkeys' })).toEqual({ changed: [PANEL_VIEW] });
+    expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: true, topic: 'hotkeys' });
     await run('help.open', tab('a'), { name: '' });
-    expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: true, topic: 'overview', query: '' });
+    expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: true, topic: 'overview' });
 });
 
-test('a closed panel takes no search or topic, and its answer carries it closed', async () => {
+test('a closed panel takes no topic, and its answer carries it closed', async () => {
     const { run, read } = stand();
-    expect(await run('help.search', tab('a'), { query: 'x' })).toEqual({
+    expect(await run('help.show', tab('a'), { topic: 'slash' })).toEqual({
         refused: 'Help is not open.',
         changed: [PANEL_VIEW],
     });
-    expect(await run('help.show', tab('a'), { topic: 'slash' })).toMatchObject({ refused: 'Help is not open.' });
     await run('help.open', tab('a'), { name: 'slash' });
     expect(await run('help.close', tab('a'), {})).toEqual({ changed: [PANEL_VIEW] });
     expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: false });
@@ -92,8 +88,7 @@ test('however many tabs open help, each keeps its panel until it closes it or is
     const sessions = Array.from({ length: 100 }, (_, i) => `t${i}`);
     for (const session of sessions) await run('help.open', tab(session), { name: 'slash' });
     for (const session of sessions)
-        expect(await read(PANEL_VIEW, tab(session))).toEqual({ open: true, topic: 'slash', query: '' });
-    expect(await run('help.search', tab('t0'), { query: 'echo' })).toEqual({ changed: [PANEL_VIEW] });
+        expect(await read(PANEL_VIEW, tab(session))).toEqual({ open: true, topic: 'slash' });
 });
 
 test("a tab that's gone keeps no panel", async () => {

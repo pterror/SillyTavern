@@ -131,23 +131,16 @@ const EVERY_TOPIC: Listed[] = TOPICS.map((topic) => ({ topic }));
 function Panel(props: Handlers & { view: Accessor<Open>; markdown: Accessor<boolean> }) {
     const { client, t } = useUi();
     const [navOpen, setNavOpen] = createSignal(false);
-    const [typed, setTyped] = createSignal(untrack(() => props.view().query));
-    const [sending, setSending] = createSignal(0);
-    const send = (type: string, payload: unknown) => {
-        setSending((n) => n + 1);
-        void client.send(type, payload).finally(() => setSending((n) => n - 1));
-    };
-    createEffect(() => {
-        if (sending() > 0) return;
-        const query = props.view().query;
-        if (untrack(typed) !== query) setTyped(query);
-    });
+    // The page's own: a search filters what the panel holds, asking the server nothing.
+    const [typed, setTyped] = createSignal('');
 
     const topic = () => props.view().topic;
-    const query = () => props.view().query.trim();
+    createEffect(on(topic, () => setTyped(''), { defer: true }));
+    const query = () => typed().trim();
     const searching = createMemo(() => query() !== '');
     const show = (next: Topic) => {
-        send('help.show', { topic: next });
+        setTyped('');
+        void client.send('help.show', { topic: next });
     };
 
     let content: HTMLDivElement | undefined;
@@ -218,10 +211,7 @@ function Panel(props: Handlers & { view: Accessor<Open>; markdown: Accessor<bool
                         placeholder={t('Search all help')}
                         aria-label={t('Search all help')}
                         value={typed()}
-                        onInput={(event) => {
-                            setTyped(event.currentTarget.value);
-                            send('help.search', { query: event.currentTarget.value });
-                        }}
+                        onInput={(event) => setTyped(event.currentTarget.value)}
                     />
                     <ul class="helpTopics">
                         <For each={listed()}>{(item) => <TopicItem {...item} />}</For>

@@ -26,7 +26,7 @@ function stand(
         send: async (type, payload) => {
             sent.push({ type, payload });
             if (held) await new Promise<void>((resolve) => waiting.push(resolve));
-            if (type === 'help.open') setPanel({ open: true, topic: 'overview', query: '' });
+            if (type === 'help.open') setPanel({ open: true, topic: 'overview' });
             if (type === 'help.close') setPanel({ open: false });
             return { ok: true };
         },
@@ -156,13 +156,13 @@ test('the topic shown is the one the view names; a pick and an overview link ask
     root.querySelector<HTMLElement>('.helpTopic[data-topic="format"]')?.click();
     expect(s.sent.at(-1)).toEqual({ type: 'help.show', payload: { topic: 'format' } });
     expect(text(root.querySelector('.helpContent'))).toContain('Hello there!');
-    s.setPanel({ open: true, topic: 'format', query: '' });
+    s.setPanel({ open: true, topic: 'format' });
     expect(text(root.querySelector('.helpContent'))).toContain('italics');
     expect(root.querySelector('.helpTopic.active')?.getAttribute('data-topic')).toBe('format');
-    s.setPanel({ open: true, topic: 'overview', query: '' });
+    s.setPanel({ open: true, topic: 'overview' });
     [...root.querySelectorAll<HTMLAnchorElement>('.helpContent a')].find((a) => a.textContent === 'Hotkeys')?.click();
     expect(s.sent.at(-1)).toEqual({ type: 'help.show', payload: { topic: 'hotkeys' } });
-    s.setPanel({ open: true, topic: 'slash', query: '' });
+    s.setPanel({ open: true, topic: 'slash' });
     await flush();
     expect(root.querySelector('.helpSection[data-topic="slash"] .browser-slash')).not.toBeNull();
     s.dispose();
@@ -171,7 +171,7 @@ test('the topic shown is the one the view names; a pick and an overview link ask
 test('the markdown hotkeys are greyed out while they are off', async () => {
     const s = stand({ open: false }, false);
     await s.compat.open('hotkeys');
-    s.setPanel({ open: true, topic: 'hotkeys', query: '' });
+    s.setPanel({ open: true, topic: 'hotkeys' });
     const root = s.panelElement() as HTMLElement;
     const item = (combo: string) =>
         [...root.querySelectorAll('.hotkeyItem')].find((li) =>
@@ -184,13 +184,13 @@ test('the markdown hotkeys are greyed out while they are off', async () => {
     s.dispose();
 });
 
-test('a search sends what is typed and shows, once every topic is counted, the topics that match', async () => {
+test('a search filters what the panel holds as it is typed, asking the server nothing, and shows the topics that match once every topic is counted', async () => {
     const s = stand();
     await s.compat.open('');
     const root = s.panelElement() as HTMLElement;
-    type(root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement, 'strikethrough');
-    expect(s.sent.at(-1)).toEqual({ type: 'help.search', payload: { query: 'strikethrough' } });
-    s.setPanel({ open: true, topic: 'overview', query: 'strikethrough' });
+    const input = root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement;
+    const sentBefore = s.sent.length;
+    type(input, 'strikethrough');
     await flush();
     expect(text(root.querySelector('.helpHeaderTitle'))).toBe('Search results');
     expect(topics(root)).toEqual(['hotkeys']);
@@ -201,24 +201,41 @@ test('a search sends what is typed and shows, once every topic is counted, the t
     expect(section('format')?.hidden).toBe(true);
     expect(root.querySelector('.helpNoResults')).toBeNull();
 
-    s.setPanel({ open: true, topic: 'overview', query: 'e' });
+    type(input, 'e');
     await flush();
     expect(topics(root)).toContain('slash');
     expect(text(root.querySelector('.helpTopic[data-topic="slash"] .helpTopicCount'))).toBe('2');
 
-    s.setPanel({ open: true, topic: 'overview', query: 'zzqqxxnomatchzz' });
+    type(input, 'zzqqxxnomatchzz');
     await flush();
     expect(topics(root)).toEqual([]);
     expect(root.querySelector('.helpNoResults')).not.toBeNull();
 
-    const sentBefore = s.sent.length;
-    s.setPanel({ open: true, topic: 'overview', query: 'bold' });
+    type(input, 'bold');
     await flush();
     root.querySelector<HTMLElement>('.helpTopic[data-topic="format"]')?.click();
     expect(s.sent.length).toBe(sentBefore);
 
-    s.setPanel({ open: true, topic: 'overview', query: '' });
+    type(input, '');
     expect(root.querySelector('.helpTopic.active')?.getAttribute('data-topic')).toBe('overview');
+    s.dispose();
+});
+
+test('a topic shown ends the search', async () => {
+    const s = stand();
+    await s.compat.open('');
+    const root = s.panelElement() as HTMLElement;
+    const input = root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement;
+    type(input, 'hotkeys');
+    await flush();
+    [...root.querySelectorAll<HTMLAnchorElement>('.helpContent a')].find((a) => a.textContent === 'Hotkeys')?.click();
+    expect(s.sent.at(-1)).toEqual({ type: 'help.show', payload: { topic: 'hotkeys' } });
+    expect(input.value).toBe('');
+    type(input, 'ctrl');
+    s.setPanel({ open: true, topic: 'slash' });
+    await flush();
+    expect(input.value).toBe('');
+    expect(text(root.querySelector('.helpHeaderTitle'))).not.toBe('Search results');
     s.dispose();
 });
 
@@ -228,7 +245,7 @@ test('while every topic is being counted, the side menu keeps the topics it list
     const s = stand({ open: false }, false, loaded);
     await s.compat.open('');
     const root = s.panelElement() as HTMLElement;
-    s.setPanel({ open: true, topic: 'overview', query: 'strikethrough' });
+    type(root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement, 'strikethrough');
     await flush();
     expect(topics(root)).toEqual(['overview', 'slash', 'format', 'hotkeys', 'macros']);
     expect(root.querySelector('.helpTopic.active')?.getAttribute('data-topic')).toBe('overview');
@@ -236,25 +253,6 @@ test('while every topic is being counted, the side menu keeps the topics it list
     load();
     await flush();
     expect(topics(root)).toEqual(['hotkeys']);
-    s.dispose();
-});
-
-test("the search box isn't overwritten by an earlier answer while what's typed is still being sent", async () => {
-    const s = stand();
-    await s.compat.open('');
-    const root = s.panelElement() as HTMLElement;
-    const input = root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement;
-    s.hold();
-    type(input, 'ab');
-    s.setPanel({ open: true, topic: 'overview', query: 'a' });
-    expect(input.value).toBe('ab');
-    s.setPanel({ open: true, topic: 'overview', query: 'ab' });
-    s.letGo();
-    await flush();
-    expect(input.value).toBe('ab');
-    s.setPanel({ open: true, topic: 'slash', query: '' });
-    await flush();
-    expect(input.value).toBe('');
     s.dispose();
 });
 
@@ -267,7 +265,7 @@ test('the close button closes the layer at once and tells the server afterwards;
     expect(layer?.closed).toBe(true);
     expect(s.panelElement()).toBeNull();
     expect(s.sent.at(-1)).toEqual({ type: 'help.close', payload: {} });
-    s.setPanel({ open: true, topic: 'slash', query: '' });
+    s.setPanel({ open: true, topic: 'slash' });
     await flush();
     expect(s.panelElement()).toBeNull();
     s.letGo();

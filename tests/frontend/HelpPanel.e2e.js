@@ -94,9 +94,15 @@ test.describe('Help panel', () => {
         await expect(page.locator('.helpLayer .slashCommandBrowser')).toBeVisible();
     });
 
-    test('the search box searches every topic at once', async ({ page }) => {
+    test('the search box searches every topic at once, asking the server nothing', async ({ page }) => {
         await runSlash(page, '/help');
         const search = page.locator('.helpLayer .helpSearch');
+        await expect(search).toBeVisible();
+        /** @type {string[]} */
+        const asked = [];
+        page.on('request', request => {
+            if (request.url().includes('/api/')) asked.push(request.url());
+        });
 
         await search.fill('strikethrough');
         await expect(page.locator('.helpLayer .helpSection[data-topic="hotkeys"]')).toBeVisible();
@@ -112,6 +118,7 @@ test.describe('Help panel', () => {
 
         await search.fill('');
         await expect(activeTopic(page)).toHaveAttribute('data-topic', 'overview');
+        expect(asked).toEqual([]);
     });
 
     test('on a narrow screen the topic list sits behind the menu button', async ({ page }) => {
