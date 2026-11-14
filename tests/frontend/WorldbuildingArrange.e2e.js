@@ -174,7 +174,7 @@ test.describe('arranging a world', () => {
         await pane(page).locator('.wb-selmenu .wb-pick-row', { hasText: 'The back room' }).click();
         await pane(page).locator('.wb-rels-world').click();
         await card(page, 'The back room').locator('.wb-card-open').click();
-        await expect(pane(page).locator('.wb-keys').getByLabel('“keeps”, key')).toBeVisible();
+        await expect(pane(page).locator('.wb-triggers').getByLabel('“keeps”, trigger', { exact: true })).toBeVisible();
         await deleteWorld(page, name);
     });
 });
