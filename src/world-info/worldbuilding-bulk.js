@@ -13,7 +13,7 @@ export function bulkSelection(selection) {
 /**
  * The selection's count and the bulk actions of the worldbuilding area, over the store.
  * @param {{ libOf: (user: import('@st/server-ui').User) => Promise<import('../library-engine.js').LibraryEngine> }} wiring
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readSelection' | 'startBulk' | 'readBulkJobs'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readSelection' | 'startBulk' | 'readBulkJobs' | 'restoreDeleted'>}
  */
 export function worldbuildingBulkPorts({ libOf }) {
     return {
@@ -31,7 +31,19 @@ export function worldbuildingBulkPorts({ libOf }) {
         },
         async startBulk(who, selection, action, loopCheckLimit) {
             const lib = await libOf(who.user);
-            return lib.books.startBulk(BigInt(selection.book), bulkSelection(selection), action, loopCheckLimit, { user: who.user.handle, session: who.session });
+            const book = BigInt(selection.book);
+            const since = 'delete' in action ? await lib.books.changeMark() : null;
+            /** @type {(import('@st/worldbuilding/protocol').Named | null)[]} */
+            const [one] = since !== null && selection.base === 'none' && selection.except.length === 1
+                ? await lib.store.worldRead('worldbuildingLabels', { book, entities: [BigInt(selection.except[0])] })
+                : [null];
+            const done = await lib.books.startBulk(book, bulkSelection(selection), action, loopCheckLimit, { user: who.user.handle, session: who.session });
+            if (since === null || typeof done === 'string' || 'refused' in done) return done;
+            return { ...done, deleted: { since: String(since), one: one ?? null } };
+        },
+        async restoreDeleted(who, book, since, until) {
+            const lib = await libOf(who.user);
+            return lib.books.restoreDeletedSince(BigInt(book), BigInt(since), until === null ? null : BigInt(until), { user: who.user.handle, session: who.session });
         },
         async readBulkJobs(user, book) {
             const lib = await libOf(user);

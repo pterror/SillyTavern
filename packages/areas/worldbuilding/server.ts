@@ -309,12 +309,25 @@ export type Ports = {
     readLoopsLeftByJobs(user: User, book: string): Promise<UnreachedLoop[]>;
     // `walkSteps`: the keys a chips-only count's walk reads.
     readSelection(user: User, selection: HeldSelection, walkSteps: number): Promise<SelectionRead | null>;
+    // A delete answers `deleted`: the change its deletions start from, and the entry's label when it is one.
     startBulk(
         who: Who,
         selection: HeldSelection,
         action: BulkAction,
         loopCheckLimit: number,
-    ): Promise<{ unreachedLoops: UnreachedLoop[] } | 'missing' | { refused: string }>;
+    ): Promise<
+        | { unreachedLoops: UnreachedLoop[]; deleted?: { since: string; one: Named | null } }
+        | 'missing'
+        | { refused: string }
+    >;
+    // Restores what the session deleted in the world from change `since` on, and before `until` when given, stopping
+    // its deletes still running there.
+    restoreDeleted(
+        who: Who,
+        book: string,
+        since: string,
+        until: string | null,
+    ): Promise<{ restored: number; unreachedLoops: UnreachedLoop[] } | 'missing' | { refused: string }>;
     readBulkJobs(user: User, book: string): Promise<BulkJob[] | null>;
     createRelationKind(who: Who, book: string, name: string): Promise<string | null>;
     renameRelationKind(who: Who, book: string, kind: string, name: string): Promise<'ok' | 'missing' | 'no kind'>;
@@ -460,6 +473,8 @@ const NO_SUCH_KIND = 'Relation type not found.';
 const BEING_MERGED = 'That relation type is being merged.';
 const NO_SUCH_ENTRY = 'Entry not found.';
 const CHANGED_ELSEWHERE = 'Changed in another tab.';
+const NOTHING_TO_UNDO = 'Nothing to undo.';
+const DELETES_KEPT = 8;
 const NO_ENTRY_OPEN = 'No entry open.';
 const NO_CHARACTER_BOOK = 'This character has no lorebook.';
 const NO_FILTER = 'Nothing to search for.';
@@ -531,6 +546,8 @@ type SessionState = {
     findingCharacters: string | null;
     suggestingKeys: { book: string; typed: string } | null;
     selection: HeldSelection | null;
+    // The tab's latest bulk deletes, oldest first: each undoes up to the next one in its world.
+    deletes: { book: string; since: string }[];
 };
 
 const NO_SESSION_STATE: SessionState = {
@@ -546,6 +563,7 @@ const NO_SESSION_STATE: SessionState = {
     findingCharacters: null,
     suggestingKeys: null,
     selection: null,
+    deletes: [],
 };
 
 type EntryShown = { book: string; shown: OpenEntry };
@@ -2066,17 +2084,41 @@ export function worldbuildingArea(ports: Ports) {
                 const done = await ports.startBulk(who(context), selection, action, loopCheckLimit);
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 if ('refused' in done) return { refused: done.refused };
+                const { deletes } = stateOf(context.session);
                 remember(context.session, {
                     selection: null,
                     lastChange: { ...NOTHING_CHANGED, loops: { book, found: done.unreachedLoops } },
+                    ...(done.deleted
+                        ? { deletes: [...deletes, { book, since: done.deleted.since }].slice(-DELETES_KEPT) }
+                        : {}),
                 });
                 return {
                     changed: [
                         ...new Set([...VIEWS_COUNTING_ENTRIES, ...VIEWS_OF_CARDS, BULK_JOBS_VIEW, LAST_CHANGE_VIEW]),
                     ],
                     own: [SELECTION_VIEW, BULK_JOBS_VIEW, LAST_CHANGE_VIEW],
+                    ...(done.deleted ? { answer: { deleted: { book, ...done.deleted } } } : {}),
                 };
             }),
+            'worldbuilding.undoDelete': async (context, { book, since }) => {
+                const { deletes } = stateOf(context.session);
+                const at = deletes.findIndex((one) => one.book === book && one.since === since);
+                if (at < 0) return { refused: NOTHING_TO_UNDO };
+                const until = deletes.slice(at + 1).find((one) => one.book === book)?.since ?? null;
+                const done = await ports.restoreDeleted(who(context), book, since, until);
+                if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                if ('refused' in done) return { refused: done.refused };
+                remember(context.session, {
+                    deletes: deletes.filter((_, i) => i !== at),
+                    lastChange: { ...NOTHING_CHANGED, loops: { book, found: done.unreachedLoops } },
+                });
+                return {
+                    changed: [
+                        ...new Set([...VIEWS_COUNTING_ENTRIES, ...VIEWS_OF_CARDS, BULK_JOBS_VIEW, LAST_CHANGE_VIEW]),
+                    ],
+                    own: [OVERVIEW_VIEW, BULK_JOBS_VIEW, LAST_CHANGE_VIEW],
+                };
+            },
         },
     });
 }

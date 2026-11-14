@@ -7,7 +7,11 @@ import { chatCards } from './ChatCard.tsx';
 // What the old page asks the worldbuilding page to show. `character` is the character's entity id.
 export type Target = { world: string; uid: number | null } | { at: EntryAt } | { character: string } | { import: File };
 
-export type OldPage = { showPane(): void; notify(words: string): void };
+// `notify`: the app's toast; with `action`, a button on it that runs `run`.
+export type OldPage = {
+    showPane(): void;
+    notify(words: string, action?: { label: string; run: () => void }): void;
+};
 
 export function worldbuildingCompat(client: Client, old: OldPage) {
     const [shown, setShown] = createSignal(false);

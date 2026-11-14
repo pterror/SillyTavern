@@ -50,13 +50,13 @@ import type { RowsContext } from './Rows.tsx';
 
 const POINTING_AT_SHOWN = 12;
 
-// `notify`: the app's toast, for what the server refused.
+// `notify`: the app's toast, for what the server refused; with `action`, a button on it.
 // `activationSettings`: how lorebook entries are brought into replies, for every world; another area draws it.
 type Props = {
     shown: boolean;
     target: Target | null;
     onTargetTaken: () => void;
-    notify: (words: string) => void;
+    notify: (words: string, action?: { label: string; run: () => void }) => void;
     activationSettings: () => JSX.Element;
 };
 
@@ -147,9 +147,11 @@ function Page(props: Props) {
         void act('worldbuilding.openEntry', { entry, pointingAt: pointingAtShown() });
     };
     const drag = dragControl(act);
+    const offerUndo: Wb['offerUndo'] = (words, undo) => props.notify(words, { label: t('Undo'), run: undo });
     const wb: Wb = {
         act,
         edit,
+        offerUndo,
         layout: () => layout().overview,
         firstRead,
         pointingAt: pointingAtShown,

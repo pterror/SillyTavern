@@ -61,6 +61,7 @@ function stand(entry: OpenEntryView) {
         pointingAt: () => ({ endRank: 1, layout: { regionsByNestingLevel: [], cardTextCharacters: 0 } }),
         open: () => {},
         say: () => {},
+        offerUndo: () => {},
         drag: { press: () => {}, moves: () => false, clickIsDrop: () => false, held: () => null },
     };
     const host = document.createElement('div');

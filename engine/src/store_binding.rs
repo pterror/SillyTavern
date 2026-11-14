@@ -3551,6 +3551,15 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "deletedBy" => {
+            let (book, from) = (req_integer(a, "book")?, req_integer(a, "from")?);
+            let (session, to) = (opt_integer(a, "session")?, opt_integer(a, "to")?);
+            let limit = req_integer(a, "limit")? as usize;
+            Box::new(move |s| {
+                s.chat_read(|v| h::deleted_by(v, book, session, (from, to), limit))
+                    .map(JsTree)
+            })
+        }
         "lastChanges" => {
             let entities = integers(a, "entities")?;
             Box::new(move |s| {

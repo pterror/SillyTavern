@@ -17,6 +17,8 @@ export type Wb = {
     pointingAt: Accessor<PointingAtShown>;
     open(entry: string): void;
     say(words: string): void;
+    // Says what was done, with Undo, which runs `undo`.
+    offerUndo(words: string, undo: () => void): void;
     drag: DragControl;
 };
 

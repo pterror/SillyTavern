@@ -5,6 +5,7 @@ import { ask } from '@st/page/dialog';
 import { LOOP_CHECK_VISITS_PER_WRITE, SELECTION_COUNTED_UP_TO } from '../protocol.ts';
 import type {
     BulkAction,
+    BulkDeleted,
     EntryCell,
     Placement,
     RegionCell,
@@ -407,12 +408,23 @@ export function selectedWords(selection: Selected, t: (text: string) => string):
         : fill(t('All ${0} matching except ${1}'), all, count(selection.except.length));
 }
 
-export function deleteQuestion(selection: Selected, t: (text: string) => string): string {
-    const capped = selection.base === 'matching' && isCapped(selection);
+// How many entries the selection is, in words, and whether it is one.
+const selectedCount = (selection: Selected): { words: string; one: boolean } => {
+    if (selection.base === 'matching' && isCapped(selection))
+        return { words: `${count(SELECTION_COUNTED_UP_TO)}+`, one: false };
     const selected = selection.base === 'none' ? selection.except.length : (selection.matching ?? 0);
-    if (capped) return fill(t('Delete ${0} entries?'), `${count(SELECTION_COUNTED_UP_TO)}+`);
-    return fill(t(selected === 1 ? 'Delete ${0} entry?' : 'Delete ${0} entries?'), count(selected));
+    return { words: count(selected), one: selected === 1 };
+};
+
+export function deleteQuestion(selection: Selected, t: (text: string) => string): string {
+    const { words, one } = selectedCount(selection);
+    return fill(t(one ? 'Delete ${0} entry?' : 'Delete ${0} entries?'), words);
 }
+
+const deletedWords = (selection: Selected, t: (text: string) => string): string => {
+    const { words, one: single } = selectedCount(selection);
+    return fill(t(single ? 'Deleted ${0} entry' : 'Deleted ${0} entries'), words);
+};
 
 export const hasSelection = (selection: Selected | null): selection is Selected =>
     selection !== null && (selection.base === 'matching' || selection.except.length > 0);
@@ -424,13 +436,20 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
     const wb = useWb();
     const [menu, setMenu] = createSignal<Menu>(null);
     const kind = () => props.groupBy ?? props.kinds[0]?.id ?? null;
-    const run = (action: BulkAction) => {
+    const run = async (action: BulkAction) => {
         setMenu(null);
-        void wb.act('worldbuilding.bulk', {
+        // Worded before the action clears the selection.
+        const many = deletedWords(props.selection, t);
+        const done = await wb.act('worldbuilding.bulk', {
             book: props.selection.book,
             action,
             loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE,
         });
+        const answer = done.ok ? (done.answer as BulkDeleted | undefined) : undefined;
+        if (!answer) return;
+        const { book, since, one } = answer.deleted;
+        const words = one ? fill(t('Deleted ${0}'), one.text) : many;
+        wb.offerUndo(words, () => void wb.act('worldbuilding.undoDelete', { book, since }));
     };
     return (
         <div class="st-floating wb-bulk">
@@ -445,8 +464,8 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                 </button>
                 <Show when={menu() === 'set'}>
                     <SetMenu
-                        onSet={(set) => run({ set })}
-                        onFillTitles={() => run({ fillTitles: true })}
+                        onSet={(set) => void run({ set })}
+                        onFillTitles={() => void run({ fillTitles: true })}
                         onClose={() => setMenu(null)}
                     />
                 </Show>
@@ -467,7 +486,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                                     heading={t('Move the selected to')}
                                     book={props.selection.book}
                                     kind={chosen()}
-                                    onPick={(target) => run({ moveTo: { kind: chosen(), target } })}
+                                    onPick={(target) => void run({ moveTo: { kind: chosen(), target } })}
                                     onClose={() => setMenu(null)}
                                 />
                             </Show>
@@ -485,7 +504,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                                     heading={t('Add selected to')}
                                     book={props.selection.book}
                                     kind={chosen()}
-                                    onPick={(target) => run({ alsoPutIn: { kind: chosen(), target } })}
+                                    onPick={(target) => void run({ alsoPutIn: { kind: chosen(), target } })}
                                     onClose={() => setMenu(null)}
                                 />
                             </Show>
@@ -508,7 +527,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                                 heading={t(transfer.heading)}
                                 from={props.selection.book}
                                 onPick={(toBook) =>
-                                    run(
+                                    void run(
                                         transfer.menu === 'copyToWorld'
                                             ? { copyToWorld: toBook }
                                             : { moveToWorld: toBook },
@@ -529,11 +548,11 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                             {
                                 kind: 'confirm',
                                 message: deleteQuestion(props.selection, t),
-                                detail: t('Each can be restored from its page.'),
+                                detail: t('You can undo it.'),
                             },
                             t,
                         );
-                        if (sure) run({ delete: true });
+                        if (sure) void run({ delete: true });
                     })()
                 }
             >

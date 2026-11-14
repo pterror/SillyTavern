@@ -196,3 +196,23 @@ test('filling titles from keys gives each selected entry with no title its keys,
     assert.equal(stored[2].comment, 'alpha, beta');
     assert.equal(stored[3].comment, '');
 });
+
+test('undoing a delete restores what the tab deleted from its mark up to the next, not another tab\'s deletions', async () => {
+    const shelf = await write('Undo', [1, 2, 3, 4, 5].map(uid => entry(uid, `entry ${uid}`)));
+    const tab = { user: 'u', session: 'undo-tab' };
+    const other = { user: 'u', session: 'other-tab' };
+    const del = async (uids, actor) => {
+        const since = await lib.books.changeMark();
+        await lib.books.startBulk(shelf.book, { selected: { entries: uids.map(shelf.id) }, except: [] }, { delete: true }, LOOPS, actor);
+        return since;
+    };
+    const first = await del([1, 2], tab);
+    await del([3], other);
+    const second = await del([4], tab);
+    assert.deepEqual(Object.keys(await entriesOf('Undo')).sort(), ['5']);
+    assert.deepEqual(await lib.books.restoreDeletedSince(shelf.book, first, second, tab), { restored: 2, unreachedLoops: [] });
+    assert.deepEqual(Object.keys(await entriesOf('Undo')).sort(), ['1', '2', '5']);
+    assert.deepEqual(await lib.books.restoreDeletedSince(shelf.book, first, second, tab), { restored: 0, unreachedLoops: [] }, 'once');
+    assert.deepEqual(await lib.books.restoreDeletedSince(shelf.book, second, null, tab), { restored: 1, unreachedLoops: [] });
+    assert.deepEqual(Object.keys(await entriesOf('Undo')).sort(), ['1', '2', '4', '5']);
+});

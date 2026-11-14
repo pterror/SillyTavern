@@ -1573,3 +1573,33 @@ fn the_kept_version_is_the_newest_change_through_random_writes_deletes_restores_
         fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+#[test]
+fn a_sessions_deletions_in_a_world_are_listed_from_a_change_on_until_restored() {
+    let dir = temp_dir("deleted-by");
+    let s = open(&dir);
+    let listed = |s: &Store, session: Option<u64>, from: u64| -> Vec<u64> {
+        let Js::Arr(rows) = s
+            .chat_read(|v| history::deleted_by(v, BOOK_ID, session, (from, None), 10))
+            .unwrap()
+        else {
+            panic!()
+        };
+        rows.iter().map(|r| match r { Js::Big(e) => *e, _ => panic!("{r:?}") }).collect()
+    };
+    s.commit_wait(vec![set(100, &content(), "x", false, by(TAB))]).unwrap();
+    let mut gone = entity_delete(101);
+    gone.values[3] = Value::Id(TAB);
+    s.commit_wait(vec![gone]).unwrap();
+    assert_eq!(listed(&s, Some(TAB), 101), vec![ENTRY_ID]);
+    assert_eq!(listed(&s, Some(TAB), 102), Vec::<u64>::new(), "deleted before the change asked from");
+    assert_eq!(listed(&s, Some(OTHER_TAB), 0), Vec::<u64>::new(), "another session's");
+    let before = s
+        .chat_read(|v| history::deleted_by(v, BOOK_ID, Some(TAB), (0, Some(101)), 10))
+        .unwrap();
+    assert_eq!(before, Js::Arr(Vec::new()), "deleted at the change it ends before");
+    s.commit_wait(vec![restore(102, "1:0")]).unwrap();
+    assert_eq!(listed(&s, Some(TAB), 0), Vec::<u64>::new(), "restored");
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

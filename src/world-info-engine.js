@@ -1943,36 +1943,103 @@ export class WorldInfoEngine {
      */
     restoreIn(book, id, actor = null) {
         return this.inWorld(book, async (form, commit) => {
-            const page = await this.store.worldRead('deleted', { book, after: id - 1n, limit: 1 });
-            const d = page.entries[0];
-            if (!d || d.id !== id) return 'no entry';
-            let uid = /** @type {string} */ (d.key);
-            const numbers = await this.store.worldRead('numbers', { book });
-            const [taken] = await this.lib.ids(TYPE.entry, [`${book}:${uid}`]);
-            if (taken !== null) {
-                if (numbers.freeKey >= MAX_UID) return 'full';
-                uid = String(numbers.freeKey);
-            }
-            /** @type {number | null} */
-            let position = d.position;
-            if (position !== null) {
-                const there = await this.store.worldRead('entries', { book, ...(position > 0 ? { after: position - 1 } : {}), limit: 1 });
-                if (there.entries[0]?.position === position) position = null;
-            }
-            /** @type {object[]} */
-            const records = [];
-            const stamp = await this.stamper(actor, records);
-            const kept = await this.store.worldRead('worldbuildingRelationsKept', { book, entity: id });
-            records.push(
-                { kind: 'histRestore', entity: id, type: TYPE.entry, key: `${book}:${uid}`, added: 0, ...stamp() },
-                ...(kept === null ? [] : historyWrites(stamp).json(id, RELATIONS_FIELD, kept.json, kept.before)),
-                { kind: 'itemPlace', entity: book, list: 0, item: id, position: position ?? (numbers.lastPosition ?? 0) + POSITION_GAP },
-                ...(d.index === null ? [] : [{ kind: 'entryIndex', entry: id, book, index: d.index }]),
-            );
-            await commit(records);
-            this.jobs.start(book);
+            const done = await this.restoreOne(book, id, commit, actor);
+            if (typeof done === 'string') return done;
             const [e] = await this.lib.entities([id]);
-            return { uid, entry: entryAsWorld(/** @type {import('./entity-values.js').StoredEntity} */ (e), form), unreachedLoops: await this.unreachedLoops(book, records, [id]) };
+            return { uid: done.uid, entry: entryAsWorld(/** @type {import('./entity-values.js').StoredEntity} */ (e), form), unreachedLoops: await this.unreachedLoops(book, done.records, [id]) };
+        });
+    }
+
+    /**
+     * Runs in the book's lane. Restores one deleted entry of the book, under its own number when that is free.
+     * @param {bigint} book
+     * @param {bigint} id
+     * @param {(records: object[]) => Promise<void>} commit
+     * @param {Actor | null} actor
+     * @returns {Promise<{ uid: string, records: object[] } | 'no entry' | 'full'>}
+     */
+    async restoreOne(book, id, commit, actor) {
+        const page = await this.store.worldRead('deleted', { book, after: id - 1n, limit: 1 });
+        const d = page.entries[0];
+        if (!d || d.id !== id) return 'no entry';
+        let uid = /** @type {string} */ (d.key);
+        const numbers = await this.store.worldRead('numbers', { book });
+        const [taken] = await this.lib.ids(TYPE.entry, [`${book}:${uid}`]);
+        if (taken !== null) {
+            if (numbers.freeKey >= MAX_UID) return 'full';
+            uid = String(numbers.freeKey);
+        }
+        /** @type {number | null} */
+        let position = d.position;
+        if (position !== null) {
+            const there = await this.store.worldRead('entries', { book, ...(position > 0 ? { after: position - 1 } : {}), limit: 1 });
+            if (there.entries[0]?.position === position) position = null;
+        }
+        /** @type {object[]} */
+        const records = [];
+        const stamp = await this.stamper(actor, records);
+        const kept = await this.store.worldRead('worldbuildingRelationsKept', { book, entity: id });
+        records.push(
+            { kind: 'histRestore', entity: id, type: TYPE.entry, key: `${book}:${uid}`, added: 0, ...stamp() },
+            ...(kept === null ? [] : historyWrites(stamp).json(id, RELATIONS_FIELD, kept.json, kept.before)),
+            { kind: 'itemPlace', entity: book, list: 0, item: id, position: position ?? (numbers.lastPosition ?? 0) + POSITION_GAP },
+            ...(d.index === null ? [] : [{ kind: 'entryIndex', entry: id, book, index: d.index }]),
+        );
+        await commit(records);
+        this.jobs.start(book);
+        return { uid, records };
+    }
+
+    /**
+     * The id the next change will have: a deletion made after reading it is one of the deletions `restoreDeletedSince`
+     * restores from it.
+     * @returns {Promise<bigint>}
+     */
+    async changeMark() {
+        return (await this.lib.nextIds()).change;
+    }
+
+    /**
+     * Restores every entry of the book the actor's session deleted from change `since` on (and before `until`, when
+     * given), after stopping the session's bulk deletes still running there.
+     * @param {bigint} book
+     * @param {bigint} since
+     * @param {bigint | null} until
+     * @param {Actor} actor
+     * @returns {Promise<{ restored: number, unreachedLoops: UnreachedLoop[] } | 'missing' | { refused: string }>}
+     */
+    restoreDeletedSince(book, since, until, actor) {
+        return this.inWorld(book, async (form, commit) => {
+            const [bookEntity] = await this.lib.entities([book]);
+            const running = bulkJobFields(bookEntity?.values ?? []).filter(({ state }) => 'delete' in state.action && state.actor?.session === actor.session);
+            if (running.length > 0) {
+                await commit(running.flatMap(({ job }) => [
+                    { kind: 'valueDelete', entity: book, field: `${BULK_JOB_FIELD}${job}` },
+                    { kind: 'valueDelete', entity: book, field: `${BULK_JOB_CURSOR_FIELD}${job}` },
+                ]));
+            }
+            const [session] = actor.session ? await this.store.chatRead('ids', { space: SPACE.session, keys: [actor.session] }) : [null];
+            let restored = 0;
+            /** @type {UnreachedLoop[]} */
+            const unreachedLoops = [];
+            for (;;) {
+                /** @type {bigint[]} */
+                const ids = await this.store.worldRead('deletedBy', { book, from: since, limit: RELATION_CHANGES_PER_STEP, ...(until === null ? {} : { to: until }), ...(session === null ? {} : { session }) });
+                /** @type {object[]} */
+                const records = [];
+                const back = [];
+                for (const id of ids) {
+                    const done = await this.restoreOne(book, id, commit, actor);
+                    if (done === 'full') return { refused: 'This world has no free entry number left.' };
+                    if (typeof done === 'string') continue;
+                    pushAll(records, done.records);
+                    back.push(id);
+                }
+                restored += back.length;
+                unreachedLoops.push(...await this.unreachedLoops(book, records, back));
+                if (ids.length < RELATION_CHANGES_PER_STEP || back.length === 0) break;
+            }
+            return { restored, unreachedLoops };
         });
     }
 

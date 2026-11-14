@@ -559,6 +559,9 @@ export type SelectionView =
 
 export type RelationTo = { kind: string; target: string };
 
+// A bulk delete's answer: what undoing it names, and the entry's label when it was one.
+export type BulkDeleted = { deleted: { book: string; since: string; one: Named | null } };
+
 export type BulkAction =
     | { delete: true }
     | { set: Partial<Omit<Placement, 'characterFilter'>> }
@@ -841,6 +844,8 @@ export const actions = {
     'worldbuilding.selectAllMatching': v.object({ book: entityId }),
     'worldbuilding.selectNone': v.object({ book: entityId }),
     'worldbuilding.bulk': v.object({ book: entityId, action: bulkAction, loopCheckLimit }),
+    // `since`: as a delete's answer named it.
+    'worldbuilding.undoDelete': v.object({ book: entityId, since: entryVersion }),
     // Shows a saved view of the shown world (null: none, as a world with no views is shown).
     'worldbuilding.showView': v.object({ book: entityId, view: v.nullable(viewId), overview: shownOverview }),
     // Changes the shown view for this tab only, until it is saved or discarded.

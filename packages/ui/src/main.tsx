@@ -132,7 +132,7 @@ export function start(options: StartOptions) {
             everShown={worldbuilding.everShown()}
             target={worldbuilding.target()}
             onTargetTaken={worldbuilding.targetTaken}
-            notify={(words) => options.worldbuilding.notify(words)}
+            notify={(words, action) => options.worldbuilding.notify(words, action)}
             activationSettings={() => <WorldInfoSettings />}
         />
     ));

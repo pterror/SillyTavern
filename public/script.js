@@ -1360,7 +1360,7 @@ async function firstLoadInit() {
         },
         alternatives: alternativesOldPage,
         activations: activationsOldPage,
-        worldbuilding: { showPane: () => ensureDrawerOpen('WI-SP-button'), notify: (/** @type {string} */ words) => toastr.warning(words) },
+        worldbuilding: { showPane: () => ensureDrawerOpen('WI-SP-button'), notify: worldbuildingNotice },
         shownCharacter: () => getCurrentCharacter()?.avatar ?? null,
     });
     await checkOpenRouterAuth();
@@ -11539,3 +11539,21 @@ jQuery(async function () {
         }
     });
 });
+
+/**
+ * The worlds page's toast: a refusal as a warning, or what was done with a button for what undoes it.
+ * @param {string} words
+ * @param {{ label: string, run: () => void }} [action]
+ */
+function worldbuildingNotice(words, action) {
+    if (!action) {
+        toastr.warning(words);
+        return;
+    }
+    const toast = toastr.info(words, '', { timeOut: 10000, extendedTimeOut: 5000, closeButton: true });
+    const button = $('<button type="button" class="menu_button"></button>').text(action.label).on('click', () => {
+        toastr.clear(toast, { force: true });
+        action.run();
+    });
+    toast.find('.toast-message').empty().append($('<div></div>').text(words), button);
+}

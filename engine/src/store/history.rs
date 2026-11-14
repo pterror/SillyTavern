@@ -28,6 +28,8 @@ pub const DELETED: u64 = 214;
 pub const MARKS: u64 = 215;
 pub const FORGET: u64 = 216;
 pub const KEEP: u64 = 217;
+// A world's deleted entries by the session that deleted them and the deletion's change.
+pub const DELETED_BY: u64 = 254;
 
 pub const FORGET_SLICE: usize = 256;
 
@@ -767,6 +769,24 @@ fn deleted_key(book: u64, e: u64) -> Vec<u8> {
     key::ids(DELETED, book, e)
 }
 
+fn deleted_by_key(book: u64, session: Option<u64>, c: u64) -> Vec<u8> {
+    let mut k = key::ids(DELETED_BY, book, session.unwrap_or(0));
+    put_u64(&mut k, c);
+    k
+}
+
+// The key of a deleted entry's place among its session's deletions, from its deletion's change.
+fn deletion_key(view: &View, book: u64, e: u64) -> Result<Option<Vec<u8>>, StoreError> {
+    let Some((c, None)) = latest(view, e, None, VALUES)? else {
+        return Ok(None);
+    };
+    let (_, r) = change(view, None, c)?;
+    if r.kind.name != "histEntityDelete" {
+        return Ok(None);
+    }
+    Ok(Some(deleted_by_key(book, Meta::of(&r).session, c)))
+}
+
 pub fn is_deleted_entry_of_book(view: &View, book: u64, e: u64) -> Result<bool, StoreError> {
     Ok(view.get(&deleted_key(book, e))?.is_some())
 }
@@ -1152,6 +1172,7 @@ impl Deriver for EntityDelete {
                 deleted_key(book, e),
                 varints(&[flags, place.unwrap_or(0), index.map_or(0, f64::to_bits)]),
             );
+            out.put(deleted_by_key(book, m.session, m.change()), uvarint(e));
         }
         let made = take_down(view, out, e, kind, &k, at, false)?;
         out.put(key::id(GONE, e), varints(&[made.pos, made.len, at.pos]));
@@ -1244,6 +1265,9 @@ pub fn erase(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<bool, StoreE
             if id(&was, 1) == ENTRY {
                 let (book, _) = books::parse_entry_key(bytes(&was, 2))?;
                 out.del(deleted_key(book, e));
+                if let Some(k) = deletion_key(view, book, e)? {
+                    out.del(k);
+                }
                 super::relations::deleted_entry_erased(view, out, book, e)?;
             }
             out.del(key::id(GONE, e));
@@ -1356,6 +1380,9 @@ impl Deriver for Restore {
         o.del(key::id(GONE, e));
         if let Some(book) = book {
             o.del(deleted_key(book, e));
+            if let Some(k) = deletion_key(view, book, e)? {
+                o.del(k);
+            }
         }
         o.del(key::ids(key::ENTITY_CHANGE, deleted_at, e));
         out.entries.extend(o.entries.iter().cloned());
@@ -2173,6 +2200,27 @@ pub fn changes_since(
         }
         row.push(("unknown", Js::Bool(unknown)));
         out.push(Js::Obj(row));
+    }
+    Ok(Js::Arr(out))
+}
+
+// The entries of a world that `session` deleted with changes from `from` on, and before `to` when given, still deleted,
+// oldest first: at most `limit`.
+pub fn deleted_by(
+    view: &View,
+    book: u64,
+    session: Option<u64>,
+    (from, to): (u64, Option<u64>),
+    limit: usize,
+) -> Result<Js, StoreError> {
+    let end = match to {
+        Some(to) => deleted_by_key(book, session, to),
+        None => key::prefix_end(&key::ids(DELETED_BY, book, session.unwrap_or(0))),
+    };
+    let found = view.scan(&deleted_by_key(book, session, from), &end, limit)?;
+    let mut out = Vec::with_capacity(found.len());
+    for (_, v) in found {
+        out.push(Js::Big(parse_uvarint(&v)?));
     }
     Ok(Js::Arr(out))
 }
