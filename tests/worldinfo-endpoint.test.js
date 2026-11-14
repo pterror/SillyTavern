@@ -267,7 +267,7 @@ describe('lorebook actions', () => {
         expect(await (await op({ op: 'remove', books: [] })).json()).toEqual({ result: 'ok', extraBooks: ['X'] });
     });
 
-    test('a rename that relinks moves the characters\' links; without, they keep the old name', async () => {
+    test('a rename moves the characters\' links with the world: they name it by id', async () => {
         const { lib } = await stores.userStore(directories, 'u');
         const data = { name: 'Linker', description: '', personality: '', scenario: '', first_mes: '', mes_example: '', tags: [] };
         const card = (/** @type {string} */ world) => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', ...data, data: { ...data, extensions: { world } } });
@@ -280,11 +280,11 @@ describe('lorebook actions', () => {
             return r;
         };
 
-        expect(await lib.books.rename('Linked', 'Linked 2', { relink: true })).toBe('ok');
+        expect(await lib.books.rename('Linked', 'Linked 2')).toBe('ok');
         expect(await linkOf()).toMatchObject({ key: 'Linked 2', defined: true });
 
-        expect(await lib.books.rename('Linked 2', 'Linked 3', { relink: false })).toBe('ok');
-        expect(await linkOf()).toMatchObject({ key: 'Linked 2', defined: false });
+        expect(await lib.books.rename('Linked 2', 'Linked 3')).toBe('ok');
+        expect(await linkOf()).toMatchObject({ key: 'Linked 3', defined: true });
     });
 });
 

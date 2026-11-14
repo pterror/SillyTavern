@@ -1,6 +1,5 @@
 import { jsonHash } from '../public/scripts/hash-utils.js';
-import { POSITION_GAP, historyWrites, itemField, pushAll, valueRecords } from './entity-values.js';
-import { LINKS, storedLinks } from './character-links.js';
+import { POSITION_GAP, historyWrites, pushAll, valueRecords } from './entity-values.js';
 import { LOOK_FIELD, TYPE } from './library-codes.js';
 import { cardEntryAsWorld, cardEntryWritten, newCardEntry } from './world-info/card-book-entries.js';
 import { bookKey } from './world-info-keys.js';
@@ -1087,12 +1086,13 @@ export class WorldInfoEngine {
     }
 
     /**
+     * Characters, chats, personas and the worlds used in every chat name a world by its id, so a rename changes only its
+     * name; the characters' identity hashes, which cover the name their card carries, are written again with it.
      * @param {string} name
      * @param {string} newName
-     * @param {{ relink?: boolean, moved?: bigint[] }} [options]
      * @returns {Promise<'ok' | 'missing' | 'taken'>}
      */
-    rename(name, newName, { relink = true, moved } = {}) {
+    rename(name, newName) {
         const [from, to] = [bookKey(name), bookKey(newName)];
         return this.lane([from, to], async () => {
             const found = await this.find(name);
@@ -1100,46 +1100,29 @@ export class WorldInfoEngine {
             if (from === to) return 'ok';
             const there = await this.find(newName);
             if (there?.defined) return 'taken';
-            const { records, own } = await this.renameRecords(found.id, there, from, to, relink);
-            await this.store.commit(records);
-            if (moved && relink) pushAll(moved, own);
+            await this.store.commit(await this.renameRecords(found.id, there, from, to));
             return 'ok';
         });
     }
 
     /**
+     * `there`: the placeholder a card naming a world that didn't exist made under the new name, whose links the renamed
+     * world takes over.
      * @param {bigint} id
      * @param {{ id: bigint } | null} there
      * @param {string} from
      * @param {string} to
-     * @param {boolean} relink
-     * @returns {Promise<{ records: object[], own: bigint[] }>}
+     * @returns {Promise<object[]>}
      */
-    async renameRecords(id, there, from, to, relink) {
+    async renameRecords(id, there, from, to) {
         const [entity] = await this.lib.entities([id]);
         const update = { kind: 'entityUpdate', entity: id, type: TYPE.book, key: to, added: entity?.added ?? 0 };
         const records = there
             ? [{ kind: 'bookForward', from: there.id, into: id }, { kind: 'entityDelete', entity: there.id }, update]
             : [update];
-        const own = await this.linkers(id);
-        if (!relink && own.length) {
-            const kept = this.lib.nextId++;
-            records.push({ kind: 'entityCreate', entity: kept, type: TYPE.book, key: from, added: Date.now() });
-            const resolving = new Set(await this.store.worldRead('resolving', { book: id }));
-            for (let i = 0; i < own.length; i += 256) {
-                const linkers = await this.lib.entities(own.slice(i, i + 256), { fields: [], lists: [LINKS] });
-                for (const e of linkers) {
-                    if (!e) continue;
-                    const links = storedLinks(e).filter(l => resolving.has(l.book));
-                    links.forEach((l, n) => records.push(n === 0
-                        ? { kind: 'textValue', entity: e.id, field: itemField(LINKS, l.item), text: String(kept) }
-                        : { kind: 'itemDelete', entity: e.id, list: LINKS, item: l.item }));
-                }
-            }
-        }
-        const linkers = [...(relink ? own : []), ...(there ? await this.linkers(there.id) : [])];
-        pushAll(records, await this.lib.identityRecords(linkers, to, relink ? [from, to] : [to]));
-        return { records, own };
+        const linkers = [...(await this.linkers(id)), ...(there ? await this.linkers(there.id) : [])];
+        pushAll(records, await this.lib.identityRecords(linkers, to, [from, to]));
+        return records;
     }
 
     /**
