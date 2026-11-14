@@ -84,8 +84,8 @@ test.describe('stacked drawers', () => {
     test('the slash command suggestions cut the chat under them', async ({ page }) => {
         await chatBox(page).click();
         await page.keyboard.type('/sen');
-        await expect(page.locator('.autoComplete-wrap')).toBeVisible();
-        await expectOccludes(page, '.autoComplete-wrap, .autoComplete-detailsWrap', '#sheld');
+        await expect(page.locator('#chat_box .cm-tooltip-autocomplete')).toBeVisible();
+        await expectOccludes(page, '#chat_box .cm-tooltip, #chat_box .cm-completionInfo', '#sheld');
     });
 
     test('an editor\'s macro suggestions cut the chat under them', async ({ page }) => {

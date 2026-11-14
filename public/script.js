@@ -216,7 +216,7 @@ import { pagerSelection, selectedGreetingIndex } from './scripts/greeting-pager-
 import { initPresetManager } from './scripts/preset-manager.js';
 import { getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
-import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
+import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs, raiseToasts } from './scripts/popup.js';
 import { initMacroColorsEditor } from './scripts/macro-colors-editor.js';
 import { applyMacroColors, macroColorsOf } from './scripts/macro-colors.js';
 import { renderTemplateAsync } from './scripts/templates.js';
@@ -227,7 +227,8 @@ import { initDynamicStyles } from './scripts/dynamic-styles.js';
 import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { autosizeTextareas, initAutosizeTextareas } from './scripts/autosize-textareas.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
-import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, drawerStackChanged, drawerLayersChanged, addLayer, bringChatForward, restoreLayerOrder } from './scripts/drawer-stack.js';
+import { initWidgetPopovers } from './scripts/widget-popovers.js';
+import { initDrawerStack, isDrawerCovered, frontmostOf, raiseDrawer, drawerStackChanged, addLayer, bringChatForward, restoreLayerOrder } from './scripts/drawer-stack.js';
 import { initSystemPrompts } from './scripts/sysprompt.js';
 import { ToolManager } from './scripts/tool-calling.js';
 import { applyBrowserFixes } from './scripts/browser-fixes.js';
@@ -365,10 +366,10 @@ toastr.options = {
 };
 
 toastr.subscribe(function (args) {
-    drawerLayersChanged();
     if (args.state !== 'visible') {
         return;
     }
+    raiseToasts();
 
     const $container = toastr.getContainer(args.options, false);
     if (!$container || !$container.length) {
@@ -431,11 +432,26 @@ export const comment_avatar = 'img/quill.png';
 export const default_user_avatar = 'img/user-default.png';
 let optionsPopper = Popper.createPopper(document.getElementById('options_button'), document.getElementById('options'), {
     placement: 'top-start',
+    strategy: 'fixed',
 });
 let exportPopper = Popper.createPopper(document.getElementById('export_button'), document.getElementById('export_format_popup'), {
     placement: 'left',
+    strategy: 'fixed',
 });
 let isExportPopupOpen = false;
+
+/**
+ * Shows or hides the export menu, a popover opened from its button
+ * @param {boolean} open
+ */
+function showExportPopup(open) {
+    isExportPopupOpen = open;
+    const popup = document.getElementById('export_format_popup');
+    if (open && !popup.matches(':popover-open')) popup.showPopover({ source: document.getElementById('export_button') });
+    $(popup).toggle(open);
+    if (!open && popup.matches(':popover-open')) popup.hidePopover();
+    exportPopper.update();
+}
 
 // Saved here for performance reasons
 const messageTemplate = $('#message_template .mes');
@@ -10332,7 +10348,8 @@ jQuery(async function () {
             wasOpenAtPointerDown = talkativenessPopover.matches(':popover-open');
         });
         talkativenessButton.addEventListener('click', () => {
-            talkativenessPopover.togglePopover(!wasOpenAtPointerDown);
+            if (wasOpenAtPointerDown) talkativenessPopover.hidePopover();
+            else talkativenessPopover.showPopover({ source: talkativenessButton });
             wasOpenAtPointerDown = false;
         });
 
@@ -10451,13 +10468,18 @@ jQuery(async function () {
 
     function showMenu() {
         showBookmarksButtons();
-        menu.fadeIn(animation_duration);
+        // Other code hides the menu without closing its popover, so it is opened afresh, on top
+        if (menu[0].matches(':popover-open')) menu[0].hidePopover();
+        menu[0].showPopover({ source: button[0] });
+        menu.stop(true).fadeIn(animation_duration);
         optionsPopper.update();
         isOptionsMenuVisible = true;
     }
 
     function hideMenu() {
-        menu.fadeOut(animation_duration);
+        menu.fadeOut(animation_duration, () => {
+            if (!isOptionsMenuVisible && menu[0].matches(':popover-open')) menu[0].hidePopover();
+        });
         optionsPopper.update();
         isOptionsMenuVisible = false;
     }
@@ -10923,9 +10945,7 @@ jQuery(async function () {
     });
 
     $('#export_button').on('click', function () {
-        isExportPopupOpen = !isExportPopupOpen;
-        $('#export_format_popup').toggle(isExportPopupOpen);
-        exportPopper.update();
+        showExportPopup(!isExportPopupOpen);
     });
 
     $(document).on('click', '.export_format', async function () {
@@ -10935,9 +10955,7 @@ jQuery(async function () {
             return;
         }
 
-        $('#export_format_popup').hide();
-        isExportPopupOpen = false;
-        exportPopper.update();
+        showExportPopup(false);
 
         await flushCharacterFieldSaves();
         const body = { format, avatar_url: getCurrentCharacter().avatar };
@@ -11047,9 +11065,7 @@ jQuery(async function () {
         if (isExportPopupOpen
             && clickTarget.closest('#export_button').length == 0
             && clickTarget.closest('#export_format_popup').length == 0) {
-            $('#export_format_popup').hide();
-            isExportPopupOpen = false;
-            exportPopper.update();
+            showExportPopup(false);
         }
 
         const forbiddenTargets = [
@@ -11486,6 +11502,7 @@ jQuery(async function () {
     });
 
     initDrawerStack(onDrawerVisibilityChanged, content => frontDrawer(content.id));
+    initWidgetPopovers();
 
     $('#charInfoFullscreenToggle').on('click', () => {
         const panel = document.getElementById('char-info-panel');

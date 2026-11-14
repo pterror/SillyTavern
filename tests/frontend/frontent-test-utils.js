@@ -285,7 +285,7 @@ export function stackMismatches(page, {
             return inside;
         };
         const modal = document.querySelector('dialog:modal');
-        const inTopLayer = (/** @type {HTMLElement} */ el) => el.matches('dialog, [popover]');
+        const inTopLayer = (/** @type {HTMLElement} */ el) => el.closest('dialog, [popover]') !== null;
         const blockers = [...all, document.getElementById('top-bar'), document.getElementById('top-settings-holder')].filter(Boolean);
         const out = [];
         for (const [i, layer] of all.entries()) {

@@ -1172,7 +1172,6 @@ body .panelControlBar {
 }
 
 .st-float {
-    position: fixed;
     margin: 0;
     overflow: visible;
 }
@@ -1696,7 +1695,6 @@ textarea.autoSetHeight {
 }
 
 .macro-tooltip {
-    position: fixed;
     inset: auto;
     margin: 0;
     padding: 0.3em 0.5em;
@@ -2025,7 +2023,6 @@ input[type="range"].macro-colors-hue {
 }
 
 .hotkeyOverlay {
-    position: fixed;
     inset: 0;
     margin: auto;
     width: min(90vw, 70em);
@@ -2166,10 +2163,17 @@ button {
     --rightOffset: 1vw;
     display: flex;
     flex-direction: var(--direction);
-    position: absolute;
+    inset: auto;
     left: var(--leftOffset);
     right: var(--rightOffset);
-    z-index: 10000;
+    width: auto;
+    height: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    overflow: visible;
     pointer-events: none;
 
     .autoComplete {
@@ -2209,6 +2213,11 @@ button {
     }
 }
 
+.autoComplete-wrap[popover]:not(:popover-open),
+.autoComplete-detailsWrap[popover]:not(:popover-open) {
+    display: none;
+}
+
 .autoComplete-detailsWrap {
     --targetOffset: 0;
     --rightOffset: 1vw;
@@ -2216,12 +2225,18 @@ button {
     --leftOffset: 74vw;
     display: flex;
     flex-direction: column;
-    position: absolute;
     top: 5vh;
     right: var(--rightOffset);
     bottom: var(--bottomOffset);
     left: var(--leftOffset);
-    z-index: 10000;
+    width: auto;
+    height: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    overflow: visible;
     pointer-events: none;
 
     &:before {
@@ -3916,8 +3931,10 @@ select option[disabled]:not(:checked) {
 }
 
 .view_pill_popover {
-    position: fixed;
-    z-index: 10001;
+    inset: auto;
+    margin: 0;
+    overflow: visible;
+    color: inherit;
     min-width: 12em;
     max-height: 50vh;
     display: flex;
@@ -4745,6 +4762,16 @@ grammarly-extension {
 
 
 /* Override toastr default styles */
+:where(#toast-container[popover]) {
+    inset: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    overflow: visible;
+}
+
 body #toast-container {
     margin-top: var(--drawerBarTop);
     margin-bottom: var(--drawerBarBottom);
@@ -5651,8 +5678,11 @@ h5 {
 
 body .ui-autocomplete {
     position: absolute;
+    inset: auto;
     top: 0;
     left: 0;
+    margin: 0;
+    color: inherit;
     cursor: default;
     max-height: 300px;
     overflow-y: auto;
@@ -5902,7 +5932,17 @@ a:hover {
 
 #export_format_popup {
     display: none;
-    z-index: 9999;
+    margin: 0;
+    padding: 0;
+    color: inherit;
+}
+
+#options {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    overflow: visible;
 }
 
 #rawPromptPopup {
@@ -7584,4 +7624,15 @@ div.cm-tooltip.paste-picker {
 
 .chat-text .macro-block-tag {
     color: var(--macro-color);
+}
+
+/* select2's dropdown, a popover opened from its select (widget-popovers.js); select2 places it */
+.select2-container[popover] {
+    inset: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    overflow: visible;
 }

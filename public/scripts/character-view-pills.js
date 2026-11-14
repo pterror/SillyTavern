@@ -1,4 +1,3 @@
-import { addLayer } from './drawer-stack.js';
 import { RANGE_FIELDS, SEARCH_FIELDS, canonicalSearchField, cleanRanges } from './character-view.js';
 
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
@@ -234,7 +233,9 @@ function openFieldPicker(anchor, onPick, { special = false } = {}) {
  * @param {HTMLElement} focus
  */
 function showPopover(popover, anchor, focus) {
-    addLayer(popover);
+    document.body.append(popover);
+    popover.popover = 'manual';
+    popover.showPopover({ source: anchor });
     const box = anchor.getBoundingClientRect();
     popover.style.left = `${Math.max(4, Math.min(box.left, window.innerWidth - popover.offsetWidth - 4))}px`;
     popover.style.top = `${box.bottom + 4}px`;

@@ -5,9 +5,7 @@ const STACK_DRAWER_SELECTOR = '#top-settings-holder > .drawer > .drawer-content'
 const DRAWER_SELECTOR = '.drawer-content';
 const FLOATING_SELECTOR = '#movingDivs > *, body > .draggable';
 const CHAT_ID = 'sheld';
-const OVERLAY_SELECTOR = 'dialog, [popover], .ui-menu, .select2-container--open > .select2-dropdown, .cm-tooltip, .cm-completionInfo';
-const TOP_LAYER_SELECTOR = 'dialog, [popover]';
-export const OVERLAYS_CHANGED_EVENT = 'overlayschanged';
+const OPEN_SELECTOR = ':popover-open, dialog[open]';
 const ORDERED_SELECTOR = `#${CHAT_ID}, ${DRAWER_SELECTOR}, ${FLOATING_SELECTOR}`;
 const EDITING_SELECTOR = '.field_editing:not(.field_edit_saving), .mes_editor, .reasoning_editor';
 const HOLE_SOURCE = 'drawer-stack';
@@ -28,17 +26,20 @@ let onVisibilityChanged = () => {};
 /** @type {(el: HTMLElement) => void} */
 let onFront = raiseDrawer;
 let frame = 0;
-/** @type {{ ordered: HTMLElement[], overlays: HTMLElement[], icons: HTMLElement[] } | null} */
+/** @type {{ ordered: HTMLElement[], icons: HTMLElement[] } | null} */
 let found = null;
+
+/**
+ * Popovers and dialogs the browser said it opened, in the order it opened them (the top layer's order), each with the
+ * element it was opened from, if the browser said
+ * @type {Map<HTMLElement, Element | null>}
+ */
+const surfaces = new Map();
 
 function findLayers() {
     if (!found) {
-        const ordered = /** @type {HTMLElement[]} */ ([...document.querySelectorAll(ORDERED_SELECTOR)]);
-        const overlays = new Set(/** @type {HTMLElement[]} */ ([...document.querySelectorAll(OVERLAY_SELECTOR)]));
-        for (const el of bodyOverlays(ordered)) overlays.add(el);
         found = {
-            ordered,
-            overlays: [...overlays].sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)),
+            ordered: /** @type {HTMLElement[]} */ ([...document.querySelectorAll(ORDERED_SELECTOR)]),
             icons: /** @type {HTMLElement[]} */ ([...document.querySelectorAll('[data-stack-front-of]')]),
         };
     }
@@ -46,20 +47,44 @@ function findLayers() {
 }
 
 /**
- * @param {HTMLElement[]} ordered
- * @returns {HTMLElement[]}
+ * @param {Element} el
+ * @returns {boolean}
  */
-function bodyOverlays(ordered) {
-    /** @param {Element} el */
-    const zIndex = (el) => Number.parseInt(getComputedStyle(el).zIndex) || 0;
-    const holders = new Set(ordered.map(el => {
-        let holder = el;
-        while (holder.parentElement && holder.parentElement !== document.body) holder = holder.parentElement;
-        return holder;
-    }));
-    const above = Math.max(0, ...[...holders].map(zIndex));
-    return /** @type {HTMLElement[]} */ ([...document.body.children]).filter(el => !holders.has(el)
-        && ['fixed', 'absolute'].includes(getComputedStyle(el).position) && zIndex(el) > above);
+function isOpen(el) {
+    return el.isConnected && el.matches(OPEN_SELECTOR);
+}
+
+/** @param {HTMLElement} el */
+function forgetSurface(el) {
+    surfaces.delete(el);
+    sizeWatcher?.unobserve(el);
+}
+
+/** @returns {HTMLElement[]} the surfaces open, bottom up */
+function openSurfaces() {
+    for (const el of [...surfaces.keys()]) {
+        // Taken out of the page, a popover closes without saying so
+        if (!el.isConnected) forgetSurface(el);
+    }
+    return [...surfaces.keys()].filter(isOpen);
+}
+
+/**
+ * The panel a surface belongs to: the one holding what it was opened from (or, if the browser didn't say, where it is
+ * in the page), through any surface holding that
+ * @param {HTMLElement} surface
+ * @param {HTMLElement[]} open
+ * @returns {HTMLElement | null} none for a surface outside every shown panel
+ */
+function panelOf(surface, open) {
+    const seen = new Set([surface]);
+    let at = surfaces.get(surface) ?? surface.parentElement;
+    for (let holder = open.find(other => !seen.has(other) && other.contains(at)); holder; holder = open.find(other => !seen.has(other) && other.contains(at))) {
+        seen.add(holder);
+        at = surfaces.get(holder) ?? holder.parentElement;
+    }
+    const panel = /** @type {HTMLElement | null} */ (at?.closest(ORDERED_SELECTOR) ?? null);
+    return panel && isShown(panel) ? panel : null;
 }
 
 /**
@@ -77,11 +102,6 @@ function stackOn() {
 /** @returns {HTMLElement[]} */
 function orderedLayers() {
     return findLayers().ordered;
-}
-
-/** @returns {HTMLElement[]} */
-function overlayLayers() {
-    return findLayers().overlays;
 }
 
 /**
@@ -170,23 +190,22 @@ function isShown(el) {
 }
 
 /**
+ * Each shown panel with the surfaces that belong to it just above it, then the surfaces outside every panel
  * @param {HTMLElement[]} ordered
- * @param {HTMLElement[]} overlays
+ * @param {HTMLElement[]} open
  * @returns {HTMLElement[]}
  */
-function shownLayersBottomUp(ordered, overlays) {
+function shownLayersBottomUp(ordered, open) {
+    /** @type {Map<HTMLElement | null, HTMLElement[]>} */
+    const byPanel = new Map();
+    for (const surface of open) {
+        const panel = panelOf(surface, open);
+        byPanel.set(panel, [...(byPanel.get(panel) ?? []), surface]);
+    }
     return [
-        ...ordered.filter(isShown).sort(compareOrder),
-        ...overlays.filter(isShown),
+        ...ordered.filter(isShown).sort(compareOrder).flatMap(panel => [panel, ...(byPanel.get(panel) ?? [])]),
+        ...(byPanel.get(null) ?? []),
     ];
-}
-
-/**
- * @param {Element} el
- * @returns {boolean}
- */
-function isOrdered(el) {
-    return findLayers().ordered.includes(/** @type {HTMLElement} */ (el));
 }
 
 /**
@@ -201,21 +220,41 @@ function paintsItself(style) {
 }
 
 /**
+ * What an element paints: its box, if it paints one, with what its positioned children paint, which can lie outside
+ * it; else what its children paint, though its box is empty (an empty popover holding positioned children)
  * @param {HTMLElement} el
  * @param {DOMRect} box
  * @param {boolean} whole
  * @param {number} [depth]
+ * @param {Set<HTMLElement>} [painters] gets each element whose box is in the answer
  * @returns {Rect[]}
  */
-function paintedBoxes(el, box, whole, depth = 4) {
+function paintedBoxes(el, box, whole, depth = 4, painters) {
     const style = getComputedStyle(el);
-    if (whole || depth === 0 || paintsItself(style)) return [roundedBox(el, box, style)];
-    return [...el.children].flatMap((child) => {
+    const empty = box.width === 0 || box.height === 0;
+    const own = !empty && (whole || depth === 0 || paintsItself(style));
+    if (own) painters?.add(el);
+    if (whole || depth === 0) return own ? [roundedBox(el, box, style)] : [];
+    const children = [...el.children].flatMap((child) => {
         if (!(child instanceof HTMLElement) || !child.checkVisibility({ visibilityProperty: true })) return [];
-        const childBox = child.getBoundingClientRect();
-        if (childBox.width === 0 || childBox.height === 0) return [];
-        return paintedBoxes(child, childBox, false, depth - 1);
+        if (own && !['absolute', 'fixed'].includes(getComputedStyle(child).position)) return [];
+        return paintedBoxes(child, child.getBoundingClientRect(), false, depth - 1, painters);
     });
+    return own ? [roundedBox(el, box, style), ...children] : children;
+}
+
+/**
+ * The elements a surface paints with, whose size is watched: one can change size, appear or go inside a surface open
+ * all along, without the surface's own box changing
+ * @type {Set<HTMLElement>}
+ */
+let watchedParts = new Set();
+
+/** @param {Set<HTMLElement>} parts */
+function watchParts(parts) {
+    for (const el of watchedParts) if (!parts.has(el)) sizeWatcher?.unobserve(el);
+    for (const el of parts) if (!watchedParts.has(el)) sizeWatcher?.observe(el);
+    watchedParts = parts;
 }
 
 /**
@@ -237,18 +276,19 @@ function roundedBox(el, box, style = getComputedStyle(el)) {
 }
 
 /**
- * @param {DOMRect} box
+ * @param {Rect} box where the holes can be
  * @param {Rect[]} covers
+ * @param {Rect} [origin] what the holes are measured from, if not the box's corner
  * @returns {Rect[]}
  */
-function holesIn(box, covers) {
+function holesIn(box, covers, origin = box) {
     /** @type {Rect[]} */
     const out = [];
     for (const c of covers) {
-        const top = Math.max(box.top, c.top) - box.top;
-        const bottom = Math.min(box.bottom, c.bottom) - box.top;
-        const left = Math.max(box.left, c.left) - box.left;
-        const right = Math.min(box.right, c.right) - box.left;
+        const top = Math.max(box.top, c.top) - origin.top;
+        const bottom = Math.min(box.bottom, c.bottom) - origin.top;
+        const left = Math.max(box.left, c.left) - origin.left;
+        const right = Math.min(box.right, c.right) - origin.left;
         if (bottom <= top || right <= left) continue;
         if (!c.radii) {
             out.push({ top, right, bottom, left });
@@ -309,6 +349,28 @@ function cutLayer(el, box, covers, hideIfSplit) {
 }
 
 /**
+ * Cuts a surface where covers are, anywhere in the window: what it paints can lie outside its own box. It is hidden
+ * whole when everything it paints is covered.
+ * @param {HTMLElement} el
+ * @param {DOMRect} box
+ * @param {Rect[]} covers
+ * @returns {boolean}
+ */
+function cutSurface(el, box, covers) {
+    const window = { top: 0, left: 0, right: innerWidth, bottom: innerHeight };
+    const rects = holesIn(window, covers, box);
+    if (rects.length === 0) return clearLayer(el);
+    setHoles(el, HOLE_SOURCE, rects, { top: -box.top, left: -box.left, right: innerWidth - box.left, bottom: innerHeight - box.top });
+    const covered = paintedBoxes(el, box, false).every(part => unionArea(holesIn(part, covers))
+        >= (part.right - part.left) * (part.bottom - part.top) - 0.5);
+    const before = el.classList.contains('stackCovered');
+    el.classList.toggle('stackCovered', covered);
+    el.dataset.stackCut = 'true';
+    cut.add(el);
+    return before !== covered;
+}
+
+/**
  * @param {DOMRect} box
  * @param {Rect[]} rects
  * @param {Rect[]} alsoHidden
@@ -354,9 +416,14 @@ function updateDrawerStack() {
     let changed = false;
     if (!stackOn()) {
         for (const el of [...cut]) changed = clearLayer(el) || changed;
+        watchParts(new Set());
     } else {
-        const bottomUp = shownLayersBottomUp(ordered, overlayLayers());
+        const open = openSurfaces();
+        const surfaceSet = new Set(open);
+        const bottomUp = shownLayersBottomUp(ordered, open);
         const shown = new Set(bottomUp);
+        /** @type {Set<HTMLElement>} */
+        const parts = new Set();
         for (const el of [...cut]) {
             if (!shown.has(el)) changed = clearLayer(el) || changed;
         }
@@ -369,10 +436,13 @@ function updateDrawerStack() {
         for (let i = bottomUp.length - 1; i >= 0; i--) {
             const el = bottomUp[i];
             const box = el.getBoundingClientRect();
-            const covers = above.filter(a => !el.contains(a.el) || a.el.matches(TOP_LAYER_SELECTOR)).flatMap(a => a.covers);
-            changed = cutLayer(el, box, covers, isFullscreenDrawer(el, box, chatBox) ? barBoxes : null) || changed;
-            if (!el.classList.contains('stackCovered')) above.push({ el, covers: paintedBoxes(el, box, isOrdered(el)) });
+            const covers = above.filter(a => !el.contains(a.el) || surfaceSet.has(a.el)).flatMap(a => a.covers);
+            changed = (surfaceSet.has(el)
+                ? cutSurface(el, box, covers)
+                : cutLayer(el, box, covers, isFullscreenDrawer(el, box, chatBox) ? barBoxes : null)) || changed;
+            if (!el.classList.contains('stackCovered')) above.push({ el, covers: paintedBoxes(el, box, !surfaceSet.has(el), 4, surfaceSet.has(el) ? parts : undefined) });
         }
+        watchParts(parts);
     }
     updateFrontIcons(ordered);
     if (changed) onVisibilityChanged();
@@ -409,7 +479,7 @@ export function bringChatForward() {
 
 /** @returns {HTMLElement[]} */
 function allLayers() {
-    return [...orderedLayers(), ...overlayLayers()];
+    return [...orderedLayers(), ...openSurfaces()];
 }
 
 /**
@@ -417,10 +487,10 @@ function allLayers() {
  * @returns {string}
  */
 function boxesKey(layers) {
-    return layers.filter(isShown).map(el => {
-        const r = el.getBoundingClientRect();
-        return `${r.left},${r.top},${r.width},${r.height}`;
-    }).join(';');
+    return layers.filter(el => isShown(el) || surfaces.has(el)).flatMap(el => {
+        const box = el.getBoundingClientRect();
+        return surfaces.has(el) ? paintedBoxes(el, box, false) : [box];
+    }).map(r => `${r.left},${r.top},${r.right},${r.bottom}`).join(';');
 }
 
 /**
@@ -447,12 +517,39 @@ function scheduleUpdate() {
 }
 
 /**
+ * The panel an input went to: the one it is in, or the one the surface it is in belongs to
  * @param {EventTarget | null} target
  * @returns {HTMLElement | null}
  */
 function orderedLayerOf(target) {
-    if (!(target instanceof Element) || target.closest(OVERLAY_SELECTOR)) return null;
+    if (!(target instanceof Element)) return null;
+    const open = openSurfaces();
+    const surface = open.findLast(el => el.contains(target));
+    if (surface) return panelOf(surface, open);
     return /** @type {HTMLElement | null} */ (target.closest(ORDERED_SELECTOR));
+}
+
+/**
+ * Hears a popover or dialog opening or closing. Opening, it goes on top of the surfaces open, as the browser puts it on
+ * top of the top layer.
+ * @param {Event} event
+ */
+function onToggle(event) {
+    const el = event.target;
+    if (!(el instanceof HTMLElement) || !el.matches('[popover], dialog')) return;
+    if (event instanceof ToggleEvent && event.type === 'beforetoggle' && event.newState === 'open') {
+        surfaces.delete(el);
+        surfaces.set(el, event.source instanceof Element ? event.source : null);
+        sizeWatcher?.observe(el);
+    } else if (event.type === 'close' || (event instanceof ToggleEvent && event.type === 'toggle' && event.newState === 'closed')) {
+        forgetSurface(el);
+    }
+    if (!sizeWatcher) return;
+    drawerStackChanged();
+}
+
+function onScroll() {
+    if (surfaces.size > 0) scheduleUpdate();
 }
 
 /**
@@ -476,9 +573,9 @@ export function drawerStackChanged() {
 }
 
 /**
- * Puts a layer (a floating panel, a picker, a dragged-out avatar) on the page. Layers come only this way or with an
- * event the stack listens to, so it knows them without watching the page; a removed layer needs no call, as its size
- * watcher reports it.
+ * Puts a panel (a floating panel, a dragged-out avatar) on the page. Panels come only this way, so the stack knows them
+ * without watching the page; a removed panel needs no call, as its size watcher reports it. What floats over panels
+ * (menus, tooltips, cards, toasts) is a popover or a dialog, which the browser tells the stack of.
  * @param {HTMLElement} layer
  * @param {Element} [parent]
  */
@@ -487,8 +584,7 @@ export function addLayer(layer, parent = document.body) {
     drawerLayersChanged();
 }
 
-/** For a layer the page doesn't add itself (toastr's container). */
-export function drawerLayersChanged() {
+function drawerLayersChanged() {
     if (!sizeWatcher) return;
     found = null;
     observeLayers();
@@ -499,7 +595,7 @@ let sizeWatcher = /** @type {ResizeObserver | null} */ (null);
 function observeLayers() {
     if (!sizeWatcher) return;
     sizeWatcher.disconnect();
-    for (const el of allLayers()) sizeWatcher.observe(el);
+    for (const el of [...allLayers(), ...watchedParts]) sizeWatcher.observe(el);
 }
 
 /**
@@ -510,11 +606,12 @@ export function initDrawerStack(visibilityChanged, front) {
     onVisibilityChanged = visibilityChanged;
     onFront = el => (front && el.matches(STACK_DRAWER_SELECTOR) ? front(el) : raiseDrawer(el));
     sizeWatcher = new ResizeObserver(() => { if (!frame) drawerStackChanged(); });
+    for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll(OPEN_SELECTOR)])) surfaces.set(el, null);
     observeLayers();
-    $(document).on('autocompleteopen autocompleteclose select2:open select2:close', drawerLayersChanged);
-    document.addEventListener(OVERLAYS_CHANGED_EVENT, drawerLayersChanged);
-    document.addEventListener('toggle', drawerLayersChanged, true);
-    document.addEventListener('close', drawerLayersChanged, true);
+    document.addEventListener('beforetoggle', onToggle, true);
+    document.addEventListener('toggle', onToggle, true);
+    document.addEventListener('close', onToggle, true);
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
     document.addEventListener('pointerdown', onUserInput, true);
     document.addEventListener('keydown', onUserInput, true);
     window.addEventListener('resize', drawerStackChanged);

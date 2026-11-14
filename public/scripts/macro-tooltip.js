@@ -1,5 +1,4 @@
 import { macroPersonCard } from './macro-pill.js';
-import { OVERLAYS_CHANGED_EVENT } from './drawer-stack.js';
 import { unclippedSpace } from './util/unclipped-space.js';
 
 const MACRO_TOOLTIP_ANCHOR = '[data-macro-source]';
@@ -67,7 +66,7 @@ function place() {
     if (!box) {
         if (tooltip.matches(':popover-open')) tooltip.hidePopover();
     } else {
-        if (!tooltip.matches(':popover-open')) tooltip.showPopover();
+        if (!tooltip.matches(':popover-open')) tooltip.showPopover({ source: el });
         const { width, height } = tooltip.getBoundingClientRect();
         const left = Math.min(Math.max(GAP, (box.left + box.right) / 2 - width / 2), window.innerWidth - width - GAP);
         const top = box.top - height - GAP >= GAP ? box.top - height - GAP : box.bottom + GAP;
@@ -76,7 +75,6 @@ function place() {
             placed = at;
             tooltip.style.left = `${left}px`;
             tooltip.style.top = `${top}px`;
-            document.dispatchEvent(new Event(OVERLAYS_CHANGED_EVENT));
         }
     }
     frame = requestAnimationFrame(place);

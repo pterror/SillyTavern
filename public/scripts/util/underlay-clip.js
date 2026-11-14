@@ -5,6 +5,12 @@ const ARC_STEPS = 8;
 /** @type {Map<HTMLElement, Map<string, Rect | Rect[]>>} */
 const holes = new Map();
 
+/**
+ * The outline holes are cut from, for an element that paints outside its box; others are cut from their box
+ * @type {WeakMap<HTMLElement, Rect>}
+ */
+const rings = new WeakMap();
+
 /** @type {Set<() => void>} */
 const updaters = new Set();
 
@@ -73,13 +79,18 @@ function apply(el) {
         }
         return;
     }
+    const ring = rings.get(el);
+    const start = ring ? `${ring.left}px ${ring.top}px` : '0 0';
+    const outline = ring
+        ? [[ring.left, ring.top], [ring.right, ring.top], [ring.right, ring.bottom], [ring.left, ring.bottom]].map(([x, y]) => `${x}px ${y}px`).join(', ')
+        : '0 0, 100% 0, 100% 100%, 0 100%';
     const cut = [
         ...disjointRects(rects).map(r => [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]),
         ...roundedCorners(rects),
     ]
-        .map(points => [...points, points[0]].map(([x, y]) => `${x}px ${y}px`).join(', ') + ', 0 0')
+        .map(points => [...points, points[0]].map(([x, y]) => `${x}px ${y}px`).join(', ') + `, ${start}`)
         .join(', ');
-    const clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${cut})`;
+    const clipPath = `polygon(evenodd, ${outline}, ${start}, ${cut})`;
     if (el.dataset.underlayClip !== clipPath) {
         el.dataset.underlayClip = clipPath;
         el.style.clipPath = clipPath;
@@ -90,8 +101,10 @@ function apply(el) {
  * @param {HTMLElement} el
  * @param {string} source
  * @param {Rect[]} rects
+ * @param {Rect} [ring] the outline to cut them from, in the element's coordinates, if not its box
  */
-export function setHoles(el, source, rects) {
+export function setHoles(el, source, rects, ring) {
+    if (ring) rings.set(el, ring); else rings.delete(el);
     if (rects.length === 0) {
         holes.get(el)?.delete(source);
     } else {

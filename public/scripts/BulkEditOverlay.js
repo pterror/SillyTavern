@@ -498,6 +498,9 @@ class BulkTagPopupHandler {
         }
 
         document.body.insertAdjacentHTML('beforeend', this.#getHtml());
+        const shown = /** @type {HTMLElement} */ (document.body.lastElementChild);
+        shown.popover = 'manual';
+        shown.showPopover();
 
         const { characterRepository } = await import('./character-repository.js');
         const characters = await characterRepository.getMany(prepared.sample);

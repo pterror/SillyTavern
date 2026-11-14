@@ -939,10 +939,10 @@ function getTopmostModalLayer() {
 }
 
 /**
- * Fixes the issue with toastr not displaying on top of the dialog by moving the toastr container inside the dialog or back to the main body
+ * Keeps the toasts over everything: their container is a popover shown on top of the top layer, inside the newest open
+ * dialog if there is one, as what is outside a modal dialog takes no input
  */
 export function fixToastrForDialogs() {
-    // Hacky way of getting toastr to actually display on top of the popup...
     const dlg = Array.from(document.querySelectorAll('dialog[open]:not([closing])')).pop();
 
     let toastContainer = document.getElementById('toast-container');
@@ -953,18 +953,10 @@ export function fixToastrForDialogs() {
         if (toastr.options.positionClass) toastContainer.classList.add(toastr.options.positionClass);
     }
 
-    // Check if toastr is already a child. If not, we need to move it inside this dialog.
-    // This is either the existing toastr container or the newly created one.
     if (dlg && !dlg.contains(toastContainer)) {
-        dlg?.appendChild(toastContainer);
-        return;
-    }
-
-    // Now another case is if we only have one popup and that is currently closing. In that case the toastr container exists,
-    // but we don't have an open dialog to move it into. It's just inside the existing one that will be gone in milliseconds.
-    // To prevent new toasts from being showing up in there and then vanish in an instant,
-    // we move the toastr back to the main body, or delete if its empty
-    if (!dlg && isAlreadyPresent) {
+        dlg.appendChild(toastContainer);
+    } else if (!dlg && isAlreadyPresent) {
+        // The dialog it is in is closing: new toasts would go with it
         if (!toastContainer.childNodes.length) {
             toastContainer.remove();
         } else {
@@ -973,4 +965,14 @@ export function fixToastrForDialogs() {
             toastContainer.classList.add(toastr.options.positionClass);
         }
     }
+    raiseToasts();
+}
+
+/** Shows the toast container, while it holds toasts, as a popover on top of the top layer */
+export function raiseToasts() {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+    container.popover = 'manual';
+    if (container.matches(':popover-open')) container.hidePopover();
+    if (container.childElementCount > 0) container.showPopover();
 }

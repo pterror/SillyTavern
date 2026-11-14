@@ -1,4 +1,3 @@
-import { addLayer } from '../drawer-stack.js';
 import { power_user } from '../power-user.js';
 import { debounce, escapeRegex } from '../utils.js';
 import { AutoCompleteOption } from './AutoCompleteOption.js';
@@ -510,7 +509,7 @@ export class AutoComplete {
             }
             this.dom.append(frag);
             this.updatePosition();
-            addLayer(this.domWrap, this.getLayer());
+            this.showOver(this.domWrap);
         } else {
             this.domWrap.remove();
         }
@@ -525,7 +524,7 @@ export class AutoComplete {
         if (!this.isShowingDetails && this.isReplaceable) return this.detailsWrap.remove();
         this.detailsDom.innerHTML = '';
         this.detailsDom.append(this.selectedItem?.renderDetails() ?? 'NO ITEM');
-        addLayer(this.detailsWrap, this.getLayer());
+        this.showOver(this.detailsWrap);
         this.updateDetailsPositionDebounced();
     }
 
@@ -534,6 +533,24 @@ export class AutoComplete {
      */
     getLayer() {
         return this.textarea.closest('dialog, body');
+    }
+
+    /**
+     * Shows the list or its details as a popover opened from the field. It stays in the field's dialog, as what is
+     * outside a modal dialog takes no input.
+     * @param {HTMLElement} wrap
+     */
+    showOver(wrap) {
+        if (wrap.parentElement !== this.getLayer()) this.getLayer().append(wrap);
+        wrap.popover = 'manual';
+        if (!wrap.matches(':popover-open')) wrap.showPopover({ source: this.textarea });
+    }
+
+    /**
+     * @returns {DOMRect} the window, which the list and its details are placed against
+     */
+    getWindowRect() {
+        return new DOMRect(0, 0, window.innerWidth, window.innerHeight);
     }
 
 
@@ -607,7 +624,7 @@ export class AutoComplete {
     updateFloatingPosition() {
         const location = this.getCursorPosition();
         const rect = this.getFieldRect();
-        const layerRect = this.getLayer().getBoundingClientRect();
+        const layerRect = this.getWindowRect();
         // cursor is out of view -> hide
         if (location.bottom < rect.top || location.top > rect.bottom || location.left < rect.left || location.left > rect.right) {
             return this.hide();
@@ -630,7 +647,7 @@ export class AutoComplete {
     updateFloatingDetailsPosition(location = null) {
         if (!location) location = this.getCursorPosition();
         const rect = this.getFieldRect();
-        const layerRect = this.getLayer().getBoundingClientRect();
+        const layerRect = this.getWindowRect();
         if (location.bottom < rect.top || location.top > rect.bottom || location.left < rect.left || location.left > rect.right) {
             return this.hide();
         }
