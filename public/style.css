@@ -5314,10 +5314,9 @@ input[type="range"]::-webkit-slider-thumb {
     gap: 2px;
 }
 
+/* The editor draws its text where the reader drew it: no box of its own around it. */
 .chat-editor .cm-editor {
-    padding: 5px;
-    background-color: var(--black50a);
-    border-radius: 5px;
+    background-color: transparent;
 }
 
 .chat-editor .cm-editor.cm-focused {

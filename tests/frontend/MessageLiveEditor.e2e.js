@@ -99,6 +99,22 @@ test.describe('message edits in the live editor', () => {
         await mes.locator('.mes_edit_cancel').click();
     });
 
+    test('the editor draws its text where the message drew it, with no box of its own, and its toolbar\'s icons', async ({ page }) => {
+        const id = await chatWithUserMessage(page, 'Some *text*.');
+        const mes = page.locator(`#chat .mes[mesid="${id}"]`);
+        const readLeft = await mes.locator('.mes_text .chat-text').evaluate(element => element.getBoundingClientRect().left);
+        await mes.locator('.mes_edit').click();
+        const editor = mes.locator('.cm-editor');
+        await expect(editor).toBeVisible();
+        expect(await editor.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+        const editLeft = await mes.locator('.cm-content .cm-line').first().evaluate(element => element.getBoundingClientRect().left);
+        expect(Math.abs(editLeft - readLeft)).toBeLessThan(1);
+        const icon = mes.locator('.chat-editor-toolbar button[data-tool="bold"] i');
+        await expect(icon).toBeVisible();
+        expect(await icon.evaluate(element => getComputedStyle(element, '::before').content)).not.toBe('none');
+        await mes.locator('.mes_edit_cancel').click();
+    });
+
     test('Cancel takes the editor away and keeps the stored text', async ({ page }) => {
         await setAutoSave(page, false);
         const id = await chatWithUserMessage(page, 'Keep me.');
