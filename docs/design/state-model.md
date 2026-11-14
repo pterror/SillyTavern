@@ -123,7 +123,7 @@ Core primitive 2 of 2. That is the whole core.
 store:node(parents)          -> node     a list: two or more to merge; none only if unscoped
 store:parents(node)          -> list     only the parents inside this reference's scope
 store:get(node, key)         -> value, or { conflict = { value, value, ... } }
-store:range(node, prefix)    -> every key under prefix at node, in key order
+store:range(node, prefix)    -> { { key, value }, ... }: every key under prefix at node, in key order
 store:apply(node, changes)   -> ids      changes = { { key, op, arg }, ... }, all or none
 store:revert(node, id)       -> id       a change cancelling change id, from node down
 store:drop(node)             removes node and what is reachable only through it
@@ -387,17 +387,21 @@ return function(c)
     end,
   }
 
-  local reply_steps = {
-    function(ctx) ctx.history = history(ctx.at) end,
-    function(ctx) ctx.speaker = "Ilse"; lore.activate(ctx, { "bestiary", "places", "capital", "story" }, 4) end,
-    function(ctx) ctx.messages = prompt.assemble(parts, ctx) end,
-    function(ctx) ctx.reply = model.generate(ctx.messages) end,
-    function(ctx) ctx.at = chat.append(ctx.at, { role = "assistant", name = "Ilse", text = ctx.reply }) end,
+  local reply_steps = {                   -- each returns the fields it sets, or nothing
+    function(ctx) return { history = history(ctx.at), speaker = "Ilse" } end,
+    function(ctx) return { came_up = lore.activate(ctx, { "bestiary", "places", "capital", "story" }, 4) } end,
+    function(ctx) return { messages = prompt.assemble(parts, ctx) } end,
+    function(ctx) return { reply = model.generate(ctx.messages) } end,
+    function(ctx)
+      return { at = chat.append(ctx.at, { role = "assistant", name = "Ilse", text = ctx.reply }) }
+    end,
     tracker.step,
   }
 
   function T.reply(ctx)                   -- also what a swipe runs, from the message above
-    for _, step in ipairs(reply_steps) do step(ctx) end
+    for _, step in ipairs(reply_steps) do
+      for k, v in pairs(step(ctx) or {}) do ctx[k] = v end
+    end
     return ctx
   end
 
@@ -410,7 +414,7 @@ return function(c)
 end
 ```
 
-The person sends, the prompt is assembled, the model is called, the reply is stored: four entries in a list the card owns. There are no hooks. An extension is one more step, or a wrapper around a part; a group chat is a module that runs the reply steps once per speaker, or composes their replies into one.
+The person sends, the prompt is assembled, the model is called, the reply is stored: four entries in a list the card owns. Each step returns the fields it sets and the turn merges them, because values crossing a reference are copied: a step from another module (tracker.step, cleanup in gap 8) can't write into the card's ctx, and lore.activate returns what came up. There are no hooks. An extension is one more step, or a wrapper around a part; a group chat is a module that runs the reply steps once per speaker, or composes their replies into one.
 
 ## The install: loading modules and handing out capabilities
 
@@ -499,28 +503,32 @@ return function(c)
 
   cond.define("cameUp", function(ctx, name) return ctx.active[name] ~= nil end)
 
-  function L.activate(ctx, books, depth)      -- depth: how many recent messages are scanned
+  function L.activate(ctx, books, depth)      -- the entries that came up, in order; depth: messages scanned
     local recent = {}
     for i = math.max(1, #ctx.history - depth + 1), #ctx.history do
       recent[#recent + 1] = ctx.history[i].msg.text
     end
-    ctx.scanned, ctx.active, ctx.came_up = table.concat(recent, "\n"), {}, {}
+    local scan = { at = ctx.at, speaker = ctx.speaker,   -- what conditions read
+                   scanned = table.concat(recent, "\n"), active = {} }
+    local came_up = {}
     repeat                                    -- recursion: scan again with what came up
       local grew = false
       for _, book in ipairs(books) do
         local b = store:get(ctx.at, "lore/book/" .. book) or {}                 -- [host]
-        if cond.holds(b.when, ctx) then
-          for _, e in store:range(ctx.at, "lore/entry/" .. book .. "/") do      -- [host]
-            if ctx.active[e.name] == nil and cond.holds(e.when, ctx) then
-              ctx.active[e.name] = e
-              ctx.came_up[#ctx.came_up + 1] = e
-              ctx.scanned = ctx.scanned .. "\n" .. e.text
+        if cond.holds(b.when, scan) then
+          for _, kv in ipairs(store:range(ctx.at, "lore/entry/" .. book .. "/")) do   -- [host]
+            local e = kv.value
+            if scan.active[e.name] == nil and cond.holds(e.when, scan) then
+              scan.active[e.name] = e
+              came_up[#came_up + 1] = e
+              scan.scanned = scan.scanned .. "\n" .. e.text
               grew = true
             end
           end
         end
       end
     until not grew
+    return came_up
   end
 
   return L
@@ -826,8 +834,8 @@ function(ctx)
   function sink:close() end
   local ok, err = pcall(model.stream, ctx.messages, sink)
   if not ok and err ~= "cancelled" then error(err, 0) end
-  ctx.reply, ctx.stopped = table.concat(got), not ok   -- the append step stores stopped with it
   shown:close()
+  return { reply = table.concat(got), stopped = not ok }   -- the append step stores stopped with it
 end
 ```
 
@@ -1387,15 +1395,17 @@ end
 
 -- ilse/main.lua under A: the card runs the points it chooses, where it chooses
 local reply_steps = {
-  function(ctx) ctx.history, ctx.speaker = history(ctx.at), "Ilse" end,
-  function(ctx) ctx.came_up = ctx.hooks.wrap("lore.activate", lore.activate)(ctx, books, 4) end,
+  function(ctx) return { history = history(ctx.at), speaker = "Ilse" } end,
+  function(ctx) return { came_up = ctx.hooks.wrap("lore.activate", lore.activate)(ctx, books, 4) } end,
   function(ctx)
-    ctx.messages = prompt.at_depth(prompt.assemble(parts, ctx), ctx.hooks.list("prompt.notes", ctx))
+    return { messages = prompt.at_depth(prompt.assemble(parts, ctx), ctx.hooks.list("prompt.notes", ctx)) }
   end,
-  function(ctx) ctx.reply = model.generate(ctx.messages) end,
-  function(ctx) ctx.at = chat.append(ctx.at, { role = "assistant", name = "Ilse", text = ctx.reply }) end,
-  function(ctx) for k, v in pairs(ctx.hooks.run("after_reply", ctx)) do ctx[k] = v end end,
-}
+  function(ctx) return { reply = model.generate(ctx.messages) } end,
+  function(ctx)
+    return { at = chat.append(ctx.at, { role = "assistant", name = "Ilse", text = ctx.reply }) }
+  end,
+  function(ctx) return ctx.hooks.run("after_reply", ctx) end,
+}                                           -- run and merged as T.reply does
 
 -- in root.lua under A: a chat's points, the person's installs first, then the card's
 local function points_for(card)
@@ -1991,7 +2001,7 @@ local cleanup = load("cleanup", { regex = regex, unicode = unicode })
 return function(c)
   local ooc = c.regex.compile([[\s*\(OOC:[^)]*\)]], "giu")   -- ECMAScript syntax and flags
   return function(ctx)
-    ctx.reply = c.unicode.normalize(ooc:replace(ctx.reply, ""), "NFC")
+    return { reply = c.unicode.normalize(ooc:replace(ctx.reply, ""), "NFC") }
   end
 end
 ```
