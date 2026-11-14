@@ -30,12 +30,15 @@
 .look-screen {
     --look-name: var(--SmartThemeUnderlineColor);
 
-    position: fixed;
-    top: var(--topBarBlockSize);
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 3050;
+    inset: var(--topBarBlockSize) 0 0 0;
+    width: auto;
+    height: auto;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    overflow: visible;
     display: flex;
     flex-direction: column;
     background: var(--look-tone-0);

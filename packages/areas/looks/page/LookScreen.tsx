@@ -3,7 +3,7 @@ import type { Accessor, JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { Name } from '@st/page/name';
-import { float } from '@st/page/popover';
+import { float, inTopLayer } from '@st/page/popover';
 import {
     LOOK_SCOPE_CLASS,
     LOOK_SHOWS_MESSAGE_POINTED_CLASS,
@@ -177,7 +177,7 @@ function Screen(props: { view: Open }) {
     });
 
     return (
-        <div class="look-screen" role="dialog" aria-label={t('Look')}>
+        <div ref={inTopLayer()} class="look-screen" role="dialog" aria-label={t('Look')}>
             <style>{draftCss()}</style>
             <div class="look-hd">
                 <button type="button" class="look-back" onClick={close}>

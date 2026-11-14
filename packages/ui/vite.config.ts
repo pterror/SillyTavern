@@ -10,6 +10,7 @@ export default defineConfig({
     test: {
         name: 'ui',
         environment: 'happy-dom',
+        setupFiles: [path.resolve(import.meta.dirname, 'test/popovers.ts')],
         dir: path.resolve(import.meta.dirname, '..'),
         include: ['{ui,page}/{src,test}/**/*.test.{ts,tsx}', 'areas/*/page/**/*.test.{ts,tsx}'],
         server: { deps: { inline: [/solid-js/] } },

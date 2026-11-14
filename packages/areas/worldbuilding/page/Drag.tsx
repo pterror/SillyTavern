@@ -1,6 +1,7 @@
 import { Show, createSignal, onCleanup } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import { useUi } from '@st/page/context';
+import { inTopLayer } from '@st/page/popover';
 import { LOOP_CHECK_VISITS_PER_WRITE } from '../protocol.ts';
 import type { ActionResult } from '@st/page/client';
 import type { Grouping, Membership } from './CardMenu.tsx';
@@ -300,6 +301,7 @@ export function DragLayer(props: { control: DragControl }) {
                 };
                 return (
                     <div
+                        ref={inTopLayer()}
                         class="wb-dragged"
                         style={{
                             left: `${holding().at.x - holding().grab.x}px`,

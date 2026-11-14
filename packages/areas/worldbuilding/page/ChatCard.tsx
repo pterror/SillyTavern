@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import type { Client } from '@st/page/client';
 import { useUi } from '@st/page/context';
+import { inTopLayer } from '@st/page/popover';
 import { CARD_ENTRIES_AT_MOST, CARD_VIEW } from '../protocol.ts';
 import type { CardAsked, CardView, EntryAt, HoverCard } from '../protocol.ts';
 import { HoverItem, RelationsPath, broughtUpSentence, cardsFor } from './HoverCard.tsx';
@@ -67,6 +68,7 @@ export function chatCards(client: Client, open: (at: EntryAt) => void) {
         point(null);
         open({ book: card.book, entry: card.entry });
     };
+    const fromWord = inTopLayer(() => pointed()?.word);
 
     const Drawn = () => (
         <Show when={shown()}>
@@ -75,7 +77,10 @@ export function chatCards(client: Client, open: (at: EntryAt) => void) {
                     when={both().at.sheet}
                     fallback={
                         <div
-                            ref={(element) => (box = element)}
+                            ref={(element) => {
+                                box = element;
+                                fromWord(element);
+                            }}
                             class="wb-chat-card-at"
                             classList={{ 'wb-hover-above': both().at.above }}
                             style={{ left: `${both().at.left}px`, top: `${both().at.top}px` }}
@@ -103,6 +108,7 @@ export function chatCards(client: Client, open: (at: EntryAt) => void) {
                     }
                 >
                     <Sheet
+                        ref={fromWord}
                         cards={both().cards}
                         reply={both().at.latest ? 'latest' : 'other'}
                         onOpen={opened}
@@ -116,6 +122,7 @@ export function chatCards(client: Client, open: (at: EntryAt) => void) {
 }
 
 function Sheet(props: {
+    ref: (element: HTMLElement) => void;
     cards: HoverCard[];
     reply: 'latest' | 'other';
     onOpen: (card: HoverCard) => void;
@@ -133,7 +140,7 @@ function Sheet(props: {
         onCleanup(() => document.removeEventListener('keydown', escape, true));
     });
     return (
-        <div class="wb-chat-sheet-at">
+        <div ref={props.ref} class="wb-chat-sheet-at">
             <div class="wb-chat-scrim" onClick={() => props.onClose()} />
             <div
                 class="st-floating wb-chat-sheet"

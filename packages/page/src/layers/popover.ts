@@ -1,4 +1,4 @@
-import { onCleanup, onMount } from 'solid-js';
+import { createEffect, onCleanup, onMount } from 'solid-js';
 import { dismiss } from '@pterror/interact-list/dismiss';
 import { popover } from '@pterror/interact-list/popover';
 
@@ -37,14 +37,6 @@ function placedAt(anchor: Box, element: HTMLElement, align: Align): Box {
     return { left: x, top: y, right: x, bottom: y };
 }
 
-function placeOnce(element: HTMLElement, anchor: Anchor): () => void {
-    const { left, top } = anchor.getBoundingClientRect();
-    element.style.left = `${String(left)}px`;
-    element.style.top = `${String(top)}px`;
-    element.style.visibility = 'visible';
-    return () => undefined;
-}
-
 // Shows `element()` as a popover against `anchor()` while the calling component is mounted, and calls `close` on a
 // press outside it or on Escape. Escape goes no further: the old page closes its drawers on Escape.
 export function float(element: () => HTMLElement | undefined, options: FloatOptions) {
@@ -60,16 +52,12 @@ export function float(element: () => HTMLElement | undefined, options: FloatOpti
                 return placedAt(anchor, shown, align);
             },
         };
-        // Without the Popover API (older browsers) it is placed once, as a fixed box, outside the top layer.
-        const stopShowing =
-            typeof shown.showPopover === 'function'
-                ? popover({
-                      element: shown,
-                      anchor: point,
-                      open: { get: () => true, watch: () => () => undefined },
-                      side: 'right',
-                  })
-                : placeOnce(shown, point);
+        const stopShowing = popover({
+            element: shown,
+            anchor: point,
+            open: { get: () => true, watch: () => () => undefined },
+            side: 'right',
+        });
         // `side: 'right'` puts the corner at the point's right and top, which placedAt made the corner itself.
         const stopDismissing = dismiss({
             elements: [shown, ...(options.also?.() ?? []).filter((e): e is Element => e !== undefined)],
@@ -89,4 +77,18 @@ export function float(element: () => HTMLElement | undefined, options: FloatOpti
             stopShowing();
         });
     });
+}
+
+// A ref that shows its element as a manual popover, in the top layer, while it is mounted: opened from `source()` when
+// it gives one, and opened again from each one it gives after. Placing and closing it are the caller's.
+export function inTopLayer(source?: () => HTMLElement | undefined) {
+    return (element: HTMLElement) => {
+        element.popover = 'manual';
+        createEffect(() => {
+            const from = source?.();
+            if (!element.isConnected) return;
+            if (element.matches(':popover-open')) element.hidePopover();
+            element.showPopover(from ? { source: from } : {});
+        });
+    };
 }
