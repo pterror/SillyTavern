@@ -75,8 +75,9 @@ The screen shows the stored text.
   it arrives.
 - Every macro in every text is drawn as its value (Editing and reading), not only in the first message. The values
   are the server's, sent with the messages in the answer that delivers them (`extra.macro_values`, derived and never
-  stored): opening a chat, alternatives, openings, an edit, a stored reply. A settings change is answered with the
-  values of the macros the chat shows, so a persona switch redraws them without a request of its own.
+  stored): opening a chat, alternatives, openings, an edit, a stored reply, and the chat box's draft with the answer
+  that moves to it (the draft's `macro_values`). A settings change is answered with the values of the macros the chat
+  shows, the chat box's included, so a persona switch redraws them without a request of its own.
 - Passes that exist only because HTML is edited as a string go: `align*` to `$$`, `&amp;` in code, removing every
   U+200B, U+FFFE as a quote, trimming the result.
 

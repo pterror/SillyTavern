@@ -176,21 +176,51 @@ export async function storedMessageMacros(request, chat, nodeIds) {
 }
 
 /**
- * The answer's part for an action that may have changed the values of the macros the page shows: their values now
+ * The values of the macros a text in the chat box draws: as the person's message after where the chat ends
+ * @param {import('express').Request} request
+ * @param {import('./chat-request.js').ChatContext} chat
+ * @param {string[]} sources the macros, as written
+ * @returns {Promise<Record<string, string | null>>}
+ */
+async function boxMacroValues(request, chat, sources) {
+    const [values] = await macroValuesOf(request.user.directories, chatMacroOwner(request, chat), [{ texts: sources, speaker: null }]);
+    return values;
+}
+
+/**
+ * The draft of where an answer leaves the chat ending, with the values of the macros it draws (`macro_values`)
+ * @param {import('express').Request} request
+ * @param {import('./chat-request.js').ChatContext} chat
+ * @param {import('./chat-drafts.js').DraftAnswer | undefined} draft
+ * @returns {Promise<import('./chat-drafts.js').DraftAnswer | undefined>}
+ */
+export async function draftWithMacros(request, chat, draft) {
+    const sources = draft ? macrosIn(draft.text) : [];
+    if (!draft || !sources.length) return draft;
+    return { ...draft, [MACRO_VALUES]: await boxMacroValues(request, chat, sources) };
+}
+
+/**
+ * The answer's part for an action that may have changed the values of the macros the page shows: their values now,
+ * the messages' by node and the chat box's
  * @param {import('express').Request} request
  * @param {unknown} shown the macros the page shows, as `shownMessageMacros` lists them (page)
- * @returns {Promise<{ message_macros?: Record<string, Record<string, string | null>> }>}
+ * @returns {Promise<{ message_macros?: Record<string, Record<string, string | null>>, box_macros?: Record<string, string | null> }>}
  */
 export async function shownMacrosAnswer(request, shown) {
     if (!shown || typeof shown !== 'object') return {};
-    const { avatar_url: avatarUrl, group_id: groupIdOf, at, items } = /** @type {Record<string, unknown>} */ (shown);
+    const { avatar_url: avatarUrl, group_id: groupIdOf, at, items, box } = /** @type {Record<string, unknown>} */ (shown);
     const avatar = typeof avatarUrl === 'string' && avatarUrl !== '' ? avatarUrl : null;
     const groupId = typeof groupIdOf === 'string' && groupIdOf !== '' ? groupIdOf : null;
     if (avatar === null && groupId === null) return {};
     try {
         const chat = await chatContext(request, { avatar, group: groupId });
         const values = await shownMacroValues(request.user.directories, { avatar, groupId, chat, at: typeof at === 'string' && at !== '' ? at : null, pageFacts: pageFactsOf(request) }, items);
-        return values ? { message_macros: values } : {};
+        const inBox = Array.isArray(box) ? box.filter(source => typeof source === 'string').slice(0, 1000) : [];
+        return {
+            ...(values ? { message_macros: values } : {}),
+            ...(inBox.length && chat ? { box_macros: await boxMacroValues(request, chat, inBox) } : {}),
+        };
     } catch (error) {
         console.warn('Could not fill in the macros the page shows:', error);
         return {};

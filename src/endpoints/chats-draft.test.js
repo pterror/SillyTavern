@@ -18,6 +18,7 @@ const { writeAllSettings } = await import('../settings-store.js');
 const { newSessionKey } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
 const { draftFrames } = await import('../chat-drafts.js');
+const { shownMacrosAnswer } = await import('../message-macros.js');
 const { convertedUser, writeLibraryCard, treeOf } = await import('../../tests/converted-user.fixture.js');
 
 const user = await convertedUser('st-chats-draft-test-');
@@ -48,6 +49,7 @@ app.use((req, _res, next) => {
     next();
 });
 app.use('/api/chats', router);
+app.post('/api/chats/shown-macros', async (req, res) => res.send(await shownMacrosAnswer(req, req.body.shown)));
 const server = app.listen(0, '127.0.0.1');
 await new Promise(resolve => server.once('listening', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -139,6 +141,21 @@ test('a greeting taken out of its card takes its draft with it, in the same writ
     const write = commits.find(records => records.some(r => r.kind === 'itemDelete'));
     assert.ok(write?.some(r => r.kind === 'draftValue' && r.text === '' && r.greeting === idOf('Two.')), 'dropped in the write that takes the greeting out');
     assert.deepEqual((await post('draft', { avatar_url: 'Gia.png', owner: { greeting: idOf('Two.'), avatar: 'Gia.png' }, ...over('', 'late') }, tab)).body, { ok: true, left: 'gone' });
+});
+
+test('a draft comes with the values of the macros in it, as the person\'s message after the chat\'s end; what is only known when sent is null', async () => {
+    await writeCharacter('Mac.png', 'Mac', '');
+    const tab = newSessionKey();
+    await post('open', { avatar_url: 'Mac.png' }, tab);
+    await post('draft', { avatar_url: 'Mac.png', owner: { root: true }, ...over('', 'Hi {{char}}, {{input}}') }, tab);
+    const opened = await post('open', { avatar_url: 'Mac.png' }, tab);
+    assert.deepEqual({ ...opened.body.draft, macro_values: undefined }, { owner: { root: true }, text: 'Hi {{char}}, {{input}}', macro_values: undefined });
+    assert.equal(opened.body.draft.macro_values['{{char}}'], 'Mac');
+    assert.equal(opened.body.draft.macro_values['{{input}}'], null);
+    const answered = await post('shown-macros', { shown: { avatar_url: 'Mac.png', items: [], box: ['{{char}}', '{{user}}', '{{input}}'] } }, tab);
+    assert.deepEqual([answered.body.box_macros['{{char}}'], answered.body.box_macros['{{user}}'], answered.body.box_macros['{{input}}']], ['Mac', 'Tester', null], 'an answer that may change them carries the values of the macros the box shows, typed ones too');
+    await post('draft', { avatar_url: 'Mac.png', owner: { root: true }, ...over('Hi {{char}}, {{input}}', 'plain') }, tab);
+    assert.deepEqual((await post('open', { avatar_url: 'Mac.png' }, tab)).body.draft, { owner: { root: true }, text: 'plain' }, 'one with no macros comes with none');
 });
 
 test('a draft stays with the message it responds to: each alternative shows its own', async () => {

@@ -28,7 +28,7 @@ import { groupObjects } from './groups.js';
 import { wholeCharacter } from './characters.js';
 import { chatOpenParts } from '../chat-open-parts.js';
 import { countedOpeningState, countSent, storedMessageCounts } from '../message-count-service.js';
-import { chatMacroOwner, fillSentMacros, storedMessageMacros } from '../message-macros.js';
+import { chatMacroOwner, draftWithMacros, fillSentMacros, storedMessageMacros } from '../message-macros.js';
 import { shownTextCounts } from '../shown-text-counts.js';
 import { metadata_keys } from '../authors-note.js';
 import { SESSION_GONE_HEADER, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
@@ -836,7 +836,7 @@ async function shapeSent(request, chat, sources) {
  * @returns {Promise<{ draft: import('../chat-drafts.js').DraftAnswer | undefined, left?: object[] }>}
  */
 async function endAnswer(response, chat) {
-    return { draft: await endDraft(chat), ...(Array.isArray(response.locals.left) ? { left: response.locals.left } : {}) };
+    return { draft: await draftWithMacros(response.req, chat, await endDraft(chat)), ...(Array.isArray(response.locals.left) ? { left: response.locals.left } : {}) };
 }
 
 /**
@@ -1202,7 +1202,7 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
         const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
         const result = await chat.store.chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents, sendKeys, actor: chat.session.actor(), draftSent: chat.draftSent ?? null });
         chat.session.answer(response, { moved: result.ok });
-        return response.status(result.ok ? 200 : 409).send({ ...result, draft: result.ok ? await endDraft(chat) : undefined, message_counts: result.ok ? await storedMessageCounts(request, chat, result.node_ids) : undefined, message_macros: result.ok ? await storedMessageMacros(request, chat, result.node_ids) : undefined, links: result.ok ? await storedChatLinks(request.user.directories, chat, result.node_ids) : undefined });
+        return response.status(result.ok ? 200 : 409).send({ ...result, draft: result.ok ? await draftWithMacros(request, chat, await endDraft(chat)) : undefined, message_counts: result.ok ? await storedMessageCounts(request, chat, result.node_ids) : undefined, message_macros: result.ok ? await storedMessageMacros(request, chat, result.node_ids) : undefined, links: result.ok ? await storedChatLinks(request.user.directories, chat, result.node_ids) : undefined });
     } catch (error) {
         console.error('Error appending messages:', error);
         return response.status(500).send({ error: true });

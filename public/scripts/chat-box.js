@@ -3,6 +3,7 @@ import { boxCopies, guardedStorage } from './chat-box-copies.js';
 import { sameOwner } from './chat-box-ends.js';
 import { loadChatEditor } from './chat-text/editors.js';
 import { getRequestHeaders } from './request-headers.js';
+import { macrosIn } from './safe-macros.js';
 import { tabToken } from './tab-session.js';
 
 /**
@@ -20,7 +21,8 @@ import { tabToken } from './tab-session.js';
  * @typedef {import('./chat-box-ends.js').DraftOwner} DraftOwner
  * @typedef {import('./chat-box-text.js').BoxChange} BoxChange
  * @typedef {{ avatar_url: string } | { group_id: string }} ChatOf
- * @typedef {{ owner: DraftOwner, text: string }} Draft
+ * @typedef {Record<string, string | null>} MacroValues each macro's value, by its source; null when only known when sent
+ * @typedef {{ owner: DraftOwner, text: string, macro_values?: MacroValues }} Draft
  * @typedef {Partial<ChatOf> & { owner: DraftOwner, text: string, changes: BoxChange[], tab: string, change?: string }} LeftDraft
  *   a draft as a request carries it to be kept
  * @typedef {import('@codemirror/view').KeyBinding} KeyBinding
@@ -31,7 +33,8 @@ import { tabToken } from './tab-session.js';
  * @property {HTMLElement} element where the box goes
  * @property {() => ChatOf | null} chat the chat open now
  * @property {() => DraftOwner} endOwner what the open chat ends on now
- * @property {() => import('./chat-text/surface.js').TextSetup} setup how the box's text is drawn, as the settings are when it's made
+ * @property {(valuesOf: () => MacroValues | undefined) => import('./chat-text/surface.js').TextSetup} setup how the box's
+ *   text is drawn, its macros' values as `valuesOf` has them
  * @property {string} label
  * @property {readonly KeyBinding[]} keys the box's commands
  * @property {Parameters<typeof import('./chat-text/suggest.js').slashSuggestions>[0]} slashParser
@@ -44,10 +47,16 @@ const copies = boxCopies(guardedStorage(() => globalThis.localStorage));
 const PAGE = Math.random().toString(36).slice(2);
 
 /**
- * @type {{ chat: ChatOf, owner: DraftOwner, base: string } | null} the end the box's text responds to, and its draft
- *   as this page last heard it
+ * @type {{ chat: ChatOf, owner: DraftOwner, base: string, values?: MacroValues } | null} the end the box's text responds
+ *   to, its draft as this page last heard it, and the values of the macros the server sent with it
  */
 let here = null;
+
+/**
+ * @param {string} source a macro as written
+ * @returns {string | null | undefined} its value as the server sent it; undefined when it sent none
+ */
+const macroValue = source => (here?.values && Object.hasOwn(here.values, source) ? here.values[source] : undefined);
 
 const tab = () => tabToken();
 
@@ -141,8 +150,9 @@ function follow(known) {
     const owner = known?.owner ?? page.endOwner();
     const was = here;
     if (sameOwner(owner, was.owner)) return;
-    here = { chat: was.chat, owner, base: was.base };
+    here = { chat: was.chat, owner, base: was.base, ...(known?.macro_values ? { values: known.macro_values } : {}) };
     rebase(known?.text ?? '');
+    editor?.redraw();
     keepCopy();
     copies.remove(was.chat, was.owner, tab());
 }
@@ -163,7 +173,8 @@ export async function initChatBox(dependencies) {
     editor = chatBoxEditor({
         parent: page.element,
         text,
-        setup: page.setup(),
+        setup: page.setup(() => here?.values),
+        macroValue,
         label: page.label,
         keys: page.keys,
         slashParser: page.slashParser,
@@ -298,9 +309,13 @@ export function takeChatBoxPush(frame) {
  */
 export function arriveChatBox(chat, draft) {
     if (!draft) return;
-    if (here && isHere(chat, draft.owner)) return;
+    if (here && isHere(chat, draft.owner)) {
+        if (draft.macro_values) takeChatBoxMacros(draft.macro_values);
+        return;
+    }
     const first = here === null;
-    here = { chat, owner: draft.owner, base: draft.text };
+    here = { chat, owner: draft.owner, base: draft.text, ...(draft.macro_values ? { values: draft.macro_values } : {}) };
+    editor?.redraw();
     copies.setApart(chat, draft.owner, tab());
     if (first && text.text() !== '' && draft.text === '') {
         rebase('');
@@ -308,6 +323,23 @@ export function arriveChatBox(chat, draft) {
         return;
     }
     text.replace(draft.text);
+}
+
+/**
+ * @returns {string[]} the macros written in the box, for an answer that may change their values to carry them
+ */
+export function chatBoxMacros() {
+    return [...new Set(macrosIn(text.text()))];
+}
+
+/**
+ * The values of macros in the box, as an answer carries them: the box draws them
+ * @param {unknown} values
+ */
+export function takeChatBoxMacros(values) {
+    if (!here || !values || typeof values !== 'object' || Array.isArray(values)) return;
+    here.values = { ...here.values, .../** @type {MacroValues} */ (values) };
+    editor?.redraw();
 }
 
 /**

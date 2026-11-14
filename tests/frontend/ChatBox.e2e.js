@@ -222,6 +222,25 @@ test.describe('the chat box\'s drafts', () => {
         await expect.poll(() => boxText(page)).toBe('to B');
     });
 
+    test('a macro in a draft is drawn as its value, as the server sends it with the draft; one only known when sent says so', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        const name = `Pill ${stamp()}`;
+        const first = await createCharacter(page, name);
+        const second = await createCharacter(page, `Pill B ${stamp()}`);
+        await openCharacter(page, first);
+        await expect(chatBox(page)).toHaveCount(1, { timeout: 10000 });
+        await chatBox(page).click();
+        await page.keyboard.type('Hi {{char}} {{input}}');
+        await openCharacter(page, second);
+        await openCharacter(page, first);
+        await expect.poll(() => boxText(page)).toBe('Hi {{char}} {{input}}');
+        const pills = page.locator('#chat_box .macro-pill');
+        await expect(pills).toHaveCount(2);
+        await expect(pills.first()).toHaveText(name);
+        await expect(pills.nth(1)).toHaveAttribute('data-macro-note', 'Filled in when sent');
+        await emptyBox(page);
+    });
+
     test('text the server never confirmed is in the browser, and goes with the next open of any chat after a reload', async ({ page }) => {
         await testSetup.awaitST({ page });
         const first = await createCharacter(page, `Copy A ${stamp()}`);

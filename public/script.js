@@ -205,7 +205,7 @@ import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { getMountedTextarea } from './scripts/live-editor/registry.js';
-import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxText, focusChatBox, forgetChatBoxChat, initChatBox, openingChatBox, takeChatBoxPush, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
+import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxMacros, chatBoxText, focusChatBox, forgetChatBoxChat, initChatBox, openingChatBox, takeChatBoxMacros, takeChatBoxPush, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
 import { endOwnerOf } from './scripts/chat-box-ends.js';
 import { chatBoxSetup } from './scripts/message-text.js';
 import { initChatEditors, loadChatEditor } from './scripts/chat-text/editors.js';
@@ -620,7 +620,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
         if (mapping.v1) setAtPath(mergeData, mapping.v1, converted.value);
         setAtPath(mergeData, mapping.v2, converted.value);
         mergeData._loadedFieldHashes = { [mapping.v2]: chain.hash };
-        if (avatar === getCurrentCharacter()?.avatar) mergeData.shown_macros = shownMessageMacros();
+        if (avatar === getCurrentCharacter()?.avatar) mergeData.shown_macros = shownMessageMacros(chatBoxMacros());
 
         try {
             const fetchResult = await fetch('/api/characters/merge-attributes', {
@@ -675,6 +675,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                     savedHash = payload?.hashes?.[mapping.v2];
                     savedCounts = payload?.card_token_counts ?? null;
                     takeMessageMacros(payload?.message_macros);
+                    takeChatBoxMacros(payload?.box_macros);
                 } catch { /* no body, or not JSON - the fallback below covers it */ }
             }
 
@@ -6164,7 +6165,7 @@ export function takePendingSettingsChanges() {
     const dirtyKeys = full ? Object.keys(payload) : [...pendingSettingsKeys];
     pendingSettingsKeys.clear();
     const changes = partialChangesOf(payload, dirtyKeys);
-    return changes ? { ...changes, shown: shownMessageMacros() } : undefined;
+    return changes ? { ...changes, shown: shownMessageMacros(chatBoxMacros()) } : undefined;
 }
 
 /**
@@ -6177,11 +6178,12 @@ export function returnPendingSettingsChanges(changes) {
 
 /**
  * Takes the server's answer to settings changes it applied, as a save's or an action's that carried them.
- * @param {{ keyHashes?: Record<string, number>, settingsHash?: number, shown_counts?: any, card_token_counts?: any, message_macros?: any }} answer
+ * @param {{ keyHashes?: Record<string, number>, settingsHash?: number, shown_counts?: any, card_token_counts?: any, message_macros?: any, box_macros?: any }} answer
  * @param {Record<string, any>} sent The changes as they were sent, by key.
  */
 export async function noteSettingsChangesSaved(answer, sent) {
     takeMessageMacros(answer.message_macros);
+    takeChatBoxMacros(answer.box_macros);
     if (!takeServerKeyHashes(answer.keyHashes, Object.keys(sent).map(key => key.split('.')[0]))) {
         for (const [key, value] of Object.entries(sent)) {
             seedSettingsHashes(value, key);
@@ -6230,7 +6232,7 @@ async function performSave({ full }) {
             const result = await fetch('/api/settings/save-partial', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ keys: partialPayload, expectedHashes, shown_macros: shownMessageMacros() }),
+                body: JSON.stringify({ keys: partialPayload, expectedHashes, shown_macros: shownMessageMacros(chatBoxMacros()) }),
                 cache: 'no-cache',
             });
 

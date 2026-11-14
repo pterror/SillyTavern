@@ -1,5 +1,6 @@
 import {
     commands as cmCommands,
+    lookChanged,
     markdownPaste,
     overtype,
     state as cmState,
@@ -30,6 +31,8 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
  * @property {Element} parent
  * @property {import('../chat-box-text.js').BoxText} text
  * @property {import('./surface.js').TextSetup} setup
+ * @property {(source: string) => string | null | undefined} macroValue a macro's value, as the server sent it with the
+ *   box's text: null when only known when sent, undefined when it sent none
  * @property {string} label what the field is, for assistive technology
  * @property {readonly KeyBinding[]} keys the box's own commands on keys (Enter sends), taken before the editor's
  * @property {Parameters<typeof slashSuggestions>[0]} slashParser
@@ -44,6 +47,7 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
  * @property {() => { text: string, changes: import('../chat-box-text.js').BoxChange[] }} unsaved the edits the text
  *   heard last doesn't include, as replacements in that text's positions with what each removes, and that text
  * @property {(base: string) => void} rebase keeps what the box shows, as edits over `base` in place of the text heard
+ * @property {() => void} redraw draws the text again, as when its macros' values changed
  * @property {() => void} stop
  */
 
@@ -53,10 +57,9 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
  * @param {ChatBoxEditorOptions} options
  * @returns {ChatBoxEditor}
  */
-export function chatBoxEditor({ parent, text, setup, label, keys, slashParser, slashWanted, maxHeight }) {
+export function chatBoxEditor({ parent, text, setup, macroValue, label, keys, slashParser, slashWanted, maxHeight }) {
     const page = editorPage();
-    const filledWhenSent = () => null;
-    const pill = macroPills({ get: filledWhenSent }, name => page.person(name, ''), page.t, () => false);
+    const pill = macroPills({ get: macroValue }, name => page.person(name, ''), page.t, () => false);
     const placeholders = new Compartment();
     const drawing = new Compartment();
     const editorHolder = document.createElement('div');
@@ -75,7 +78,7 @@ export function chatBoxEditor({ parent, text, setup, label, keys, slashParser, s
             drawSelection(),
             overtype(),
             markdownPaste({ shows: markdown => drawnText(markdown, setup).textContent ?? '' }),
-            suggestions([slashSuggestions(slashParser, slashWanted), macroSuggestions(filledWhenSent, page.t), mentionSuggestions(name => page.person(name, ''))]),
+            suggestions([slashSuggestions(slashParser, slashWanted), macroSuggestions(macroValue, page.t), mentionSuggestions(name => page.person(name, ''))]),
             boxSize(maxHeight),
             placeholders.of([]),
         ],
@@ -100,6 +103,9 @@ export function chatBoxEditor({ parent, text, setup, label, keys, slashParser, s
         },
         rebase(base) {
             text.rebased(base, made.rebase(base));
+        },
+        redraw() {
+            view.dispatch({ effects: lookChanged.of(undefined) });
         },
         placeholder(shown) {
             view.dispatch({ effects: placeholders.reconfigure(shown ? placeholderText(shown) : []) });

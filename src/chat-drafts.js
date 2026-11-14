@@ -14,8 +14,9 @@ import { draftWriteOf } from './chat-engine.js';
  */
 
 /**
- * A draft as an answer carries it: the end of the chat the answer leaves the page at, and the text written after it
- * @typedef {{ owner: WireDraftOwner, text: string }} DraftAnswer
+ * A draft as an answer carries it: the end of the chat the answer leaves the page at, the text written after it, and
+ * the values of the macros in it (`draftWithMacros`), each null when only known when sent
+ * @typedef {{ owner: WireDraftOwner, text: string, macro_values?: Record<string, string | null> }} DraftAnswer
  */
 
 /**

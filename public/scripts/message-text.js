@@ -258,16 +258,18 @@ export function cardTextSetup(kind, { values, person, styleScope = '' }) {
 }
 
 /**
- * The macros the open chat's messages draw, for an action that may change their values to be answered with them
- * @returns {{ avatar_url?: string, group_id?: string, at?: string | null, items: { node: string, speaker: string | null, sources: string[] }[] } | undefined}
+ * The macros the open chat draws, for an action that may change their values to be answered with them: its messages',
+ * and the chat box's
+ * @param {string[]} box the macros in the chat box
+ * @returns {{ avatar_url?: string, group_id?: string, at?: string | null, items: { node: string, speaker: string | null, sources: string[] }[], box?: string[] } | undefined}
  */
-export function shownMessageMacros() {
+export function shownMessageMacros(box) {
     const items = chat.flatMap((message) => {
         if (!message || typeof message.node_id !== 'string' || isAppMessage(message)) return [];
         const sources = [message.mes, message.extra?.reasoning, message.extra?.bias].flatMap(text => (typeof text === 'string' ? macrosIn(text) : []));
         return sources.length ? [{ node: message.node_id, speaker: speakerOf(message), sources: [...new Set(sources)] }] : [];
     });
-    return items.length ? { ...page.macroScope(), items } : undefined;
+    return items.length || box.length ? { ...page.macroScope(), items, ...(box.length ? { box } : {}) } : undefined;
 }
 
 /**
@@ -281,11 +283,13 @@ export function messageStyles(message) {
 }
 
 /**
- * How the chat box draws what is written in it: as the person's message will be drawn, its macros filled in when sent
+ * How the chat box draws what is written in it: as the person's message will be drawn, its macros' values those the
+ * server sent with its text
+ * @param {() => Record<string, string | null> | undefined} valuesOf
  * @returns {TextSetup}
  */
-export function chatBoxSetup() {
-    return chatSetup(null, 'chat-box', () => undefined);
+export function chatBoxSetup(valuesOf) {
+    return chatSetup(null, 'chat-box', valuesOf);
 }
 
 /**

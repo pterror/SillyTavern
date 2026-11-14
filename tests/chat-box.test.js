@@ -6,7 +6,7 @@ import { boxCopies, guardedStorage } from '../public/scripts/chat-box-copies.js'
 
 let tab = 'tab-a';
 jest.unstable_mockModule('../public/scripts/chat-text/editors.js', () => ({ loadChatEditor: () => Promise.resolve() }));
-jest.unstable_mockModule('../public/scripts/chat-text/chat-box-editor.js', () => ({ chatBoxEditor: (/** @type {any} */ options) => (shown = boxEditor(options.text)) }));
+jest.unstable_mockModule('../public/scripts/chat-text/chat-box-editor.js', () => ({ chatBoxEditor: (/** @type {any} */ options) => (shown = { ...boxEditor(options.text), macroValue: options.macroValue }) }));
 jest.unstable_mockModule('../public/scripts/request-headers.js', () => ({ getRequestHeaders: () => ({}) }));
 jest.unstable_mockModule('../public/scripts/tab-session.js', () => ({ tabToken: () => tab }));
 
@@ -76,6 +76,10 @@ function boxEditor(text) {
         view,
         placeholder() {},
         stop() {},
+        redrawn: 0,
+        redraw() {
+            this.redrawn += 1;
+        },
         /** @param {string} typed what is typed at the end */
         type: typed => view.dispatch({ changes: { from: current.length, to: current.length, insert: typed } }),
         unsaved() {
@@ -456,6 +460,27 @@ describe('the chat box\'s drafts', () => {
         box.arriveChatBox({ group_id: 'g' }, { owner: { root: true }, text: 'at the root' });
         await settle();
         expect(box.chatBoxText()).toBe('at the root, edited');
+    });
+
+    test('its macros are drawn with the values the server sent with its text; one it sent none for, as written', async () => {
+        box.arriveChatBox({ group_id: 'mac' }, { owner: { root: true }, text: 'Hi {{char}}, {{input}}', macro_values: { '{{char}}': 'Mac', '{{input}}': null } });
+        await settle();
+        expect(shown.macroValue('{{char}}')).toBe('Mac');
+        expect(shown.macroValue('{{input}}')).toBeNull();
+        shown.type(' {{user}}');
+        await settle();
+        expect(shown.macroValue('{{user}}')).toBeUndefined();
+        expect(box.chatBoxMacros()).toEqual(['{{char}}', '{{input}}', '{{user}}']);
+        const before = shown.redrawn;
+        box.takeChatBoxMacros({ '{{user}}': 'Me' });
+        expect(shown.redrawn).toBe(before + 1);
+        expect(shown.macroValue('{{user}}')).toBe('Me');
+        expect(shown.macroValue('{{char}}')).toBe('Mac');
+        box.arriveChatBox({ group_id: 'mac2' }, { owner: { root: true }, text: '' });
+        expect(shown.macroValue('{{char}}')).toBeUndefined();
+        await settle();
+        box.writeChatBox('');
+        await settle();
     });
 
     test('a chat that is gone takes its copies with it', () => {
