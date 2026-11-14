@@ -151,9 +151,33 @@ Mockup options first.
 
 ## Accounts
 
-- A login session is renewed by any request and expires after inactivity; no page timer.
-- Settings snapshots belong to settings.
+- **Accounts share one store.** Each account is a node in one store. Content shared between accounts (a card imported
+  by two people, a common starting library) sits above the account nodes and is shared copy-on-write, the way the
+  version store shares everything above a branch. Privacy comes from capability scopes, quotas are charged per
+  reference, deleting an account drops its nodes, and a multiplayer chat is a node two accounts' scopes include.
+  Indexes sit at the shared base node, with each account's changes as rows, as a chat's are (replaces "indexes
+  declared per home"); a read pays one more level. Images: blobs by content hash are stored once across accounts,
+  pinned and charged per account.
+- **Accounts are a redesign, not a port,** after the state model. An account is an identity (login, password, sessions
+  renewed by any request and expiring after inactivity, no page timer), a home node in the shared store, the scopes
+  its capabilities get, and its quotas. An admin is the ceiling on what an account can be granted. Settings snapshots
+  become settings history (settings are in the version store at every level). Reason for dropping upstream's shape:
+  the owner thinks per-user folders are a leftover of upstream's file-as-database era.
 - An admin's edits to another user reach that user's open tabs at once.
+
+## State model: questions closed on 2026-11-15
+
+- **Open question 2 (how non-programmers build things)**, decided earlier: editors are modules that write data that
+  libraries read; no language in the core.
+- **Open question 6 (building an index on existing data).** Owner: "idc i guess". A schema version that adds an index
+  comes into force after the store builds it in one pass; accepted.
+- **Open question 8 (speaker names).** Owner: "references (aka new behavior) make more sense right?" Messages refer to
+  their speaker entity; a rename renames it everywhere; the rename is itself a change in history.
+- **Store integrity (requirements).** A checksum on every page or record, verified on read; copy-on-write and
+  append-style writes with no overwrite in place; a write-ahead log with checksums so a torn write is detected and
+  rolled back on open; background scrubbing that re-verifies; backups at the level of pages, so only damaged pages are
+  restored. The engine has the log's checksums and rollback on open, checksums on blocks verified on read and
+  immutable runs; it has no scrubbing, no backups and no blob store (`state-model.md`, "Store integrity").
 
 ## App-wide
 

@@ -625,10 +625,41 @@ Write cost per declared index, per change that changes what it reads:
   computed          its function, run once per change of the component, then as its kind
   A change that leaves an index's fields as they were writes nothing to it.
 A new index on existing rows: built in steps by the store's own job over the component's
-  rows (n at the library node, then each chat's), before the schema version that declares
-  it is in force; until then the version before it is, and writes during the build keep the
-  part the build has passed. Nothing reads a half-built index, and nothing is left to
-  build once the version is in force. Cost: one pass, once; after it, only the writes.
+  rows (n at the base node, then each account's, then each chat's), before the schema
+  version that declares it is in force; until then the version before it is, and writes
+  during the build keep the part the build has passed. Nothing reads a half-built index, and
+  nothing is left to build once the version is in force. Cost: one pass, once; after it,
+  only the writes. Decided (question 6): the version waits for the pass.
+
+With accounts (see "Accounts: one store, a home node each"): the base node is shared, each
+account is a child of it, and a chat is a child of its account's node (a multiplayer chat is
+a child of the base node that two accounts' scopes include, so it has no account level).
+Rows below the base node are keyed by the level they sit at: (index, account, key, e,
+depth, node) for a change made at an account's own nodes, (index, chat, ...) as above for a
+chat's. Nothing is keyed by other accounts, so no read touches another account's rows.
+  a    the index's rows at the reader's account node, in the range read (account level)
+  s_a  changes of one (component, e) on the account's other branches, between the nearest
+       change on the read's path and the read
+  point read of (e, c) at v in a chat
+          one get per level, deepest first: the chat's changes of (c, e), then the account's,
+          then the base node's value: no change at either below level costs 3 gets. Else the
+          nearest level that has changes is searched as before, (1 + s) log D in the chat or
+          (1 + s_a) log D in the account; a deeper level with changes decides before a higher one
+  query at v
+          t + r + (m_range + a_range) (1 + s) log D, a_range the account's rows in the range
+          (a_range ≤ the account's own changes of the component: edits of shared content,
+          not its chats). Compared with the table above: one more level to look up and test,
+          one more get per row the base range returns that has a change in the account, and
+          a term a_range that is zero for an account that changed nothing of the component
+  count at v
+          the base node's count (t), corrected by the account's rows and the chat's rows in
+          the range
+  write   at the base node as before; below it k rows and 1 count, at the account or chat
+          level the change was made at. A change above existing accounts and chats writes
+          only its own rows: every account's and chat's value that it doesn't override
+          follows, with nothing written per account. This is the cost table above unchanged
+          except that a read pays one more level (a_range and 1 more get); no write got
+          dearer
 
 Host: indexes, queries and store:declare are the store's. Necessary: only the store sees
   every write (any reference, a revert, the replay after it, a merge) and resolves a value
@@ -641,8 +672,9 @@ Assumes: an index is kept per node.
 Still restrictive:
   a read below the library node pays for the rows of its chat's other branches in its range;
   each merge on a read's path doubles its ancestry checks;
-  an index is the library node's or a chat's: a node below the library that takes many
+  an index is the base node's, an account's or a chat's: a node below the base that takes many
   in-place writes (a long-lived node in a chat) is read as any chat node is;
+  a read pays one more level for an account's changes of shared content;
   a schema version with a new index on existing rows comes into force when the build ends.
 ```
 
@@ -1358,7 +1390,7 @@ return function(c)
 end
 ```
 
-Which page: every open page of the person; the first answer wins and the others' calls are cancelled, so their page modules take the question down. None connected: the call raises at once, and the module decides. A page that closes mid-question makes its call raise "gone", and first goes on with the rest. A question that must wait for someone to connect, or survive a restart, is a job (gap 3) whose record is the question; pages watch jobs/ (gap 4) and answer with an action. Assumes: the install has one person, so "their pages" is every page; how persons and their pages are told apart is not settled here (I don't know whether several persons per install are wanted). How a question is drawn is the display handle's (the owner's).
+Which page: every open page of the person; the first answer wins and the others' calls are cancelled, so their page modules take the question down. None connected: the call raises at once, and the module decides. A page that closes mid-question makes its call raise "gone", and first goes on with the rest. A question that must wait for someone to connect, or survive a restart, is a job (gap 3) whose record is the question; pages watch jobs/ (gap 4) and answer with an action. Assumes: "their pages" are the pages whose sessions belong to the account asking ("Accounts: one store, a home node each"). How a question is drawn is the display handle's (the owner's).
 
 ## Gap 1, waiting: blocking-style Lua on the page
 
@@ -4013,6 +4045,96 @@ local rag  = load("rag", {
 
 Quotas are a host module, because only the store, latest, disk and holds see every byte they keep, including pins made by values. Each charged reference is a narrowing like any other, so a module's quota is in what it was handed. Assumes: space is the limited thing. Rules out: limiting calls or GPU time with it; a call rate is a net wrapper (ratelimit.lua, gap 7), and charging inference time would be infer's own (I don't know whether that's wanted). A blob shared by two accounts counts in both, so the accounts' usage can add up to more than the disk holds. How much each installed module gets is decided when it's installed (gap 5's manifest), and showing usage is the display handle's (the owner's).
 
+## Accounts: one store, a home node each
+
+```
+Decided by the owner: accounts share one store. Each account is a node in it.
+
+   base node           content shared between accounts: a card imported by two people, a common
+     |                 starting library; copy-on-write, as the version store shares everything
+     |                 above a branch
+     +-- account A     A's home: what A made or changed; A's chats are nodes under it
+     |     +-- chat
+     +-- account B
+     +-- chat 55       a multiplayer chat: a child of the base node that A's and B's scopes include
+```
+
+An account that changes shared content writes the change at its own node, as a row; the content is not copied (indexes: "Indexes under branching", with accounts). Privacy is the capability scopes: A's grant narrows the store to A's node and what is under it, and to the shared content for reading. Quotas are charged per reference (gap 6): what an account's writes add under its node is charged to it, and shared content is charged to nobody in particular, or to whoever owns the base node (I don't know which). Deleting an account drops its nodes (`store:drop`, gap 6), so the pins its values held go with them. Images and other blobs are by content hash, stored once across accounts; each account that has a value naming one pins it and is charged for it (gap 6), so usage can add up to more than the disk holds, and a blob goes when its last pin goes.
+
+```
+An account, in the model:
+  identity      a login and a password; sessions renewed by any request and expiring after
+                inactivity (no timer on a page); sessions are latest (gap 2), never history
+  home          its node in the shared store
+  scopes        the capabilities its grant mints: narrowings of the admin's ceiling ("an admin's
+                ceiling"), one of them the store narrowed to its home
+  quotas        what its references charge (gap 6)
+An admin is the ceiling on what an account can be granted, and holds no other power over what
+an account does with what it holds.
+Settings snapshots are settings history: settings at every level are changes in the store
+(the cascade), so an earlier state of them is a node, and a person who wants it back reverts
+to it. There is no second kind of copy.
+```
+
+This is a redesign of accounts, not a port of upstream's, after the state model. Upstream keeps a folder of files per user. The owner thinks per-user folders are a leftover of upstream's file-as-database era: a folder is how a database made of files tells whose data is whose, and here the node and the scopes do that. What the redesign has to answer is listed in "Questions still open" (9 to 11). Not decided here: how accounts are created and removed (the install page, an admin's page), what a login looks like, and where the password's hash is kept.
+
+## Store integrity: what the store must promise, and what the engine has
+
+Requirements (the owner's):
+
+```
+1. A checksum on every page or record, verified on read.
+2. Copy-on-write and append-style writes; nothing is overwritten in place.
+3. A write-ahead log with checksums: a torn write is detected and rolled back on open.
+4. Background scrubbing that re-verifies what is stored.
+5. Backups at the level of pages, so only damaged pages are restored.
+```
+
+What the engine has today (`engine/src/log`, `engine/src/keyspace`, `engine/src/store`; the promises are `engine/CONTRACT.md` G1, G2, G13 and the fault-injection row):
+
+```
+1. Checksums
+   exists   the record log: a crc32c per group of records, seeded with the group's position, in a
+            5-byte trailer (log/mod.rs group_seed, whole_group_at; log/format.rs TRAILER);
+            keyspace data and index blocks: a crc32c at the end of each, checked whenever a block is
+            read from disk (keyspace/block.rs Block::parse, called from run.rs read_block);
+            a run's 64-byte footer, and its kinds bitmap (run.rs read, Kinds::parse)
+   missing  nothing checks a block until it is read, so damage to a block no query reads is
+            not found; a damaged block makes the read fail (KsError::Corrupt), with no repair;
+            no checksum on a run as a whole or on the files outside the log and runs (the bulk
+            load's marker, the directory lock)
+2. No overwrite in place
+   exists   the log is append-only, in files of 16 MB (log/mod.rs FILE_TARGET); a run is written to a
+            temporary file, synced, renamed into place and the directory synced, and is never
+            changed afterwards (keyspace/mod.rs around the rename, run.rs RunWriter::finish);
+            a merge writes a new run and marks the inputs obsolete before deleting them
+   missing  restamp (run.rs) rewrites a run's footer in place during a bulk install (bulk.rs
+            install); the log is truncated at open (below). The bulk path has no fault hooks
+3. Write-ahead log
+   exists   the log is the write-ahead log: commit() resolves after sync_data on the log
+            (log/mod.rs, G1); at open the last file is scanned group by group, and a torn or
+            wrong-checksum tail is truncated to the last whole group and synced (log/mod.rs open,
+            set_len); damage that has whole groups after it refuses to open and changes nothing
+            (LogError::Corrupt, find_damage; G2). Runs are derived from the log and replayed from
+            the covered position at open (G12, G13). Crashes, torn writes, EIO and ENOSPC at
+            every I/O operation of a workload are injected in store/fault_tests.rs
+   missing  a rename or new file lost because its directory wasn't synced is not modelled
+            (CONTRACT.md); nothing in the log is replicated or repaired: the damage case stops
+            the open and waits for a person
+4. Scrubbing
+   exists   none. Verification happens at open (footers, top blocks, the log tail) and on reads
+   missing  a background pass that reads every block and group, finds damage early, and reports it
+5. Backups at page level
+   exists   none: no backup, no copy of pages, no restore
+   missing  a way to take a copy of the store's pages and to put back only the damaged ones; the
+            log files and runs are immutable once written, which makes a page-level copy natural
+            but nothing uses it
+Blobs and images: the engine has no blob store (`grep` for blob/sha256 in engine/src finds nothing),
+so content-hash blobs, their pins and per-account charges (gap 6) are not in the engine at all.
+```
+
+What is missing, as work: a scrub job, page-level backup and restore, and a way for a read that finds a bad block to ask for the page back instead of failing; the verification on read, the append-only layout and the checksummed log with rollback on open exist and are tested.
+
 ## Gap 7, granting at runtime: prompts the host draws
 
 ```
@@ -4424,14 +4546,20 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 
 ## Questions still open
 
-Decided: modules are Lua, run by LuaJIT on the server and compiled to JavaScript on the page, which the browser's engine JITs, with the compiler deciding every name code can reach; the pure-computation libraries (regex, Unicode, tokenizers, zip, PDF) are wasm, one build for both sides (gap 8). Question 5, how installed extensions and a card's own join a card's turn, is answered by option D: the composition is data, a graph the root interprets, which a card ships a piece of and an extension transforms (gap 5); which transforms run where, and in what order, are the person's rules resolved through the settings cascade, which is one mechanism for levels of context, followed relations and the message tree ("Settings: one cascade along a path").
+Decided: store integrity requirements ("Store integrity"): a checksum on every page or record verified on read, copy-on-write and append-style writes with no overwrite in place, a write-ahead log with checksums so a torn write is detected and rolled back on open, background scrubbing, and page-level backups so only damaged pages are restored. Modules are Lua, run by LuaJIT on the server and compiled to JavaScript on the page, which the browser's engine JITs, with the compiler deciding every name code can reach; the pure-computation libraries (regex, Unicode, tokenizers, zip, PDF) are wasm, one build for both sides (gap 8). Question 5, how installed extensions and a card's own join a card's turn, is answered by option D: the composition is data, a graph the root interprets, which a card ships a piece of and an extension transforms (gap 5); which transforms run where, and in what order, are the person's rules resolved through the settings cascade, which is one mechanism for levels of context, followed relations and the message tree ("Settings: one cascade along a path").
 
-2. **How does someone who doesn’t program build things?** a. Libraries in a module language that read data, as cond.lua reads ["all", …] · b. A declarative form the core itself evaluates, so it can index and explain it without running code. This puts a language in the core, which then has to pass both tests above. Option D (gap 5) already makes a card's composition data the root explains without running it, with no language in the core; what a code node does inside is still code
+2. **How does someone who doesn’t program build things?** Decided. Editors are modules that write data that libraries read; there is no language in the core. Option D (gap 5) makes a card's composition data the root explains without running it; what a code node does inside is still code.
 
-6. **Building an index on data that already exists.** A schema version that adds an index comes into force when the store's job has built it over the component's existing rows; until then the version before it is in force ("Indexes under branching"). Nothing stored is ever partial or read half-built, but a new version waits for one pass over the rows: a · whether that wait satisfies "no stored data is waiting for a backfill" · b · an index may only be added with a new component name, so nothing is built and old data stays under the old name (less general).
+6. **Building an index on data that already exists.** Decided. Owner: "idc i guess". A schema version that adds an index comes into force after the store has built it in one pass over the component's existing rows; until then the version before it is in force ("Indexes under branching"). That wait is accepted.
 
-7. **Where an index's base is.** Indexes are kept in place at the node they are declared for (the library node) and below it by chat, the child of that node a node descends from. A person whose data is not the child of one library node (several people under one root, each with a home) has the indexes declared per home. I don't know whether several persons per install are wanted (gap 1 says the same).
+7. **Where an index's base is.** Decided, replacing "indexes declared per home". Accounts share one store ("Accounts: one store, a home node each"), so indexes sit at the shared base node, with each account's changes as rows keyed by account, as a chat's are keyed by chat. The read cost with the extra level is stated under "Indexes under branching".
 
-8. **Shown names of entities.** Messages hold their speaker's entity, not a name, so a renamed character's messages show the new name; upstream's imported messages keep the name upstream stored, which "reads" returns until something names an entity. Whether a message should instead keep the name it was sent under is a UX decision.
+8. **Shown names of entities.** Decided. Owner: "references (aka new behavior) make more sense right?" Messages refer to their speaker's entity; a rename renames it everywhere, and the rename is itself a change in history. Upstream's imported messages keep the name upstream stored, which "reads" returns until something names an entity.
+
+9. **What a multiplayer chat sees.** A multiplayer chat is a child of the base node that two accounts' scopes include, so its ancestry is the base node and the chat, not either account's node: an account's own edits of shared content (a card it changed) are not in it. I don't know whether that is wanted, or whether a participant's edits should be visible there, which would need a different place for the chat.
+
+10. **How content moves between an account and the base node, and who is charged for the base.** Importing a card into the base node for everyone, or taking a common library's card into one account's changes, are operations the model doesn't yet name. I don't know who a shared node's bytes are charged to (nobody, the admin, the first importer).
+
+11. **Accounts' identity data.** Where the login, the password's hash and the list of accounts live (a store entity, the secrets of gap 2, something else), how an account is created and removed, and whether an account's home can be moved or merged. The owner's.
 
 Left out: how much control the model gets over state. Each card or world decides that for itself.

@@ -33,6 +33,8 @@
 - Zero friction for everyone, including browsing cards.
 - Budget tracking, management, enforcement (money).
 - Capability parity with other frontends (Marinara Engine's Noodle, Talemate).
+- Accounts, redesigned after the state model, not ported (`docs/design/state-model.md`, "Accounts: one store, a home node each"): an account is an identity (login, password, sessions renewed by any request and expiring after inactivity), a home node in the shared store, the scopes its capabilities get, and its quotas; an admin is the ceiling on what an account can be granted; settings snapshots become settings history. Upstream's per-user folders are, in the owner's view, a leftover of its file-as-database era. No earlier accounts migration item was in this file; the bullets under "Accounts" in `decisions-2026-11-14.md` were the only record.
+- Store integrity in the engine: background scrubbing, page-level backup and restore, and repair of a damaged block on read are missing (`docs/design/state-model.md`, "Store integrity"); a blob store with content hashes, pins and per-account charges doesn't exist in the engine.
 
 ## From the 10-03 backlog and the 10-12 / 10-16 lists (`.plans/2026-10-03-backlog.md` in `~/sillytavern-harness-backup-2026-10-17.tgz`)
 
