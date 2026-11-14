@@ -192,3 +192,54 @@ function textBox(textarea) {
     }
     show();
 }
+
+/**
+ * The shared editor on a field's text, for the expanded editor: the field's value (or, for an element that is
+ * contenteditable, its text) is the editor's, each edit written back as typing in the field was
+ * @param {HTMLElement} field the textarea, or the contenteditable element
+ * @param {{ tab?: boolean }} [options] `tab`: Tab writes a tab character
+ * @returns {{ element: HTMLElement, focus: () => void, stop: () => void }}
+ */
+export function expandedEditor(field, { tab = false } = {}) {
+    const kind = field.dataset['textBox'] === 'notes' ? 'notes' : 'literal';
+    const values = new MacroValues(() => deps.macroScope());
+    const setup = cardTextSetup(kind, { values, person: name => deps.macroPerson(name) });
+    const element = document.createElement('div');
+    element.className = 'expanded_editor';
+    const contentEditable = field.matches('[contenteditable]');
+    const text = contentEditable ? field.innerText : /** @type {HTMLTextAreaElement} */ (field).value;
+    /** @type {import('./chat-text/editor.js').ChatEditor | null} */
+    let editor = null;
+    let stopped = false;
+    void values.want(text);
+    void loadChatEditor().then(({ chatEditor, tabKeys }) => {
+        if (stopped) return;
+        editor = chatEditor({
+            parent: element,
+            setup,
+            macroValue: values.valueOf,
+            macroValues: values,
+            speaker: '',
+            person: name => withFilledAbout(deps.macroPerson(name), name, values.valueOf),
+            initial: text,
+            edited: (edited) => {
+                if (contentEditable) field.innerText = edited;
+                else /** @type {HTMLTextAreaElement} */ (field).value = edited;
+                field.dispatchEvent(new Event('input', { bubbles: true }));
+            },
+            save: async () => {},
+            className: 'expanded_editor_text macro_preview_content mes_text',
+            placeholder: field instanceof HTMLTextAreaElement ? field.placeholder : '',
+            extensions: tab ? tabKeys() : [],
+        });
+        editor.view.focus();
+    });
+    return {
+        element,
+        focus: () => editor?.view.focus(),
+        stop() {
+            stopped = true;
+            editor?.stop();
+        },
+    };
+}

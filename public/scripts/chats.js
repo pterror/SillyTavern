@@ -25,6 +25,7 @@ import {
     updateIn,
 } from '../script.js';
 import { drawnText, editPosition } from './chat-text/surface.js';
+import { expandedEditor } from './text-box-editor.js';
 import { cardTextSetup } from './message-text.js';
 import { fetchMacroValues, macroValuesOf } from './macro-values.js';
 import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
@@ -1226,7 +1227,6 @@ export function initChatUtilities() {
 
         const broId = $(this).attr('data-for');
         const bro = $(`#${broId}`);
-        const contentEditable = bro.is('[contenteditable]');
         const withTab = $(this).attr('data-tab');
 
         if (!bro.length) {
@@ -1237,79 +1237,33 @@ export function initChatUtilities() {
         const wrapper = document.createElement('div');
         wrapper.classList.add('height100p', 'wide100p', 'flex-container');
         wrapper.classList.add('flexFlowColumn', 'justifyCenter', 'alignitemscenter');
-        const textarea = document.createElement('textarea');
-        textarea.dataset.for = broId;
-        if (bro[0].dataset.macros !== undefined) {
-            textarea.dataset.macros = bro[0].dataset.macros;
-            textarea.dataset.macrosAutocomplete = 'always'; // Always show autocomplete in expanded editor
-            textarea.dataset.macrosAutocompleteStyle = 'expanded'; // Use expanded autocomplete style
-        }
-        textarea.value = String(contentEditable ? bro[0].innerText : bro.val());
-        textarea.classList.add('height100p', 'wide100p', 'maximized_textarea');
-        bro.hasClass('monospace') && textarea.classList.add('monospace');
-        bro.hasClass('mdHotkeys') && textarea.classList.add('mdHotkeys');
-        textarea.addEventListener('input', function () {
-            if (contentEditable) {
-                bro[0].innerText = textarea.value;
-            } else {
-                bro[0].value = textarea.value;
-            }
-            bro[0].dispatchEvent(new Event('input', { bubbles: true }));
-        });
+        const expanded = expandedEditor(bro[0], { tab: Boolean(withTab) });
         const committed = () => bro[0].dispatchEvent(new Event('change', { bubbles: true }));
-        wrapper.appendChild(textarea);
+        wrapper.appendChild(expanded.element);
 
-        if (textarea.dataset.macros !== undefined) {
+        if (bro[0].dataset.macros !== undefined) {
             const previewButton = document.createElement('i');
             previewButton.className = 'macro_preview_button fa-solid fa-wand-magic-sparkles right_menu_button';
             previewButton.dataset.for = broId;
             previewButton.title = t`Preview with macros substituted`;
-            wrapper.insertBefore(previewButton, textarea);
-        }
-
-        if (withTab) {
-            textarea.addEventListener('keydown', (evt) => {
-                if (evt.key == 'Tab' && !evt.shiftKey && !evt.ctrlKey && !evt.altKey) {
-                    evt.preventDefault();
-                    const start = textarea.selectionStart;
-                    const end = textarea.selectionEnd;
-                    if (end - start > 0 && textarea.value.substring(start, end).includes('\n')) {
-                        const lineStart = textarea.value.lastIndexOf('\n', start);
-                        const count = textarea.value.substring(lineStart, end).split('\n').length - 1;
-                        textarea.value = `${textarea.value.substring(0, lineStart)}${textarea.value.substring(lineStart, end).replace(/\n/g, '\n\t')}${textarea.value.substring(end)}`;
-                        textarea.selectionStart = start + 1;
-                        textarea.selectionEnd = end + count;
-                    } else {
-                        textarea.value = `${textarea.value.substring(0, start)}\t${textarea.value.substring(end)}`;
-                        textarea.selectionStart = start + 1;
-                        textarea.selectionEnd = end + 1;
-                    }
-                } else if (evt.key == 'Tab' && evt.shiftKey && !evt.ctrlKey && !evt.altKey) {
-                    evt.preventDefault();
-                    const start = textarea.selectionStart;
-                    const end = textarea.selectionEnd;
-                    const lineStart = textarea.value.lastIndexOf('\n', start);
-                    const count = textarea.value.substring(lineStart, end).split('\n\t').length - 1;
-                    textarea.value = `${textarea.value.substring(0, lineStart)}${textarea.value.substring(lineStart, end).replace(/\n\t/g, '\n')}${textarea.value.substring(end)}`;
-                    textarea.selectionStart = start - 1;
-                    textarea.selectionEnd = end - count;
-                }
-            });
+            wrapper.insertBefore(previewButton, expanded.element);
         }
 
         if (this.closest('dialog:modal')) {
             await callGenericPopup(wrapper, POPUP_TYPE.TEXT, '', { wide: true, large: true });
+            expanded.stop();
             committed();
             return;
         }
         openEditorLayer(wrapper, {
             closeTitle: t`Restore`,
             onClose: () => {
+                expanded.stop();
                 committed();
                 if (bro[0].isConnected) bro[0].focus({ preventScroll: true });
             },
         });
-        textarea.focus();
+        expanded.focus();
     });
 
     $(document).on('click', '.macro_preview_button', async function (e) {

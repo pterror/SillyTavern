@@ -88,6 +88,42 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
 export const shiftDelete = view => view.state.selection.ranges.every(range => range.empty) && deleteCharForward(view);
 
 /**
+ * Tab writes a tab character, or one at the start of each selected line; Shift+Tab takes one from each
+ * @returns {import('@codemirror/state').Extension}
+ */
+export function tabKeys() {
+    /** @param {View} view */
+    const lines = (view) => {
+        const { from, to } = view.state.selection.main;
+        const first = view.state.doc.lineAt(from).number;
+        const last = view.state.doc.lineAt(to).number;
+        return Array.from({ length: last - first + 1 }, (_, i) => view.state.doc.line(first + i));
+    };
+    return keymap.of([
+        {
+            key: 'Tab',
+            run(view) {
+                const { from, to } = view.state.selection.main;
+                if (view.state.doc.lineAt(from).number === view.state.doc.lineAt(to).number) {
+                    view.dispatch(view.state.replaceSelection('\t'), { userEvent: 'input' });
+                } else {
+                    view.dispatch({ changes: lines(view).map(line => ({ from: line.from, insert: '\t' })), userEvent: 'input' });
+                }
+                return true;
+            },
+        },
+        {
+            key: 'Shift-Tab',
+            run(view) {
+                const changes = lines(view).filter(line => line.text.startsWith('\t')).map(line => ({ from: line.from, to: line.from + 1 }));
+                if (changes.length) view.dispatch({ changes, userEvent: 'delete' });
+                return true;
+            },
+        },
+    ]);
+}
+
+/**
  * An icon for a toolbar button
  * @param {string} name a Font Awesome icon
  * @returns {() => Element}
@@ -279,6 +315,7 @@ export const editorPage = () => page;
  * @property {string} [label] what the field is, for assistive technology
  * @property {string} [placeholder]
  * @property {() => import('./search.js').PresetContext} [presetContext]
+ * @property {import('@codemirror/state').Extension} [extensions] more of the editor
  */
 
 /**
@@ -297,7 +334,7 @@ export const editorPage = () => page;
  * @param {ChatEditorOptions} options
  * @returns {ChatEditor}
  */
-export function chatEditor({ parent, setup, macroValue, macroValues, speaker, person = name => page.person(name, speaker), initial, edited, save, className, label, placeholder, presetContext }) {
+export function chatEditor({ parent, setup, macroValue, macroValues, speaker, person = name => page.person(name, speaker), initial, edited, save, className, label, placeholder, presetContext, extensions = [] }) {
     let current = initial;
     /** @type {string | undefined} */
     let latest;
@@ -358,6 +395,7 @@ export function chatEditor({ parent, setup, macroValue, macroValues, speaker, pe
             suggestions([macroSuggestions(macroValue, page.t), mentionSuggestions(person)]),
             EditorView.contentAttributes.of({ ...BROWSER_TEXT_AIDS, 'aria-multiline': 'true', ...(label ? { 'aria-label': label } : {}) }),
             ...(placeholder ? [placeholderText(placeholder)] : []),
+            extensions,
         ],
     });
     view = made.view;

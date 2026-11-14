@@ -44,3 +44,30 @@ describe('the tools an editor\'s toolbar shows', () => {
         expect(editor.shownTools(toolsById([...formatting, 'find', 'presets'])).get().map(tool => tool.id)).toEqual(['presets', 'bold']);
     });
 });
+
+describe('the Tab keys of the expanded editor', () => {
+    /**
+     * @param {string} doc
+     * @param {number} anchor
+     * @param {number} head
+     * @param {string} key
+     */
+    async function pressed(doc, anchor, head, key) {
+        const { EditorState } = await import('@codemirror/state');
+        const { keymap } = await import('@codemirror/view');
+        const state = EditorState.create({ doc, selection: { anchor, head }, extensions: [editor.tabKeys()] });
+        const binding = state.facet(keymap).flat().find(candidate => candidate.key === key);
+        const view = { state, dispatch(/** @type {any} */ ...specs) { view.state = view.state.update(...specs).state; } };
+        binding?.run?.(/** @type {any} */ (view));
+        return view.state.doc.toString();
+    }
+
+    test('Tab writes a tab character, or one at the start of each selected line', async () => {
+        expect(await pressed('ab', 1, 1, 'Tab')).toBe('a\tb');
+        expect(await pressed('a\nb\nc', 0, 3, 'Tab')).toBe('\ta\n\tb\nc');
+    });
+
+    test('Shift+Tab takes one tab from each selected line that has one', async () => {
+        expect(await pressed('\ta\n\tb\nc', 0, 5, 'Shift-Tab')).toBe('a\nb\nc');
+    });
+});

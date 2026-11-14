@@ -1,4 +1,4 @@
-body.safari .popup .popup-body:has(.maximized_textarea),
+body.safari .popup .popup-body:has(.expanded_editor),
 body.safari .popup.large_dialogue_popup .popup-body {
     height: 100%;
 }

@@ -97,7 +97,31 @@ test.describe('prompt text boxes', () => {
             'persona_description', 'extension_floating_prompt', 'extension_floating_chara', 'extension_floating_default',
             'main_prompt_quick_edit_textarea', 'nsfw_prompt_quick_edit_textarea', 'jailbreak_prompt_quick_edit_textarea',
             'context_story_string', 'completion_prompt_manager_popup_entry_form_prompt',
+            'instruct_input_sequence', 'instruct_output_suffix', 'context_example_separator', 'sysprompt_content',
+            'reasoning_prefix', 'start_reply_with', 'chat_cfg_negative_prompt', 'global_cfg_positive_prompt',
+            'nai_preamble_textarea', 'rm_group_generation_mode_join_prefix',
         ]));
         for (const id of ids) await expect(page.locator(`#${id} + .text_box`)).toHaveCount(1);
+    });
+
+    test('the expanded editor is the shared editor, bigger, writing into the field', async ({ page }) => {
+        await openPersona(page);
+        await page.evaluate(() => {
+            /** @type {HTMLTextAreaElement} */ (document.querySelector('#persona_description')).value = 'Start';
+        });
+        await page.locator('.editor_maximize[data-for="persona_description"]').click();
+        const expanded = page.locator('.expanded_editor');
+        await expect(expanded.locator('.cm-editor')).toBeVisible();
+        await expect(expanded.locator('.chat-editor-toolbar button[data-tool="bold"]')).toBeVisible();
+        await expect(expanded.locator('textarea')).toHaveCount(0);
+        await page.keyboard.press('Control+End');
+        await page.keyboard.type(' more {{user}}');
+        expect(await description(page)).toBe('Start more {{user}}');
+        await expect(expanded.locator('.macro-pill')).toHaveCount(1);
+        const box = await expanded.locator('.cm-editor').boundingBox();
+        expect(box?.height).toBeGreaterThan(300);
+        await page.locator('.editorLayer .editorLayerClose, .editorLayer [title="Restore"]').first().click();
+        await expect(expanded).toHaveCount(0);
+        await expect(page.locator('#persona_description + .text_box .text_box_view')).toContainText('Start more');
     });
 });

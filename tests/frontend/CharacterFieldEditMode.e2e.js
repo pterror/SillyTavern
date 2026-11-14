@@ -1231,10 +1231,10 @@ test.describe('expanded editor layer', () => {
         });
         try {
             await page.locator('.editor_maximize[data-for="expand_test_textarea"]').click();
-            const editor = layer(page).locator('textarea.maximized_textarea');
+            const editor = layer(page).locator('.expanded_editor .cm-content');
             await expect(editor).toBeVisible();
             await expect(page.locator('dialog[open]')).toHaveCount(0);
-            await expect(editor).toHaveValue('calm');
+            await expect(editor).toHaveText('calm');
             await editor.fill('calm and kind');
             await expect(page.locator('#expand_test_textarea')).toHaveValue('calm and kind');
             await page.keyboard.press('Escape');

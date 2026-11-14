@@ -114,7 +114,7 @@ test.describe('chat completion settings panel', () => {
         });
         await expect(page.locator('#claude_assistant_prefill')).toBeAttached();
         await page.evaluate(() => /** @type {HTMLElement} */ (document.querySelector('.editor_maximize[data-for="claude_assistant_prefill"]')).click());
-        const editor = page.locator('textarea.maximized_textarea');
+        const editor = page.locator('.expanded_editor .cm-content');
         await expect(editor).toBeVisible();
         await editor.fill('Sure, here goes:');
         await page.keyboard.press('Escape');

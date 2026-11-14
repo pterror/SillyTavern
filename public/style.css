@@ -7567,3 +7567,17 @@ div.cm-tooltip.paste-picker {
 .text_box_bar [hidden] {
     display: none !important;
 }
+
+.expanded_editor {
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+}
+
+.expanded_editor > .chat-editor {
+    min-height: 100%;
+}
+
+.expanded_editor .cm-editor {
+    min-height: 60dvh;
+}
