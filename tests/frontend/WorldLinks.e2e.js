@@ -1,39 +1,8 @@
 import { test, expect } from './fixtures.js';
 import { testSetup } from './frontent-test-utils.js';
-import { deleteWorld, makeWorld } from './worlds.js';
+import { deleteCharacter, deleteWorld, makeCharacter, makeWorld } from './worlds.js';
 
 const unique = (/** @type {string} */ name) => `${name} ${Date.now()}${Math.floor(Math.random() * 1000)}`;
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {string} name
- * @param {Record<string, unknown>} [more]
- * @returns {Promise<string>} the character's avatar
- */
-async function makeCharacter(page, name, more = {}) {
-    return page.evaluate(async ({ name, more }) => {
-        const { getRequestHeaders } = await import('/scripts/request-headers.js');
-        const card = { spec: 'chara_card_v2', spec_version: '2.0', data: { name, extensions: {}, ...more } };
-        const form = new FormData();
-        form.set('ch_name', name);
-        form.set('fav', 'false');
-        form.set('json_data', JSON.stringify(card));
-        const response = await fetch('/api/characters/create', { method: 'POST', headers: getRequestHeaders({ omitContentType: true }), body: form });
-        if (!response.ok) throw new Error(`create failed: ${response.status}`);
-        return response.text();
-    }, { name, more });
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {string} avatar
- */
-async function deleteCharacter(page, avatar) {
-    await page.evaluate(async (avatar) => {
-        const { getRequestHeaders } = await import('/scripts/request-headers.js');
-        await fetch('/api/characters/delete', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar, delete_chats: true }) });
-    }, avatar);
-}
 
 /**
  * Renames the shown world from its name on the world's page.
