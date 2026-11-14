@@ -10,10 +10,14 @@ One order for every setting, closest first:
 1. **tab**: the tab's server session (`X-ST-Session`, `public/scripts/tab-session.js`, `engine/src/store/sessions.rs`).
    Its statements are stored on the session record, so history already names them.
 2. chat
-3. character (in a group: the speaking character, then the group)
-4. **device**: one browser on one machine, for one user.
-5. user
-6. default
+3. **bookmarks**: the pinned bookmarks above this point in the chat, nearest first (a following bookmark states
+   nothing of its own for others; see `state-model.md`).
+4. character (in a group: the speaking character, then the group). A card's own statements are the character level.
+5. **world**: the world the chat or entry belongs to. Where a setting's subject is an entry or a world, containment
+   relations are followed within these levels, as the world names them.
+6. **device**: one browser on one machine, for one user.
+7. user
+8. default: the value when no level states one. Not a level that can be moved or switched off.
 
 Bundles, overrides, resolution, edits, history and forgetting work at the new levels exactly as at the others.
 
@@ -34,16 +38,29 @@ reordering them). Each row of `settings-mapping.tsv` gets a `levels` column.
 No chat or character can change a reader-bound setting, and output in a shared chat never depends on a device.
 
 The owner on deciding per setting what it's per: "what's per what: incorrect mental model" (2026-10-17T03:28:40).
-Whether that rules out this table is not decided.
+Whether that rules out this table is not decided. Until it is, the table stays as data: it is each setting's schema
+restricting which levels the setting uses (`state-model.md`, "Settings: one cascade along a path"), so it can be
+changed or removed without touching the model. World and bookmark levels are not in the rows above yet; which kinds
+may use them is open.
 
 ## The order is a setting
 
-The order of the levels is itself a setting, resolved through the cascade like any other: the order above is its
-default; it can be stated at any level, and per setting the way any field is overridden. "On this phone, my
-settings win over chats" is a device-level statement of the order; "my preset over characters' presets" is a
-user-level statement of the order for presets. Resolving a field first resolves the order that applies to it, then
-walks the levels in that order; which order resolves the order itself is not decided. Nothing else is added: the
-order is shown, edited, kept in history and reset like every other value.
+The owner: "the critical part". The order of the levels is itself a setting, resolved through the cascade like any
+other. The shipped order above is its default; it can be stated at any level and per setting (or for every setting
+under a name prefix). "On this phone, my settings win over chats" is a device-level statement of the order;
+"my preset over characters' presets" is a user-level statement of the order for presets.
+
+Each level in the order can also be switched off while keeping its place. The owner: "ideally with the ability to
+toggle some off too i guess but preserve position". The order is a list of levels, each on or off. A level that is
+off is skipped when resolving; switching it on returns it to the same position, because the toggle never edits the
+list. A toggle is a statement like any other: kept in history, undoable, and overridable at a more specific level
+("on this phone, chat-level presets are off"). The order and the toggles are shown, edited, kept in history and reset
+like every other value.
+
+Which order resolves the order itself: the owner has not decided. The model's answer, a proposal, is that the order
+and the toggles resolve along the shipped order, fixed: they are read at every level, and no statement can switch off
+the level that holds it. There is no more general answer here: a statable order of the order has to be resolved
+before it is known. Worked example, with real JSON and Lua: `state-model.md`.
 
 ## Device
 
@@ -70,5 +87,5 @@ position does. The tab shows what it states ("this tab: preset X") with a reset.
   "movingui saved on device: data loss risk" (owner, 2026-10-17T03:28:40).
 - Import: an import lands at user level; upstream's `chat_metadata.custom_background` ("lock background") becomes the
   chat's background statement; upstream's localStorage language becomes a device-level statement.
-- Cost: at most 6 levels, so O(levels) point reads per resolved slot; one localStorage read and one header per
+- Cost: at most 8 levels, so O(levels) point reads per resolved slot, plus the reads of the order and its toggles; one localStorage read and one header per
   request; one small record per device. Nothing is O(devices) or O(sessions) on a request path.

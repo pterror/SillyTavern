@@ -1206,57 +1206,86 @@ A page keeps its state only by applying the server's batches, and the cursor mak
 
 ## Settings: one cascade along a path
 
-A setting's value is the first statement found along a path of places, most specific first, and the default when none states it. Three kinds of chain feed that path in the owner's designs, and here they are one mechanism:
+A setting's value is the first statement found along a path of places, most specific first, and the default when none states it. Which places, and in which order, is the first thing the cascade resolves, because the order is itself a setting. The owner called that "the critical part".
 
-- **Levels of context.** `settings-scopes.md`: "One order for every setting, closest first: tab, chat, character (in a group: the speaking character, then the group), device, user, default", and "The order of the levels is itself a setting, resolved through the cascade like any other". `settings-reorganization.md`'s level slider adds a preset level ("default · preset · you · character · chat").
-- **Relations.** `world-model.md`: no relation kind is built in or privileged; a value is inherited along the relation kinds its resolution path names. A world's relation kinds are named by its author ("in", "works at", "belongs to", "part of"…), so which kinds a setting follows is data, stated per world. `looks.md` and `worldbuilding.md` resolve a look "theme → world → shared looks → thing, most specific wins"; whether a look also passes along relations is the world's statement of the look's path, and the app ships none (a look applies to exactly what it is set on). A path may follow several kinds, in priority order, and an entry may have several targets for one kind.
+**The order is a setting.** The order of the levels is not fixed anywhere. For a setting `x` it is two settings, resolved through this same cascade, statable at any level, for `x` or for every setting under a prefix of its name (`order/generation/` for all generation settings, `order/` for all):
+
+- `order/x`, a list of item ids, closest first. A stated list puts those items first, in that order; items it doesn't list follow, in the schema's order.
+- `on/x`, a table from item id to true or false, merged field by field: the most specific place that states an id decides it, and an id nobody states is on. An item that is off is skipped when resolving `x`; its place in the order is not touched, so switching it back on puts it exactly where it was, and moving it while it is off moves it there.
+
+Both are statements like any other: kept in history, undone and branched by the store, shown and reset like every value, and overridable at a more specific level ("on this phone, chat-level presets are off" is a device statement of `on/`; "my preset over characters' presets" is a user statement of `order/` for presets). Read together they are the list of `{ id, on }` the user sees. An item is a level, with the walk the level needs at that point: plain, a `follow` along relation kinds (a character's groups; an entry's containers), or an `ancestry` (the pinned bookmarks above). The default order, closest first, is tab, chat, the pinned bookmarks above this point, character (in a group: the speaking character, then the group; a card's own statements are the character level), world, device, user, and then the setting's default, which is not an item: it is the value when no item states one, so it can be neither moved nor switched off. A schema may restrict the items a setting uses (a reader-bound setting names tab, device and user only); a statement can reorder or switch off only items the schema has, and a level the schema doesn't name is refused. Which order resolves `order/` and `on/` themselves is not decided by the owner; the model's answer is that they resolve along the shipped default order, fixed, so nothing can switch off the level that holds the statement that switches it off (the bootstrap is a proposal, listed under "Still restrictive").
+
+Three kinds of chain feed that order in the owner's designs, and here they are one mechanism:
+
+- **Levels of context.** `settings-scopes.md`: the levels and the default order above. `settings-reorganization.md`'s level slider adds a preset level ("default · preset · you · character · chat"), which is a level and an item like the others.
+- **Relations.** `world-model.md`: no relation kind is built in or privileged; a value is inherited along the relation kinds its order names. A world's relation kinds are named by its author ("in", "works at", "belongs to", "part of"…), so which kinds a setting follows is data, stated per world. `looks.md` and `worldbuilding.md` resolve a look "theme → world → shared looks → thing, most specific wins"; whether a look also passes along relations is the world's statement of the look's path, and the app ships none (a look applies to exactly what it is set on). A path may follow several kinds, in priority order, and an entry may have several targets for one kind.
 - **The message tree.** The Author's Note panel says "Bookmarks inherit the Note from their parent, and can be changed individually after that" (`public/index.html:5832`, upstream's text with checkpoints renamed). The owner: "single author's note feels restrictive", "ANs are the wrong mental model", "idk why we cant have multiple authors note/characters note". So there is no single note: a note is a prompt part (text, a position or depth, a role, an optional condition), the same shape as a constant lorebook entry, and the notes are one setting, "prompt/notes", a table of notes by id merged across the path. A value set at a message holds for everything under it. A bookmark is a position with a mode (`engine/src/store/chat.rs`: FOLLOWING moves to each new message, PINNED stays on its message; `bookmarks_at(view, m)` lists the bookmarks at a message), and the owner's rule is that a setting stated on a bookmark is inherited down the message tree only from PINNED bookmarks on the path to it, not from every message and not from following bookmarks. A position without statements of its own, a following bookmark included, resolves a bookmark-level setting from the nearest pinned bookmarks above it.
 
 ```json
-{ "levels": {
+{ "order": [
+    { "id": "tab",       "level": "tab" },
+    { "id": "chat",      "level": "chat" },
+    { "id": "bookmarks", "level": "bookmark",  "ancestry": { "start": "at", "filter": "pinned" } },
+    { "id": "character", "level": "character", "follow": { "kinds": [ "group" ] } },
+    { "id": "world",     "level": "world" },
+    { "id": "device",    "level": "device" },
+    { "id": "user",      "level": "user" } ],
+  "levels": {
     "tab":       { "kept": "store",  "node": "tab",    "prefix": "settings/tab/" },
-    "chat":      { "kept": "store",  "node": "at",   "prefix": "settings/chat/" },
-    "character": { "kept": "store",  "node": "home", "prefix": "settings/character/{character}/" },
+    "chat":      { "kept": "store",  "node": "at",     "prefix": "settings/chat/" },
+    "bookmark":  { "kept": "store",  "node": "chat",   "of": "bookmark",  "prefix": "settings/bookmark/{id}/" },
+    "character": [ { "kept": "store", "node": "home",  "of": "character", "prefix": "settings/character/{id}/" },
+                   { "given": "card_settings", "name": "card" } ],
+    "world":     { "kept": "world",  "node": "home",   "of": "world",     "prefix": "world/{id}/settings/" },
     "device":    { "kept": "store",  "node": "device", "prefix": "settings/device/" },
-    "bookmark":  { "kept": "store",  "node": "chat",   "prefix": "settings/bookmark/{id}/" },
-    "user":      { "kept": "store",  "node": "home", "prefix": "settings/user/" },
-    "card":      { "given": "card_settings" },
+    "user":      { "kept": "store",  "node": "home",   "prefix": "settings/user/" },
     "declared":  { "given": "declared" },
-    "entry":     { "kept": "world",  "node": "home", "prefix": "world/{world}/entry/{id}/" },
-    "world":     { "kept": "world",  "node": "home", "prefix": "world/{world}/settings/" },
-    "theme":     { "kept": "store",  "node": "home", "prefix": "settings/theme/{theme}/" } },
+    "entry":     { "kept": "world",  "node": "home",   "of": "entry",     "prefix": "world/{world}/entry/{id}/" },
+    "theme":     { "kept": "store",  "node": "home",   "of": "theme",     "prefix": "settings/theme/{id}/" } },
   "schemas": {
-    "looks/text_size":  { "default": 16, "path": [ [ "level", "tab" ], [ "level", "device" ], [ "level", "user" ] ] },
+    "generation/preset": { "default": "Default" },
+    "looks/text_size":  { "default": 16, "order": [ "tab", "device", "user" ] },
     "look/name":        { "default": { "color": "#dddddd" }, "combine": "merge",
-                          "path": [ [ "follow", "entry", "entry", [] ], [ "level", "theme" ] ] },
+                          "order": [ { "id": "entry", "level": "entry", "follow": { "kinds": [] } }, { "id": "theme", "level": "theme" } ] },
     "tags":             { "default": [], "combine": "union",
-                          "path": [ [ "follow", "entry", "entry", [] ], [ "level", "world" ] ] },
+                          "order": [ { "id": "entry", "level": "entry", "follow": { "kinds": [] } }, "world" ] },
     "prompt/notes":     { "default": {}, "combine": "merge",
-                          "path": [ [ "level", "tab" ], [ "follow", "bookmark", "bookmark", [] ], [ "level", "chat" ],
-                                    [ "ancestry", "bookmark", "at", "pinned" ],
-                                    [ "level", "character" ], [ "level", "card" ], [ "level", "user" ] ] },
-    "path/":            { "path": [ [ "level", "tab" ], [ "level", "chat" ], [ "level", "character" ], [ "level", "device" ],
-                                    [ "level", "user" ], [ "level", "world" ], [ "level", "card" ], [ "level", "declared" ] ] },
+                          "order": [ "tab", { "id": "own-bookmark", "level": "bookmark", "follow": { "kinds": [] } }, "chat",
+                                     "bookmarks", "character", "user" ] },
+    "order/":           { },
+    "on/":              { "default": {}, "combine": "merge" },
     "compose":          { "combine": "rules",
-                          "path": [ [ "level", "tab" ], [ "level", "chat" ], [ "level", "character" ], [ "level", "device" ],
-                                    [ "level", "user" ], [ "level", "card" ], [ "level", "declared" ] ] } } }
+                          "order": [ "tab", "chat", "character", "device", "user", { "id": "declared", "level": "declared" } ] } } }
 ```
 
 ```
+An item of an order is { id, level, follow?, ancestry? }; the id names it in "order/x" and
+  "on/x", and the level says where its statements are. The shipped "order" above is the
+  default for every setting; a schema's own "order" lists the items it allows (a string is the
+  id of a shipped item, a table is an item of its own), in its default order.
 A level is data: where its statements are kept, and what of the context names its place.
   A filter is data too: { "pinned": ["=", "mode", "pinned"] } is a cond over a bookmark's
   own fields, declared in the app's piece; the store keeps one index per declared filter.
+  A level is one source, or a list of them, nearest first: "character" is the character's
+  statements kept in the store, then the card's own (the card is not a level of its own).
   kept    a reference the root hands settings.lua by that name: "store" or "world", both the
           version store, so every level has history and branches
   node    the context field naming the store node to read at; a tab and a device each have a
           node of their own
+  of      the context field naming the level's subject (the speaking character, an entry, a
+          world, a bookmark, a theme); the subject's id is {id} in the prefix, and what a
+          "follow" or "ancestry" walks over
   prefix  the keys' prefix; {x} is the context's x, and a level whose x the context lacks
           isn't on the path (no chat open: no chat level)
-  given   a table the context carries (what the card ships, what transforms declare)
+  given   a table the context carries (what the card ships, what transforms declare); it
+          belongs to the context's own subject, so a follow reads it at its start only
+  name    what the source is called in "from" reports (default: the level)
 A schema, which the module that owns the keys ships (the "setting schema" row at the end):
-  path    segments, most specific first:
-            ["level", name]                  that level's place
-            ["follow", level, start, kinds, most?]  the place of the context's start, then,
+  order   the items the setting may use, in its default order; absent: the shipped order.
+          What an item walks is the item's own:
+            plain                           that level's place
+            "follow": { kinds, start?, most? }  the place of the level's subject (start: the
+                                             context field, default the level's "of"), then,
                                              depth first, of each target of each of kinds
                                              (a list of relation kinds, in priority order;
                                              an entry's targets of a kind are in that
@@ -1265,20 +1294,21 @@ A schema, which the module that owns the keys ships (the "setting schema" row at
                                              special, and [] follows nothing: the start only.
                                              Cycles stop at the repeat; an entry reached two
                                              ways is one place, at its first position.
-                                             Several follow segments give several priority
-                                             tiers, each walked in full before the next
-            ["ancestry", level, start, filter]  the places of the bookmarks matching the
-                                             named filter on the context's start message
-                                             and on each message above it, nearest first
-                                             (several on one message, in the bookmark
-                                             index's order); the store answers it from
-                                             an index declared for that filter, below
-          The path a setting resolves along is itself the setting "path/<name>" (or
-          "path/<a prefix of name>/", or "path/"), stated along the schema's own path; the
-          schema's path is the default. Which levels a setting may use is which levels its
-          path names: settings-scopes' table is these paths. Which relation kinds a
-          setting follows is therefore data, and a world states it at its own level.
-  combine how the statements found along the path become the value, a property of the
+                                             Two items of one level are two priority tiers,
+                                             each walked in full before the next
+            "ancestry": { start, filter }   the places of the bookmarks matching the named
+                                             filter on the context's start message and on
+                                             each message above it, nearest first (several
+                                             on one message, in the bookmark index's order);
+                                             the store answers it from an index declared
+                                             for that filter, below
+          The order a setting resolves along is the settings "order/<name>" and "on/<name>",
+          or those of "<a prefix of name>/", or "order/" and "on/", stated along the shipped
+          order; the schema's order is the default. Which levels a setting may use is which
+          levels its schema's items name: settings-scopes' table is these orders. Which
+          relation kinds a setting follows is therefore data, and a world states it at its
+          own level (as an item with a follow, on a level the schema allows).
+  combine how the statements found along the order become the value, a property of the
           setting:
             "first" (the default)  the first place that states it
             "merge"   statements are tables; each field comes from the first place that
@@ -1297,7 +1327,7 @@ The tree comes from the store: a statement at node 800 is a change at 800, so re
   any node below sees it, and a statement lower down shadows it from there on. A branch
   from above 800 doesn't see it. Undo and branching are the store's.
 Writes: settings.state(level, name, statement, ctx, field?) at the level's place; a level
-  the setting's path doesn't name is refused. nil takes a statement back. With field, the
+  the setting's order doesn't name is refused. nil takes a statement back. With field, the
   change is kv.set_field, an op (old, { field, value }) -> old with that field set, so a
   node's table of notes keeps the others and a revert restores the old table.
 ```
@@ -1325,9 +1355,10 @@ return function(c)
   return cond
 end
 
--- settings.lua: a setting's value, from the statements along its path, most specific first
+-- settings.lua: a setting's value, from the statements along its order of levels, most specific first
 return function(c)
   local cond, kv, kept, levels, schema_of = c.cond, c.kv, c.kept, c.levels, c.schema   -- schema_of(name): a schema, or nil
+  local default_order = c.order             -- the shipped order: a list of items { id, level, follow?, ancestry? }
   local combiners = c.combiners or {}       -- name -> pure function(list, default) -> value
   local ancestry = c.ancestry               -- (filter, message) -> { bookmark ids, nearest first }   [host]
   local S = {}
@@ -1341,7 +1372,7 @@ return function(c)
     if not missing then return out end
   end
 
-  local function reader(spec, ctx)          -- read(key) at this level's place, or nil if ctx can't name it
+  local function reader(spec, ctx)          -- read(key) at this source's place, or nil if ctx can't name it
     if spec.given then
       local t = ctx[spec.given]
       return t and function(key) return t[key] end
@@ -1355,37 +1386,82 @@ return function(c)
     return function(key) return ref:get(prefix .. key) end                     -- [host]
   end
 
-  local function places(path, ctx)          -- { { name, read } }, most specific first
-    local out, emitted = {}, {}
-    local function place(level, id)         -- the level's place for id, once, at its first position
-      local read = reader(levels[level], setmetatable({ id = id }, { __index = ctx }))
-      local name = level .. " " .. id
-      if read and not emitted[name] then
-        emitted[name] = true
-        out[#out + 1] = { name = name, read = read }
-      end
-      return read
+  local function sources(level)             -- a level is one source, or a list of them, nearest first
+    local spec = levels[level]
+    return spec[1] and spec or { spec }
+  end
+
+  local function index(items)
+    local by_id = {}
+    for _, it in ipairs(items) do by_id[it.id] = it end
+    return by_id
+  end
+
+  local function expand(list, known, allowed)   -- a string is the id of an item in known; a table is an item, kept if its level is allowed
+    local out, seen = {}, {}
+    for _, e in ipairs(list or {}) do
+      local it = type(e) == "string" and known[e] or (type(e) == "table" and (not allowed or allowed[e.level]) and e)
+      if it and not seen[it.id] then seen[it.id] = true; out[#out + 1] = it end
     end
-    for _, seg in ipairs(path) do
-      if seg[1] == "level" then
-        local read = reader(levels[seg[2]], ctx)
-        if read then out[#out + 1] = { name = seg[2], read = read } end
-      elseif seg[1] == "follow" then
-        local kinds, most, seen = seg[4], seg[5], {}
+    return out, seen
+  end
+
+  local function schema(name)               -- the schema for name, or for the longest prefix of it ending in "/"
+    local p = name
+    while true do
+      local s = schema_of(p)
+      if s then return s end
+      local up = p:match("^(.*/)[^/]+/?$")
+      if not up then error("no schema for " .. name, 0) end
+      p = up
+    end
+  end
+
+  local function base_of(s)                 -- the items a setting may use, in its schema's own order
+    if not s.order then return default_order end
+    return (expand(s.order, index(default_order)))
+  end
+
+  local function places(items, ctx)         -- { { name, read } }, most specific first
+    local out, emitted = {}, {}
+    local function place(item, id, first)   -- the level's places for id, each once, at its first position
+      local frame = setmetatable({ id = id }, { __index = ctx })
+      local reads = {}
+      for _, src in ipairs(sources(item.level)) do
+        local name = (src.name or item.level) .. (id and (" " .. id) or "")
+        local read = (first or not src.given) and reader(src, frame)
+        if read then
+          if not emitted[name] then
+            emitted[name] = true
+            out[#out + 1] = { name = name, read = read }
+          end
+          reads[#reads + 1] = read
+        end
+      end
+      return reads[1]
+    end
+    for _, item in ipairs(items) do
+      local of = sources(item.level)[1].of
+      local f, a = item.follow, item.ancestry
+      if f then
+        local seen = {}
         local function visit(id, depth)
-          if seen[id] and (not most or seen[id] <= depth) then return end   -- a repeat, or no nearer than before
+          if seen[id] and (not f.most or seen[id] <= depth) then return end   -- a repeat, or no nearer than before
           seen[id] = depth
-          local read = place(seg[2], id)
-          if not read or (most and depth >= most) then return end
-          for _, kind in ipairs(kinds) do
+          local read = place(item, id, depth == 0)
+          if not read or (f.most and depth >= f.most) then return end
+          for _, kind in ipairs(f.kinds) do
             for _, next_id in ipairs(read("relation/" .. kind) or {}) do visit(next_id, depth + 1) end
           end
         end
-        if ctx[seg[3]] ~= nil then visit(ctx[seg[3]], 0) end
-      elseif seg[1] == "ancestry" then
-        if ctx[seg[3]] ~= nil then
-          for _, id in ipairs(ancestry(seg[4], ctx[seg[3]])) do place(seg[2], id) end
+        local start = ctx[f.start or of]
+        if start ~= nil then visit(start, 0) end
+      elseif a then
+        if ctx[a.start] ~= nil then
+          for _, id in ipairs(ancestry(a.filter, ctx[a.start])) do place(item, id) end
         end
+      else
+        place(item, of and ctx[of], true)
       end
     end
     return out
@@ -1401,26 +1477,45 @@ return function(c)
     return s ~= nil, s
   end
 
-  local function schema(name)               -- the schema for name, or for the longest prefix of it ending in "/"
+  local function prefixes(name)             -- name, then each prefix of it ending in "/", down to ""
     local p = name
-    while true do
-      local s = schema_of(p)
-      if s then return s end
-      local up = p:match("^(.*/)[^/]+/?$")
-      if not up then error("no schema for " .. name, 0) end
-      p = up
+    return function()
+      if p == nil then return nil end
+      local this = p
+      p = this ~= "" and (this:match("^(.*/)[^/]+/?$") or "") or nil
+      return this
     end
   end
 
-  local function path_of(name, s, ctx)      -- "path/<name>", else "path/<a prefix of it>/", else "path/"; else the schema's
-    if name:sub(1, 5) == "path/" then return s.path end   -- paths resolve along the "path/" schema's own
-    local p = name
-    while p do
-      local v = S.get("path/" .. p, ctx)
-      if v ~= nil then return v end
-      p = p ~= "" and (p:match("^(.*/)[^/]+/?$") or "") or nil
+  local function ordered(name, s, ctx)      -- every item the setting may use, in the order the cascade states, with whether it is on
+    local base, out = base_of(s), {}
+    if name:find("^order/") or name:find("^on/") then       -- the order of the order is the shipped one
+      for _, it in ipairs(base) do out[#out + 1] = { item = it, on = true } end
+      return out
     end
-    return s.path
+    local known, allowed = index(base), {}
+    for _, it in ipairs(base) do allowed[it.level] = true end
+    local listed
+    for p in prefixes(name) do
+      listed = S.get("order/" .. p, ctx)
+      if listed ~= nil then break end
+    end
+    local items, seen = expand(listed, known, allowed)
+    for _, it in ipairs(base) do if not seen[it.id] then items[#items + 1] = it end end   -- unlisted: after, in the schema's order
+    local off = {}
+    for p in prefixes(name) do
+      for id, on in pairs(S.get("on/" .. p, ctx)) do
+        if off[id] == nil then off[id] = (on == false) end                  -- the most specific name states each id
+      end
+    end
+    for _, it in ipairs(items) do out[#out + 1] = { item = it, on = not off[it.id] } end
+    return out
+  end
+
+  local function live(name, s, ctx)         -- the items to walk
+    local out = {}
+    for _, o in ipairs(ordered(name, s, ctx)) do if o.on then out[#out + 1] = o.item end end
+    return out
   end
 
   local function has(list, x)
@@ -1428,9 +1523,15 @@ return function(c)
     return false
   end
 
+  function S.order(name, ctx)               -- the order of levels that applies to name: { { id, on } }
+    local out = {}
+    for _, o in ipairs(ordered(name, schema(name), ctx)) do out[#out + 1] = { id = o.item.id, on = o.on } end
+    return out
+  end
+
   function S.get(name, ctx)                 -- the value, and where it came from
     local s = schema(name)
-    local ps = places(path_of(name, s, ctx), ctx)
+    local ps = places(live(name, s, ctx), ctx)
     local how = s.combine or "first"
     if how == "rules" then
       local rules = {}
@@ -1475,9 +1576,11 @@ return function(c)
   end
 
   function S.state(level, name, statement, ctx, field)   -- field: set only that field of the table already there
-    local s, spec, named = schema(name), levels[level], false
-    for _, seg in ipairs(s.path) do if seg[2] == level then named = true end end
-    local prefix = named and spec and spec.kept and fill(spec.prefix or "", ctx)
+    local s, named, spec = schema(name), false, nil
+    for _, it in ipairs(base_of(s)) do if it.level == level then named = true end end
+    for _, src in ipairs(sources(level)) do if src.kept then spec = src; break end end
+    local frame = setmetatable({ id = spec and spec.of and ctx[spec.of] }, { __index = ctx })
+    local prefix = named and spec and fill(spec.prefix or "", frame)
     if not prefix then error(name .. " can't be stated at " .. level .. " here", 0) end
     local change = { field == nil and { prefix .. name, kv.set, statement }
                      or { prefix .. name, kv.set_field, { field, statement } } }
@@ -1495,7 +1598,7 @@ end
 ```
 
 ```
-levels of context: looks/text_size, path tab, device, user
+levels of context: looks/text_size, order tab, device, user
 t=0      laptop: action { type = "state", level = "user", name = "looks/text_size", value = 15 }
          store: settings/user/looks/text_size = 15 at home; every device reads 15
 t=1m     phone (device 3f0c…): the same at level "device", 17: settings/device/looks/text_size
@@ -1503,39 +1606,73 @@ t=1m     phone (device 3f0c…): the same at level "device", 17: settings/device
          laptop still 15
 t=2m     phone, tab 9a71…: level "tab", 20, at the tab's node; that tab reads 20 (from
          "tab"), the phone's other tabs 17. Undoing it at the tab's node brings 17 back
-t=3m     a "state" at level "chat" for it is refused: its path names no chat level
+t=3m     a "state" at level "chat" for it is refused: its order names no chat item
+
+the order: generation/preset, whose schema states no order of its own, so every shipped item
+         applies. user states "Balanced", chat "Chat-X", character mira "Mira-tuned"; the
+         phone is device 3f0c…, no world is open. S.order(name, ctx) is the list of
+         { id, on } and S.get the value; the lines below are the output of the Lua above run
+         under LuaJIT, the statements as the calls that wrote them:
+t0       nothing stated about the order
+           chat                   Chat-X (from chat)
+           [tab, chat, bookmarks, character, world, device, user]
+t1       phone: S.state("device", "on/generation/preset", false, ctx, "chat")
+           the statement is { "chat": false } at the device's node, a change in history
+           Mira-tuned (from character mira)
+           [tab, chat (off), bookmarks, character, world, device, user]
+t2       phone: S.state("device", "order/generation/preset",
+             ["tab","user","chat","bookmarks","character","world","device"], ctx)
+           user moves in front of chat; chat is still off, and still where the list puts it
+           Balanced (from user)
+           [tab, user, chat (off), bookmarks, character, world, device]
+t3       phone: S.state("device", "on/generation/preset", true, ctx, "chat")
+           chat is on again, at the position it had at t2, not at the end and not at its
+           shipped place; user still outranks it
+           Balanced (from user)
+           [tab, user, chat, bookmarks, character, world, device]
+t4       phone: S.state("device", "order/generation/preset", nil, ctx), taking the order back
+           chat is on and back at its shipped place
+           Chat-X (from chat)
+           [tab, chat, bookmarks, character, world, device, user]
+         The laptop states neither, so at every step it reads t0. Every step is a change at the
+         device's node: undoing t3 turns chat off again, undoing t2 puts chat back in front of
+         user.
 
 relations: look/name, merged; which relations it follows is each world's own statement
-         The app ships path look/name = follow nothing, then theme: a look applies to exactly
-         what it is set on. A world opts in by stating path/look/ at its world level; no
+         The app ships order look/name = follow nothing, then theme: a look applies to exactly
+         what it is set on. A world opts in by stating order/look/ at its world level; no
          relation kind is named anywhere in the app.
          world vell, whose author calls its relations "in" and "belongs to":
            aldric: in [ house-vell ]; belongs to [ pale-choir ]; states nothing
            house-vell: in [ vell ]; states { color = #77aa33 }
            pale-choir: in [ vell ]; states { color = #aa3355, italic = true }
            vell: states { color = #3355aa, font = serif }
-           world level, path/look/: [ ["follow","entry","entry",["in"]],
-             ["follow","entry","entry",["belongs to"]], ["level","theme"] ]
+           world level, order/look/ (the first two are items of the world's own, the third
+             the shipped "theme"):
+             [ { "id": "in", "level": "entry", "follow": { "kinds": ["in"] } },
+               { "id": "belongs to", "level": "entry", "follow": { "kinds": ["belongs to"] } },
+               "theme" ]
          places for aldric: entry aldric, house-vell, vell (the "in" chain), then pale-choir
            (aldric is already a place; its "belongs to" is still followed), then theme
          look/name = { color #77aa33 (entry house-vell), font serif (entry vell), italic
-           true (entry pale-choir) }; the "belongs to" segment first would make the color
-           #aa3355; one segment ["in","belongs to"] visits house-vell, vell, then pale-choir
+           true (entry pale-choir) }; the "belongs to" item first would make the color
+           #aa3355; one item with kinds ["in","belongs to"] visits house-vell, vell, then
+           pale-choir. Run under LuaJIT, this reads #77aa33, serif, italic true
          world coast, whose author calls the relation "part of": mira: part of [ reef ] and
            in [ harbor ]; reef states { color = #2288aa }; harbor states { color = #aa2222 };
-           path/look/: [ ["follow","entry","entry",["part of"]], ["level","theme"] ]
+           order/look/: [ { "id": "part of", "level": "entry", "follow": { "kinds": ["part of"] } }, "theme" ]
            mira reads #2288aa from "entry reef"; "in" means nothing here and harbor is ignored
-         world tide states no path: mira reads only its own look and the theme's, then the
+         world tide states no order: mira reads only its own look and the theme's, then the
            default { color = #dddddd }
          tags (union): aldric's list, then house-vell's, vell's and pale-choir's, each tag once
 
-notes: prompt/notes, merged by note id; path tab, the bookmark's own, chat, the pinned
-         bookmarks above, character, card, user. A note is { text, depth or position, role,
+notes: prompt/notes, merged by note id; order tab, the bookmark's own, chat, the pinned
+         bookmarks above, character (the card included), user. A note is { text, depth or position, role,
          set (the depth it was stated at), when? }, a prompt part; notes from every place
          apply together, and one id stated nearer replaces that id alone. false switches an
          id off. A bookmark's statements are kept by the bookmark under the chat's node, so
          they stay with it when it moves. The chat level outranks the pinned ones because the
-         path says so; the order is data.
+         order says so; the order is data.
          chat 790: positions 40 … 60 … 70 … 85 … 120 on the main line (a position is its depth
          in the chat's path, which the store knows); 62 under 60 and 105 under 100 are branches
 t=0      P1, pinned at 40, states { scene = { text "The Drowned Coast, night.", depth 4, set 40 },
@@ -1598,23 +1735,27 @@ Necessary: the store alone holds the ancestry. Assumes: the filter is a cond ove
   So: a filter is declared data, and the store keeps one index per filter.
 ```
 
-Every setting resolves this way, so a setting's levels, their order, the relation kinds it follows, how statements combine and where each level is kept are data: settings-scopes' table is the paths, its "the order is a setting" is "path/<name>", and its levels are the levels list, which content can add to (a preset level, settings-reorganization's, is a level whose prefix names the preset the context carries; settings-scopes' group, after the speaking character, is a follow from the character through whichever relation kinds name its groups). Every level is kept in the version store, a tab's and a device's under nodes of their own, so every statement at every level branches and undoes the same way; latest holds caches, progress, sessions and drafts, never a setting. Costs: a resolve is one read per place on its path (a follow, one per entry it passes and kind it follows); a "rules" setting is one read per level; no setting costs anything per card, chat or row. Nothing here is a host module or a primitive, so both tests are only the assumptions:
+Every setting resolves this way, so a setting's levels, their order, the relation kinds it follows, how statements combine and where each level is kept are data: settings-scopes' table is the schemas' orders, its "the order is a setting" is "order/<name>" with "on/<name>", and its levels are the levels list, which content can add to (a preset level, settings-reorganization's, is a level whose prefix names the preset the context carries and an item in the order; settings-scopes' group, after the speaking character, is the follow on the character item). Every level is kept in the version store, a tab's and a device's under nodes of their own, so every statement at every level branches and undoes the same way; latest holds caches, progress, sessions and drafts, never a setting. Costs: a resolve is one read per place on its order (a follow, one per entry it passes and kind it follows), plus the reads of "order/" and "on/" for the name and each prefix of it, themselves resolved along the shipped order; that is a constant number of reads per setting, never per card; a "rules" setting is one read per level; no setting costs anything per card, chat or row. Nothing here is a host module or a primitive, so both tests are only the assumptions:
 
 ```
 settings.lua, context_cond.lua: content.
 Necessary: none of it.
 
-Assumes: a fixed set of levels (tab, chat, character, device, user, default).
+Assumes: a fixed set of levels (tab, chat, bookmarks, character, world, device, user, default).
   Rules out: a level someone needs that isn't on the list: a preset, a group, a world
   entry's container, a session.
   So: levels are data: where each is kept and what of the context names its place.
 Assumes: one order of levels for every setting.
   Rules out: settings-scopes' "my preset over characters' presets", or a world whose looks
   pass along its relations next to one whose looks don't.
-  So: each setting has a path, and the path is itself a setting.
+  So: the order is itself a setting ("order/<name>"), statable at any level and per
+  setting, and each level in it can be switched off ("on/<name>") with its place kept.
+Assumes: a level is either always consulted or never.
+  Rules out: "on this phone, chat-level presets are off" without losing where chat sits.
+  So: on/ is a statement apart from order/: a toggle never edits the list.
 Assumes: one relation kind is the one a value is inherited along.
   Rules out: a world that names it differently, or inherits along several kinds, or none.
-  So: a path names the relation kinds it follows, as data a world states.
+  So: an item names the relation kinds it follows, as data a world states.
 Assumes: the first place that states a value decides it.
   Rules out: a look assembled from parts set at different entries, a list of tags from all
   of them.
@@ -1632,8 +1773,16 @@ Still restrictive:
   every level has history, so a tab's and a device's statements are at nodes of their own
   in the store; what keeps those nodes from piling up for every tab ever opened is not
   designed here;
-  which path resolves the paths is the "path/" schema's own, which names every level;
-  the order is data, and which level outranks which is only the order of that path;
+  which order resolves "order/" and "on/" is the shipped one, fixed, so a statement of
+  either is read at every level and none can be switched off by itself; this is the model's
+  answer, not the owner's decision; an order of the order that is itself statable would have
+  to be resolved before it is known;
+  the order is data, and which level outranks which is only the order of that list;
+  a statement of "order/" that lists an unknown id drops it silently, and one that omits a
+  shipped item leaves that item after the listed ones; whether either should be refused is
+  not decided;
+  the shipped order's "group" kind is the one name this model gives a relation, standing in
+  for whatever the groups feature will call its membership;
   a "follow" that loops (an entry in itself, through others) stops at the repeat, with
   no error, and an entry reached two ways is one place at its first position.
 ```

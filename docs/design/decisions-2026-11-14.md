@@ -66,7 +66,8 @@ choice made is marked as such.
   device, chat, character, card, world, user) are in the version store, a tab and a device under nodes of their own, so
   all undo and branch alike; latest holds caches, progress, sessions and drafts, never a setting.
 - **A card is one more level.** Its statements, ordering included, are statements at the card level; whether they
-  outrank the person's depends only on the path's order, which is itself a setting. The person's authority is that only
+  outrank the person's depends only on the path's order, which is itself a setting. Superseded in part below: a card's
+  own statements are the character level. The person's authority is that only
   their install holds the references that write their levels, not a rule about levels.
 - **Bookmarks.** A setting stated on a bookmark is inherited down the message tree only from pinned bookmarks on the path
   (`engine/src/store/chat.rs`: FOLLOWING moves to each new message, PINNED stays); a following bookmark or any position
@@ -80,6 +81,22 @@ choice made is marked as such.
   stops applying at some point". Two ways, both existing mechanisms: a statement at a later message switching the note
   off by id (it holds for everything under that message, on that branch only), and a condition on the note ("for N
   messages after it was set", "until message N", "while a state key is true", "until the next pinned bookmark").
+
+- **The order of the levels is the critical part.** Owner: "the critical part" (that the order is itself a setting).
+  The order is a setting resolved through the cascade, statable at any level and per setting, and central to the
+  cascade section of `state-model.md`, not a footnote. Realised as the settings `order/<name>` (a list of levels) and
+  `on/<name>` (which are on).
+- **A level can be switched off and keep its place.** Owner: "ideally with the ability to toggle some off too i guess
+  but preserve position". A stated order is a list of levels, each on or off; off levels are skipped in resolution;
+  switching one on returns it to the same position. A toggle is a statement like any other: in history, undoable,
+  overridable at a more specific level ("on this phone, chat-level presets are off").
+- **Default order** (owner: "sure up to you"; the model's choice), closest first: tab, chat, pinned bookmarks above
+  this point, character (in a group: the speaking character, then the group; a card's own statements are the character
+  level), world, device, user, default. Containment-relation follows apply within the levels whose subject is an entry
+  or world.
+- **Still open from this:** which order resolves the order itself (the model proposes the shipped order, fixed);
+  whether `settings-scopes.md`'s table of which levels a kind of setting may use survives ("what's per what: incorrect
+  mental model", 2026-10-17); what "group" is called as a relation.
 
 ## Worldbuilding
 
