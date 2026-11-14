@@ -40,12 +40,10 @@ const WIDTHS: Record<RowField, string> = {
 const NUMERIC = new Set<RowField>(['order', 'chance', 'tokens']);
 
 const COMES: { comes: EntryFacts['comesIn']; words: string; change: Partial<Placement> }[] = [
-    { comes: 'always', words: 'Always', change: { constant: true, disable: false } },
-    { comes: 'broughtUp', words: 'When brought up', change: { constant: false, disable: false } },
-    { comes: 'never', words: 'Never', change: { constant: false, disable: true } },
+    { comes: 'broughtUp', words: 'Normal', change: { constant: false, disable: false } },
+    { comes: 'always', words: 'Constant', change: { constant: true, disable: false } },
+    { comes: 'never', words: 'Disabled', change: { constant: false, disable: true } },
 ];
-
-const capitalized = (words: string) => words.charAt(0).toUpperCase() + words.slice(1);
 
 export const columnsOf = (fields: RowField[]): string =>
     ['58px', '36px', '230px', ...fields.map((field) => WIDTHS[field])].join(' ');
@@ -388,9 +386,7 @@ function GoesCell(props: { book: string; entry: string; facts: EntryFacts }) {
                         });
                     }}
                 >
-                    <For each={WHERES}>
-                        {(where) => <option value={where.position}>{capitalized(t(where.words))}</option>}
-                    </For>
+                    <For each={WHERES}>{(where) => <option value={where.position}>{t(where.words)}</option>}</For>
                 </select>
             </Show>
         </span>
@@ -627,7 +623,7 @@ function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onFillTitles
                         role="menuitem"
                         onClick={() => props.onSet({ position: where.position })}
                     >
-                        {capitalized(t(where.words))}
+                        {t(where.words)}
                     </button>
                 )}
             </For>

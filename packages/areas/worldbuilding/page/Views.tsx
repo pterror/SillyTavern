@@ -40,7 +40,7 @@ const SORT_CHOICES: { sort: ViewSort; label: string }[] = [
     { sort: { by: 'uid', descending: false }, label: 'UID ↗' },
     { sort: { by: 'uid', descending: true }, label: 'UID ↘' },
     { sort: { by: 'probability', descending: false }, label: 'Probability ↗' },
-    { sort: { by: 'probability', descending: true }, label: 'Trigger% ↘' },
+    { sort: { by: 'probability', descending: true }, label: 'Probability ↘' },
     { sort: { by: 'priority', descending: false }, label: 'Priority' },
 ];
 

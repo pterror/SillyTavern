@@ -90,7 +90,7 @@ test.describe('a world\'s views', () => {
 
         await row(page, 'Season of fog').locator('.wb-cell').nth(1).click();
         await row(page, 'Season of fog').getByLabel('Position').selectOption({ label: 'At depth' });
-        await expect(row(page, 'Season of fog')).toContainText('Into the chat, 4 up');
+        await expect(row(page, 'Season of fog')).toContainText('At depth 4');
 
         const box = async (/** @type {string} */ title) => {
             const found = await pane(page).getByRole('checkbox', { name: `Select ${title}`, exact: true }).boundingBox();
@@ -112,10 +112,10 @@ test.describe('a world\'s views', () => {
         await row(page, 'Season of fog').locator('.wb-cb').click();
         await expect(pane(page).locator('.wb-bulk')).toContainText('All 5 matching except 1');
         await pane(page).locator('.wb-bulk').getByRole('button', { name: 'Set ▾' }).click();
-        await pane(page).locator('.wb-bulk-menu').getByRole('menuitem', { name: 'Always' }).click();
-        await expect(row(page, 'Saltmarrow')).toContainText('Always');
-        await expect(row(page, 'Ilse Varro')).toContainText('Always');
-        await expect(row(page, 'Season of fog')).toContainText('When brought up');
+        await pane(page).locator('.wb-bulk-menu').getByRole('menuitem', { name: 'Constant' }).click();
+        await expect(row(page, 'Saltmarrow')).toContainText('Constant');
+        await expect(row(page, 'Ilse Varro')).toContainText('Constant');
+        await expect(row(page, 'Season of fog')).toContainText('Normal');
 
         await pane(page).getByRole('checkbox', { name: 'Select Harbormaster Quell' }).click();
         await pane(page).getByRole('checkbox', { name: 'Select all matching' }).click();

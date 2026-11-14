@@ -79,8 +79,8 @@ test.describe('a world of hundreds of entries, on its page', () => {
     });
 
     test('a card shows what brings its entry up and where it goes, and is switched on and off in one action', async ({ page }) => {
-        await expect(card(page, 0).locator('.wb-card-triggers')).toHaveText('Always');
-        await expect(card(page, 0).locator('.wb-card-goes')).toHaveText('Into the chat, 4 up');
+        await expect(card(page, 0).locator('.wb-card-triggers')).toHaveText('Constant');
+        await expect(card(page, 0).locator('.wb-card-goes')).toHaveText('At depth 4');
         await expect(card(page, 1).locator('.wb-card-triggers')).toHaveText('thing1, alias1');
         await expect(card(page, 7).locator('.wb-card-triggers')).toHaveText('thing7, alias7 + none of also7');
         await expect(card(page, 3).locator('.wb-onoff')).toHaveAttribute('aria-checked', 'false');
@@ -127,8 +127,8 @@ test.describe('a world of hundreds of entries, on its page', () => {
             await sentence.locator('.wb-choice', { hasText: offer }).click();
         };
 
-        await sentence.getByRole('button', { name: 'none of' }).click();
-        await sentence.getByRole('option', { name: 'all of', exact: true }).click();
+        await sentence.getByRole('button', { name: 'None of' }).click();
+        await sentence.getByRole('option', { name: 'All of', exact: true }).click();
         await expect.poll(async () => (await storedEntry(page, 7)).selectiveLogic).toBe(3);
 
         await sentence.getByRole('button', { name: 'Before character' }).click();

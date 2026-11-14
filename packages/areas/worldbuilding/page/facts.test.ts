@@ -17,9 +17,9 @@ const facts = (change: Partial<EntryFacts> = {}): EntryFacts => ({
 });
 
 test('a card says what brings its entry up: always, its keys, or its keys with the secondary ones and their logic', () => {
-    expect(triggerWords(['lamp'], facts({ comesIn: 'always' }), t)).toBe('Always');
+    expect(triggerWords(['lamp'], facts({ comesIn: 'always' }), t)).toBe('Constant');
     expect(triggerWords(['lamp', 'light'], facts(), t)).toBe('lamp, light');
-    expect(triggerWords([], facts(), t)).toBe('no keys');
+    expect(triggerWords([], facts(), t)).toBe('No keys');
     expect(triggerWords(['lamp'], facts({ keysecondary: ['oil'], selectiveLogic: 2 }), t)).toBe('lamp + none of oil');
     expect(triggerWords(['lamp'], facts({ keysecondary: ['oil', 'wick'], selectiveLogic: 3 }), t)).toBe(
         'lamp + all of oil, wick',
@@ -27,7 +27,7 @@ test('a card says what brings its entry up: always, its keys, or its keys with t
 });
 
 test('where it goes reads as the sentence does, into the chat with its depth', () => {
-    expect(goesWords(facts({ position: 4, depth: 2 }), t)).toBe('Into the chat, ${0} up'.replace('${0}', '2'));
+    expect(goesWords(facts({ position: 4, depth: 2 }), t)).toBe('At depth 2');
     expect(goesWords(facts({ position: 1 }), t)).toBe('After character');
 });
 

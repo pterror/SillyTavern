@@ -49,10 +49,10 @@ const ROLES: { value: Placement['role']; words: string }[] = [
 
 // Upstream's `selectiveLogic`: 0 AND ANY, 1 NOT ALL, 2 NOT ANY, 3 AND ALL.
 export const LOGICS: { value: Placement['selectiveLogic']; words: string }[] = [
-    { value: 0, words: 'any of' },
-    { value: 3, words: 'all of' },
-    { value: 2, words: 'none of' },
-    { value: 1, words: 'not all of' },
+    { value: 0, words: 'Any of' },
+    { value: 3, words: 'All of' },
+    { value: 2, words: 'None of' },
+    { value: 1, words: 'Not all of' },
 ];
 
 const TRIGGER_WORDS: Record<Placement['triggers'][number], string> = {
