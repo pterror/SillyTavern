@@ -33,8 +33,9 @@ greetings and other alternatives, worldbuilding text, prompt manager prompts, au
 From `~/git/cyoa`'s design: every action is a command, reachable from the toolbar (each person chooses its buttons), a
 bar beside the selection, right-click, the palette and keys. Each button's tooltip shows its key; holding Ctrl shows
 every shortcut. With nothing selected, formatting buttons are switches for what's typed next and show pressed while
-the cursor is in that style. On a touch screen the toolbar sits above the on-screen keyboard. Toolbar placement in each
-field is reserved space, so it never moves the field.
+the cursor is in that style. On a touch screen the toolbar sits above the on-screen keyboard. The chat box is always
+an editor, toolbar included, so the input used on every turn never reflows; other fields show their toolbar when
+editing begins.
 
 - Slash-command suggestions are the editor's own, the same mechanism as macro suggestions.
 - Find and replace and its presets move over unchanged; their redesign is a separate item.
