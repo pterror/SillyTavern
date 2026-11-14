@@ -2096,6 +2096,8 @@ button {
 }
 
 #chat_box {
+    /* it sits among the send form's icons, sized larger (#nonQRFormItems); its text is message text */
+    font-size: var(--mainFontSize);
     min-height: calc(var(--bottomFormBlockSize) + 2px);
     min-width: 0;
     display: flex;
@@ -3095,10 +3097,6 @@ textarea::placeholder {
     color: var(--SmartThemeEmColor);
     opacity: 0.7;
     white-space: nowrap;
-}
-
-#chat_box .cm-content:has(.cm-placeholder) {
-    text-align: center;
 }
 
 @media screen and (max-width: 1000px) {

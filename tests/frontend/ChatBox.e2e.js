@@ -71,6 +71,24 @@ test.describe('the chat box', () => {
         await emptyBox(page);
     });
 
+    test('its text and placeholder are drawn as message text is: its size, from the start of the line', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        await emptyBox(page);
+        const style = (/** @type {string} */ selector) => page.locator(selector).first().evaluate((element) => {
+            const { fontSize, textAlign } = getComputedStyle(element);
+            return { fontSize, textAlign };
+        });
+        const message = await style('#chat .mes_text .chat-text');
+        await expect(page.locator('#chat_box .cm-placeholder')).toBeVisible();
+        expect(await style('#chat_box .cm-content')).toEqual({ fontSize: message.fontSize, textAlign: 'start' });
+        expect((await style('#chat_box .cm-placeholder')).fontSize).toBe(message.fontSize);
+        await chatBox(page).click();
+        await page.keyboard.type('typed');
+        expect(await style('#chat_box .cm-content')).toEqual({ fontSize: message.fontSize, textAlign: 'start' });
+        await emptyBox(page);
+    });
+
     test('its toolbar holds every formatting command, which run on its text', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openSeraphina(page);
