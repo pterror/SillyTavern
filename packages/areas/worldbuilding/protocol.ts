@@ -372,14 +372,14 @@ export type NamesOffer = {
 
 // `usedInThisChat`: a reply in the tab's chat reads the world. `cameWith`: the character whose own lorebook the world is
 // (its card carries it); such a world is not among the worlds listed and is opened by its character.
-export type WorldView =
-    | (World & {
-          namesOffer: NamesOffer | null;
-          description: string;
-          usedInThisChat: boolean;
-          cameWith: Named | null;
-      })
-    | { id: null };
+export type OpenWorldView = World & {
+    namesOffer: NamesOffer | null;
+    description: string;
+    usedInThisChat: boolean;
+    cameWith: Named | null;
+};
+
+export type WorldView = OpenWorldView | { id: null };
 
 // What pointing at an entry's name shows: the first CARD_RELATIONS_SHOWN of its relations, and its text's first
 // CARD_TEXT_CHARACTERS characters. `broughtUpBy`: the keys that brought it into the reply the card was asked about, in

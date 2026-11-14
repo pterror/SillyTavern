@@ -63,6 +63,7 @@ import type {
     World,
     WorldsView,
     WorldView,
+    OpenWorldView,
     LastChangeView,
     LoopsLeftByJobsView,
     MentionedIn,
@@ -222,7 +223,7 @@ export type Ports = {
     // answers looks for.
     looksOf(context: ViewContext, view: string, things: string[]): Promise<Looks>;
     readWorlds(user: User): Promise<World[]>;
-    readWorld(user: User, book: string): Promise<Omit<Extract<WorldView, { id: string }>, 'usedInThisChat'> | null>;
+    readWorld(user: User, book: string): Promise<Omit<OpenWorldView, 'usedInThisChat'> | null>;
     // Whether a reply in the tab's chat reads the world; false with no chat.
     chatReadsWorld(context: ViewContext, book: string): Promise<boolean>;
     // The character's own lorebook, null when it has none.
@@ -798,7 +799,7 @@ export function worldbuildingArea(ports: Ports) {
             textLinkReads: TEXT_LINK_READS_PER_READ,
         });
         if (read === null) return NO_ENTRY;
-        if (read.deleted) return { book, entry: shown.entry, deleted: true, label: shown.label };
+        if (read.deleted === true) return { book, entry: shown.entry, deleted: true, label: shown.label };
         const shownCursor = tagged(generation);
         const mentionedIn = {
             pages: read.mentionedIn.pages.map((page) => ({
@@ -1194,10 +1195,11 @@ export function worldbuildingArea(ports: Ports) {
             }),
             [WORLD_VIEW]: async (context: ViewContext): Promise<WorldView> => {
                 const book = overviewOf(context.session)?.book;
-                const [world, usedInThisChat] =
-                    book === undefined
-                        ? [null, false]
-                        : await Promise.all([ports.readWorld(context.user, book), ports.chatReadsWorld(context, book)]);
+                if (book === undefined) return NO_WORLD;
+                const [world, usedInThisChat] = await Promise.all([
+                    ports.readWorld(context.user, book),
+                    ports.chatReadsWorld(context, book),
+                ]);
                 return world ? { ...world, usedInThisChat } : NO_WORLD;
             },
             [CARD_VIEW]: async (context: ViewContext): Promise<CardView> => {

@@ -1,7 +1,7 @@
 import { For, Show } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
-import type { AxesView, LastChangeView, OverviewView, RelationKind, ResultsView, WorldView } from '../protocol.ts';
+import type { AxesView, LastChangeView, OverviewView, RelationKind, ResultsView, OpenWorldView } from '../protocol.ts';
 import { Axes } from './Axes.tsx';
 import type { AxesChange } from './Axes.tsx';
 import { Picture } from './Cards.tsx';
@@ -16,7 +16,7 @@ import { EntryRows, ROW_HEIGHT, RowsHead } from './Rows.tsx';
 import type { RowsContext } from './Rows.tsx';
 import { count, fill } from './words.ts';
 
-type Shown = Extract<WorldView, { id: string }>;
+type Shown = OpenWorldView;
 
 export function WorldPage(props: {
     world: Shown;

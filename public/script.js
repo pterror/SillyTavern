@@ -1334,7 +1334,7 @@ async function firstLoadInit() {
         },
         alternatives: alternativesOldPage,
         activations: activationsOldPage,
-        worldbuilding: { showPane: () => ensureDrawerOpen('WI-SP-button'), notify: (words) => toastr.warning(words) },
+        worldbuilding: { showPane: () => ensureDrawerOpen('WI-SP-button'), notify: (/** @type {string} */ words) => toastr.warning(words) },
         shownCharacter: () => getCurrentCharacter()?.avatar ?? null,
     });
     await checkOpenRouterAuth();
