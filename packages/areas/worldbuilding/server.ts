@@ -1628,7 +1628,7 @@ export function worldbuildingArea(ports: Ports) {
                 const overview = overviewOf(context.session);
                 if (overview?.book !== book) return { refused: NOT_SHOWN };
                 if (overview.groupBy !== null || overview.sort.by === 'world')
-                    return { refused: 'Sort the view by a field, grouped by nothing, first.' };
+                    return { refused: 'Choose a field sort with grouping off.' };
                 const done = await ports.applySortAsOrder(who(context), book, overview.sort, {
                     start,
                     step,

@@ -270,8 +270,8 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
                         <button
                             type="button"
                             class="wb-grip fa-solid fa-grip-vertical"
-                            title={t('Drag to move it in the world’s order')}
-                            aria-label={fill(t('Move ${0} in the world’s order'), props.cell.label.text)}
+                            title={t('Drag to reorder')}
+                            aria-label={fill(t('Reorder ${0}'), props.cell.label.text)}
                             onPointerDown={(event) => {
                                 const row = (event.target as Element).closest<HTMLElement>('.wb-top-row');
                                 event.preventDefault();

@@ -2933,7 +2933,7 @@ test("applying a sort as order renumbers by the shown view's sort, and only a fi
     await w.act('worldbuilding.openOverview', { ...open, groupBy: undefined });
     const numbering = { book: '1', start: 100, step: 1, ascending: false };
     expect(await w.act('worldbuilding.applySortAsOrder', numbering)).toMatchObject({
-        refused: 'Sort the view by a field, grouped by nothing, first.',
+        refused: 'Choose a field sort with grouping off.',
     });
     const sort = { by: 'depth', descending: false } as const;
     await w.act('worldbuilding.changeView', { book: '1', change: { groupBy: null, sort }, overview: shownRange });

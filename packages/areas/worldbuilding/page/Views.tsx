@@ -265,7 +265,7 @@ export function ViewBar(props: {
                                         disabled={view().groupBy !== null && choice.sort.by !== 'world'}
                                         title={
                                             view().groupBy !== null && choice.sort.by !== 'world'
-                                                ? t('Group by nothing to sort by a field.')
+                                                ? t('Sort needs grouping off')
                                                 : undefined
                                         }
                                     >
@@ -279,15 +279,15 @@ export function ViewBar(props: {
                         <button
                             type="button"
                             class="menu_button margin0 whitespacenowrap"
-                            title={t("Sets each entry's Order by its place in this sort.")}
+                            title={t('Apply current sorting as Order')}
                             onClick={() =>
                                 void (async () => {
                                     const answer = await ask(
                                         {
                                             kind: 'confirm',
-                                            message: t('Apply current sorting as Order'),
+                                            message: t('Apply Current Sorting'),
                                             detail: t(
-                                                'The first entry gets the starting value and each next one the step less, down to 0; with ascending, the step more.',
+                                                'Assigns Order values to all entries based on their current sort position.',
                                             ),
                                             numbers: [
                                                 { id: 'start', label: t('Starting value'), value: 100, min: 0 },

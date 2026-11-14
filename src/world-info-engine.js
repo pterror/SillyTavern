@@ -1487,7 +1487,7 @@ export class WorldInfoEngine {
      */
     placeInWorldOrder(book, entry, after) {
         return this.inWorld(book, async (form, commit) => {
-            if (form !== 'world') return { refused: 'A character\'s own lorebook keeps the order its card gives it.' };
+            if (form !== 'world') return { refused: 'Not available for a character\'s lorebook.' };
             const e = await this.entryIn(book, entry);
             if (!e) return 'no entry';
             if (after === entry) return 'ok';
