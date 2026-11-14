@@ -84,7 +84,7 @@ import type {
     EntryAt,
     UnreachedLoop,
     RegionCell,
-    RowFacts,
+    EntryFacts,
     SavedView,
     ViewsView,
 } from './protocol.ts';
@@ -216,7 +216,8 @@ export type Ports = {
     readViews(user: User, book: string): Promise<StoredViews | null>;
     writeReaderViews(who: Who, book: string, reader: ReaderViews): Promise<'ok' | 'missing'>;
     // What rows show of each entry, in the order asked; null for one that isn't a live entry of the world.
-    readRowFacts(user: User, book: string, entries: string[]): Promise<(RowFacts | null)[]>;
+    // `tokens`: also count each entry's tokens.
+    readFacts(user: User, book: string, entries: string[], tokens: boolean): Promise<(EntryFacts | null)[]>;
     // Each cell's entries (its first `limit`) and count: those passing the filter and every one of its items.
     readCells(user: User, query: CellsQuery): Promise<CellRead[]>;
     // The looks of the things a view draws, as the view is read: the session's views' things are what a look's edit
@@ -672,19 +673,27 @@ export function worldbuildingArea(ports: Ports) {
         return { state, stored, saved, shown: state.draft ?? saved };
     };
 
-    const drawsRows = async (user: User, session: string): Promise<boolean> =>
-        (await viewShown(user, session))?.shown.drawing === 'rows';
+    // The shown view's rows show each entry's tokens.
+    const rowsShowTokens = async (user: User, session: string): Promise<boolean> => {
+        const shown = (await viewShown(user, session))?.shown;
+        return shown?.drawing === 'rows' && shown.fields.includes('tokens');
+    };
 
-    const withRowFacts = async (user: User, book: string, cells: EntryCell[]): Promise<void> => {
+    const withFacts = async (
+        context: ViewContext,
+        book: string,
+        cells: { entry: string; facts?: EntryFacts }[],
+    ): Promise<void> => {
         if (cells.length === 0) return;
-        const facts = await ports.readRowFacts(
-            user,
+        const facts = await ports.readFacts(
+            context.user,
             book,
             cells.map((cell) => cell.entry),
+            await rowsShowTokens(context.user, context.session),
         );
         cells.forEach((cell, at) => {
             const fact = facts[at];
-            if (fact) cell.row = fact;
+            if (fact) cell.facts = fact;
         });
     };
 
@@ -832,6 +841,11 @@ export function worldbuildingArea(ports: Ports) {
             held: pointingAt.ranges,
             maxCards: MAX_CARDS_PER_READ,
         });
+        await withFacts(
+            context,
+            book,
+            (sections ?? []).flatMap((section) => entryCellsOf(section.entries)),
+        );
         return { book, entry, sections: sections ?? [] };
     };
 
@@ -859,12 +873,11 @@ export function worldbuildingArea(ports: Ports) {
             };
         });
         const shownCursor = tagged(shown.generation);
-        if (await drawsRows(context.user, context.session))
-            await withRowFacts(
-                context.user,
-                shown.book,
-                read.pages.flatMap((page) => entryCellsOf(page.entries)),
-            );
+        await withFacts(
+            context,
+            shown.book,
+            read.pages.flatMap((page) => entryCellsOf(page.entries)),
+        );
         const pages = read.pages.map((page) => ({
             cursor: shownCursor(page.cursor),
             entries: page.entries,
@@ -969,6 +982,12 @@ export function worldbuildingArea(ports: Ports) {
                 more: cell?.more ?? false,
             };
         });
+        const cardsOf = (cards: CellCard[]): CellCard[] => cards.flatMap((card) => [card, ...cardsOf(card.region)]);
+        await withFacts(
+            context,
+            book,
+            drawn.flatMap((cell) => cardsOf(cell.entries)),
+        );
         return { book, columns: headers.slice(0, columns.length), rows: headers.slice(columns.length), cells: drawn };
     };
 
@@ -1221,12 +1240,9 @@ export function worldbuildingArea(ports: Ports) {
             [OVERVIEW_VIEW]: async (context: ViewContext): Promise<OverviewView> => {
                 const overview = overviewOf(context.session);
                 if (!overview) return NO_OVERVIEW;
-                const [read, rows] = await Promise.all([
-                    ports.readOverview(context.user, overview),
-                    drawsRows(context.user, context.session),
-                ]);
+                const read = await ports.readOverview(context.user, overview);
                 if (!read) return NO_OVERVIEW;
-                if (rows) await withRowFacts(context.user, overview.book, entryCellsOf(read.entries));
+                await withFacts(context, overview.book, entryCellsOf(read.entries));
                 return { book: overview.book, groupBy: overview.groupBy, ...read };
             },
             [VIEWS_VIEW]: async (context: ViewContext): Promise<ViewsView> => {

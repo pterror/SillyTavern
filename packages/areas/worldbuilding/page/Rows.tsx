@@ -9,7 +9,7 @@ import type {
     Placement,
     RegionCell,
     RelationKind,
-    RowFacts,
+    EntryFacts,
     RowField,
     SelectionView,
 } from '../protocol.ts';
@@ -20,6 +20,8 @@ import { dismissOn } from './dismiss.ts';
 import { TargetPicker } from './Picker.tsx';
 import { WHERES } from './Placement.tsx';
 import { FIELD_WORDS } from './Views.tsx';
+import { OnOff } from './OnOff.tsx';
+import { goesWords } from './facts.ts';
 import { count, fill } from './words.ts';
 
 export const ROW_HEIGHT = 40;
@@ -36,24 +38,16 @@ const WIDTHS: Record<RowField, string> = {
 
 const NUMERIC = new Set<RowField>(['order', 'chance', 'tokens']);
 
-const COMES: { comes: RowFacts['comesIn']; words: string; change: Partial<Placement> }[] = [
+const COMES: { comes: EntryFacts['comesIn']; words: string; change: Partial<Placement> }[] = [
     { comes: 'always', words: 'Always', change: { constant: true, disable: false } },
     { comes: 'broughtUp', words: 'When brought up', change: { constant: false, disable: false } },
     { comes: 'never', words: 'Never', change: { constant: false, disable: true } },
 ];
 
-const IN_CHAT: Placement['position'] = 4;
-
 const capitalized = (words: string) => words.charAt(0).toUpperCase() + words.slice(1);
 
-const goesWords = (facts: RowFacts, t: (text: string) => string): string => {
-    if (facts.position === IN_CHAT) return fill(t('Into the chat, ${0} up'), String(facts.depth));
-    const where = WHERES.find((one) => one.position === facts.position);
-    return where ? capitalized(t(where.words)) : t('Into an outlet');
-};
-
 export const columnsOf = (fields: RowField[]): string =>
-    ['40px', '230px', ...fields.map((field) => WIDTHS[field])].join(' ');
+    ['40px', '36px', '230px', ...fields.map((field) => WIDTHS[field])].join(' ');
 
 type Selected = Extract<SelectionView, { book: string }>;
 
@@ -158,6 +152,7 @@ export function RowsHead(props: { fields: RowField[]; selection: Selected | null
                     }}
                 />
             </span>
+            <span class="wb-th-on">{t('On')}</span>
             <span>{t('Name')}</span>
             <For each={props.fields}>
                 {(field) => <span classList={{ 'wb-num': NUMERIC.has(field) }}>{t(FIELD_WORDS[field])}</span>}
@@ -203,7 +198,7 @@ export function EntryRows(props: { cell: RegionCell; depth: number; context: Row
 function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
     const { t } = useUi();
     const selected = () => props.context.isSelected(props.cell.entry);
-    const facts = () => props.cell.row;
+    const facts = () => props.cell.facts;
     const relations = () =>
         props.cell.relations
             .filter((relation) => relation.inUse && relation.target !== null)
@@ -260,7 +255,7 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
     return (
         <div
             class="wb-tr"
-            classList={{ 'wb-tr-sel': selected() }}
+            classList={{ 'wb-tr-sel': selected(), 'wb-tr-off': facts()?.comesIn === 'never' }}
             data-entry={props.cell.entry}
             style={{ 'grid-template-columns': columnsOf(props.context.fields) }}
             onPointerEnter={() => props.context.enter(props.cell.entry)}
@@ -274,6 +269,18 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
                     onPointerDown={(event) => props.context.press(props.cell.entry, event)}
                     onClick={(event) => event.preventDefault()}
                 />
+            </span>
+            <span>
+                <Show when={facts()}>
+                    {(shown) => (
+                        <OnOff
+                            book={props.context.book}
+                            entry={props.cell.entry}
+                            name={props.cell.label.text}
+                            facts={shown()}
+                        />
+                    )}
+                </Show>
             </span>
             <button
                 type="button"
@@ -293,7 +300,7 @@ function setPlacement(wb: ReturnType<typeof useWb>, book: string, entry: string,
     void wb.act('worldbuilding.setPlacement', { book, entry, fields });
 }
 
-function ComesCell(props: { book: string; entry: string; facts: RowFacts }) {
+function ComesCell(props: { book: string; entry: string; facts: EntryFacts }) {
     const { t } = useUi();
     const wb = useWb();
     const [editing, setEditing] = createSignal(false);
@@ -327,7 +334,7 @@ function ComesCell(props: { book: string; entry: string; facts: RowFacts }) {
     );
 }
 
-function GoesCell(props: { book: string; entry: string; facts: RowFacts }) {
+function GoesCell(props: { book: string; entry: string; facts: EntryFacts }) {
     const { t } = useUi();
     const wb = useWb();
     const [editing, setEditing] = createSignal(false);

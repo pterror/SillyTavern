@@ -40,7 +40,7 @@ const VIEWS = [
 const pane = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#Worldbuilding');
 const tab = (/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ name) => pane(page).getByRole('tab', { name });
 const region = (/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ title) =>
-    pane(page).locator('.wb-region', { has: page.locator(':scope > .wb-region-head .wb-region-name', { hasText: title }) });
+    pane(page).locator('.wb-region', { has: page.locator(':scope > .wb-region-top > .wb-region-head .wb-region-name', { hasText: title }) });
 const row = (/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ title) =>
     pane(page).locator('.wb-tr[data-entry]', { has: page.getByRole('checkbox', { name: `Select ${title}`, exact: true }) });
 

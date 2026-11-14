@@ -186,6 +186,7 @@ function Page(props: Props) {
 
     const actions: CardActions = {
         open,
+        book: () => shownOverview()?.book ?? null,
         searchIn(entry, label) {
             const kind = shownOverview()?.groupBy;
             if (kind === null || kind === undefined) return;

@@ -262,7 +262,7 @@ async function worldKey(lib, book) {
 /**
  * The entry actions and the entry view of the worldbuilding area, over the store.
  * @param {EntryPortsWiring} wiring
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'readRowFacts' | 'findCharacters' | 'readKeySharers' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'readFacts' | 'findCharacters' | 'readKeySharers' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld'>}
  */
 export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
     const actorOf = (/** @type {import('@st/worldbuilding/server').Who} */ who) => ({ user: who.user.handle, session: who.session });
@@ -315,26 +315,27 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
     };
 
     return {
-        async readRowFacts(user, book, entries) {
+        async readFacts(user, book, entries, tokens) {
             const lib = await libOf(user);
             const b = BigInt(book);
             const form = await lib.books.bookForm(b);
             const stored = await Promise.all(entries.map(entry => lib.books.entryIn(b, BigInt(entry))));
             const worlds = stored.map(one => (one && form ? entryAsWorld(one, form.form) : null));
-            const counts = await countTokens(user, worlds.flatMap(world => (world ? [String(world.content ?? '')] : [])));
+            const counts = tokens ? await countTokens(user, worlds.flatMap(world => (world ? [String(world.content ?? '')] : []))) : null;
             let counted = 0;
             return worlds.map(world => {
                 if (!world) return null;
                 const { placement } = placementOf(world);
-                const tokens = counts?.[counted++] ?? null;
                 const chance = placement.useProbability && Number(placement.probability) < 100 ? Number(placement.probability) : null;
                 return {
                     comesIn: placement.disable ? 'never' : placement.constant ? 'always' : 'broughtUp',
+                    keysecondary: /** @type {string[]} */ (placement.keysecondary),
+                    selectiveLogic: /** @type {import('@st/worldbuilding/protocol').Placement['selectiveLogic']} */ (placement.selectiveLogic),
                     position: /** @type {import('@st/worldbuilding/protocol').Placement['position']} */ (placement.position),
                     depth: Number(placement.depth),
                     order: Number(placement.order),
                     chance,
-                    tokens,
+                    tokens: counts ? counts[counted++] ?? null : null,
                 };
             });
         },

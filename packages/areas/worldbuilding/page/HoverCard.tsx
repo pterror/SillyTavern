@@ -94,7 +94,7 @@ export function hoverCards() {
     let box: HTMLElement | undefined;
     const enter = (book: string, entry: string, word: HTMLElement) => {
         if (pointed()?.word === word) return;
-        const host = word.closest('.wb-entry');
+        const host = word.closest('.wb-hover-host');
         const pane = word.closest('.wb-pane');
         if (!(host instanceof HTMLElement) || !(pane instanceof HTMLElement)) return;
         const frame = host.getBoundingClientRect();

@@ -5,7 +5,11 @@ import type { AxesView, AxisCell, AxisHeader, AxisItem, CellCard, RelationKind }
 import { useWb } from './context.ts';
 import { dismissOn } from './dismiss.ts';
 import type { CellAt, CellsDrag } from './Drag.tsx';
+import type { CardActions } from './Cards.tsx';
 import { Label, Picture } from './Label.tsx';
+import { OnOff } from './OnOff.tsx';
+import { goesWords, triggerWords } from './facts.ts';
+import { PHONE } from './layout.ts';
 import { TargetPicker } from './Picker.tsx';
 import { count, fill } from './words.ts';
 
@@ -37,11 +41,15 @@ const anyDepth = (item: AxisItem) => typeof item.is === 'object' && item.is.dept
 
 // An entry with members is drawn as its region, headed by its own card when it is in the cell and by a small head when
 // it is drawn only for where its members are.
-function CellCards(props: { cards: CellCard[]; cell: AxisCell; drag: CellsDrag | null }) {
-    return <For each={props.cards}>{(card) => <CellEntry card={card} cell={props.cell} drag={props.drag} />}</For>;
+// What every card of the cells shares: the world, the drag that moves them between cells, and their hover card.
+type CardsAt = { book: string; drag: CellsDrag | null; hover: CardActions['hover'] };
+
+function CellCards(props: { cards: CellCard[]; cell: AxisCell; at: CardsAt }) {
+    return <For each={props.cards}>{(card) => <CellEntry card={card} cell={props.cell} at={props.at} />}</For>;
 }
 
-function SmallCard(props: { card: CellCard; cell: AxisCell; drag: CellsDrag | null }) {
+function SmallCard(props: { card: CellCard; cell: AxisCell; at: CardsAt }) {
+    const { t } = useUi();
     const wb = useWb();
     let root: HTMLDivElement | undefined;
     const gist = () =>
@@ -49,19 +57,28 @@ function SmallCard(props: { card: CellCard; cell: AxisCell; drag: CellsDrag | nu
             ? ''
             : (props.card.text.split(/\n/u).find((line) => line.trim() !== '') ?? '');
     return (
-        <div class="wb-ec" data-entry={props.card.entry} ref={(element) => (root = element)}>
+        <div
+            class="wb-ec"
+            classList={{ 'wb-card-off': props.card.facts?.comesIn === 'never' }}
+            data-entry={props.card.entry}
+            ref={(element) => (root = element)}
+            onMouseEnter={(event) => {
+                if (!window.matchMedia(PHONE).matches) props.at.hover?.enter(props.card.entry, event.currentTarget);
+            }}
+            onMouseLeave={(event) => props.at.hover?.leave(event)}
+        >
             <button
                 type="button"
                 class="wb-ec-open"
                 onPointerDown={(event) => {
-                    if (props.drag === null || !root) return;
+                    if (props.at.drag === null || !root) return;
                     wb.drag.press(event, {
                         entry: props.card.entry,
                         name: props.card.label.text,
                         grouping: null,
                         region: null,
                         element: root,
-                        cells: { ...props.drag, from: { column: props.cell.column, row: props.cell.row } },
+                        cells: { ...props.at.drag, from: { column: props.cell.column, row: props.cell.row } },
                     });
                 }}
                 onClick={() => {
@@ -76,16 +93,32 @@ function SmallCard(props: { card: CellCard; cell: AxisCell; drag: CellsDrag | nu
                     <span class="wb-ec-text">{gist()}</span>
                 </span>
             </button>
+            <Show when={props.card.facts}>
+                {(facts) => (
+                    <div class="wb-card-facts">
+                        <OnOff
+                            book={props.at.book}
+                            entry={props.card.entry}
+                            name={props.card.label.text}
+                            facts={facts()}
+                        />
+                        <span class="wb-card-triggers" title={triggerWords(props.card.keys, facts(), t)}>
+                            {triggerWords(props.card.keys, facts(), t)}
+                        </span>
+                        <span class="wb-card-goes">{goesWords(facts(), t)}</span>
+                    </div>
+                )}
+            </Show>
         </div>
     );
 }
 
-function CellEntry(props: { card: CellCard; cell: AxisCell; drag: CellsDrag | null }) {
+function CellEntry(props: { card: CellCard; cell: AxisCell; at: CardsAt }) {
     const wb = useWb();
     return (
         <Show
             when={props.card.region.length > 0}
-            fallback={<SmallCard card={props.card} cell={props.cell} drag={props.drag} />}
+            fallback={<SmallCard card={props.card} cell={props.cell} at={props.at} />}
         >
             <div class="wb-rg" data-entry={props.card.entry}>
                 <Show
@@ -99,15 +132,15 @@ function CellEntry(props: { card: CellCard; cell: AxisCell; drag: CellsDrag | nu
                         </button>
                     }
                 >
-                    <SmallCard card={props.card} cell={props.cell} drag={props.drag} />
+                    <SmallCard card={props.card} cell={props.cell} at={props.at} />
                 </Show>
-                <CellCards cards={props.card.region} cell={props.cell} drag={props.drag} />
+                <CellCards cards={props.card.region} cell={props.cell} at={props.at} />
             </div>
         </Show>
     );
 }
 
-function CellBody(props: { cell: AxisCell; drag: CellsDrag | null; book: string }) {
+function CellBody(props: { cell: AxisCell; drag: CellsDrag | null; book: string; hover: CardActions['hover'] }) {
     const { t } = useUi();
     const wb = useWb();
     const drawn = () => {
@@ -124,7 +157,11 @@ function CellBody(props: { cell: AxisCell; drag: CellsDrag | null; book: string 
     return (
         <>
             <div class="wb-grid wb-cell-cards">
-                <CellCards cards={props.cell.entries} cell={props.cell} drag={props.drag} />
+                <CellCards
+                    cards={props.cell.entries}
+                    cell={props.cell}
+                    at={{ book: props.book, drag: props.drag, hover: props.hover }}
+                />
             </div>
             <Show when={props.cell.more}>
                 <button
@@ -150,7 +187,7 @@ function CellBody(props: { cell: AxisCell; drag: CellsDrag | null; book: string 
 
 const cellAttributes = (cell: AxisCell) => ({ 'data-cell': `${cell.column ?? ''}:${cell.row ?? ''}` });
 
-export function Axes(props: { axes: Shown; onChange: AxesChange }) {
+export function Axes(props: { axes: Shown; onChange: AxesChange; hover: CardActions['hover'] }) {
     const { t } = useUi();
     const wb = useWb();
     const columns = () => props.axes.columns;
@@ -235,7 +272,12 @@ export function Axes(props: { axes: Shown; onChange: AxesChange }) {
                                             </span>
                                             <span class="wb-bct">{shownCount(cell())}</span>
                                         </div>
-                                        <CellBody cell={cell()} drag={drops() ? drag : null} book={props.axes.book} />
+                                        <CellBody
+                                            cell={cell()}
+                                            drag={drops() ? drag : null}
+                                            book={props.axes.book}
+                                            hover={props.hover}
+                                        />
                                     </section>
                                 )}
                             </Show>
@@ -283,6 +325,7 @@ export function Axes(props: { axes: Shown; onChange: AxesChange }) {
                                                     cell={cell()}
                                                     drag={drops() ? drag : null}
                                                     book={props.axes.book}
+                                                    hover={props.hover}
                                                 />
                                             </div>
                                         )}

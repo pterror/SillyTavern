@@ -3,6 +3,7 @@ import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
 import type { AxesView, LastChangeView, OverviewView, RelationKind, ResultsView, OpenWorldView } from '../protocol.ts';
 import { Axes } from './Axes.tsx';
+import { hoverCards } from './HoverCard.tsx';
 import type { AxesChange } from './Axes.tsx';
 import { Picture } from './Cards.tsx';
 import type { CardActions } from './Cards.tsx';
@@ -49,8 +50,14 @@ export function WorldPage(props: {
         return gone && gone.book === book() ? gone : null;
     };
     const marked = () => props.lastChange?.markedTitleKeys?.book === book() && props.world.namesOffer === null;
+    const hover = hoverCards();
+    const actions: CardActions = {
+        ...props.actions,
+        hover: { enter: (entry, element) => hover.enter(book(), entry, element), leave: hover.leave },
+    };
     return (
-        <div class="wb-front">
+        <div class="wb-front wb-hover-host">
+            <hover.Drawn />
             <Show when={!props.rows && !props.axes}>
                 <div class="wb-front-head">
                     <Show when={props.world.picture}>{(url) => <Picture url={url()} class="wb-front-pic" />}</Show>
@@ -226,7 +233,7 @@ export function WorldPage(props: {
                                             pane={props.pane}
                                             shown={props.shown}
                                             columns={props.columns}
-                                            actions={props.actions}
+                                            actions={actions}
                                             onRange={props.onRange}
                                             {...(props.rows
                                                 ? {
@@ -249,7 +256,7 @@ export function WorldPage(props: {
                                 <Results
                                     view={results()}
                                     pageSize={props.resultsPageSize}
-                                    actions={props.actions}
+                                    actions={actions}
                                     onMore={props.onMoreResults}
                                     rows={props.rows}
                                 />
@@ -258,7 +265,7 @@ export function WorldPage(props: {
                     </>
                 }
             >
-                {(axes) => <Axes axes={axes()} onChange={props.onAxes} />}
+                {(axes) => <Axes axes={axes()} onChange={props.onAxes} hover={actions.hover} />}
             </Show>
             <Show
                 when={

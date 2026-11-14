@@ -10,6 +10,9 @@ import { Label, Picture } from './Label.tsx';
 
 export { Label, Picture };
 import { Icon } from './icons.tsx';
+import { OnOff } from './OnOff.tsx';
+import { goesWords, triggerWords } from './facts.ts';
+import { PHONE } from './layout.ts';
 import { count, fill } from './words.ts';
 
 export type CardActions = {
@@ -17,6 +20,10 @@ export type CardActions = {
     searchIn(entry: string, label: string): void;
     // The kind the cards are grouped by: what their menus and drags change. Null: grouped by nothing.
     grouping(): Grouping | null;
+    // The world the cards are in.
+    book(): string | null;
+    // Pointing at a card shows its hover card.
+    hover?: { enter(entry: string, element: HTMLElement): void; leave(event: MouseEvent): void };
 };
 
 // A card's menu, its drag and Alt+arrows, which move it among the cards of its region.
@@ -72,6 +79,11 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
     const open = () => {
         if (!wb.drag.clickIsDrop()) props.actions.open(props.entry);
     };
+    const enter = (event: MouseEvent) => {
+        if (!window.matchMedia(PHONE).matches)
+            props.actions.hover?.enter(props.entry, event.currentTarget as HTMLElement);
+    };
+    const leave = (event: MouseEvent) => props.actions.hover?.leave(event);
     const Menu = () => (
         <Show when={props.actions.grouping()}>
             {(grouping) => (
@@ -86,7 +98,7 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
             )}
         </Show>
     );
-    return { menu, Menu, press, key, open, ref: (element: HTMLElement) => (root = element) };
+    return { menu, Menu, press, key, open, enter, leave, ref: (element: HTMLElement) => (root = element) };
 }
 
 // What a card says under the name: the text's first paragraph, or nothing when the name already is the opening.
@@ -111,9 +123,11 @@ export function Card(props: { cell: EntryCell; region: Membership; actions: Card
     return (
         <div
             class="wb-card"
-            classList={{ 'wb-card-menu-open': arrange.menu() }}
+            classList={{ 'wb-card-menu-open': arrange.menu(), 'wb-card-off': props.cell.facts?.comesIn === 'never' }}
             data-entry={props.cell.entry}
             ref={arrange.ref}
+            onMouseEnter={arrange.enter}
+            onMouseLeave={arrange.leave}
         >
             <button
                 type="button"
@@ -130,8 +144,36 @@ export function Card(props: { cell: EntryCell; region: Membership; actions: Card
                     <span class="wb-card-text">{gistOf(props.cell)}</span>
                 </span>
             </button>
+            <Facts cell={props.cell} actions={props.actions} />
             <arrange.Menu />
         </div>
+    );
+}
+
+// How the entry comes into the prompt, at a glance: on or off, what brings it up, and where it goes.
+function Facts(props: { cell: EntryCell; actions: CardActions }) {
+    const { t } = useUi();
+    return (
+        <Show when={props.cell.facts}>
+            {(facts) => (
+                <div class="wb-card-facts">
+                    <Show when={props.actions.book()}>
+                        {(book) => (
+                            <OnOff
+                                book={book()}
+                                entry={props.cell.entry}
+                                name={props.cell.label.text}
+                                facts={facts()}
+                            />
+                        )}
+                    </Show>
+                    <span class="wb-card-triggers" title={triggerWords(props.cell.keys, facts(), t)}>
+                        {triggerWords(props.cell.keys, facts(), t)}
+                    </span>
+                    <span class="wb-card-goes">{goesWords(facts(), t)}</span>
+                </div>
+            )}
+        </Show>
     );
 }
 
@@ -169,27 +211,30 @@ export function Region(props: { cell: EntryCell; region: Membership; actions: Ca
     return (
         <section
             class="wb-region"
-            classList={{ 'wb-card-menu-open': arrange.menu() }}
+            classList={{ 'wb-card-menu-open': arrange.menu(), 'wb-card-off': props.cell.facts?.comesIn === 'never' }}
             aria-label={fill(t('${0} and what is under it'), label())}
             data-entry={props.cell.entry}
             {...REGION_ATTRIBUTES(props.cell.entry, label(), props.actions.grouping()?.kind ?? null)}
             ref={arrange.ref}
         >
-            <button
-                type="button"
-                class="wb-region-head"
-                onPointerDown={arrange.press}
-                onKeyDown={arrange.key}
-                onClick={arrange.open}
-            >
-                <Picture url={props.cell.picture} class="wb-region-pic" />
-                <span class="wb-card-words">
-                    <span class="wb-region-name">
-                        <Label named={props.cell.label} />
+            <div class="wb-region-top" onMouseEnter={arrange.enter} onMouseLeave={arrange.leave}>
+                <button
+                    type="button"
+                    class="wb-region-head"
+                    onPointerDown={arrange.press}
+                    onKeyDown={arrange.key}
+                    onClick={arrange.open}
+                >
+                    <Picture url={props.cell.picture} class="wb-region-pic" />
+                    <span class="wb-card-words">
+                        <span class="wb-region-name">
+                            <Label named={props.cell.label} />
+                        </span>
+                        <span class="wb-region-text">{gistOf(props.cell)}</span>
                     </span>
-                    <span class="wb-region-text">{gistOf(props.cell)}</span>
-                </span>
-            </button>
+                </button>
+                <Facts cell={props.cell} actions={props.actions} />
+            </div>
             <div class="wb-region-corner">
                 <arrange.Menu />
                 <button

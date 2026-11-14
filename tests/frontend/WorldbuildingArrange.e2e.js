@@ -36,7 +36,7 @@ const pane = (/** @type {import('@playwright/test').Page} */ page) => page.locat
  * @param {string} title
  */
 const region = (page, title) =>
-    pane(page).locator('.wb-region', { has: page.locator(':scope > .wb-region-head .wb-region-name', { hasText: title }) });
+    pane(page).locator('.wb-region', { has: page.locator(':scope > .wb-region-top > .wb-region-head .wb-region-name', { hasText: title }) });
 
 /**
  * @param {import('@playwright/test').Page} page

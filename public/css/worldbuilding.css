@@ -970,6 +970,8 @@
 .wb-choices-static {
     position: static;
     margin-top: 6px;
+    max-height: min(320px, 40vh);
+    overflow-y: auto;
 }
 
 .wb .wb-choice {
@@ -1217,7 +1219,7 @@
 
 .wb-card:hover > .wb-card-more,
 .wb-card:focus-within > .wb-card-more,
-.wb-region-head:hover ~ .wb-region-corner .wb-card-more,
+.wb-region-top:hover ~ .wb-region-corner .wb-card-more,
 .wb-region-corner:hover .wb-card-more,
 .wb-region-corner:focus-within .wb-card-more,
 .wb .wb-card-more:focus-visible {
@@ -2296,4 +2298,62 @@
         right: auto !important;
         width: min(440px, calc(100vw - 32px));
     }
+}
+
+.wb-hover-host {
+    position: relative;
+}
+
+.wb-card-facts {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px 10px;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    color: var(--wb-ink-mid);
+    min-width: 0;
+}
+
+.wb-region-top {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wb-region-top > .wb-card-facts {
+    padding: 0;
+}
+
+.wb-card-triggers {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wb-card-goes {
+    flex: none;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wb .wb-onoff {
+    flex: none;
+    font-size: calc(var(--mainFontSize) * 1.2);
+    color: var(--wb-accent-100);
+    cursor: pointer;
+}
+
+.wb .wb-onoff.wb-onoff-off {
+    color: var(--wb-ink-mid);
+}
+
+.wb-card-off .wb-card-open,
+.wb-card-off > .wb-region-top > .wb-region-head,
+.wb-card-off > .wb-ec-open,
+.wb-tr-off > :not(:nth-child(-n + 2)) {
+    opacity: 0.55;
 }

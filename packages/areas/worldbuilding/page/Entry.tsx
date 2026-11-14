@@ -65,7 +65,7 @@ export function EntryPage(props: {
     };
     return (
         <article
-            class="wb-entry"
+            class="wb-entry wb-hover-host"
             onTouchStart={(event) => {
                 const touch = event.touches[0];
                 const editing = event.target instanceof Element && event.target.closest('.wb-text-editing') !== null;
@@ -214,7 +214,19 @@ export function EntryPage(props: {
                 )}
             </Show>
             <For each={props.pointingAt?.entry === props.entry.entry ? props.pointingAt.sections : []}>
-                {(section) => <PointingAt section={section} entry={props.entry} actions={props.actions} />}
+                {(section) => (
+                    <PointingAt
+                        section={section}
+                        entry={props.entry}
+                        actions={{
+                            ...props.actions,
+                            hover: {
+                                enter: (entry, element) => hover.enter(props.entry.book, entry, element),
+                                leave: hover.leave,
+                            },
+                        }}
+                    />
+                )}
             </For>
             <button
                 type="button"

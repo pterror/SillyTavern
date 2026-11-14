@@ -158,8 +158,7 @@ export type EntryCell = {
     groupingKindRelationsTargetingThis: number;
     alreadyOpenAbove: boolean;
     region: RegionCell[];
-    // Present when the shown view is drawn as rows.
-    row?: RowFacts;
+    facts?: EntryFacts;
 };
 
 export type PlaceOfDeletedEntryCell = {
@@ -405,10 +404,12 @@ export type Depth = 'directly' | 'anyDepth';
 
 export type Chip = { kind: string; target: string; depth: Depth };
 
-// What a row shows besides the card's own fields: where the entry goes in the prompt, and its size.
-// `comesIn`: upstream's `constant` and `disable`; `chance` is null when it comes in every time.
-export type RowFacts = {
+// What a drawn card or row shows of how the entry comes into the prompt. `comesIn`: upstream's `constant` and `disable`;
+// `chance` is null when it comes in every time; `tokens` is null unless the view's rows show it.
+export type EntryFacts = {
     comesIn: 'always' | 'broughtUp' | 'never';
+    keysecondary: string[];
+    selectiveLogic: Placement['selectiveLogic'];
     position: Placement['position'];
     depth: number;
     order: number;

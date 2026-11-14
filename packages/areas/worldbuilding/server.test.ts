@@ -192,9 +192,22 @@ const card = (occurrence: string, topLevelRank: number): EntryCell & { topLevelR
     topLevelRank,
 });
 
+// A card as the shown results draw it: with how it comes into the prompt, from the fake `readFacts`.
 const resultCard = (rank: number): EntryCell => {
     const { topLevelRank: _, ...cell } = card(String(300 + rank), rank);
-    return cell;
+    return {
+        ...cell,
+        facts: {
+            comesIn: 'broughtUp',
+            keysecondary: [],
+            selectiveLogic: 0,
+            position: 0,
+            depth: 4,
+            order: 300 + rank,
+            chance: null,
+            tokens: null,
+        },
+    };
 };
 
 const SOURCES_FROM = 1000;
@@ -450,14 +463,16 @@ function world(
                 more: false,
             }));
         },
-        readRowFacts: async (_u, _book, entries) =>
+        readFacts: async (_u, _book, entries, tokens) =>
             entries.map((entry) => ({
                 comesIn: 'broughtUp',
+                keysecondary: [],
+                selectiveLogic: 0,
                 position: 0,
                 depth: 4,
                 order: Number(entry),
                 chance: null,
-                tokens: 10,
+                tokens: tokens ? 10 : null,
             })),
         looksOf: async (context, view, things) => {
             asked.looks.push({ view, session: context.session, things });
@@ -2699,13 +2714,15 @@ test("a world's views are its tabs, the world's first, the reader's changed copi
     w.storedViews.set('1', {
         world: [savedView('places', 'Places'), savedView('debts', 'Debts', { groupBy: '2' })],
         reader: {
-            changed: { debts: savedView('debts', 'Debts', { groupBy: '2', drawing: 'rows' }) },
+            changed: { debts: savedView('debts', 'Debts', { groupBy: '2', drawing: 'rows', fields: ['tokens'] }) },
             own: [savedView('own-1', 'Mine')],
         },
     });
     const { groupBy: _left, ...withoutGrouping } = open;
     const answer = await w.act('worldbuilding.openOverview', withoutGrouping);
     expect(answer).toMatchObject({ own: expect.arrayContaining([VIEWS_VIEW]) });
+    const cards = await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect(cards.entries[0]).toMatchObject({ facts: { comesIn: 'broughtUp', tokens: null } });
     const views = await w.view<ViewsView>(VIEWS_VIEW);
     expect(views).toMatchObject({
         book: '1',
@@ -2720,7 +2737,7 @@ test("a world's views are its tabs, the world's first, the reader's changed copi
     await w.act('worldbuilding.showView', { book: '1', view: 'debts', overview: shownRange });
     expect((await w.view<OverviewView>(OVERVIEW_VIEW)).groupBy).toBe('2');
     const rows = await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect(rows.entries[0]).toMatchObject({ row: { comesIn: 'broughtUp', tokens: 10 } });
+    expect(rows.entries[0]).toMatchObject({ facts: { comesIn: 'broughtUp', tokens: 10 } });
     expect(await w.act('worldbuilding.showView', { book: '1', view: 'gone', overview: shownRange })).toMatchObject({
         refused: 'This world has no such view.',
     });
