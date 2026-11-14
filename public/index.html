@@ -547,7 +547,7 @@
                                         Use style tags to modify the writing style of the output.
                                     </div>
                                     <div class="wide100p">
-                                        <textarea id="nai_preamble_textarea" class="text_pole textarea_compact" name="nai_preamble" rows="2" placeholder=""></textarea>
+                                        <textarea id="nai_preamble_textarea" data-text-box="literal" class="text_pole textarea_compact" name="nai_preamble" rows="2" placeholder=""></textarea>
                                     </div>
                                 </div>
                                 <div class="range-block">
@@ -3018,7 +3018,7 @@
                                             <small data-i18n="Example Separator">Example Separator</small>
                                         </label>
                                         <div>
-                                            <textarea id="context_example_separator" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                            <textarea id="context_example_separator" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                         </div>
                                     </div>
                                     <div class="flex1">
@@ -3026,7 +3026,7 @@
                                             <small data-i18n="Chat Start">Chat Start</small>
                                         </label>
                                         <div>
-                                            <textarea id="context_chat_start" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                            <textarea id="context_chat_start" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                         </div>
                                     </div>
                                 </div>
@@ -3172,7 +3172,7 @@
                                             <small data-i18n="Story String Prefix">Story String Prefix</small>
                                         </label>
                                         <div>
-                                            <textarea id="instruct_story_string_prefix" class="text_pole textarea_compact autoSetHeight"></textarea>
+                                            <textarea id="instruct_story_string_prefix" data-text-box="literal" class="text_pole textarea_compact autoSetHeight"></textarea>
                                         </div>
                                     </div>
                                     <div class="flexAuto" title="Inserted after a Story String." data-i18n="[title]Inserted after a Story String.">
@@ -3180,7 +3180,7 @@
                                             <small data-i18n="Story String Suffix">Story String Suffix</small>
                                         </label>
                                         <div>
-                                            <textarea id="instruct_story_string_suffix" class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
+                                            <textarea id="instruct_story_string_suffix" data-text-box="literal" class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
                                         </div>
                                     </div>
                                 </div>
@@ -3190,11 +3190,11 @@
                                 <div class="flex-container">
                                     <div class="flexAuto" title="Inserted before a User message and as a last prompt line when impersonating." data-i18n="[title]Inserted before a User message and as a last prompt line when impersonating.">
                                         <small data-i18n="User Prefix">User Message Prefix</small>
-                                        <textarea id="instruct_input_sequence" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_input_sequence" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                     </div>
                                     <div class="flexAuto" title="Inserted after a User message." data-i18n="[title]Inserted after a User message.">
                                         <small data-i18n="User Suffix">User Message Suffix</small>
-                                        <textarea id="instruct_input_suffix" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_input_suffix" data-text-box="literal" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
                                     </div>
                                 </div>
                             </details>
@@ -3203,11 +3203,11 @@
                                 <div class="flex-container">
                                     <div class="flexAuto" title="Inserted before an Assistant message and as a last prompt line when generating an AI reply." data-i18n="[title]Inserted before an Assistant message and as a last prompt line when generating an AI reply.">
                                         <small data-i18n="Assistant Prefix">Assistant Message Prefix</small>
-                                        <textarea id="instruct_output_sequence" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_output_sequence" data-text-box="literal" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
                                     </div>
                                     <div class="flexAuto" title="Inserted after an Assistant message." data-i18n="[title]Inserted after an Assistant message.">
                                         <small data-i18n="Assistant Suffix">Assistant Message Suffix</small>
-                                        <textarea id="instruct_output_suffix" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_output_suffix" data-text-box="literal" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
                                     </div>
                                 </div>
                             </details>
@@ -3216,11 +3216,11 @@
                                 <div class="flex-container">
                                     <div class="flexAuto" id="instruct_system_sequence_block" title="Inserted before a System (added by slash commands or extensions) message." data-i18n="[title]Inserted before a System (added by slash commands or extensions) message.">
                                         <small data-i18n="System Prefix">System Message Prefix</small>
-                                        <textarea id="instruct_system_sequence" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_system_sequence" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                     </div>
                                     <div class="flexAuto" id="instruct_system_suffix_block" title="Inserted after a System message." data-i18n="[title]Inserted after a System message.">
                                         <small data-i18n="System Suffix">System Message Suffix</small>
-                                        <textarea id="instruct_system_suffix" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_system_suffix" data-text-box="literal" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
                                     </div>
                                 </div>
                                 <div class="flexBasis100p" title="If enabled, System Sequences will be the same as User Sequences." data-i18n="[title]If enabled, System Sequences will be the same as User Sequences.">
@@ -3235,27 +3235,27 @@
                                 <div class="flex-container">
                                     <div class="flexAuto" title="Inserted before the first Assistant's message." data-i18n="[title]Inserted before the first Assistant's message.">
                                         <small data-i18n="First Assistant Prefix">First Assistant Prefix</small>
-                                        <textarea id="instruct_first_output_sequence" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_first_output_sequence" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                     </div>
                                     <div class="flexAuto" title="Inserted before the last Assistant's message or as a last prompt line when generating an AI reply (except a neutral/system role)." data-i18n="[title]instruct_last_output_sequence">
                                         <small data-i18n="Last Assistant Prefix">Last Assistant Prefix</small>
-                                        <textarea id="instruct_last_output_sequence" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_last_output_sequence" data-text-box="literal" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
                                     </div>
                                 </div>
                                 <div class="flex-container">
                                     <div class="flexAuto" title="Inserted before the first User's message." data-i18n="[title]Inserted before the first User's message.">
                                         <small data-i18n="First User Prefix">First User Prefix</small>
-                                        <textarea id="instruct_first_input_sequence" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_first_input_sequence" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                     </div>
                                     <div class="flexAuto" title="Inserted before the last User's message or as a last prompt line when generating an impersonation." data-i18n="[title]instruct_last_input_sequence">
                                         <small data-i18n="Last User Prefix">Last User Prefix</small>
-                                        <textarea id="instruct_last_input_sequence" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_last_input_sequence" data-text-box="literal" data-macros class="text_pole wide100p textarea_compact autoSetHeight"></textarea>
                                     </div>
                                 </div>
                                 <div class="flex-container">
                                     <div class="flexAuto" title="Will be inserted as a last prompt line when using system/neutral generation." data-i18n="[title]Will be inserted as a last prompt line when using system/neutral generation.">
                                         <small data-i18n="System Instruction Prefix">System Instruction Prefix</small>
-                                        <textarea id="instruct_last_system_sequence" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_last_system_sequence" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                     </div>
                                     <div class="flexAuto" title="If a stop sequence is generated, everything past it will be removed from the output (inclusive)." data-i18n="[title]If a stop sequence is generated, everything past it will be removed from the output (inclusive).">
                                         <small data-i18n="Stop Sequence">Stop Sequence</small>
@@ -3265,7 +3265,7 @@
                                 <div class="flex-container">
                                     <div class="flexAuto" title="Will be inserted at the start of the chat history if it doesn't start with a User message." data-i18n="[title]Will be inserted at the start of the chat history if it doesn't start with a User message.">
                                         <small data-i18n="User Filler Message">User Filler Message</small>
-                                        <textarea id="instruct_user_alignment_message" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="instruct_user_alignment_message" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                     </div>
                                 </div>
                             </details>
@@ -3303,7 +3303,7 @@
                                     <small data-i18n="Prompt Content">Prompt Content</small>
                                     <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="sysprompt_content" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                 </label>
-                                <textarea id="sysprompt_content" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                <textarea id="sysprompt_content" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                             </div>
 
                             <div>
@@ -3311,7 +3311,7 @@
                                     <small data-i18n="Post-History Instructions">Post-History Instructions</small>
                                     <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="sysprompt_post_history" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                 </label>
-                                <textarea id="sysprompt_post_history" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                <textarea id="sysprompt_post_history" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                             </div>
                         </div>
 
@@ -3523,17 +3523,17 @@
                                     <div class="flex-container">
                                         <div class="flex1" title="Inserted before the reasoning content." data-i18n="[title]reasoning_prefix">
                                             <small data-i18n="Prefix">Prefix</small>
-                                            <textarea id="reasoning_prefix" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                            <textarea id="reasoning_prefix" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                         </div>
                                         <div class="flex1" title="Inserted after the reasoning content." data-i18n="[title]reasoning_suffix">
                                             <small data-i18n="Suffix">Suffix</small>
-                                            <textarea id="reasoning_suffix" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                            <textarea id="reasoning_suffix" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                         </div>
                                     </div>
                                     <div class="flex-container">
                                         <div class="flex1" title="Inserted between the reasoning and the message content." data-i18n="[title]reasoning_separator">
                                             <small data-i18n="Separator">Separator</small>
-                                            <textarea id="reasoning_separator" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                            <textarea id="reasoning_separator" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                         </div>
                                     </div>
                                 </details>
@@ -3567,7 +3567,7 @@
                                         </span>
                                     </small>
                                     <div>
-                                        <textarea id="start_reply_with" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                        <textarea id="start_reply_with" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                     </div>
                                 </div>
                             </div>
@@ -5092,7 +5092,7 @@
                                                     <div class="fa-solid fa-circle-info opacity50p" data-i18n="[title]When 'Join character cards' is selected, all respective fields of the characters are being joined together.This means that in the story string for example all character descriptions will be joined to one big text.If you want those fields to be separated, you can define a prefix or suffix here.This value supports normal macros and will also replace {{char}} with the relevant char's name and &lt;FIELDNAME&gt; with the name of the part (e.g.: description, personality, scenario, etc.)" title="When 'Join character cards' is selected, all respective fields of the characters are being joined together.&#13;This means that in the story string for example all character descriptions will be joined to one big text.&#13;If you want those fields to be separated, you can define a prefix or suffix here.&#13;&#13;This value supports normal macros and will also replace {{char}} with the relevant char's name and &lt;FIELDNAME&gt; with the name of the part (e.g.: description, personality, scenario, etc.)">
                                                     </div>
                                                 </label>
-                                                <textarea id="rm_group_generation_mode_join_prefix" class="text_pole wide100p textarea_compact autoSetHeight" placeholder="&mdash;" rows="1"></textarea>
+                                                <textarea id="rm_group_generation_mode_join_prefix" data-text-box="literal" class="text_pole wide100p textarea_compact autoSetHeight" placeholder="&mdash;" rows="1"></textarea>
                                             </div>
                                             <div class="flex1 flexGap5" title="Inserted after each part of the joined fields." data-i18n="[title]Inserted after each part of the joined fields.">
                                                 <label for="rm_group_generation_mode_join_suffix" class="flexnowrap width100p whitespacenowrap">
@@ -5100,7 +5100,7 @@
                                                     <div class="fa-solid fa-circle-info opacity50p" data-i18n="[title]When 'Join character cards' is selected, all respective fields of the characters are being joined together.This means that in the story string for example all character descriptions will be joined to one big text.If you want those fields to be separated, you can define a prefix or suffix here.This value supports normal macros and will also replace {{char}} with the relevant char's name and &lt;FIELDNAME&gt; with the name of the part (e.g.: description, personality, scenario, etc.)" title="When 'Join character cards' is selected, all respective fields of the characters are being joined together.&#13;This means that in the story string for example all character descriptions will be joined to one big text.&#13;If you want those fields to be separated, you can define a prefix or suffix here.&#13;&#13;This value supports normal macros and will also replace {{char}} with the relevant char's name and &lt;FIELDNAME&gt; with the name of the part (e.g.: description, personality, scenario, etc.)">
                                                     </div>
                                                 </label>
-                                                <textarea id="rm_group_generation_mode_join_suffix" class="text_pole wide100p textarea_compact autoSetHeight" placeholder="&mdash;" rows="1"></textarea>
+                                                <textarea id="rm_group_generation_mode_join_suffix" data-text-box="literal" class="text_pole wide100p textarea_compact autoSetHeight" placeholder="&mdash;" rows="1"></textarea>
                                             </div>
                                         </div>
                                         <div id="GroupFavDelOkBack" class="flex-container flexGap5 spaceEvenly flex1">
@@ -5991,11 +5991,11 @@
                                 <label for="chat_cfg_negative_prompt">
                                     <span data-i18n="Negative Prompt">Negative Prompt</span>
                                 </label>
-                                <textarea id="chat_cfg_negative_prompt" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
+                                <textarea id="chat_cfg_negative_prompt" data-text-box="literal" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
                                 <label for="chat_cfg_positive_prompt">
                                     <span data-i18n="Positive Prompt">Positive Prompt</span>
                                 </label>
-                                <textarea id="chat_cfg_positive_prompt" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
+                                <textarea id="chat_cfg_positive_prompt" data-text-box="literal" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
                             </div>
                             <div id="groupchat_cfg_use_chara_container">
                                 <label class="checkbox_label" for="groupchat_cfg_use_chara">
@@ -6032,11 +6032,11 @@
                                 <label for="chara_cfg_negative_prompt">
                                     <span data-i18n="Negative Prompt">Negative Prompt</span>
                                 </label>
-                                <textarea id="chara_cfg_negative_prompt" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
+                                <textarea id="chara_cfg_negative_prompt" data-text-box="literal" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
                                 <label for="chara_cfg_positive_prompt">
                                     <span data-i18n="Positive Prompt">Positive Prompt</span>
                                 </label>
-                                <textarea id="chara_cfg_positive_prompt" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
+                                <textarea id="chara_cfg_positive_prompt" data-text-box="literal" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
                             </div>
                         </div>
                     </div>
@@ -6067,11 +6067,11 @@
                                 <label for="global_cfg_negative_prompt">
                                     <span data-i18n="Negative Prompt">Negative Prompt</span>
                                 </label>
-                                <textarea id="global_cfg_negative_prompt" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
+                                <textarea id="global_cfg_negative_prompt" data-text-box="literal" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
                                 <label for="global_cfg_positive_prompt">
                                     <span data-i18n="Positive Prompt">Positive Prompt</span>
                                 </label>
-                                <textarea id="global_cfg_positive_prompt" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
+                                <textarea id="global_cfg_positive_prompt" data-text-box="literal" rows="2" class="text_pole textarea_compact" data-i18n="[placeholder]write short replies, write replies using past tense" placeholder="write short replies, write replies using past tense"></textarea>
                             </div>
                         </div>
                     </div>
