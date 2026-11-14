@@ -5584,14 +5584,13 @@ function chatOpenOwner(body) {
 }
 
 /**
- * What a request that opens a chat asks with it, and the chat box's text it leaves behind
+ * What a request that opens a chat asks with it, and the chat box's text the server hasn't confirmed (`openingChatBox`)
  * @param {{ avatar_url?: string, group_id?: string }} body
  * @returns {{ send_keys: string[], parts: Record<string, unknown>, leaving: ReturnType<typeof openingChatBox> }}
  */
 export function chatOpenAsk(body) {
     const owner = chatOpenOwner(body);
-    const chat = body.group_id ? { group_id: String(body.group_id) } : { avatar_url: String(body.avatar_url) };
-    return { send_keys: keptSendKeys(owner), parts: chatOpenAsks(owner), leaving: openingChatBox(chat) };
+    return { send_keys: keptSendKeys(owner), parts: chatOpenAsks(owner), leaving: openingChatBox() };
 }
 
 /**

@@ -202,7 +202,7 @@ test.describe('the chat box\'s drafts', () => {
         await expect.poll(() => boxText(page)).toBe('to B');
     });
 
-    test('text the server never confirmed is in the browser, and goes with the next open of its chat after a reload', async ({ page }) => {
+    test('text the server never confirmed is in the browser, and goes with the next open of any chat after a reload', async ({ page }) => {
         await testSetup.awaitST({ page });
         const first = await createCharacter(page, `Copy A ${stamp()}`);
         const second = await createCharacter(page, `Copy B ${stamp()}`);
@@ -220,9 +220,9 @@ test.describe('the chat box\'s drafts', () => {
         expect(refused).toBeGreaterThan(0);
 
         await openCharacter(page, second);
+        await expect.poll(copies).toBe(0);
         await openCharacter(page, first);
         await expect.poll(() => boxText(page)).toBe('never saved');
-        await expect.poll(copies).toBe(0);
     });
 
     test('two tabs writing in one chat both keep what they wrote: a draft saved in one is laid under what the other is typing', async ({ page, context }) => {

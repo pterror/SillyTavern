@@ -242,6 +242,12 @@ const refusing = {
     },
 };
 
+/**
+ * @param {ReturnType<typeof boxCopies>} copies
+ * @param {{ avatar_url: string } | { group_id: string }} chat
+ */
+const copiesOf = (copies, chat) => copies.all().filter(copy => JSON.stringify(copy.chat) === JSON.stringify(chat)).map(({ chat: _, ...copy }) => copy);
+
 describe('the browser\'s copies of the chat box\'s text', () => {
     const ada = { avatar_url: 'Ada.png' };
     const one = { text: 'from one', changes: [{ from: 0, to: 0, insert: 'from one', deleted: '' }] };
@@ -253,7 +259,7 @@ describe('the browser\'s copies of the chat box\'s text', () => {
         copies.write(ada, { message: '1' }, 'two', two);
         expect(copies.read(ada, { message: '1' }, 'one')).toEqual(one);
         expect(copies.read(ada, { message: '1' }, 'two')).toEqual(two);
-        expect(copies.of(ada)).toEqual([{ owner: { message: '1' }, tab: 'one', ...one }, { owner: { message: '1' }, tab: 'two', ...two }]);
+        expect(copiesOf(copies, ada)).toEqual([{ owner: { message: '1' }, tab: 'one', ...one }, { owner: { message: '1' }, tab: 'two', ...two }]);
     });
 
     test('a copy goes only when the server confirms the text it holds', () => {
@@ -262,7 +268,7 @@ describe('the browser\'s copies of the chat box\'s text', () => {
         copies.confirm(ada, { message: '1' }, 'one', 'what was sent');
         expect(copies.read(ada, { message: '1' }, 'one')?.text).toBe('from one');
         copies.confirm(ada, { message: '1' }, 'one', 'from one');
-        expect(copies.of(ada)).toEqual([]);
+        expect(copiesOf(copies, ada)).toEqual([]);
     });
 
     test('a copy set apart is kept as it is beside the next one', () => {
@@ -271,7 +277,7 @@ describe('the browser\'s copies of the chat box\'s text', () => {
         copies.setApart(ada, { message: '1' }, 'one');
         copies.write(ada, { message: '1' }, 'one', two);
         copies.setApart(ada, { message: '1' }, 'one');
-        expect(copies.of(ada)).toEqual([{ owner: { message: '1' }, tab: 'one~1', ...one }, { owner: { message: '1' }, tab: 'one~2', ...two }]);
+        expect(copiesOf(copies, ada)).toEqual([{ owner: { message: '1' }, tab: 'one~1', ...one }, { owner: { message: '1' }, tab: 'one~2', ...two }]);
     });
 
     test('every copy of a chat that is gone goes with it', () => {
@@ -280,15 +286,15 @@ describe('the browser\'s copies of the chat box\'s text', () => {
         copies.write(ada, { greeting: 0, avatar: 'Ada.png' }, 'two', two);
         copies.write({ group_id: 'g' }, { root: true }, 'one', one);
         copies.dropChat(ada);
-        expect(copies.of(ada)).toEqual([]);
-        expect(copies.of({ group_id: 'g' })).toEqual([{ owner: { root: true }, tab: 'one', ...one }]);
+        expect(copiesOf(copies, ada)).toEqual([]);
+        expect(copiesOf(copies, { group_id: 'g' })).toEqual([{ owner: { root: true }, tab: 'one', ...one }]);
     });
 
     test('with storage that refuses, keep nothing and never throw', () => {
         const copies = boxCopies(guardedStorage(() => /** @type {any} */ (refusing)));
         expect(() => copies.write(ada, { message: '1' }, 'one', one)).not.toThrow();
         expect(copies.read(ada, { message: '1' }, 'one')).toBeNull();
-        expect(copies.of(ada)).toEqual([]);
+        expect(copiesOf(copies, ada)).toEqual([]);
         expect(() => copies.confirm(ada, { message: '1' }, 'one', 'hello')).not.toThrow();
         expect(() => copies.setApart(ada, { message: '1' }, 'one')).not.toThrow();
         expect(() => copies.dropChat(ada)).not.toThrow();
@@ -367,20 +373,22 @@ describe('the chat box\'s drafts', () => {
         expect(box.chatBoxText()).toBe('yet other base mine more', 'an edit of another page of this tab is no edit of this one');
     });
 
-    test('every copy of a chat goes with its next open, a crashed tab\'s and an open tab\'s too', async () => {
+    test('every copy goes with the next open of any chat, a crashed tab\'s and an open tab\'s too, so none outlasts it', async () => {
         box.arriveChatBox(ada, { owner: { message: '3' }, text: '' });
         await settle();
         const crashed = { text: 'from a crashed tab', changes: [insert(0, 'from a crashed tab')] };
         copies().write(ada, { message: '3' }, 'crashed-tab', crashed);
         copies().write(ada, { message: '3' }, 'open-tab', { ...crashed, text: 'from an open tab', changes: [insert(0, 'from an open tab')], change: 'p/e:4' });
-        expect(box.openingChatBox({ group_id: 'g' })).toBeUndefined();
-        const carried = box.openingChatBox(ada) ?? [];
+        const elsewhere = { text: 'in a chat never opened again', changes: [insert(0, 'in a chat never opened again')] };
+        copies().write({ group_id: 'never' }, { root: true }, 'crashed-tab', elsewhere);
+        const carried = box.openingChatBox() ?? [];
         expect(carried).toEqual(expect.arrayContaining([
             { avatar_url: 'Ada.png', owner: { message: '3' }, ...crashed, tab: 'crashed-tab' },
             { avatar_url: 'Ada.png', owner: { message: '3' }, text: 'from an open tab', changes: [insert(0, 'from an open tab')], tab: 'open-tab', change: 'p/e:4' },
+            { group_id: 'never', owner: { root: true }, ...elsewhere, tab: 'crashed-tab' },
         ]));
         box.chatBoxLeft(carried.map(c => ({ ...c, sent: c.text, left: c.owner.message === '1' ? 'gone' : 'kept', text: 'merged' })));
-        expect(copies().of(ada)).toEqual([]);
+        expect(copies().all()).toEqual([]);
     });
 
     test('arriving at a draft this tab has an unconfirmed copy of shows the draft, and sets the copy apart for the next open', async () => {
@@ -392,7 +400,7 @@ describe('the chat box\'s drafts', () => {
         shown.type('!');
         await settle();
         expect(copies().read(ada, { message: '5' }, 'tab-a')?.text).toBe('kept for 5!');
-        expect(box.openingChatBox(ada)).toContainEqual({ avatar_url: 'Ada.png', owner: { message: '5' }, ...unconfirmed, tab: 'tab-a~1' });
+        expect(box.openingChatBox()).toContainEqual({ avatar_url: 'Ada.png', owner: { message: '5' }, ...unconfirmed, tab: 'tab-a~1' });
         copies().remove(ada, { message: '5' }, 'tab-a~1');
     });
 
@@ -453,7 +461,7 @@ describe('the chat box\'s drafts', () => {
     test('a chat that is gone takes its copies with it', () => {
         copies().write(ada, { message: '9' }, 'tab-a', { text: 'x', changes: [insert(0, 'x')] });
         box.forgetChatBoxChat(ada);
-        expect(copies().of(ada)).toEqual([]);
+        expect(copiesOf(copies(), ada)).toEqual([]);
     });
 
     test('with storage that refuses, the box keeps its text and carries it as before', async () => {
@@ -463,7 +471,7 @@ describe('the chat box\'s drafts', () => {
         box.writeChatBox('no storage');
         await settle();
         expect(box.chatBoxText()).toBe('no storage');
-        expect(box.openingChatBox({ group_id: 'h' })).toEqual([expect.objectContaining({ group_id: 'g', owner: { message: '8' }, text: 'no storage', changes: [insert(0, 'no storage')], tab: 'tab-a' })]);
+        expect(box.openingChatBox()).toEqual([expect.objectContaining({ group_id: 'g', owner: { message: '8' }, text: 'no storage', changes: [insert(0, 'no storage')], tab: 'tab-a' })]);
         globalThis.localStorage = /** @type {any} */ (storage);
     });
 });

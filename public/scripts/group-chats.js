@@ -2156,7 +2156,7 @@ export async function deleteGroupChatByName(groupId, chatName) {
         const response = await fetch('/api/chats/new', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ group_id: group.id, replace: chatName, leaving: openingChatBox({ group_id: group.id }) }),
+            body: JSON.stringify({ group_id: group.id, replace: chatName, leaving: openingChatBox() }),
         });
         if (!response.ok) {
             toastr.error(t`The replacement chat was not created. Check the server console for details.`, t`Group chat could not be created`);

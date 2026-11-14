@@ -2,14 +2,15 @@
  * The chat box's text as the browser keeps it until the server confirms a save of it: per draft (a chat and what the
  * text responds to) and per tab, the text with the changes from the draft it was written over, as a save carries them.
  * Only text the server hasn't confirmed is kept, so a copy is never a draft of its own: the server merges it into its
- * draft, and merging one already in it changes nothing, so any tab may carry any copy.
+ * draft, and merging one already in it changes nothing, so any tab may carry any copy, of any chat.
  *
  * Each tab writes only its own copies, under its tab token (`tab-session.js`, kept in sessionStorage, so it outlives a
- * reload and a duplicated tab takes a new one).
+ * reload and a duplicated tab takes a new one). A tab that is gone never confirms its copies, so whichever tab opens a
+ * chat next carries every copy there is (`all`), and they last until then.
  */
 
 const COPY = 'ChatBoxCopy:';
-const INDEX = 'ChatBoxCopies:';
+const INDEX = 'ChatBoxCopies';
 
 /**
  * @typedef {import('./chat-box-ends.js').DraftOwner} DraftOwner
@@ -21,6 +22,12 @@ const INDEX = 'ChatBoxCopies:';
 
 /** @param {ChatOf} chat */
 const chatId = chat => ('group_id' in chat ? `group:${chat.group_id}` : `card:${chat.avatar_url}`);
+
+/**
+ * @param {string} id
+ * @returns {ChatOf | null}
+ */
+const chatOfId = id => (id.startsWith('group:') ? { group_id: id.slice(6) } : id.startsWith('card:') ? { avatar_url: id.slice(5) } : null);
 
 /** @param {DraftOwner} owner */
 const ownerField = owner => JSON.stringify('message' in owner ? { message: owner.message } : 'root' in owner ? { root: true } : { greeting: owner.greeting, avatar: owner.avatar });
@@ -85,27 +92,24 @@ function writeList(storage, key, list) {
  */
 export function boxCopies(storage) {
     /**
-     * @param {ChatOf} chat
-     * @param {DraftOwner} owner
+     * @param {string} chat its id
+     * @param {string} field its owner, as kept
      * @param {string} tab
      */
-    const keyOf = (chat, owner, tab) => COPY + JSON.stringify([chatId(chat), ownerField(owner), tab]);
+    const keyOf = (chat, field, tab) => COPY + JSON.stringify([chat, field, tab]);
+
+    /** @returns {[string, string, string][]} each copy kept: its chat, what it responds to and its tab */
+    const index = () => /** @type {[string, string, string][]} */ (readList(storage, INDEX).filter(e => Array.isArray(e) && e.length === 3 && e.every(part => typeof part === 'string')));
 
     /**
-     * @param {ChatOf} chat
-     * @returns {[string, string][]} each copy of the chat: what it responds to and its tab
-     */
-    const indexOf = chat => /** @type {[string, string][]} */ (readList(storage, INDEX + chatId(chat)).filter(e => Array.isArray(e) && typeof e[0] === 'string' && typeof e[1] === 'string'));
-
-    /**
-     * @param {ChatOf} chat
-     * @param {DraftOwner} owner
+     * @param {string} chat
+     * @param {string} field
      * @param {string} tab
      * @returns {Copy | null}
      */
-    const read = (chat, owner, tab) => {
+    const readKept = (chat, field, tab) => {
         try {
-            const copy = JSON.parse(storage.getItem(keyOf(chat, owner, tab)) ?? 'null');
+            const copy = JSON.parse(storage.getItem(keyOf(chat, field, tab)) ?? 'null');
             return copy && typeof copy.text === 'string' && Array.isArray(copy.changes)
                 ? { text: copy.text, changes: copy.changes, ...(typeof copy.change === 'string' ? { change: copy.change } : {}) }
                 : null;
@@ -118,11 +122,19 @@ export function boxCopies(storage) {
      * @param {ChatOf} chat
      * @param {DraftOwner} owner
      * @param {string} tab
+     * @returns {Copy | null}
+     */
+    const read = (chat, owner, tab) => readKept(chatId(chat), ownerField(owner), tab);
+
+    /**
+     * @param {ChatOf} chat
+     * @param {DraftOwner} owner
+     * @param {string} tab
      */
     const remove = (chat, owner, tab) => {
-        storage.removeItem(keyOf(chat, owner, tab));
-        const field = ownerField(owner);
-        writeList(storage, INDEX + chatId(chat), indexOf(chat).filter(([f, t]) => !(f === field && t === tab)));
+        const [id, field] = [chatId(chat), ownerField(owner)];
+        storage.removeItem(keyOf(id, field, tab));
+        writeList(storage, INDEX, index().filter(([c, f, t]) => !(c === id && f === field && t === tab)));
     };
 
     /**
@@ -133,10 +145,10 @@ export function boxCopies(storage) {
      * @param {Copy} copy
      */
     const write = (chat, owner, tab, copy) => {
-        storage.setItem(keyOf(chat, owner, tab), JSON.stringify(copy));
-        const field = ownerField(owner);
-        const index = indexOf(chat);
-        if (!index.some(([f, t]) => f === field && t === tab)) writeList(storage, INDEX + chatId(chat), [...index, [field, tab]]);
+        const [id, field] = [chatId(chat), ownerField(owner)];
+        storage.setItem(keyOf(id, field, tab), JSON.stringify(copy));
+        const kept = index();
+        if (!kept.some(([c, f, t]) => c === id && f === field && t === tab)) writeList(storage, INDEX, [...kept, [id, field, tab]]);
     };
 
     return {
@@ -144,15 +156,15 @@ export function boxCopies(storage) {
         read,
         remove,
         /**
-         * @param {ChatOf} chat
-         * @returns {KeptCopy[]} every copy kept for the chat
+         * @returns {(KeptCopy & { chat: ChatOf })[]} every copy kept, of every chat
          */
-        of(chat) {
-            return indexOf(chat).flatMap(([field, tab]) => {
+        all() {
+            return index().flatMap(([id, field, tab]) => {
+                const chat = chatOfId(id);
+                const copy = chat ? readKept(id, field, tab) : null;
+                if (!chat || !copy) return [];
                 try {
-                    const owner = JSON.parse(field);
-                    const copy = read(chat, owner, tab);
-                    return copy ? [{ owner, tab, ...copy }] : [];
+                    return [{ chat, owner: JSON.parse(field), tab, ...copy }];
                 } catch {
                     return [];
                 }
@@ -172,8 +184,10 @@ export function boxCopies(storage) {
          * @param {ChatOf} chat a chat that is gone
          */
         dropChat(chat) {
-            for (const [field, tab] of indexOf(chat)) storage.removeItem(COPY + JSON.stringify([chatId(chat), field, tab]));
-            storage.removeItem(INDEX + chatId(chat));
+            const id = chatId(chat);
+            const kept = index();
+            for (const [c, f, t] of kept) if (c === id) storage.removeItem(keyOf(c, f, t));
+            writeList(storage, INDEX, kept.filter(([c]) => c !== id));
         },
         /**
          * Sets this tab's copy for a draft apart from the one the box writes next, so it is carried as it is
@@ -184,8 +198,8 @@ export function boxCopies(storage) {
         setApart(chat, owner, tab) {
             const copy = read(chat, owner, tab);
             if (!copy) return;
-            const field = ownerField(owner);
-            const taken = new Set(indexOf(chat).filter(([f]) => f === field).map(([, t]) => t));
+            const [id, field] = [chatId(chat), ownerField(owner)];
+            const taken = new Set(index().filter(([c, f]) => c === id && f === field).map(([, , t]) => t));
             let n = 1;
             while (taken.has(`${tab}~${n}`)) n++;
             write(chat, owner, `${tab}~${n}`, copy);

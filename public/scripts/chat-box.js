@@ -243,17 +243,16 @@ export function leavingChatBox() {
 }
 
 /**
- * What a request that opens a chat carries: the text it leaves, and every copy the browser kept of text written in
- * that chat that the server hasn't confirmed, from any tab. A copy already in the draft changes nothing when merged
- * again, so one that a tab still open is writing goes too.
- * @param {ChatOf} chat the chat it opens
+ * What a request that opens a chat carries: the text it leaves, and every copy the browser kept of text the server
+ * hasn't confirmed, from any tab and of any chat, so a copy whose tab is gone lasts only until a chat is opened. A copy
+ * already in its draft changes nothing when merged again, so one that a tab still open is writing goes too.
  * @returns {LeftDraft[] | undefined}
  */
-export function openingChatBox(chat) {
+export function openingChatBox() {
     const own = tab();
     const live = here;
-    const kept = copies.of(chat).filter(copy => !(copy.tab === own && live && sameChat(live.chat, chat) && sameOwner(live.owner, copy.owner)));
-    const all = [...leavingChatBox() ?? [], ...kept.map(copy => ({ ...chat, owner: copy.owner, text: copy.text, changes: copy.changes, tab: copy.tab, ...(copy.change ? { change: copy.change } : {}) }))];
+    const kept = copies.all().filter(copy => !(copy.tab === own && live && sameChat(live.chat, copy.chat) && sameOwner(live.owner, copy.owner)));
+    const all = [...leavingChatBox() ?? [], ...kept.map(copy => ({ ...copy.chat, owner: copy.owner, text: copy.text, changes: copy.changes, tab: copy.tab, ...(copy.change ? { change: copy.change } : {}) }))];
     return all.length ? all : undefined;
 }
 
@@ -293,7 +292,7 @@ export function takeChatBoxPush(frame) {
 /**
  * The person is at another end, or another chat: the box shows that end's draft. Text written before any chat was
  * open stays, to be kept for the end it's sent after. A copy this tab kept for that end, which the request that moved
- * here didn't get kept, is set apart, so the box's own copy never writes over it; the next open of the chat carries it.
+ * here didn't get kept, is set apart, so the box's own copy never writes over it; the next open of a chat carries it.
  * @param {ChatOf} chat
  * @param {Draft | undefined} draft the end's draft, as the answer that moved them carries it
  */
