@@ -354,13 +354,13 @@ An entity's components exist where their changes are: a component made at the li
 A component's name says whose it is: a name the app's piece owns ("card", "chat.message",
   "lore.entry", "settings", "tags", "relations", "pkg") or an install's own name and names
   under it ("tracker", "tracker.log"). A store reference names the components it reaches,
-  so narrowing by component replaces narrowing by key prefix.
-A key and its value, as a module kept them before, is an entity with one free-form component.
+  so a module is narrowed by the components it may read or write.
+A key and its value are a special case: an entity with one free-form component.
 ```
 
 | What | Entity | Components | Where its changes hang |
 |---|---|---|---|
-| A card (a character) | one per card | "card" (upstream's fields), "tags" (a relation to tag entities), "settings" (its statements: the character level), "pkg" if it brings modules | the library node |
+| A card (a character) | one per card | "card" (upstream's fields), "tags" (a relation to tag entities), "lore.books" (a relation to its books), "settings" (its statements: the character level), "pkg" if it brings modules | the library node |
 | A tag | one per tag | "tag" { name } | the library node |
 | A lorebook, its entries | one per book, one per entry | "lore.book" { name, when }; "lore.entry" { book (an id), name, order, when, text } | the library node; an entry made in a chat, at that chat's node |
 | A world, its entries | one each | "world", "world.entry", "relations" (one field per kind the world's author named, each a list in the relation's order), "settings" | the library node |
@@ -383,7 +383,7 @@ local bestiary = store:narrow{ nodes = { home }, components = { "lore.book", "lo
 
 The tracker can write "tracker" on any entity at any node under home, and nothing else; its affection field on Ilse's entity is its own component there, and Ilse's "card" is not in its scope. The third reference reaches one book and its entries; an entry the module can see can't be moved to another book through it, since an apply must leave every changed entity in the scope. Narrowing stays capability-shaped: a reference is cut down by nodes, component names and a condition on entities, and an id outside them isn't there.
 
-The owner asked for this: "i would ideally still like relational for compatible data (optionally), for some definition of compatible. perhaps something like an ecs architecture in relational db" (09-30), and "an open bag of properties (…), then be able to search based on that" (09-12). Compatible data is the shared formats, which have schemas; the bag of properties is a free-form component; searching is a query over either. Assumes: one entity has one value per component name. Rules out: two installs keeping different things under one name. So: names are an install's own, as keys under an install's prefix were.
+The owner asked for this: "i would ideally still like relational for compatible data (optionally), for some definition of compatible. perhaps something like an ecs architecture in relational db" (09-30), and "an open bag of properties (…), then be able to search based on that" (09-12). Compatible data is the shared formats, which have schemas; the bag of properties is a free-form component; searching is a query over either. Assumes: one entity has one value per component name. Rules out: two installs keeping different things under one name. So: names are an install's own: its install name, and names under it.
 
 ## Queries
 
@@ -403,7 +403,8 @@ At a node v, the store answers q as follows:
   a part an index covers is an index read: "=", "in" and comparisons on an indexed field,
     "to" on a relation, "words" on a text index, "has" (every component is listed by name);
     in "all", the part with the smallest count leads (each index keeps its counts, one read
-    each) and the rest are checked on what it finds: through a composite index that covers
+    each; below the library node that count is the library's, which the chat's rows only
+    correct, so it plans and doesn't answer) and the rest are checked on what it finds: through a composite index that covers
     both, else on the entity's values, one read per field named; "any" is the union of its
     parts, each entity once. "in" with a list is a merge of the list, in order, with the
     index: about the shorter of the two in seeks.
@@ -658,8 +659,8 @@ Still restrictive:
 ```
 
 ```
-Shared formats have schemas: card, chat.message, lore.book, lore.entry, world.entry,
-  relations, tags, bookmark, pkg; settings has one whose fields are open (each a setting name).
+Shared formats have schemas: card, chat, chat.message, lore.book, lore.entry, lore.books,
+  world.entry, relations, tags, bookmark, pkg; settings has one whose fields are open (each a setting name).
   An install's own component may have none; then it is any table, with no index but "has".
 A schema is content: a package ships it, and a new package version with a changed schema is
   a content change like any other. The root declares the schemas of what is installed;
@@ -1764,7 +1765,7 @@ A level is data: where its statements are kept, and what of the context names it
   given   a table the context carries (what the card ships, what transforms declare); it
           belongs to the context's own subject, so a follow reads it at its start only
   name    what the source is called in "from" reports (default: the level)
-A schema, which the module that owns the keys ships (the "setting schema" row at the end):
+A schema, which the module that owns the settings ships (the "setting schema" row at the end):
   order   the setting's default order of items; absent: the shipped order. It restricts
           nothing: shipped items it omits follow, in the shipped order.
           What an item walks is the item's own:
@@ -2515,7 +2516,7 @@ t=1.2s   store: the chat's minutes and Ilse's affection change at 822 and every 
          reply to the action: { cursor = 99210 }; pages watching the chat get the batch
 ```
 
-The settings section is data about the module's own keys, which the table at the end already gave as a setting schema; a module that needs drawing of its own gets it through the display handle (decided: an allowlisted display API, a framed area where a DOM library needs one). How a card's lore activation and the person's extensions meet is the second half of each option. Under D the manifest's needs become need nodes and its slot contributions item nodes, and compose_order.lua replaces order.lua: "after" and "before" are conditions, and the person's rules override them.
+The settings section is data about the module's own settings, which the table at the end already gave as a setting schema; a module that needs drawing of its own gets it through the display handle (decided: an allowlisted display API, a framed area where a DOM library needs one). How a card's lore activation and the person's extensions meet is the second half of each option. Under D the manifest's needs become need nodes and its slot contributions item nodes, and compose_order.lua replaces order.lua: "after" and "before" are conditions, and the person's rules override them.
 
 ## Gap 5, joining, option A: a hook library of named points
 
@@ -3542,11 +3543,12 @@ Assumes: a change is reviewed as the nodes it reaches.
 Still restrictive:
   the root's words for a change are believed; whoever writes the root holds all
   authority anyway (core primitive 2);
-  the review says where an extension goes and its scope as a condition, not which cards
-  that reaches;
+  the review says where an extension goes and its scope as a condition; how many cards
+  the scope reaches is a count of the same condition as a query, where it tests only
+  stored things (a tag, a field), and unknown where it tests the context (a device);
   a module is described by what it holds, not by what it does with it: app/cascade
-  holds all of settings/, and narrows by content, so an edge to its narrow reads as all
-  of settings/, with settings' own description of narrow beside it as its words;
+  holds every "settings" component, and narrows by content, so an edge to its narrow reads
+  as all of them, with settings' own description of narrow beside it as its words;
   whether the person reviews the app's own piece at first start is the owner's, as
   before ("Capabilities from crescent: needs in a manifest").
 ```
@@ -3932,7 +3934,7 @@ The graph and its interpreter are content, as the root is. The one thing D chang
 |---|---|---|---|---|
 | `generate_interceptor` in the manifest, called with the chat, the context size, an abort and the generation type | An entry on a point before the prompt, returning a changed history; abort is raising | A wrap of "history" | A wrapper of chat.history | A wrap of every step that holds chat's history, returning a changed history; abort is raising |
 | `setExtensionPrompt(key, value, position, depth, scan, role)` | An entry on prompt.notes returning { depth, role, text }; scan is an entry on lore's point that adds its text to what's scanned | A wrap of "prompt" using prompt.at_depth; scan is a wrap of "lore" | A model wrapper; scan has no reference to wrap unless lore is one the card is handed | An insert into the notes of every step that holds prompt's assemble; scan is an insert into the scan list of every app lore step, and a wrap where a card's lore step is its own code |
-| Post-reply processing on `MESSAGE_RECEIVED`, `CHARACTER_MESSAGE_RENDERED` | An after_reply entry | An edit after "store" | A wrapper of chat.append, or store:watch on chat/ | An insert after every step that hands chat's append the role "assistant" |
+| Post-reply processing on `MESSAGE_RECEIVED`, `CHARACTER_MESSAGE_RENDERED` | An after_reply entry | An edit after "store" | A wrapper of chat.append, or store:watch on "chat.message" | An insert after every step that hands chat's append the role "assistant" |
 | Message toolbar buttons (`.extraMesButtons`) | The message.actions slot, in A, B and C | | | An item node inserted into the message.actions slot node |
 | Settings panels (`#extensions_settings`) | The settings slot, in A, B and C | | | An item node inserted into the settings slot node |
 | Slash commands (`SlashCommandParser.addCommandObject`) | The commands slot, in A, B and C | | | An item node inserted into the commands slot node |
@@ -4003,7 +4005,7 @@ pin it, and stops counting when that account's last pin goes.
 -- in root.lua
 local acct = caps.accounts:new{ bytes = 2 * 2^30 }                          -- [host]
 local rag  = load("rag", {
-  store   = caps.store:charge(acct):narrow{ nodes = { home }, prefix = "rag/", mode = "rw" },  -- [host]
+  store   = caps.store:charge(acct):narrow{ nodes = { home }, components = { "rag" }, mode = "rw" },  -- [host]
   latest  = narrow(caps.latest:charge(acct), "rag/", "rw"),                 -- [host]
   disk    = caps.disk:charge(acct), vectors = caps.vectors:charge(acct),    -- [host]
   embed   = embed })
@@ -4129,7 +4131,7 @@ local kobold      = load("kobold", { net = secrets:net("kobold"), json = json, b
 local connections = load("connections", { latest = only_latest("connections/", "rw"), kv = kv,
                                           switch = load("switch", {}), default = "openai",
                                           adapters = { openai = model, kobold = kobold } })
-local ilse        = load("ilse", { store = only("chars/", "r"), chat = chat, lore = lore, prompt = prompt,
+local ilse        = load("ilse", { store = cards, me = 7, chat = chat, lore = lore, prompt = prompt,
                                    model = connections.model, tracker = tracker, condense = condense })
 
 t=0      ilse holds connections.model; a reply streams from openai through it
@@ -4164,9 +4166,10 @@ A connection is which adapter answers, and each adapter holds its own key throug
 
 ```
 A need names what it wants, whether the module runs without it, and why, in the module's
-own words. "store" and "latest" are the module's own keys, under its install name
-(tracker/), so two modules can't collide and none can name its way into another's;
-"of" asks for another install's keys, and the review names that install. "export" is
+own words. "store" is the module's own components, named by its install name ("tracker",
+and names under it), and "latest" its own keys (tracker/), so two modules can't collide
+and none can name its way into another's; "of" asks for another install's components or
+keys, and the review names that install. "export" is
 another install's exports, which is how a dependency is said. A need the root provides by
 contract ("model") is whatever the root hands for it (connections.model above). "secret"
 makes the net one that carries a key the person picks or enters: the key goes to
@@ -4214,15 +4217,15 @@ caps.grant:match(load("grant_rules", { cond = load("cond", {}) }))          -- [
 local provided  = { model = connections.model }   -- what this root hands by contract
 local installed = { kv = kv, cond = cond, prompt = prompt }   -- exports by name: what ships, then each install
 local function wire(name)
-  local pkg = store:get(home, "pkg/" .. name)                               -- [host] { manifest, source }
+  local p = pkg(name)                                                       -- [host] { manifest, source }
   local got, given = caps.grant:needs(name), {}                             -- [host]
-  for need, decl in pairs(pkg.manifest.needs) do
+  for need, decl in pairs(p.manifest.needs) do
     local v = got[need]
     if v == true then v = provided[decl.what] or installed[decl.of] end
     if v == nil and decl.required then error(name .. " can't run without " .. need, 0) end
     given[need] = v
   end
-  installed[name] = caps.sandbox:load(pkg.source, pkg.manifest.runtime or "lua", given)   -- [core]
+  installed[name] = caps.sandbox:load(p.source, p.manifest.runtime or "lua", given)   -- [core]
   return installed[name]
 end
 
@@ -4270,7 +4273,7 @@ local function grant_of(person)
   return caps.grant:narrow{                                                 -- [host]
     net   = caps.net:only(p.net_test),        -- p.net_test reads the admin's current limits    -- [host]
     files = p.folder and caps.files:only(p.folder, p.folder_mode),          -- [host]
-    store = caps.store:narrow{ nodes = { p.home }, prefix = "", mode = "rw" },   -- [host]
+    store = caps.store:narrow{ nodes = { p.home }, mode = "rw" },          -- [host] every component
     space = caps.accounts:new{ bytes = p.bytes },                           -- [host]
   }
 end
@@ -4337,8 +4340,8 @@ Heavy work splits by whether it needs more than a CPU. Pure computation is conte
 
 ```lua
 -- in root.lua: a wasm module handed no references can do no I/O
-local regex   = caps.sandbox:load(store:get(home, "pkg/regex"), "wasm", {})      -- [core], [host]
-local unicode = caps.sandbox:load(store:get(home, "pkg/unicode"), "wasm", {})    -- [core], [host]
+local regex   = caps.sandbox:load(pkg("regex").source, "wasm", {})               -- [core], [host]
+local unicode = caps.sandbox:load(pkg("unicode").source, "wasm", {})             -- [core], [host]
 local cleanup = load("cleanup", { regex = regex, unicode = unicode })
 
 -- cleanup.lua: a reply cleanup step
@@ -4375,21 +4378,22 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 |---|---|
 | provider | A function returning messages, in the parts list a card hands prompt.assemble |
 | condition type | An operator a module adds with cond.define, or any function |
-| book type | Keys under a prefix that lore.activate reads; another kind of book is another module handing lore its entries |
+| book type | Entities with "lore.entry" naming the book, which lore.activate queries; another kind of book is another module handing lore its entries |
 | input handler | A module that takes a file or URL from a page action, parses it, and writes through its store capability; export is the reverse |
 | rewrite step | A step that rewrites ctx.reply or ctx.messages, or a wrapper around a part |
 | command | A function a module exports: run from a page action, offered to the model as a tool by a tools module, or put in a turn’s steps |
-| setting schema | Data a module ships about its own keys: the default, how statements combine, and the path the value resolves along (which levels and which relation kinds it follows, in what order); settings.lua resolves it, and whatever edits it reads it |
+| setting schema | Data a module ships about its own settings: the default, how statements combine, and the path the value resolves along (which levels and which relation kinds it follows, in what order); settings.lua resolves it, and whatever edits it reads it |
 | backend adapter | A module holding a net capability for one host (openai.lua) |
 | Chats, swipes, branches | chat.lua: nodes; a swipe or branch is another child of the same node |
-| Characters, personas | Keys under chars/ on the library node, read by a card’s parts |
+| Characters, personas | Entities with "card" or "persona" on the library node, read by a card’s parts |
 | World info | lore.lua over cond.lua |
 | Notes (author’s, character’s, any number) | The setting prompt/notes: a table of notes by id, each a prompt part (text, depth or position, role, optional when) merged across the path, from the chat, pinned bookmarks, character and card alike; the prompt step turns the ones whose condition holds into parts. The interval and delay are conditions on depth |
 | Presets, prompt manager | Data a card’s composition reads: its parts, their order, the parameters |
 | Regex, reply cleanups | Rewrite steps |
 | Macros | A library function parts call on their text |
 | Quick replies, slash commands, STscript | Commands; STscript is an interpreter module, for compatibility |
-| Tags, saved views | Data plus cond.lua expressions; a views module keeps index keys current by wrapping the store capability it hands out |
+| Tags, saved views | Tags are a relation component; a view is a query (cond.lua data) the store answers from declared indexes, live through a watch on the query |
+| Indexes, searching stored data | Declared by schemas on component fields and kept by the store: the library node's in place, each chat's rows read through the ancestry |
 | Group chats | A module that sets ctx.speaker and runs the reply steps per character, or composes their replies into one |
 | Summarize, vectors, TTS, image generation, trackers | Modules, each with only its own capabilities (condense.lua, tracker.lua; TTS holds net for its service) |
 | Extensions | Modules, the same as everything above |
@@ -4414,7 +4418,7 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 
 ## The owner's words
 
-**Supports:** "ok so what you’re saying is everything* should be an extension"; "much of ccv2 behavior would become its own app"; "an ideal rp platform wouldn’t be so chat-centric"; "how *would* the ‘turn pipeline’ be ‘composed’" (a list of steps a card owns); "it’s a composition of parts"; "think closer to arbitrary scripting running on sandboxed luajit"; "ideally state is schemaless"; "something something ocaps may be not a terrible idea".
+**Supports:** "i would ideally still like relational for compatible data (optionally), for some definition of compatible. perhaps something like an ecs architecture in relational db" (entities, components and relations, with optional schemas); "an open bag of properties (…), then be able to search based on that" (free-form components and queries); "ok so what you’re saying is everything* should be an extension"; "much of ccv2 behavior would become its own app"; "an ideal rp platform wouldn’t be so chat-centric"; "how *would* the ‘turn pipeline’ be ‘composed’" (a list of steps a card owns); "it’s a composition of parts"; "think closer to arbitrary scripting running on sandboxed luajit"; "ideally state is schemaless"; "something something ocaps may be not a terrible idea".
 
 **Strains:** "authoring being too hard for non-programmers — a problem we need to solve" (question 2); "constrained dsl since an ideal browser target is sandboxed" (question 3).
 
@@ -4423,5 +4427,11 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 Decided: modules are Lua, run by LuaJIT on the server and compiled to JavaScript on the page, which the browser's engine JITs, with the compiler deciding every name code can reach; the pure-computation libraries (regex, Unicode, tokenizers, zip, PDF) are wasm, one build for both sides (gap 8). Question 5, how installed extensions and a card's own join a card's turn, is answered by option D: the composition is data, a graph the root interprets, which a card ships a piece of and an extension transforms (gap 5); which transforms run where, and in what order, are the person's rules resolved through the settings cascade, which is one mechanism for levels of context, followed relations and the message tree ("Settings: one cascade along a path").
 
 2. **How does someone who doesn’t program build things?** a. Libraries in a module language that read data, as cond.lua reads ["all", …] · b. A declarative form the core itself evaluates, so it can index and explain it without running code. This puts a language in the core, which then has to pass both tests above. Option D (gap 5) already makes a card's composition data the root explains without running it, with no language in the core; what a code node does inside is still code
+
+6. **Building an index on data that already exists.** A schema version that adds an index comes into force when the store's job has built it over the component's existing rows; until then the version before it is in force ("Indexes under branching"). Nothing stored is ever partial or read half-built, but a new version waits for one pass over the rows: a · whether that wait satisfies "no stored data is waiting for a backfill" · b · an index may only be added with a new component name, so nothing is built and old data stays under the old name (less general).
+
+7. **Where an index's base is.** Indexes are kept in place at the node they are declared for (the library node) and below it by chat, the child of that node a node descends from. A person whose data is not the child of one library node (several people under one root, each with a home) has the indexes declared per home. I don't know whether several persons per install are wanted (gap 1 says the same).
+
+8. **Shown names of entities.** Messages hold their speaker's entity, not a name, so a renamed character's messages show the new name; upstream's imported messages keep the name upstream stored, which "reads" returns until something names an entity. Whether a message should instead keep the name it was sent under is a UX decision.
 
 Left out: how much control the model gets over state. Each card or world decides that for itself.
