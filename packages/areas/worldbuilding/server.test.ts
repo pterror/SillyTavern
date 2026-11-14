@@ -265,6 +265,8 @@ const READS_ASKED: Costs = {
     deleteEntry: () => loopCheck(LOOP_CHECK_VISITS_PER_WRITE),
     restoreEntry: () => loopCheck(LOOP_CHECK_VISITS_PER_WRITE),
     moveEntryToWorld: () => loopCheck(LOOP_CHECK_VISITS_PER_WRITE),
+    copyEntryToWorld: () => 0,
+    duplicateEntry: (_w, _b, _e, limit) => loopCheck(limit),
 };
 
 // Counts the reads each bounded port is asked for, at the most its bounds let it read: cards, steps, loop checks, mention
@@ -317,6 +319,8 @@ function world(
         deleted: string[];
         restored: string[];
         moved: { entry: string; toBook: string }[];
+        copied: { entry: string; toBook: string }[];
+        duplicated: { entry: string; loopCheckLimit: number }[];
         opened: (string | null)[];
         imported: Upload[];
         pointingAt: PointingAtQuery[];
@@ -343,6 +347,8 @@ function world(
         deleted: [],
         restored: [],
         moved: [],
+        copied: [],
+        duplicated: [],
         opened: [],
         imported: [],
         pointingAt: [],
@@ -800,6 +806,16 @@ function world(
             if (book !== '1' || !entries.has(entry)) return 'no entry';
             entries.delete(entry);
             return { entry: '90', unreachedLoops: [] };
+        },
+        copyEntryToWorld: async (_w, book, entry, toBook) => {
+            asked.copied.push({ entry, toBook });
+            if (book !== '1' || !entries.has(entry)) return 'no entry';
+            return { entry: '91', unreachedLoops: [] };
+        },
+        duplicateEntry: async (_w, book, entry, loopCheckLimit) => {
+            asked.duplicated.push({ entry, loopCheckLimit });
+            if (book !== '1' || !entries.has(entry)) return 'no entry';
+            return { entry: '92', unreachedLoops: [] };
         },
         changeRelations: async ({ session }, book, changes, loopCheckLimit) => {
             asked.writes.push(changes.length);
@@ -1809,6 +1825,40 @@ test('moving the open entry to another world opens that world with the entry ope
     expect(w.asked.entryReads).toEqual([]);
     await w.view<EntryView>(ENTRY_VIEW);
     expect(w.asked.entryReads).toEqual([{ book: '2', entry: '90', mentions: { from: null, pages: 1 } }]);
+});
+
+test('copying an entry to another world leaves the tab where it was; the same world is refused', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
+    expect(await w.act('worldbuilding.copyEntryToWorld', { book: '1', entry: '7', toBook: '1' })).toEqual({
+        refused: 'The entry is in that world already.',
+    });
+    expect(await w.act('worldbuilding.copyEntryToWorld', { book: '1', entry: '7', toBook: '2' })).toMatchObject({
+        own: [WORLDS_VIEW, LAST_CHANGE_VIEW],
+    });
+    expect(w.asked.copied).toEqual([{ entry: '7', toBook: '2' }]);
+    expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '1' });
+    expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
+        ...NOTHING_CHANGED,
+        createdEntry: { book: '2', entry: '91' },
+    });
+});
+
+test('duplicating an entry is one write in its world, answered with the overview', async () => {
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
+    expect(
+        await w.act('worldbuilding.duplicateEntry', {
+            book: '1',
+            entry: '7',
+            loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE,
+        }),
+    ).toMatchObject({ own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW] });
+    expect(w.asked.duplicated).toEqual([{ entry: '7', loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE }]);
+    expect(await w.act('worldbuilding.duplicateEntry', { book: '1', entry: '404', loopCheckLimit: 1 })).toMatchObject({
+        refused: expect.any(String),
+    });
 });
 
 test('moving an entry that is not the open one leaves the tab on its world, with the open entry still open', async () => {

@@ -6,6 +6,7 @@ import { useWb } from './context.ts';
 import { dismissOn } from './dismiss.ts';
 import { Icon } from './icons.tsx';
 import { TargetPicker } from './Picker.tsx';
+import { WorldChoice } from './WorldChoice.tsx';
 import { fill } from './words.ts';
 
 // The relation kind a list of cards is grouped by, in the world it shows.
@@ -14,12 +15,13 @@ export type Grouping = { book: string; kind: string; kindName: string };
 // The region a card is drawn in: the entry its relation of the grouping kind targets; null at the top of a list.
 export type Membership = { entry: string; label: Named } | null;
 
-type Picking = 'move' | 'also' | null;
+type Picking = 'move' | 'also' | 'copyToWorld' | 'moveToWorld' | null;
 
 export function CardMenuButton(props: {
     entry: string;
     label: Named;
-    grouping: Grouping;
+    book: string;
+    grouping: Grouping | null;
     region: Membership;
     open: boolean;
     onOpen: (open: boolean) => void;
@@ -34,7 +36,7 @@ export function CardMenuButton(props: {
                 class="right_menu_button interactable wb-card-more"
                 classList={{ 'wb-on': props.open }}
                 aria-label={fill(t('More for ${0}'), props.label.text)}
-                title={t('Move, also put in, take out')}
+                title={t('More')}
                 aria-expanded={props.open}
                 onClick={() => props.onOpen(!props.open)}
             >
@@ -44,6 +46,7 @@ export function CardMenuButton(props: {
                 <CardMenu
                     entry={props.entry}
                     label={props.label}
+                    book={props.book}
                     grouping={props.grouping}
                     region={props.region}
                     opener={() => button}
@@ -57,7 +60,8 @@ export function CardMenuButton(props: {
 function CardMenu(props: {
     entry: string;
     label: Named;
-    grouping: Grouping;
+    book: string;
+    grouping: Grouping | null;
     region: Membership;
     opener: () => HTMLElement | undefined;
     onClose: () => void;
@@ -67,20 +71,20 @@ function CardMenu(props: {
     const [picking, setPicking] = createSignal<Picking>(null);
     let box: HTMLDivElement | undefined;
     dismissOn(() => box, props.onClose, props.opener, { align: 'end', framed: false });
-    const relation = () => ({ book: props.grouping.book, entry: props.entry, kind: props.grouping.kind });
+    const relation = (grouping: Grouping) => ({ book: grouping.book, entry: props.entry, kind: grouping.kind });
     const run = (action: () => Promise<unknown>) => {
         const started = action();
         props.onClose();
         void started;
     };
-    const pick = (target: string) => {
-        move(target, props.region, picking());
+    const pick = (grouping: Grouping, target: string) => {
+        move(grouping, target, props.region, picking());
     };
-    const move = (target: string, region: Membership, how: Picking) => {
+    const move = (grouping: Grouping, target: string, region: Membership, how: Picking) => {
         run(() =>
             how === 'move' && region !== null
                 ? wb.act('worldbuilding.moveRelation', {
-                      ...relation(),
+                      ...relation(grouping),
                       target: region.entry,
                       newTarget: target,
                       after: null,
@@ -88,7 +92,7 @@ function CardMenu(props: {
                       loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE,
                   })
                 : wb.act('worldbuilding.addRelation', {
-                      ...relation(),
+                      ...relation(grouping),
                       target,
                       after: null,
                       before: null,
@@ -97,59 +101,126 @@ function CardMenu(props: {
                   }),
         );
     };
+    const at = () => ({ book: props.book, entry: props.entry });
     return (
         <div class="wb-card-menu-box" ref={(element) => (box = element)}>
             <div class="wb-menu list-group st-floating wb-card-menu" role="menu">
-                <button
-                    class="list-group-item"
-                    type="button"
-                    role="menuitem"
-                    classList={{ 'wb-on': picking() === 'move' }}
-                    onClick={() => setPicking('move')}
-                >
-                    {t('Move to…')}
-                </button>
-                <Show when={props.region}>
-                    {(region) => (
+                <Show when={props.grouping}>
+                    {(grouping) => (
                         <>
                             <button
                                 class="list-group-item"
                                 type="button"
                                 role="menuitem"
-                                classList={{ 'wb-on': picking() === 'also' }}
-                                onClick={() => setPicking('also')}
+                                classList={{ 'wb-on': picking() === 'move' }}
+                                onClick={() => setPicking('move')}
                             >
-                                {t('Also put in…')}
+                                {t('Move to…')}
                             </button>
-                            <button
-                                class="list-group-item"
-                                type="button"
-                                role="menuitem"
-                                onClick={() =>
-                                    run(() =>
-                                        wb.act('worldbuilding.removeRelation', {
-                                            ...relation(),
-                                            target: region().entry,
-                                            loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE,
-                                        }),
-                                    )
-                                }
-                            >
-                                {fill(t('Take out of ${0}'), region().label.text)}
-                            </button>
+                            <Show when={props.region}>
+                                {(region) => (
+                                    <>
+                                        <button
+                                            class="list-group-item"
+                                            type="button"
+                                            role="menuitem"
+                                            classList={{ 'wb-on': picking() === 'also' }}
+                                            onClick={() => setPicking('also')}
+                                        >
+                                            {t('Also put in…')}
+                                        </button>
+                                        <button
+                                            class="list-group-item"
+                                            type="button"
+                                            role="menuitem"
+                                            onClick={() =>
+                                                run(() =>
+                                                    wb.act('worldbuilding.removeRelation', {
+                                                        ...relation(grouping()),
+                                                        target: region().entry,
+                                                        loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE,
+                                                    }),
+                                                )
+                                            }
+                                        >
+                                            {fill(t('Take out of ${0}'), region().label.text)}
+                                        </button>
+                                    </>
+                                )}
+                            </Show>
+                            <hr />
                         </>
                     )}
                 </Show>
+                <button
+                    class="list-group-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={() =>
+                        run(() =>
+                            wb.act('worldbuilding.duplicateEntry', {
+                                ...at(),
+                                loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE,
+                            }),
+                        )
+                    }
+                >
+                    {t('Duplicate')}
+                </button>
+                <button
+                    class="list-group-item"
+                    type="button"
+                    role="menuitem"
+                    classList={{ 'wb-on': picking() === 'copyToWorld' }}
+                    onClick={() => setPicking('copyToWorld')}
+                >
+                    {t('Copy to another world…')}
+                </button>
+                <button
+                    class="list-group-item"
+                    type="button"
+                    role="menuitem"
+                    classList={{ 'wb-on': picking() === 'moveToWorld' }}
+                    onClick={() => setPicking('moveToWorld')}
+                >
+                    {t('Move to another world…')}
+                </button>
             </div>
-            <Show when={picking()} keyed>
+            <Show when={picking() === 'copyToWorld' || picking() === 'moveToWorld' ? picking() : null} keyed>
                 {(how) => (
+                    <div class="wb-menu list-group st-floating wb-card-pick" role="menu">
+                        <WorldChoice
+                            heading={fill(
+                                how === 'moveToWorld' ? t('Move ${0} to') : t('Copy ${0} to'),
+                                props.label.text,
+                            )}
+                            from={props.book}
+                            onPick={(toBook) =>
+                                run(() =>
+                                    wb.act(
+                                        how === 'moveToWorld'
+                                            ? 'worldbuilding.moveEntryToWorld'
+                                            : 'worldbuilding.copyEntryToWorld',
+                                        { ...at(), toBook },
+                                    ),
+                                )
+                            }
+                        />
+                    </div>
+                )}
+            </Show>
+            <Show when={props.grouping && (picking() === 'move' || picking() === 'also') ? props.grouping : null} keyed>
+                {(grouping) => (
                     <TargetPicker
                         class="wb-card-pick st-floating"
-                        heading={fill(how === 'move' ? t('Move ${0} to') : t('Also put ${0} in'), props.label.text)}
-                        book={props.grouping.book}
-                        kind={props.grouping.kind}
+                        heading={fill(
+                            picking() === 'move' ? t('Move ${0} to') : t('Also put ${0} in'),
+                            props.label.text,
+                        )}
+                        book={grouping.book}
+                        kind={grouping.kind}
                         leaveOut={[props.entry, ...(props.region ? [props.region.entry] : [])]}
-                        onPick={pick}
+                        onPick={(target) => pick(grouping, target)}
                     />
                 )}
             </Show>

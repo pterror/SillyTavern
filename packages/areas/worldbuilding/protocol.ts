@@ -522,7 +522,9 @@ export type BulkAction =
     | { delete: true }
     | { set: Partial<Omit<Placement, 'characterFilter'>> }
     | { moveTo: RelationTo }
-    | { alsoPutIn: RelationTo };
+    | { alsoPutIn: RelationTo }
+    | { moveToWorld: string }
+    | { copyToWorld: string };
 
 export type BulkJob = { job: string; action: BulkAction; target: Named | null; done: number };
 
@@ -635,6 +637,8 @@ const bulkAction = v.union([
     v.strictObject({ set: placementChange }),
     v.strictObject({ moveTo: relationTo }),
     v.strictObject({ alsoPutIn: relationTo }),
+    v.strictObject({ moveToWorld: entityId }),
+    v.strictObject({ copyToWorld: entityId }),
 ]);
 
 export const actions = {
@@ -711,6 +715,8 @@ export const actions = {
     'worldbuilding.deleteEntry': v.object(entryNamed),
     'worldbuilding.restoreEntry': v.object(entryNamed),
     'worldbuilding.moveEntryToWorld': v.object({ ...entryNamed, toBook: entityId }),
+    'worldbuilding.copyEntryToWorld': v.object({ ...entryNamed, toBook: entityId }),
+    'worldbuilding.duplicateEntry': v.object({ ...entryNamed, loopCheckLimit }),
     'worldbuilding.openWorlds': v.object({}),
     // A world by its name, and in it the entry with upstream's `uid` when one is named.
     'worldbuilding.openNamed': v.object({

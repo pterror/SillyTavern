@@ -262,7 +262,7 @@ async function worldKey(lib, book) {
 /**
  * The entry actions and the entry view of the worldbuilding area, over the store.
  * @param {EntryPortsWiring} wiring
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'readFacts' | 'findCharacters' | 'readKeySharers' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'readFacts' | 'findCharacters' | 'readKeySharers' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld' | 'copyEntryToWorld' | 'duplicateEntry'>}
  */
 export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
     const actorOf = (/** @type {import('@st/worldbuilding/server').Who} */ who) => ({ user: who.user.handle, session: who.session });
@@ -314,6 +314,27 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
         };
     };
 
+    /**
+     * @param {import('@st/worldbuilding/server').Who} who
+     * @param {string} book
+     * @param {string} entry
+     * @param {string} toBook
+     * @param {boolean} keep the entry stays where it is and a copy is made
+     */
+    const transferEntry = async (who, book, entry, toBook, keep) => {
+        const lib = await libOf(who.user);
+        const [from, to] = [await worldKey(lib, BigInt(book)), await worldKey(lib, BigInt(toBook))];
+        if (from === null) return (await lib.books.bookForm(BigInt(book))) === null ? 'missing' : { refused: CARD_ENTRY_STAYS };
+        if (to === null) return (await lib.books.bookForm(BigInt(toBook))) === null ? { refused: 'That world no longer exists.' } : { refused: CARD_ENTRY_STAYS };
+        const e = await lib.books.entryIn(BigInt(book), BigInt(entry));
+        if (!e) return 'no entry';
+        const moved = await lib.books.transplant({ source: from, target: to, uid: e.key.slice(e.key.indexOf(':') + 1), deleteOriginal: !keep }, actorOf(who));
+        if (moved === 'no source') return 'missing';
+        if (moved === 'no entry') return 'no entry';
+        if (moved === 'no target') return { refused: 'That world no longer exists.' };
+        if (moved === 'full') return { refused: 'That world has no free entry number left.' };
+        return { entry: String(moved.id), unreachedLoops: moved.unreachedLoops };
+    };
     return {
         async readFacts(user, book, entries, tokens) {
             const lib = await libOf(user);
@@ -414,19 +435,13 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             if (typeof done === 'string') return done;
             return { unreachedLoops: done.unreachedLoops };
         },
-        async moveEntryToWorld(who, book, entry, toBook) {
+        moveEntryToWorld: (who, book, entry, toBook) => transferEntry(who, book, entry, toBook, false),
+        copyEntryToWorld: (who, book, entry, toBook) => transferEntry(who, book, entry, toBook, true),
+        async duplicateEntry(who, book, entry, loopCheckLimit) {
             const lib = await libOf(who.user);
-            const [from, to] = [await worldKey(lib, BigInt(book)), await worldKey(lib, BigInt(toBook))];
-            if (from === null) return (await lib.books.bookForm(BigInt(book))) === null ? 'missing' : { refused: CARD_ENTRY_STAYS };
-            if (to === null) return (await lib.books.bookForm(BigInt(toBook))) === null ? { refused: 'The world to move it to no longer exists.' } : { refused: CARD_ENTRY_STAYS };
-            const e = await lib.books.entryIn(BigInt(book), BigInt(entry));
-            if (!e) return 'no entry';
-            const moved = await lib.books.transplant({ source: from, target: to, uid: e.key.slice(e.key.indexOf(':') + 1), deleteOriginal: true }, actorOf(who));
-            if (moved === 'no source') return 'missing';
-            if (moved === 'no entry') return 'no entry';
-            if (moved === 'no target') return { refused: 'The world to move it to no longer exists.' };
-            if (moved === 'full') return { refused: 'That world has no free entry number left.' };
-            return { entry: String(moved.id), unreachedLoops: moved.unreachedLoops };
+            const made = await lib.books.duplicateIn(BigInt(book), BigInt(entry), loopCheckLimit, actorOf(who));
+            if (typeof made === 'string' || 'refused' in made) return made;
+            return { entry: String(made.entry), unreachedLoops: made.unreachedLoops };
         },
     };
 }

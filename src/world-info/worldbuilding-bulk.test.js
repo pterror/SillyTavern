@@ -146,3 +146,41 @@ after(async () => {
     await user.close();
     setImmediate(() => process.exit(0));
 });
+
+test('copying the selected to another world keeps them and adds them there without relations; moving takes them out, a chunk a commit', async () => {
+    const count = RELATION_CHANGES_PER_STEP + 3;
+    const from = await write('Shelf', [entry(0, 'the hub'), ...Array.from({ length: count }, (_, i) => entry(i + 1, `book ${i + 1}`, [{ kind: IN, target: 0, position: 'a' }]))]);
+    const to = await write('Library', [entry(0, 'already here')]);
+    const all = { selected: { world: true }, except: [from.id(0)] };
+
+    assert.deepEqual(await lib.books.startBulk(from.book, all, { copyToWorld: String(to.book) }, LOOPS), { unreachedLoops: [] });
+    await lib.books.jobs.settled();
+    const copied = await entriesOf('Library');
+    assert.equal(Object.keys(copied).length, count + 1);
+    assert.equal(Object.keys(await entriesOf('Shelf')).length, count + 1, 'a copy leaves every entry where it was');
+    const contents = Object.values(copied).map(e => e.content);
+    assert.ok(contents.includes('book 1') && contents.includes(`book ${count}`));
+    assert.equal(Object.values(copied).some(e => (e.extensions?.relations ?? []).length > 0), false, 'a copy carries no relation');
+    assert.equal(new Set(Object.keys(copied)).size, count + 1, 'each copy has its own key');
+
+    const some = { selected: { entries: [from.id(1), from.id(2)] }, except: [] };
+    assert.deepEqual(await lib.books.startBulk(from.book, some, { moveToWorld: String(to.book) }, LOOPS), { unreachedLoops: [] });
+    const left = await entriesOf('Shelf');
+    assert.equal('1' in left || '2' in left, false, 'a move takes the entries out of their world');
+    assert.equal(Object.keys(await entriesOf('Library')).length, count + 3);
+
+    assert.deepEqual(await lib.books.startBulk(from.book, some, { moveToWorld: String(from.book) }, LOOPS), { refused: 'The entries are in that world already.' });
+});
+
+test('a duplicate goes right after its entry, with its keys and relations', async () => {
+    const w = await write('Twins', [entry(0, 'the hub'), entry(1, 'first', [{ kind: IN, target: 0, position: 'a' }]), entry(2, 'second')]);
+    const made = await lib.books.duplicateIn(w.book, BigInt(w.id(1)), LOOPS);
+    assert.ok(typeof made === 'object' && 'entry' in made);
+    const stored = await entriesOf('Twins');
+    const copy = stored[made.uid];
+    assert.equal(copy.content, 'first');
+    assert.deepEqual(copy.key, ['name 1']);
+    assert.deepEqual(targetsOf(stored, Number(made.uid)), [`${IN}:0`]);
+    const order = Object.values(stored).sort((a, b) => a.displayIndex - b.displayIndex).map(e => e.content);
+    assert.deepEqual(order, ['the hub', 'first', 'first', 'second']);
+});

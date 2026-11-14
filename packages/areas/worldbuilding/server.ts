@@ -355,6 +355,18 @@ export type Ports = {
         entry: string,
         toBook: string,
     ): Promise<{ entry: string; unreachedLoops: UnreachedLoop[] } | EntryWriteRefusal>;
+    copyEntryToWorld(
+        who: Who,
+        book: string,
+        entry: string,
+        toBook: string,
+    ): Promise<{ entry: string; unreachedLoops: UnreachedLoop[] } | EntryWriteRefusal>;
+    duplicateEntry(
+        who: Who,
+        book: string,
+        entry: string,
+        loopCheckLimit: number,
+    ): Promise<{ entry: string; unreachedLoops: UnreachedLoop[] } | EntryWriteRefusal>;
 };
 
 const SESSIONS_REMEMBERED = 32;
@@ -1562,6 +1574,30 @@ export function worldbuildingArea(ports: Ports) {
                     ),
                     opensViews: shown.opensViews,
                     own: [WORLD_VIEW, LAST_CHANGE_VIEW],
+                };
+            },
+            'worldbuilding.copyEntryToWorld': async (context, { book, entry, toBook }) => {
+                if (toBook === book) return { refused: 'The entry is in that world already.' };
+                const copied = await ports.copyEntryToWorld(who(context), book, entry, toBook);
+                if (typeof copied === 'string' || 'refused' in copied) return refusedWrite(copied);
+                remember(context.session, {
+                    lastChange: { ...NOTHING_CHANGED, createdEntry: { book: toBook, entry: copied.entry } },
+                });
+                return { changed: [...VIEWS_COUNTING_ENTRIES, LAST_CHANGE_VIEW], own: [WORLDS_VIEW, LAST_CHANGE_VIEW] };
+            },
+            'worldbuilding.duplicateEntry': async (context, { book, entry, loopCheckLimit }) => {
+                const made = await ports.duplicateEntry(who(context), book, entry, loopCheckLimit);
+                if (typeof made === 'string' || 'refused' in made) return refusedWrite(made);
+                remember(context.session, {
+                    lastChange: {
+                        ...NOTHING_CHANGED,
+                        createdEntry: { book, entry: made.entry },
+                        loops: { book, found: made.unreachedLoops },
+                    },
+                });
+                return {
+                    changed: [...VIEWS_COUNTING_ENTRIES, ENTRY_VIEW, POINTING_AT_VIEW, LAST_CHANGE_VIEW],
+                    own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW],
                 };
             },
             'worldbuilding.openWorlds': async () => ({ changed: [], opensViews: [WORLDS_VIEW] }),

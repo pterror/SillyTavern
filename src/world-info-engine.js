@@ -75,7 +75,7 @@ export const namesOfferShown = read => read.state === null && read.namedEntries 
  */
 
 /**
- * @typedef {{ delete: true } | { set: Record<string, unknown> } | { moveTo: { kind: string, target: string } } | { alsoPutIn: { kind: string, target: string } }} BulkAction
+ * @typedef {{ delete: true } | { set: Record<string, unknown> } | { moveTo: { kind: string, target: string } } | { alsoPutIn: { kind: string, target: string } } | { moveToWorld: string } | { copyToWorld: string }} BulkAction
  * @typedef {{ entries: string[] } | { world: true } | { query: string, chips: { kind: string, target: string, depth: 'directly' | 'anyDepth' }[] }} BulkSelected
  * @typedef {{ action: BulkAction, selected: BulkSelected, except: string[], actor: Actor | null }} BulkJob
  */
@@ -190,6 +190,15 @@ const RELATION_KIND_MERGE_FIELD = `${EXTENSION_MARK}relationKindMergingInto:`;
 const NAMES_FIELD = `${EXTENSION_MARK}names`;
 const NAMES_OFFER_FIELD = `${EXTENSION_MARK}namesOffer`;
 const CARD_BOOK_BULK_REFUSAL = 'A character\'s own lorebook is changed one entry at a time.';
+const CARD_ENTRY_STAYS_REFUSAL = 'An entry doesn\'t move into or out of a character\'s own lorebook.';
+const TRANSFER_TARGET_GONE = 'That world no longer exists.';
+
+/**
+ * The world a bulk action copies or moves the selected entries to, or null when it doesn't.
+ * @param {BulkAction} action
+ * @returns {bigint | null}
+ */
+const transferTargetOf = action => ('moveToWorld' in action ? BigInt(action.moveToWorld) : 'copyToWorld' in action ? BigInt(action.copyToWorld) : null);
 // The world's picture: the id of an image in the user's image store. Not part of a world file.
 export const WORLD_PICTURE_FIELD = `${EXTENSION_MARK}picture`;
 // The reader's layer over the world's views: never part of a world file.
@@ -1450,60 +1459,92 @@ export class WorldInfoEngine {
      * @returns {Promise<{ entry: bigint, uid: string, unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing'>}
      */
     createEntryIn(book, { after, entry, relation }, loopCheckLimit, actor = null) {
+        return this.inWorld(book, (form, commit) => this.createInLane(book, form, commit, { after, entry, relation }, loopCheckLimit, actor));
+    }
+
+    /**
+     * Copies an entry of a world, the copy placed right after it with its fields, keys and relations.
+     * @param {bigint} book
+     * @param {bigint} entry
+     * @param {number} loopCheckLimit
+     * @param {Actor | null} [actor]
+     * @returns {Promise<{ entry: bigint, uid: string, unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing' | 'no entry'>}
+     */
+    duplicateIn(book, entry, loopCheckLimit, actor = null) {
         return this.inWorld(book, async (form, commit) => {
-            const numbers = await this.store.worldRead('numbers', { book });
-            if (numbers.freeKey >= MAX_UID) return { refused: 'This world has no free entry number left.' };
-            /** @type {{ refused: string } | { displayIndex: number, moved: { entry: bigint, displayIndex: number }[] }} */
-            const placed = await this.store.worldRead('worldbuildingPlaceAfter', { book, after });
-            if ('refused' in placed) return { refused: placed.refused };
-            /** @type {unknown[]} */
-            let relations = [];
-            if (relation) {
-                /** @type {{ refused: string } | { json: string }} */
-                const made = await this.store.worldRead('worldbuildingRelationsOfNewEntry', { book, kind: relation.kind, target: relation.target });
-                if ('refused' in made) return { refused: made.refused };
-                relations = JSON.parse(made.json);
-            }
-            const k = String(numbers.freeKey);
-            const id = this.lib.nextId++;
-            const extensions = isPlainObject(entry.extensions) ? /** @type {Record<string, unknown>} */ (entry.extensions) : {};
-            const asked = {
-                ...entry,
-                uid: numbers.freeKey,
-                displayIndex: placed.displayIndex,
-                ...(relations.length > 0 ? { extensions: { ...extensions, relations } } : {}),
-            };
-            const written = form === 'card' ? newCardEntry(numbers.freeKey, asked) : asked;
-            if (typeof written.refused === 'string') return { refused: written.refused };
-            const liveAfter = new Set([String(id), ...(relation ? [String(relation.target)] : [])]);
-            /** @type {object[]} */
-            const records = [];
-            const stamp = await this.stamper(actor, records);
-            records.push(
-                ...valueRecords(id, null, entryValues(written, k, form === 'card', { targets: { entityOfKey: new Map([[k, id]]), liveAfter }, stored: null }), historyWrites(stamp)),
-                { kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 },
-                { kind: 'itemPlace', entity: book, list: 0, item: id, position: (numbers.lastPosition ?? 0) + POSITION_GAP },
-                { kind: 'entryIndex', entry: id, book, index: placed.displayIndex },
-            );
-            const moving = await this.lib.entities(placed.moved.map(m => m.entry));
-            const stored = moving.flatMap(e => (e ? [e] : []));
-            const nexts = placed.moved.map((m, i) => {
-                const e = moving[i];
-                if (!e) return {};
-                const current = entryAsWorld(e, form);
-                return /** @type {Record<string, unknown>} */ (entryToStore(e, form, current, { ...current, displayIndex: m.displayIndex }));
-            });
-            const targets = await this.relationTargets(book, nexts, stored, new Map(stored.map(e => [e.key.slice(e.key.indexOf(':') + 1), e.id])), new Set());
-            placed.moved.forEach((m, i) => {
-                const e = moving[i];
-                if (!e) return;
-                const movedKey = e.key.slice(e.key.indexOf(':') + 1);
-                pushAll(records, valueRecords(e.id, e, entryValues(nexts[i], movedKey, form === 'card', { targets, stored: e }), historyWrites(stamp)));
-                records.push({ kind: 'entryIndex', entry: e.id, book, index: m.displayIndex });
-            });
-            await commit(records);
-            return { entry: id, uid: k, unreachedLoops: await this.unreachedLoops(book, records, [], loopCheckLimit) };
+            const e = await this.entryIn(book, entry);
+            if (!e) return 'no entry';
+            const copied = { ...entryAsWorld(e, form) };
+            delete copied.uid;
+            delete copied.displayIndex;
+            return this.createInLane(book, form, commit, { after: entry, entry: copied, relation: null }, loopCheckLimit, actor);
         });
+    }
+
+    /**
+     * Runs in the book's lane: `createEntryIn`'s write.
+     * @param {bigint} book
+     * @param {BookForm} form
+     * @param {(records: object[]) => Promise<unknown>} commit
+     * @param {{ after: bigint | null, entry: Record<string, unknown>, relation: { kind: number, target: bigint } | null }} creation
+     * @param {number} loopCheckLimit
+     * @param {Actor | null} actor
+     * @returns {Promise<{ entry: bigint, uid: string, unreachedLoops: UnreachedLoop[] } | { refused: string }>}
+     */
+    async createInLane(book, form, commit, { after, entry, relation }, loopCheckLimit, actor) {
+        const numbers = await this.store.worldRead('numbers', { book });
+        if (numbers.freeKey >= MAX_UID) return { refused: 'This world has no free entry number left.' };
+        /** @type {{ refused: string } | { displayIndex: number, moved: { entry: bigint, displayIndex: number }[] }} */
+        const placed = await this.store.worldRead('worldbuildingPlaceAfter', { book, after });
+        if ('refused' in placed) return { refused: placed.refused };
+        /** @type {unknown[]} */
+        let relations = [];
+        if (relation) {
+            /** @type {{ refused: string } | { json: string }} */
+            const made = await this.store.worldRead('worldbuildingRelationsOfNewEntry', { book, kind: relation.kind, target: relation.target });
+            if ('refused' in made) return { refused: made.refused };
+            relations = JSON.parse(made.json);
+        }
+        const k = String(numbers.freeKey);
+        const id = this.lib.nextId++;
+        const extensions = isPlainObject(entry.extensions) ? /** @type {Record<string, unknown>} */ (entry.extensions) : {};
+        const asked = {
+            ...entry,
+            uid: numbers.freeKey,
+            displayIndex: placed.displayIndex,
+            ...(relations.length > 0 ? { extensions: { ...extensions, relations } } : {}),
+        };
+        const written = form === 'card' ? newCardEntry(numbers.freeKey, asked) : asked;
+        if (typeof written.refused === 'string') return { refused: written.refused };
+        const created = await this.relationTargets(book, [written], [], new Map([[k, id]]), new Set());
+        if (relation) created.liveAfter.add(String(relation.target));
+        /** @type {object[]} */
+        const records = [];
+        const stamp = await this.stamper(actor, records);
+        records.push(
+            ...valueRecords(id, null, entryValues(written, k, form === 'card', { targets: created, stored: null }), historyWrites(stamp)),
+            { kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${book}:${k}`, added: 0 },
+            { kind: 'itemPlace', entity: book, list: 0, item: id, position: (numbers.lastPosition ?? 0) + POSITION_GAP },
+            { kind: 'entryIndex', entry: id, book, index: placed.displayIndex },
+        );
+        const moving = await this.lib.entities(placed.moved.map(m => m.entry));
+        const stored = moving.flatMap(e => (e ? [e] : []));
+        const nexts = placed.moved.map((m, i) => {
+            const e = moving[i];
+            if (!e) return {};
+            const current = entryAsWorld(e, form);
+            return /** @type {Record<string, unknown>} */ (entryToStore(e, form, current, { ...current, displayIndex: m.displayIndex }));
+        });
+        const targets = await this.relationTargets(book, nexts, stored, new Map(stored.map(e => [e.key.slice(e.key.indexOf(':') + 1), e.id])), new Set());
+        placed.moved.forEach((m, i) => {
+            const e = moving[i];
+            if (!e) return;
+            const movedKey = e.key.slice(e.key.indexOf(':') + 1);
+            pushAll(records, valueRecords(e.id, e, entryValues(nexts[i], movedKey, form === 'card', { targets, stored: e }), historyWrites(stamp)));
+            records.push({ kind: 'entryIndex', entry: e.id, book, index: m.displayIndex });
+        });
+        await commit(records);
+        return { entry: id, uid: k, unreachedLoops: await this.unreachedLoops(book, records, [], loopCheckLimit) };
     }
 
     /**
@@ -2157,6 +2198,17 @@ export class WorldInfoEngine {
      * @returns {Promise<{ unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing'>}
      */
     startBulk(book, { selected, except }, action, loopCheckLimit, actor = null) {
+        const world = transferTargetOf(action);
+        if (world !== null) {
+            return this.transferLane(book, world, async () => {
+                const [bookEntity] = await this.lib.entities([book]);
+                const job = 1 + Math.max(0, ...bulkJobFields(bookEntity?.values ?? []).map(field => field.job));
+                const step = await this.transferChunk(book, world, job, { action, selected, except, actor }, { cursor: null, done: 0 }, false);
+                if ('ended' in step) return { refused: step.ended };
+                if (step.more) this.jobs.start(book);
+                return { unreachedLoops: step.unreachedLoops };
+            });
+        }
         return this.inWorld(book, async (form, commit) => {
             if (form === 'card') return { refused: CARD_BOOK_BULK_REFUSAL };
             const [bookEntity] = await this.lib.entities([book]);
@@ -2173,7 +2225,21 @@ export class WorldInfoEngine {
      * @param {number} job
      * @returns {Promise<JobStep | 'missing'>}
      */
-    bulkStep(book, job) {
+    async bulkStep(book, job) {
+        const [stored] = await this.lib.entities([book]);
+        const pending = bulkJobFields(stored?.values ?? []).find(field => field.job === job);
+        const world = pending ? transferTargetOf(pending.state.action) : null;
+        if (world !== null) {
+            return this.transferLane(book, world, async () => {
+                const [bookEntity] = await this.lib.entities([book]);
+                const found = bulkJobFields(bookEntity?.values ?? []).find(field => field.job === job);
+                if (!found) return { book, changedSources: [], touched: /** @type {const} */ ('entries') };
+                const step = await this.transferChunk(book, world, job, found.state, found.at, true);
+                return 'ended' in step
+                    ? { book, changedSources: [], touched: /** @type {const} */ ('entries') }
+                    : { book, changedSources: [], unreachedLoops: step.unreachedLoops, touched: /** @type {const} */ ('entries') };
+            });
+        }
         return this.inWorld(book, async (form, commit) => {
             const [bookEntity] = await this.lib.entities([book]);
             const found = bulkJobFields(bookEntity?.values ?? []).find(field => field.job === job);
@@ -2267,6 +2333,114 @@ export class WorldInfoEngine {
         pushAll(records, await this.rewriteRecords(RELATIONS_FIELD, chunk.rewrites, stamp));
         if (also.length > 0 || records.some(r => /** @type {any} */ (r).kind !== 'keyMap')) await this.store.commit([...records, ...also]);
         return { more, changedSources: chunk.rewrites.map(rewrite => rewrite.entity) };
+    }
+
+    /**
+     * Runs `write` in the lanes of both worlds, which must both be worlds (not a character's own book) and still exist;
+     * else it answers 'missing' for the source and refuses for the target.
+     * @template T
+     * @param {bigint} book
+     * @param {bigint} toBook
+     * @param {() => Promise<T>} write
+     * @returns {Promise<T | 'missing' | { refused: string }>}
+     */
+    async transferLane(book, toBook, write) {
+        const [from, to] = await this.lib.entities([book, toBook]);
+        if (from && characterOfBook(from) !== null) return { refused: CARD_BOOK_BULK_REFUSAL };
+        if (!from || from.type !== TYPE.book) return 'missing';
+        if (to && characterOfBook(to) !== null) return { refused: CARD_ENTRY_STAYS_REFUSAL };
+        if (!to || to.type !== TYPE.book) return { refused: TRANSFER_TARGET_GONE };
+        if (book === toBook) return { refused: 'The entries are in that world already.' };
+        return this.lane([from.key, to.key], async () => {
+            const [stillFrom, stillTo] = [await this.find(from.key), await this.find(to.key)];
+            if (!stillFrom?.defined || stillFrom.id !== book) return 'missing';
+            if (!stillTo?.defined || stillTo.id !== toBook) return { refused: TRANSFER_TARGET_GONE };
+            return write();
+        });
+    }
+
+    /**
+     * Runs in both worlds' lanes. One chunk of copying or moving the selected entries to another world: each becomes a
+     * new entry at the end of that world, without its relations; a move deletes the original in the same commit.
+     * @param {bigint} book
+     * @param {bigint} toBook
+     * @param {number} job
+     * @param {BulkJob} state
+     * @param {{ cursor: string | null, done: number }} at
+     * @param {boolean} stored
+     * @returns {Promise<{ ended: string } | { more: boolean, unreachedLoops: UnreachedLoop[] }>}
+     */
+    async transferChunk(book, toBook, job, state, at, stored) {
+        const moving = 'moveToWorld' in state.action;
+        /** @type {{ ended: string | null, entities: bigint[], next: string | null }} */
+        const chunk = await this.store.worldRead('worldbuildingBulkChunk', {
+            book,
+            ...selectedArgs(state.selected, state.except),
+            cursor: at.cursor,
+            limit: RELATION_CHANGES_PER_STEP,
+            walkSteps: WALK_STEPS_PER_READ,
+            action: moving ? 'delete' : 'set',
+        });
+        const removed = stored ? [
+            { kind: 'valueDelete', entity: book, field: `${BULK_JOB_FIELD}${job}` },
+            { kind: 'valueDelete', entity: book, field: `${BULK_JOB_CURSOR_FIELD}${job}` },
+        ] : [];
+        if (chunk.ended !== null) {
+            if (removed.length > 0) await this.store.commit(removed);
+            return { ended: chunk.ended };
+        }
+        const entities = (await this.lib.entities(chunk.entities)).filter(e => e !== null && e.type === TYPE.entry && e.key.startsWith(`${book}:`));
+        const numbers = await this.store.worldRead('numbers', { book: toBook });
+        if (numbers.freeKey + entities.length > MAX_UID) {
+            if (removed.length > 0) await this.store.commit(removed);
+            return { ended: 'That world has no free entry number left.' };
+        }
+        const more = chunk.next !== null;
+        const also = !more ? removed : [
+            ...(stored ? [] : [{ kind: 'textValue', entity: book, field: `${BULK_JOB_FIELD}${job}`, text: JSON.stringify(state) }]),
+            { kind: 'textValue', entity: book, field: `${BULK_JOB_CURSOR_FIELD}${job}`, text: JSON.stringify({ cursor: chunk.next, done: at.done + entities.length }) },
+        ];
+        /** @type {object[]} */
+        const records = [];
+        const stamp = await this.stamper(state.actor, records);
+        entities.forEach((e, i) => pushAll(records, this.copyRecords(e, toBook, numbers, i, stamp)));
+        const sources = moving && entities.length > 0
+            ? await this.store.worldRead('worldbuildingSourcesTargeting', { book, entities: entities.map(e => e.id), limit: RELATION_CHANGES_PER_STEP })
+            : [];
+        if (moving) for (const e of entities) records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
+        await this.store.commit([...records, ...also]);
+        if (moving && entities.length > 0) this.jobs.start(book);
+        return { more, unreachedLoops: moving ? await this.unreachedLoops(book, records, sources) : [] };
+    }
+
+    /**
+     * The records that make `e` a new entry of `toBook`, the `index`th placed after what `numbers` read there: its
+     * fields as written, without its relations, under the next free key, last in the world's order.
+     * @param {import('./entity-values.js').StoredEntity} e
+     * @param {bigint} toBook
+     * @param {{ freeKey: number, maxIndex: number | null, lastPosition: number | null }} numbers
+     * @param {number} index
+     * @param {() => object} stamp
+     * @returns {object[]}
+     */
+    copyRecords(e, toBook, numbers, index, stamp) {
+        const copied = /** @type {Record<string, unknown>} */ (entryObject(e, false));
+        if (isPlainObject(copied.extensions)) {
+            const extensions = { ...(/** @type {Record<string, unknown>} */ (copied.extensions)) };
+            delete extensions.relations;
+            copied.extensions = extensions;
+        }
+        const key = numbers.freeKey + index;
+        copied.uid = key;
+        copied.displayIndex = Math.max(-1, numbers.maxIndex ?? -1) + 1 + index;
+        const entry = JSON.parse(JSON.stringify(copied));
+        const id = this.lib.nextId++;
+        return [
+            ...valueRecords(id, null, entryValues(entry, String(key), false), historyWrites(stamp)),
+            { kind: 'entityCreate', entity: id, type: TYPE.entry, key: `${toBook}:${key}`, added: 0 },
+            { kind: 'itemPlace', entity: toBook, list: 0, item: id, position: (numbers.lastPosition ?? 0) + POSITION_GAP * (index + 1) },
+            { kind: 'entryIndex', entry: id, book: toBook, index: entry.displayIndex },
+        ];
     }
 
     /**

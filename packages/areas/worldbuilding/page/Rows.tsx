@@ -17,6 +17,7 @@ import { Label, Picture } from './Label.tsx';
 import { useWb } from './context.ts';
 import type { Wb } from './context.ts';
 import { dismissOn } from './dismiss.ts';
+import { WorldChoice } from './WorldChoice.tsx';
 import { TargetPicker } from './Picker.tsx';
 import { WHERES } from './Placement.tsx';
 import { FIELD_WORDS } from './Views.tsx';
@@ -428,7 +429,7 @@ export function selectedWords(selection: Selected, t: (text: string) => string):
 export const hasSelection = (selection: Selected | null): selection is Selected =>
     selection !== null && (selection.base === 'matching' || selection.except.length > 0);
 
-type Menu = 'set' | 'moveTo' | 'alsoPutIn' | null;
+type Menu = 'set' | 'moveTo' | 'alsoPutIn' | 'copyToWorld' | 'moveToWorld' | null;
 
 export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; groupBy: string | null }) {
     const { t } = useUi();
@@ -500,6 +501,33 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                     </>
                 )}
             </Show>
+            <For each={TRANSFERS}>
+                {(transfer) => (
+                    <span class="wb-bulk-slot">
+                        <button
+                            type="button"
+                            class="menu_button margin0 whitespacenowrap"
+                            onClick={() => setMenu(menu() === transfer.menu ? null : transfer.menu)}
+                        >
+                            {t(transfer.button)}
+                        </button>
+                        <Show when={menu() === transfer.menu}>
+                            <WorldMenu
+                                heading={t(transfer.heading)}
+                                from={props.selection.book}
+                                onPick={(toBook) =>
+                                    run(
+                                        transfer.menu === 'copyToWorld'
+                                            ? { copyToWorld: toBook }
+                                            : { moveToWorld: toBook },
+                                    )
+                                }
+                                onClose={() => setMenu(null)}
+                            />
+                        </Show>
+                    </span>
+                )}
+            </For>
             <button
                 type="button"
                 class="menu_button margin0 whitespacenowrap"
@@ -564,6 +592,21 @@ function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onClose: () 
                     </button>
                 )}
             </For>
+        </div>
+    );
+}
+
+const TRANSFERS = [
+    { menu: 'copyToWorld', button: 'Copy to another world…', heading: 'Copy the selected to' },
+    { menu: 'moveToWorld', button: 'Move to another world…', heading: 'Move the selected to' },
+] as const;
+
+function WorldMenu(props: { heading: string; from: string; onPick: (book: string) => void; onClose: () => void }) {
+    let menu: HTMLDivElement | undefined;
+    dismissOn(() => menu, props.onClose);
+    return (
+        <div class="wb-menu list-group wb-bulk-menu" role="menu" ref={(element) => (menu = element)}>
+            <WorldChoice heading={props.heading} from={props.from} onPick={props.onPick} />
         </div>
     );
 }

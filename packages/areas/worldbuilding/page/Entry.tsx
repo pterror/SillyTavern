@@ -2,7 +2,7 @@ import { For, Match, Show, Switch, createSignal, onCleanup, onMount } from 'soli
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { Name } from '@st/page/name';
-import { LOOP_CHECK_VISITS_PER_WRITE, MAX_CARDS_PER_READ, MENTION_PAGES_AT_MOST, WORLDS_VIEW } from '../protocol.ts';
+import { LOOP_CHECK_VISITS_PER_WRITE, MAX_CARDS_PER_READ, MENTION_PAGES_AT_MOST } from '../protocol.ts';
 import type {
     MentionsPage,
     OpenEntryView,
@@ -10,7 +10,6 @@ import type {
     PointingAtSection,
     PointingAtView,
     RelationKind,
-    WorldsView,
 } from '../protocol.ts';
 import { Cell, Label, Picture } from './Cards.tsx';
 import { REGION_ATTRIBUTES } from './Drag.tsx';
@@ -27,7 +26,7 @@ import { chooseFile } from './Switcher.tsx';
 import { SelectionMenu } from './Selection.tsx';
 import type { Selected } from './Selection.tsx';
 import { EntryText } from './Text.tsx';
-import { openedView } from './views.ts';
+import { WorldChoice } from './WorldChoice.tsx';
 import { fill } from './words.ts';
 import { PHONE } from './layout.ts';
 
@@ -381,7 +380,7 @@ function Mentions(props: {
 function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | undefined; onClose: () => void }) {
     const { t } = useUi();
     const wb = useWb();
-    const [moving, setMoving] = createSignal(false);
+    const [sending, setSending] = createSignal<'move' | 'copy' | null>(null);
     let box: HTMLDivElement | undefined;
     dismissOn(() => box, props.onClose, props.opener, { align: 'end' });
     const at = () => ({ book: props.entry.book, entry: props.entry.entry });
@@ -393,94 +392,118 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
     };
     return (
         <div class="wb-menu list-group wb-entry-menu" role="menu" ref={(element) => (box = element)}>
-            <Show when={!moving()} fallback={<MoveTo entry={props.entry} onDone={props.onClose} />}>
-                <button
-                    class="list-group-item"
-                    type="button"
-                    role="menuitem"
-                    onClick={() => run(() => wb.act('looks.open', { thing: props.entry.entry }))}
-                >
-                    {t('How its names look')}
-                </button>
-                <hr />
-                <button class="list-group-item" type="button" role="menuitem" onClick={() => setMoving(true)}>
-                    {t('Move to another world…')}
-                </button>
-                <button
-                    class="list-group-item"
-                    type="button"
-                    role="menuitem"
-                    onClick={() =>
-                        run(async () => {
-                            const entry = at();
-                            const file = await chooseFile('image/*');
-                            if (file) await wb.act('worldbuilding.setPicture', entry, file);
-                        })
-                    }
-                >
-                    {t('Choose a picture…')}
-                </button>
-                <Show when={props.entry.picture !== null}>
-                    <button
-                        class="list-group-item"
-                        type="button"
-                        role="menuitem"
-                        onClick={() => run(() => wb.act('worldbuilding.removePicture', at()))}
-                    >
-                        {t('Remove the picture')}
-                    </button>
-                </Show>
-                <button
-                    type="button"
-                    role="menuitem"
-                    class="list-group-item wb-danger"
-                    onClick={() => run(() => wb.act('worldbuilding.deleteEntry', at()))}
-                >
-                    {t('Delete')}
-                </button>
+            <Show
+                when={sending()}
+                keyed
+                fallback={
+                    <>
+                        <button
+                            class="list-group-item"
+                            type="button"
+                            role="menuitem"
+                            onClick={() => run(() => wb.act('looks.open', { thing: props.entry.entry }))}
+                        >
+                            {t('How its names look')}
+                        </button>
+                        <hr />
+                        <button
+                            class="list-group-item"
+                            type="button"
+                            role="menuitem"
+                            onClick={() =>
+                                run(() =>
+                                    wb.act('worldbuilding.duplicateEntry', {
+                                        ...at(),
+                                        loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE,
+                                    }),
+                                )
+                            }
+                        >
+                            {t('Duplicate')}
+                        </button>
+                        <button
+                            class="list-group-item"
+                            type="button"
+                            role="menuitem"
+                            onClick={() => setSending('copy')}
+                        >
+                            {t('Copy to another world…')}
+                        </button>
+                        <button
+                            class="list-group-item"
+                            type="button"
+                            role="menuitem"
+                            onClick={() => setSending('move')}
+                        >
+                            {t('Move to another world…')}
+                        </button>
+                        <button
+                            class="list-group-item"
+                            type="button"
+                            role="menuitem"
+                            onClick={() =>
+                                run(async () => {
+                                    const entry = at();
+                                    const file = await chooseFile('image/*');
+                                    if (file) await wb.act('worldbuilding.setPicture', entry, file);
+                                })
+                            }
+                        >
+                            {t('Choose a picture…')}
+                        </button>
+                        <Show when={props.entry.picture !== null}>
+                            <button
+                                class="list-group-item"
+                                type="button"
+                                role="menuitem"
+                                onClick={() => run(() => wb.act('worldbuilding.removePicture', at()))}
+                            >
+                                {t('Remove the picture')}
+                            </button>
+                        </Show>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            class="list-group-item wb-danger"
+                            onClick={() => run(() => wb.act('worldbuilding.deleteEntry', at()))}
+                        >
+                            {t('Delete')}
+                        </button>
+                    </>
+                }
+            >
+                {(how) => <SendTo entry={props.entry} how={how} onDone={props.onClose} />}
             </Show>
         </div>
     );
 }
 
-function MoveTo(props: { entry: OpenEntryView; onDone: () => void }) {
-    const { client, t } = useUi();
+function SendTo(props: { entry: OpenEntryView; how: 'move' | 'copy'; onDone: () => void }) {
+    const { t } = useUi();
     const wb = useWb();
-    const worlds = openedView<WorldsView>(client, WORLDS_VIEW);
-    const others = () => (worlds()?.worlds ?? []).filter((world) => world.id !== props.entry.book);
+    const at = { book: props.entry.book, entry: props.entry.entry };
     return (
-        <>
-            <div class="wb-menu-head">{t('Move to')}</div>
-            <For each={others()}>
-                {(world) => (
-                    <button
-                        class="list-group-item"
-                        type="button"
-                        role="menuitem"
-                        onClick={() =>
-                            void (async () => {
-                                props.onDone();
-                                const sure = await ask(
-                                    {
-                                        kind: 'confirm',
-                                        message: fill(t('Move ${0} to ${1}?'), props.entry.label.text, world.name),
-                                        detail: t('Its relations stay behind.'),
-                                    },
-                                    t,
-                                );
-                                if (sure)
-                                    await wb.act('worldbuilding.moveEntryToWorld', {
-                                        book: props.entry.book,
-                                        entry: props.entry.entry,
-                                        toBook: world.id,
-                                    });
-                            })()
-                        }
-                    >
-                        {world.name}
-                    </button>
-                )}
-            </For>
-        </>
+        <WorldChoice
+            heading={props.how === 'move' ? t('Move to') : t('Copy to')}
+            from={props.entry.book}
+            onPick={(toBook, name) =>
+                void (async () => {
+                    props.onDone();
+                    if (props.how === 'copy') {
+                        await wb.act('worldbuilding.copyEntryToWorld', { ...at, toBook });
+                        return;
+                    }
+                    const sure = await ask(
+                        {
+                            kind: 'confirm',
+                            message: fill(t('Move ${0} to ${1}?'), props.entry.label.text, name),
+                            detail: t('Its relations stay behind.'),
+                        },
+                        t,
+                    );
+                    if (sure) await wb.act('worldbuilding.moveEntryToWorld', { ...at, toBook });
+                })()
+            }
+        />
     );
 }

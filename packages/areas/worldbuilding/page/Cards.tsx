@@ -85,12 +85,13 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
     };
     const leave = (event: MouseEvent) => props.actions.hover?.leave(event);
     const Menu = () => (
-        <Show when={props.actions.grouping()}>
-            {(grouping) => (
+        <Show when={props.actions.book()}>
+            {(book) => (
                 <CardMenuButton
                     entry={props.entry}
                     label={props.label}
-                    grouping={grouping()}
+                    book={book()}
+                    grouping={props.actions.grouping()}
                     region={props.region}
                     open={menu()}
                     onOpen={setMenu}
