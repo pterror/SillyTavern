@@ -52,10 +52,14 @@ for (const handle of users) {
         do {
             counted = await lib.store.bookStatsRecountStep(counted, 2000);
         } while (counted !== null);
+        let kept = null;
+        do {
+            kept = await lib.store.setsAndVersionsConversionStep(kept, 2000);
+        } while (kept !== null);
     } finally {
         await lib.close();
     }
     for (const marker of markers) fs.writeFileSync(marker, '');
 }
 
-console.log(`Users: ${users.length} (${skipped} already converted). Relations fields rewritten to name targets by entity: ${rewritten}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed and placed among their target's sources, its keys counted with the entries that have them, its names indexed, whether it is named or offered names kept, and every book's entries, size and hash counted again, and every entry placed in each sort a list can be read in.`);
+console.log(`Users: ${users.length} (${skipped} already converted). Relations fields rewritten to name targets by entity: ${rewritten}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed and placed among their target's sources, its keys counted with the entries that have them, its names indexed, whether it is named or offered names kept, and every book's entries, size and hash counted again, every entry placed in each sort a list can be read in, every entry's version kept, and the entries deleted before now kept as one earlier delete that isn't undone as one.`);

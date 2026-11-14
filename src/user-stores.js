@@ -16,10 +16,11 @@ export const WORLDBUILDING_INDEXED = 'worldbuilding-indexed';
 export const WORLDBUILDING_KEYS_AND_NAMES_INDEXED = 'worldbuilding-keys-and-names-indexed';
 export const WORLDBUILDING_ENTRIES_COUNTED = 'worldbuilding-entries-counted';
 export const WORLDBUILDING_ENTRIES_SORTED = 'worldbuilding-entries-sorted';
+export const WORLDBUILDING_VERSIONS_AND_DELETE_SETS = 'worldbuilding-versions-and-delete-sets';
 export const CARD_BOOK_COPIES_DELETED = 'card-lorebook-copies-deleted';
 export const MESSAGE_ORDER = 'message-order';
 // A store the lorebook conversion has run on has every marker; one marked only by an earlier run is converted again.
-export const WORLDBUILDING_MARKERS = Object.freeze([WORLDBUILDING_INDEXED, WORLDBUILDING_KEYS_AND_NAMES_INDEXED, WORLDBUILDING_ENTRIES_COUNTED, WORLDBUILDING_ENTRIES_SORTED]);
+export const WORLDBUILDING_MARKERS = Object.freeze([WORLDBUILDING_INDEXED, WORLDBUILDING_KEYS_AND_NAMES_INDEXED, WORLDBUILDING_ENTRIES_COUNTED, WORLDBUILDING_ENTRIES_SORTED, WORLDBUILDING_VERSIONS_AND_DELETE_SETS]);
 
 const CONVERSIONS = Object.freeze([
     { markers: [GREETINGS_BY_ID, GREETING_LINKS], script: 'convert-greeting-choices.mjs', why: 'has chats whose greetings aren\'t kept by greeting id yet' },

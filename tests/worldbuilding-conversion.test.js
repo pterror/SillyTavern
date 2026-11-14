@@ -99,3 +99,32 @@ test('the script converts a store without the markers, keeps its counts, lists a
     expect(await counts(after.lib)).toEqual(before);
     await stores.closeUserStores();
 });
+
+test('the script keeps each entry\'s version, and puts the entries deleted before it ran in the earlier delete', async () => {
+    const data = dataRoot();
+    const root = path.join(data, 'u');
+    const store = await stores.userStore({ root });
+    await store.lib.books.write('Older', {
+        entries: {
+            0: { uid: 0, key: ['Ilse'], comment: 'Ilse', content: 'Ilse keeps the lamp.', displayIndex: 0 },
+            1: { uid: 1, key: ['Varro'], comment: 'Varro', content: 'Varro.', displayIndex: 1 },
+        },
+    });
+    const { id: book } = /** @type {{ id: bigint }} */ (await store.lib.books.find('Older'));
+    const [kept, gone] = (await store.lib.books.storedEntries(book)).map(({ entity }) => entity.id);
+    await store.lib.books.deleteEntryById(book, gone);
+    const version = async (/** @type {any} */ lib) => (await lib.store.worldRead('lastChanges', { entities: [kept] }))[0];
+    const was = await version(store.lib);
+    expect(was).toBeGreaterThan(0n);
+    expect(await store.lib.store.worldRead('deletedIn', { book, set: 0n, limit: 5 })).toEqual([]);
+    await stores.closeUserStores();
+
+    fs.rmSync(path.join(root, stores.STORE_DIR, stores.WORLDBUILDING_VERSIONS_AND_DELETE_SETS));
+    expect(await stores.oldFormatLine({ root })).toContain('convert-lorebooks-to-worldbuilding.mjs');
+    await expect(stores.userStore({ root })).rejects.toThrow('convert-lorebooks-to-worldbuilding.mjs');
+    convert(data);
+    const after = await stores.userStore({ root });
+    expect(await version(after.lib)).toBe(was);
+    expect(await after.lib.store.worldRead('deletedIn', { book, set: 0n, limit: 5 })).toEqual([gone]);
+    await stores.closeUserStores();
+});
