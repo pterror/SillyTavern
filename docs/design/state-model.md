@@ -353,7 +353,7 @@ An entity's components exist where their changes are: a component made at the li
   under it, whichever entity it is on.
 A component's name says whose it is: a name the app's piece owns ("card", "chat.message",
   "lore.entry", "settings", "tags", "relations", "pkg") or an install's own name and names
-  under it ("tracker", "tracker.recount"). A store reference names the components it reaches,
+  under it ("tracker", "tracker.log"). A store reference names the components it reaches,
   so narrowing by component replaces narrowing by key prefix.
 A key and its value, as a module kept them before, is an entity with one free-form component.
 ```
@@ -369,7 +369,7 @@ A key and its value, as a module kept them before, is an entity with one free-fo
 | A bookmark | one per bookmark | "bookmark" { at (a message node), mode, name }, "settings" | the chat's root |
 | Settings statements | the subject of the level: the tab's, device's, chat's, bookmark's, character's, world's, entry's, theme's or person's entity | "settings": one field per setting name, "order/…" and "on/…" among them | where the level says ("Settings: one cascade along a path") |
 | Tracker state | the chat's, and each character's | "tracker" { minutes } on the chat, "tracker" { affection } on a character | the message that changed it |
-| A package | one per package | "pkg" { name, hash, source, runtime, piece, extension, schemas } | the library node; the person's entity holds "pkg.installed" { [name] = id } |
+| A package | one per package | "pkg" { name, hash, source, runtime, piece, extension, schemas } | the library node, whose own entity holds "pkg.installed" { [name] = id } |
 | A person, a persona, a device, a tab | one each; a tab and a device are their own nodes | "persona" { name, … }, "settings" | the library node; a tab's and a device's at their nodes |
 
 ```lua
@@ -680,25 +680,27 @@ A schema change never touches stored data, and old shapes are read, not converte
 ## A chat and its messages
 
 ```lua
--- chat.lua: a chat is a node; each message is a child node holding "chat/msg"
+-- chat.lua: a chat is a node; each message is a child node, whose own "chat.message" is the message
 return function(c)                        -- c: what the loader handed this module
   local store, kv = c.store, c.kv
   local M = {}
 
-  function M.new(library)                 -- library: the node a chat starts under
-    return store:node{ library }          -- [host]
+  function M.new(library, card)           -- library: the node a chat starts under; card: the card's entity
+    local chat = store:node{ library }    -- [host]
+    store:apply(chat, { { chat, "chat", kv.set, { card = card } } })        -- [host]
+    return chat
   end
 
-  function M.append(at, msg)              -- msg = { role, name, text }
+  function M.append(at, msg)              -- msg = { role, speaker, text }; speaker: a card's or persona's entity
     local n = store:node{ at }            -- [host]
-    store:apply(n, { { "chat/msg", kv.set, msg } })   -- [host]
+    store:apply(n, { { n, "chat.message", kv.set, msg } })                  -- [host]
     return n
   end
 
   function M.history(at)                  -- the messages on the path to at, oldest first
     local out, n = {}, at
     while n do
-      local m = store:get(n, "chat/msg")  -- [host]
+      local m = store:get(n, n, "chat.message")   -- [host]
       if m then table.insert(out, 1, { node = n, msg = m }) end
       n = store:parents(n)[1]             -- [host] a chat's messages have one parent
     end
@@ -772,7 +774,7 @@ return function(c)
 
   local parts = {
     function(ctx)
-      return { { role = "system", content = store:get(ctx.at, "chars/Ilse").description } }  -- [host]
+      return { { role = "system", content = store:get(ctx.at, ctx.speaker, "card").description } }  -- [host]
     end,
     function(ctx)
       local out = {}
@@ -787,12 +789,12 @@ return function(c)
   }
 
   local reply_steps = {                   -- each returns the fields it sets, or nothing
-    function(ctx) return { history = history(ctx.at), speaker = "Ilse" } end,
-    function(ctx) return { came_up = lore.activate(ctx, { "bestiary", "places", "capital", "story" }, 4) } end,
+    function(ctx) return { history = history(ctx.at), speaker = c.me } end,   -- c.me: this card's entity
+    function(ctx) return { came_up = lore.activate(ctx, store:get(ctx.at, c.me, "lore.books"), 4) } end,  -- [host]
     function(ctx) return { messages = prompt.assemble(parts, ctx) } end,
     function(ctx) return { reply = model.generate(ctx.messages) } end,
     function(ctx)
-      return { at = chat.append(ctx.at, { role = "assistant", name = "Ilse", text = ctx.reply }) }
+      return { at = chat.append(ctx.at, { role = "assistant", speaker = c.me, text = ctx.reply }) }
     end,
     tracker.step,
   }
@@ -805,7 +807,7 @@ return function(c)
   end
 
   function T.send(ctx)
-    ctx.at = chat.append(ctx.at, { role = "user", name = ctx.persona, text = ctx.text })
+    ctx.at = chat.append(ctx.at, { role = "user", speaker = ctx.persona, text = ctx.text })
     return T.reply(ctx)
   end
 
@@ -813,7 +815,7 @@ return function(c)
 end
 ```
 
-The person sends, the prompt is assembled, the model is called, the reply is stored: four entries in a list the card owns. Each step returns the fields it sets and the turn merges them, because values crossing a reference are copied: a step from another module (tracker.step, cleanup in gap 8) can't write into the card's ctx, and lore.activate returns what came up. There are no hooks. An extension is one more step, or a wrapper around a part; a group chat is a module that runs the reply steps once per speaker, or composes their replies into one.
+The person sends, the prompt is assembled, the model is called, the reply is stored: four entries in a list the card owns. The card's books are its "lore.books" relation, and the speaker is an entity, so every part reads the card it needs by id. Each step returns the fields it sets and the turn merges them, because values crossing a reference are copied: a step from another module (tracker.step, cleanup in gap 8) can't write into the card's ctx, and lore.activate returns what came up. There are no hooks. An extension is one more step, or a wrapper around a part; a group chat is a module that runs the reply steps once per speaker, or composes their replies into one.
 
 ## The install: loading modules and handing out capabilities
 
@@ -821,37 +823,47 @@ The person sends, the prompt is assembled, the model is called, the reply is sto
 -- root.lua: the one module the host starts, holding every host module
 return function(caps)                     -- caps: sandbox, store, latest, net, page, clock, disk, home, ...
   local store, home = caps.store, caps.home
+  local function pkg(name)                -- a package's "pkg", by name in the library's list of them
+    return store:get(home, store:get(home, home, "pkg.installed")[name], "pkg")   -- [host]
+  end
   local function load(name, given)
-    return caps.sandbox:load(store:get(home, "pkg/" .. name), "lua", given)   -- [core], [host]
+    return caps.sandbox:load(pkg(name).source, "lua", given)               -- [core]
+  end
+  for _, name in ipairs{ "chat", "lore", "chars" } do                       -- the shared formats' schemas
+    for _, s in ipairs(pkg(name).schemas or {}) do store:declare(home, s) end   -- [host]
   end
   local narrow = load("narrow", {})       -- a wrapper forwarding only keys under a prefix, for latest
-  local function only(prefix, mode)       -- the nodes under home, keys under prefix
-    return store:narrow{ nodes = { home }, prefix = prefix, mode = mode }   -- [host]
+  local function only(components, mode)   -- the nodes under home, those components
+    return store:narrow{ nodes = { home }, components = components, mode = mode }   -- [host]
   end
   local function only_latest(prefix, mode) return narrow(caps.latest, prefix, mode) end
 
   local json     = load("json", {})
   local kv       = load("kv", {})
   local cond     = load("cond", {})
+  local function query(s) return load("query", { store = s, cond = cond }) end
   local secrets  = load("secrets",  { latest = only_latest("secrets/", "rw"), net = caps.net, kv = kv,
                                       signers = load("signers", {}), scrub = load("scrub", {}) })
-  local chat     = load("chat",     { store = only("chat/", "rw"), kv = kv })
+  local chat     = load("chat",     { store = only({ "chat", "chat.message" }, "rw"), kv = kv })
   local model    = load("openai",   { net = secrets:net("openai"), json = json,
                                       base = "https://api.example.com", model_id = "some-model" })
-  local lore     = load("lore",     { store = only("lore/", "r"), cond = cond })
-  local chars    = load("chars",    { store = only("chars/", "r"), cond = cond })
+  local lorebooks = only({ "lore.book", "lore.entry" }, "r")
+  local lore     = load("lore",     { store = lorebooks, cond = cond, query = query(lorebooks) })
+  local cards    = only({ "card", "tags", "lore.books" }, "r")
+  local chars    = load("chars",    { store = cards, cond = cond, query = query(cards) })
   local prompt   = load("prompt",   {})
-  local tracker  = load("tracker",  { store = only("tracker/", "rw"), kv = kv, model = model, cond = cond })
-  local condense = load("condense", { store = only("condense/", "rw"), kv = kv, model = model })
-  local ilse     = load("ilse",     { store = only("chars/", "r"), chat = chat, lore = lore,
+  local tracker  = load("tracker",  { store = only({ "tracker" }, "rw"), kv = kv, model = model, cond = cond })
+  local condense = load("condense", { store = only({ "condense" }, "rw"), names = only({ "card", "persona" }, "r"),
+                                      kv = kv, model = model })
+  local ilse     = load("ilse",     { store = cards, me = 7, chat = chat, lore = lore,   -- 7: Ilse's card in the library
                                       prompt = prompt, model = model, tracker = tracker, condense = condense })
 
   caps.page:on(function(action, conn)                                       -- [host]
     if action.type == "send" then
-      local ctx = ilse.send{ at = action.at, text = action.text, persona = action.persona }
+      local ctx = ilse.send{ at = action.at, chat = action.chat, text = action.text, persona = action.persona }
       conn:send{ at = ctx.at, reply = ctx.reply }                           -- [host]
     elseif action.type == "swipe" then
-      local ctx = ilse.reply{ at = store:parents(action.reply)[1] }         -- [host]
+      local ctx = ilse.reply{ at = store:parents(action.reply)[1], chat = action.chat }   -- [host]
       conn:send{ at = ctx.at, reply = ctx.reply }                           -- [host]
     elseif action.type == "condense" then
       condense.run(action.at, condense.wrap(chat.history), action.from, action.to)
@@ -861,12 +873,12 @@ return function(caps)                     -- caps: sandbox, store, latest, net, 
 end
 ```
 
-Installing a module is the root loading its source and handing it capabilities; nothing else gives a module any power. The model's key never reaches the adapter: secrets:net hands it a net that puts the key into requests (gap 2). This root wires one card; a real install’s root composes each chat’s wiring from the card and what is installed (gap 5, option D).
+Installing a module is the root loading its source and handing it capabilities; nothing else gives a module any power. Each store reference names the components it reaches, so lore can't read a card and the tracker can't touch a message; the shared formats' schemas, and with them their indexes, are declared before anything reads. The model's key never reaches the adapter: secrets:net hands it a net that puts the key into requests (gap 2). This root wires one card; a real install’s root composes each chat’s wiring from the card and what is installed (gap 5, option D).
 
 ## Lorebook activation as a library
 
 ```lua
--- cond.lua: conditions as data, e.g. ["all", ["keys", "dragon"], ["speakerTag", "npc"]]
+-- cond.lua: conditions as data, e.g. ["all", ["keys", "dragon"], ["speakerTag", 41]]
 return function()
   local unpack = unpack or table.unpack
   local ops, M = {}, {}
@@ -887,9 +899,38 @@ return function()
   return M
 end
 
+-- lore_need.lua: what an entry can't come up without; the schema's computed field "need"
+return function()
+  local function need(c)                    -- the grams c can't hold without, or nil if it can hold with none
+    if c == nil then return nil end
+    if c[1] == "keys" then
+      local out = {}
+      for i = 2, #c do out[#out + 1] = c[i]:lower():sub(1, 3) end
+      return out
+    elseif c[1] == "all" then               -- any conjunct's need will do; the shortest narrows most
+      local best
+      for i = 2, #c do
+        local n = need(c[i])
+        if n and (best == nil or #n < #best) then best = n end
+      end
+      return best
+    elseif c[1] == "any" then               -- only if every branch needs something
+      local out = {}
+      for i = 2, #c do
+        local n = need(c[i])
+        if n == nil then return nil end
+        for _, g in ipairs(n) do out[#out + 1] = g end
+      end
+      return out
+    end
+    return nil
+  end
+  return function(entry) return need(entry.when) or { "" } end
+end
+
 -- lore.lua: lorebook activation (keys, recursion) as a library
 return function(c)
-  local store, cond = c.store, c.cond
+  local store, cond, query = c.store, c.cond, c.query
   local L = {}
 
   cond.define("keys", function(ctx, ...)      -- any of these words in the scanned text
@@ -902,29 +943,45 @@ return function(c)
 
   cond.define("cameUp", function(ctx, name) return ctx.active[name] ~= nil end)
 
-  function L.activate(ctx, books, depth)      -- the entries that came up, in order; depth: messages scanned
+  local function grams(text, into)          -- every piece of 1 to 3 characters of text, and ""
+    text = text:lower()
+    into[""] = true
+    for i = 1, #text do
+      for n = 1, 3 do
+        if i + n - 1 <= #text then into[text:sub(i, i + n - 1)] = true end
+      end
+    end
+  end
+
+  function L.activate(ctx, books, depth)      -- books: book entities; the entries that came up, in order
     local recent = {}
     for i = math.max(1, #ctx.history - depth + 1), #ctx.history do
       recent[#recent + 1] = ctx.history[i].msg.text
     end
     local scan = { at = ctx.at, speaker = ctx.speaker,   -- what conditions read
                    scanned = table.concat(recent, "\n"), active = {} }
-    local came_up = {}
+    local seen, came_up = {}, {}
+    grams(scan.scanned, seen)
     repeat                                    -- recursion: scan again with what came up
-      local grew = false
-      for _, book in ipairs(books) do
-        local b = store:get(ctx.at, "lore/book/" .. book) or {}                 -- [host]
-        if cond.holds(b.when, scan) then
-          for _, kv in ipairs(store:range(ctx.at, "lore/entry/" .. book .. "/")) do   -- [host]
-            local e = kv.value
+      local grew, found, list = false, {}, {}
+      for g in pairs(seen) do list[#list + 1] = g end
+      for _, book in ipairs(books or {}) do
+        if cond.holds((store:get(ctx.at, book, "lore.book") or {}).when, scan) then   -- [host]
+          local q = { "all", { "=", "lore.entry", "book", book }, { "in", "lore.entry", "need", list } }
+          query.each(ctx.at, q, { order = { "lore.entry", "order" }, read = { "lore.entry" } }, {}, function(row)
+            local e = row.values["lore.entry"]
             if scan.active[e.name] == nil and cond.holds(e.when, scan) then
               scan.active[e.name] = e
               came_up[#came_up + 1] = e
-              scan.scanned = scan.scanned .. "\n" .. e.text
+              found[#found + 1] = e.text
               grew = true
             end
-          end
+          end)
         end
+      end
+      for _, t in ipairs(found) do
+        scan.scanned = scan.scanned .. "\n" .. t
+        grams(t, seen)
       end
     until not grew
     return came_up
@@ -934,7 +991,7 @@ return function(c)
 end
 ```
 
-keys and cameUp are lore.lua’s own operators, added to cond.lua the way any module adds one. Tags and saved views use the same cond.lua; at library scale, a views module keeps index keys current by wrapping the store capability it hands out, and reads them with store:range.
+keys and cameUp are lore.lua’s own operators, added to cond.lua the way any module adds one. An entry's condition is its own data, so the store can't run it; what it can answer is which entries could come up at all. The schema's computed field "need" is the grams an entry's condition can't hold without (the first three characters of each key, lowercased: an "all" needs what any of its parts needs, an "any" what all of them need, and anything else needs nothing, which is the gram ""), and the index on (book, need) gives, per open book, the entries whose need is one of the scanned text's grams, which cond.holds then checks in full. A pass costs, per open book, about the smaller of the text's distinct grams and the book's distinct needs in seeks, plus a check per entry found; nothing per entry of other books, nothing per card. Recursion scans again with what came up, its grams added. Unicode case folding is the unicode wasm module's in the real library (gap 8); :lower() here is ASCII. Tags and saved views are queries too ("Queries"), on the indexes their schemas declare, and a live view is a watch on its query (gap 4).
 
 ## A backend adapter and an upstream-style tracker
 
@@ -968,13 +1025,13 @@ return function(c)
       { role = "user", content = ctx.reply },
     })
     store:apply(ctx.at, {                                                   -- [host]
-      { "tracker/time", kv.add, r.minutes_passed },
-      { "tracker/affection/Ilse", kv.add_within, { r.affection_change, 0, 100 } },
+      { ctx.chat, "tracker", kv.add, r.minutes_passed, field = "minutes" },
+      { ctx.speaker, "tracker", kv.add_within, { r.affection_change, 0, 100 }, field = "affection" },
     })
   end
 
   cond.define("evening", function(ctx)
-    local minutes = store:get(ctx.at, "tracker/time") or 0                  -- [host]
+    local minutes = store:get(ctx.at, ctx.chat, "tracker", "minutes") or 0  -- [host]
     return math.floor(minutes / 60) % 24 >= 18
   end)
 
@@ -982,89 +1039,100 @@ return function(c)
 end
 ```
 
-An upstream extension and a feature that ships with the app are the same thing: a module, holding only what it was handed (here, writes under tracker/ and the model).
+An upstream extension and a feature that ships with the app are the same thing: a module, holding only what it was handed (here, writes of its own component "tracker", on any entity, and the model). The chat's time is a field on the chat's entity and the affection a field on the character's, both changed at the reply's node, so they follow the branch.
 
 ## Case 1: an entry that comes up on a keyword, only for characters tagged "npc"
 
 ```lua
-key "lore/entry/bestiary/dragons", on the library node, op kv.set:
-{ "name": "Dragons",
-  "when": ["all", ["keys", "dragon"], ["speakerTag", "npc"]],
+entity 5001, on the library node, "lore.entry", op kv.set:
+{ "book": 4001, "name": "Dragons", "order": 10,
+  "when": ["all", ["keys", "dragon"], ["speakerTag", 41]],
   "text": "Dragons nest in the eastern cliffs…" }
+  need, computed: ["dra"]; the index lore.entry (book, need) holds (4001, "dra", 5001)
 
-key "chars/Ilse", on the library node:
-{ "description": "…", "tags": { "npc": true } }
+entity 7, Ilse, on the library node: "card" { "name": "Ilse", "description": "…" },
+  "tags" [ 41 ], "lore.books" [ 4001, 4002, 4003, 4004 ]
+entity 41: "tag" { "name": "npc" }
 
 -- chars.lua
 return function(c)
-  c.cond.define("speakerTag", function(ctx, tag)
-    local who = c.store:get(ctx.at, "chars/" .. ctx.speaker)              -- [host]
-    return who ~= nil and who.tags[tag] == true
+  c.cond.define("speakerTag", function(ctx, tag)   -- ctx.speaker: the speaking character's entity
+    return c.query.holds(ctx.at, ctx.speaker, { "to", "tags", tag })
   end)
   return {}
 end
 ```
 
-The card set ctx.speaker; a group module would set it per speaker. Filtering the character list by the tag is the same ["speakerTag"]-style data, read by a views module.
+The card set ctx.speaker; a group module would set it per speaker. Filtering the character list by the tag is the query { "all", { "has", "card" }, { "to", "tags", 41 } } ("Queries"), which a views module keeps as a saved view's data and the store answers from the tags index. Run under LuaJIT on a store that folds every path: Ilse brings up Dragons; Maren, untagged, doesn't.
 
 ## Case 2: a book that loads when another entry came up
 
 ```
-key "lore/book/capital":
-{ "when": ["cameUp", "The Capital"] }
+entity 4003, "lore.book":
+{ "name": "capital", "when": ["cameUp", "The Capital"] }
 
-key "lore/entry/places/capital":
-{ "name": "The Capital", "when": ["keys", "capital"], "text": "…" }
+entity 5002, "lore.entry":
+{ "book": 4002, "name": "The Capital", "order": 1, "when": ["keys", "capital"], "text": "The capital has a palace." }
 
-key "lore/entry/capital/palace":
-{ "name": "The Palace", "when": ["keys", "palace"], "text": "…" }
+entity 5003, "lore.entry":
+{ "book": 4003, "name": "The Palace", "order": 1, "when": ["keys", "palace"], "text": "…" }
 ```
 
-lore.activate checks each book’s condition on every pass, so once The Capital comes up from another book, this book’s entries are scanned on the next pass. Whether a book gates its entries is lore.lua’s choice, not the core’s.
+lore.activate checks each book’s condition on every pass, so once The Capital comes up from another book, this book’s entries are looked up on the next pass, with the grams of what came up; run under LuaJIT, "Near the capital?" brings up The Capital, and its text, which names the palace, brings up The Palace. Whether a book gates its entries is lore.lua’s choice, not the core’s.
 
 ## Case 3: time passing and an affection meter
 
 ```
-tracker.lua (above) after each reply:
-  tracker/time            kv.add         reply’s minutes_passed
-  tracker/affection/Ilse  kv.add_within  { affection_change, 0, 100 }
+tracker.lua (above) after each reply, at the reply's node:
+  the chat 790,  "tracker" field minutes    kv.add         reply’s minutes_passed
+  Ilse (7),      "tracker" field affection  kv.add_within  { affection_change, 0, 100 }
 
-key "lore/entry/story/evening":
-{ "name": "Evening", "when": ["evening"], "text": "It is evening." }
+entity 5009, "lore.entry":
+{ "book": 4004, "name": "Evening", "when": ["evening"], "text": "It is evening." }
+  need: [""]: no key, so it is looked up on every pass of its book
 ```
 
-The time and the meter are keys the tracker chose, and “evening” is its condition. A card that wants the model to report them in the same reply, or as a tool call, writes a different step.
+The time and the meter are fields the tracker chose on the entities they are about, and “evening” is its condition. A card that wants the model to report them in the same reply, or as a tool call, writes a different step.
 
 ## Case 4: condensing a finished 80-message side quest so the prompt carries the condensed version
 
 ```lua
 -- condense.lua: put a condensed text in place of a span of messages
 return function(c)
-  local store, kv, model = c.store, c.kv, c.model
+  local store, names, kv, model = c.store, c.names, c.kv, c.model
   local C = {}
+
+  local function name(at, e)                -- a speaker's name, from its card or persona
+    local who = names:get(at, e, "card") or names:get(at, e, "persona") or {}   -- [host]
+    return who.name or ""
+  end
 
   function C.run(at, history, from, to)     -- from, to: message nodes on the path to at
     local lines, inside = {}, false
     for _, h in ipairs(history(at)) do
       if h.node == from then inside = true end
-      if inside then lines[#lines + 1] = h.msg.name .. ": " .. h.msg.text end
+      if inside then lines[#lines + 1] = name(at, h.msg.speaker) .. ": " .. h.msg.text end
       if h.node == to then break end
     end
     local text = model.generate({
       { role = "system", content = "Condense this finished side quest. Keep what later events depend on." },
       { role = "user", content = table.concat(lines, "\n") },
     })
-    store:apply(at, { { "condense/spans", kv.append, { from = from, to = to, text = text } } })  -- [host]
+    local span = store:entity(at)                                           -- [host]
+    store:apply(at, { { span, "condense", kv.set, { from = from, to = to, text = text } } })   -- [host]
   end
 
   function C.wrap(history)                  -- the same history, condensed spans in place
     return function(at)
       local starts, out, skip = {}, {}, nil
-      for _, s in ipairs(store:get(at, "condense/spans") or {}) do starts[s.from] = s end  -- [host]
+      for _, row in ipairs(store:query(at, { "has", "condense" }, { read = { "condense" } }).rows) do   -- [host]
+        local s = row.values.condense
+        starts[s.from] = s
+      end
       for _, h in ipairs(history(at)) do
         if skip == nil and starts[h.node] then
           local s = starts[h.node]
-          out[#out + 1] = { node = h.node, msg = { role = "system", name = "", text = s.text } }
+          out[#out + 1] = { node = h.node, msg = { role = "system", text = s.text } }
           skip = s.to
         end
         if skip == nil then out[#out + 1] = h
@@ -1078,25 +1146,26 @@ return function(c)
 end
 ```
 
-Nothing about summarizing is in the core or in chat.lua. The root runs it from a page action; a module could offer C.run to the model as a tool, or a step could run it. Run over C.wrap’s output, a span can cover earlier condensed text.
+Nothing about summarizing is in the core or in chat.lua. A span is an entity of its own, made at the node where it was condensed, so the spans in force at a node are the query ["has", "condense"] there: the chat's few span rows, filtered by ancestry ("Indexes under branching"), not a read per message. The root runs it from a page action; a module could offer C.run to the model as a tool, or a step could run it. Run over C.wrap’s output, a span can cover earlier condensed text.
 
 ## Case 5: a swipe or branch rolling it back
 
 ```
-node 811  chat/msg  Ren: "Where do dragons nest?"
-├─ node 812  chat/msg  Ilse: reply A
-│            tracker/time kv.add 90, tracker/affection/Ilse kv.add_within +2
-└─ node 813  chat/msg  Ilse: reply B   (the swipe: ilse.reply from 811)
-             tracker/time kv.add 30
+node 811  chat.message  Ren: "Where do dragons nest?"
+├─ node 812  chat.message  Ilse: reply A
+│            chat 790's tracker minutes kv.add 90, Ilse's tracker affection kv.add_within +2
+└─ node 813  chat.message  Ilse: reply B   (the swipe: ilse.reply from 811)
+             chat 790's tracker minutes kv.add 30
 
-state at 813: tracker/time is its value at 811 plus 30; nothing from 812.
-condense/spans written at node 925: not on a branch from node 900.
+state at 813: the chat's minutes are their value at 811 plus 30; nothing from 812, and
+Ilse's affection is what it was at 811.
+a condense span made at node 925: not on a branch from node 900.
 
 store:revert(at, 9040)                                                  -- [host]
-  cancels the "add 90"; every later tracker/time on that path is 90 less
+  cancels the "add 90"; every later value of the chat's minutes on that path is 90 less
 ```
 
-Swipes, branches and undo come from where a change hangs, for every module alike; a merge is a node with two parents. A module that keeps something out of rollback writes it on a node above the chat, such as the library node.
+Swipes, branches and undo come from where a change hangs, for every module alike; a merge is a node with two parents. A module that keeps something out of rollback writes it on a node above the chat, such as the library node; which entity it is on doesn't matter to that.
 
 ## Gap 1, waiting: several calls at once, the first answer, a time limit
 
@@ -1294,8 +1363,8 @@ Which page: every open page of the person; the first answer wins and the others'
 
 ```lua
 -- a Lua module on the page
-local function title(store, at)
-  local ch = store:get(at, "chars/Ilse")    -- a call through a reference: can wait
+local function title(store, at, ilse)
+  local ch = store:get(at, ilse, "card")    -- a call through a reference: can wait
   return ch.name:upper()
 end
 
@@ -1305,8 +1374,8 @@ local function clamp(v, lo, hi)             -- calls nothing that can wait
 end
 
 // what the compiler emits
-function* title(store, at) {
-  const ch = yield* call(store, "get", at, "chars/Ilse");
+function* title(store, at, ilse) {
+  const ch = yield* call(store, "get", at, ilse, "card");
   return str_upper(index(ch, "name"));
 }
 function clamp(v, lo, hi) {
@@ -1356,7 +1425,7 @@ on a page's own latest:
 { "key": "progress/upload/42", "value": 0.4 }
 ```
 
-Caches, sessions, progress and drafts are one host module, narrowed by prefix with narrow.lua, so each module sees only its own keys. No setting is kept here: settings at every level are in the version store, so they all branch and undo the same way ("Settings: one cascade along a path"). It is a host module rather than content because nothing else holds a value without keeping its history. Costs: one write per change, no history; a module has to choose for each piece of state whether it belongs in the version store (follows branches, can be undone) or here (doesn't). Where a module's settings are edited is a UI slot (gap 5), and the editor is drawn through the display handle; both are the owner's.
+Caches, sessions, progress and drafts are one host module, narrowed by prefix with narrow.lua, so each module sees only its own keys. latest stays keys and doesn't become components: nothing in it is asked for by what it is (a job is resumed by paging jobs/, a derived value is named by its kind and its input's hash, a secret by its name, a draft by its chat), so it needs no query and no index, and a key is its identity rather than an entity's name for it. Components would give it schemas, indexes and per-field merging it has no use for, with no history or branches to version them along. A module that needs to find unversioned state by what it is keeps it in the version store at a node above the chats, which costs history. No setting is kept here: settings at every level are in the version store, so they all branch and undo the same way ("Settings: one cascade along a path"). It is a host module rather than content because nothing else holds a value without keeping its history. Costs: one write per change, no history; a module has to choose for each piece of state whether it belongs in the version store (follows branches, can be undone) or here (doesn't). Where a module's settings are edited is a UI slot (gap 5), and the editor is drawn through the display handle; both are the owner's.
 
 ## Gap 2, state without history: secrets
 
@@ -1409,7 +1478,7 @@ span, a translated message) is applied once, complete, when its job finishes.
 
 t=0      the person attaches an image to a message; the page sends one action
          server: disk:put(bytes) → { "$blob": "sha256:4b1e…" }, leased
-         store:apply at 821: chat/msg with the blob → the blob is pinned
+         store:apply at 821: 821's chat.message with the blob → the blob is pinned
          derived.request("caption@some-vision-model", "sha256:4b1e…"):
            latest: the pending entry and jobs/derived/caption@…/sha256:4b1e…, one apply
          reply to the action: the message, and its caption { state = "pending" }
@@ -1420,7 +1489,7 @@ t=6s     the model replies → one latest apply: the entry settles to done (its 
          matches) and the record is removed; pages watching derived/ get the text
 ```
 
-Derived data is content: values that are functions of an input are kept in latest by the input's hash and the kind (whose name includes what the result depends on, such as the model), and every reader goes through derived.get, which reads absence as "none", so nothing reads a hole. Nothing stored is partial or waiting: the store holds only complete values, and in latest every pending entry has the job that will settle it, written in the same apply. A feature added to a library that already exists doesn't backfill: entries are asked for when something needs them, or by a sweep job that pages through store:range with its cursor in its record, so it resumes where it stopped and costs nothing per card until it runs. Assumes: the result depends only on what the key names. Rules out: a derived value that differs by branch without saying so in its input (a summary of a path has the path's message hashes as its input). Costs: every reader handles four states; a person editing a caption makes it content, stored at the message's node, read before the derived entry.
+Derived data is content: values that are functions of an input are kept in latest by the input's hash and the kind (whose name includes what the result depends on, such as the model), and every reader goes through derived.get, which reads absence as "none", so nothing reads a hole. Nothing stored is partial or waiting: the store holds only complete values, and in latest every pending entry has the job that will settle it, written in the same apply. A feature added to a library that already exists doesn't backfill: entries are asked for when something needs them, or by a sweep job that pages through a store:query with its cursor in its record, so it resumes where it stopped and costs nothing per card until it runs. Assumes: the result depends only on what the key names. Rules out: a derived value that differs by branch without saying so in its input (a summary of a path has the path's message hashes as its input). Costs: every reader handles four states; a person editing a caption makes it content, stored at the message's node, read before the derived entry.
 
 ## Gap 3, derived data: jobs.lua, work that survives restarts
 
@@ -1481,7 +1550,7 @@ return function(c)
 end
 ```
 
-Durable jobs are content over latest, clock and tasks. The jobs module's own tasks run the work, so a job outlives the action that started it, and J.cancel stops it with the task's cancel. Restarts: the record is written before the work and removed in the same apply as the result, so a job is run at least once; a cancel racing a finish is harmless because results settle through kv.settle, which only replaces the pending entry of that job, and kv.merge writes no progress into a record that's gone. A kind whose result goes to the version store makes that write idempotent itself (a key named by the job id, written with an op that refuses a second time), because a crash between that write and finish runs it again. Concurrency limits per kind are a few lines more of the same. Costs: at-least-once, so a model may be called twice; progress is one latest write per report, so a kind reports at a rate it chooses. Which job kinds exist comes from what is installed, so the root's kinds table depends on the manifest (gap 5); showing progress and a cancel control is the display handle's (the owner's).
+Durable jobs are content over latest, clock and tasks. The jobs module's own tasks run the work, so a job outlives the action that started it, and J.cancel stops it with the task's cancel. Restarts: the record is written before the work and removed in the same apply as the result, so a job is run at least once; a cancel racing a finish is harmless because results settle through kv.settle, which only replaces the pending entry of that job, and kv.merge writes no progress into a record that's gone. A kind whose result goes to the version store makes that write idempotent itself (a component, on the entity the result is about, written with an op that refuses a second result of that job), because a crash between that write and finish runs it again. Concurrency limits per kind are a few lines more of the same. Costs: at-least-once, so a model may be called twice; progress is one latest write per report, so a kind reports at a rate it chooses. Which job kinds exist comes from what is installed, so the root's kinds table depends on the manifest (gap 5); showing progress and a cancel control is the display handle's (the owner's).
 
 ## Gap 3, derived data: derived.lua and a caption kind
 
@@ -1539,23 +1608,29 @@ Two requests at once can't start two jobs: D.ask raises in the second apply, whi
 ## Gap 4, watching: the store and latest report every change
 
 ```
-store:watch(node, prefix, since, sink) -> handle
-  pushes to sink, in commit order, one batch per apply, revert or drop that changes a
-  value under prefix at node, from any cause: a write at node or above it, a revert and
-  the replay after it, a merge settling, another module, another device
-  since omitted: the first batch is every value under prefix (snapshot = true);
+store:watch(node, what, since, sink) -> handle
+  what = { e, c }: one component of one entity; or a query (cond data, the store's
+  operators), with "read": the components to send of what matches
+  pushes to sink, in commit order, one batch per apply, revert or drop that changes what it
+  watches at node, from any cause: a write at node or above it, a revert and the replay
+  after it, a merge settling, another module, another device. A query's batch says which
+  entities came to match (entered, with their components read), which stopped (left), and
+  the read components that changed of those still matching
+  since omitted: the first batch is the value, or every match (snapshot = true);
   since = a cursor: the batches after it, or a snapshot if it's older than the log keeps
-latest:watch(prefix, since, sink) -> the same for latest
+latest:watch(prefix, since, sink) -> the same for latest, by key prefix
 store:children(node, after, limit) -> child nodes, oldest first
 
-{ "cursor": 99120, "snapshot": true, "changed": [ { "key": "tracker/time", "value": 1290 } ] }
+{ "cursor": 99120, "snapshot": true, "changed": [ { "e": 790, "c": "tracker", "value": { "minutes": 1290 } } ] }
 { "cursor": 99140, "children": [ 821 ] }
-{ "cursor": 99151, "changed": [ { "key": "tracker/time", "value": 1200 } ],
+{ "cursor": 99151, "changed": [ { "e": 790, "c": "tracker", "value": { "minutes": 1200 } } ],
   "by": { "revert": 9040, "module": "ren-undo" } }
+{ "cursor": 99152, "entered": [ 9 ], "left": [ 8 ],
+  "changed": [ { "e": 9, "c": "card", "value": { "name": "Oren", … } } ] }
 { "cursor": 99160, "dropped": true }
 ```
 
-Watching is a property of the store and latest (host modules), not content, because what changed at a node is the store's own resolution: a write above the node, a revert and the replay after it, a merge. A wrapper would have to repeat that logic and would still miss writers who don't go through it. Assumes: watches are few, about one per open view, so on each apply the store checks the watches at or below the written node whose prefix covers a written key. Rules out: a watch per stored row at scale (a live query over 10 billion cards is a views index plus one watch on the index's prefix). The cursor is the store's commit sequence, the one order every reader shares. Costs: the store keeps a commit log for a window so a reconnect can resume; past it, a snapshot of the prefix. A narrowed store watches only nodes in its scope and keys under its prefix.
+Watching is a property of the store and latest (host modules), not content, because what changed at a node is the store's own resolution: a write above the node, a revert and the replay after it, a merge. A wrapper would have to repeat that logic and would still miss writers who don't go through it. Assumes: watches are few, about one per open view, so on each apply the store checks the watches at or below the written node that name a written component, and tests a query's watch on each changed entity before and after the change (a read per field the query names). Rules out: a watch per stored row at scale; a live query over 10 billion cards is one watch on its query, whose batches carry only the entities that enter, leave or change. The cursor is the store's commit sequence, the one order every reader shares. Costs: the store keeps a commit log for a window so a reconnect can resume; past it, a snapshot of what is watched, which for a query is a page of its matches and the query again from there. A narrowed store watches only nodes in its scope, its components and its entities.
 
 ## Gap 4, watching: a page following a chat, across tabs and reconnects
 
@@ -1565,20 +1640,24 @@ return function(c)
   local server, clock = c.server, c.clock   -- server: the exports the root gave this page
   local V = {}
 
-  function V.follow(node, prefix, draw)     -- draw(values) after each batch
+  function V.follow(node, what, draw)       -- draw(values) after each batch; values[e][c]
     local values, cursor = {}, nil
     local sink = {}
     function sink:push(b)
       if cursor and b.cursor <= cursor then return end   -- already applied
       if b.snapshot then values = {} end
-      for _, ch in ipairs(b.changed or {}) do values[ch.key] = ch.value end
+      for _, e in ipairs(b.left or {}) do values[e] = nil end
+      for _, ch in ipairs(b.changed or {}) do
+        values[ch.e] = values[ch.e] or {}
+        values[ch.e][ch.c] = ch.value
+      end
       cursor = b.cursor
       draw(values)
     end
     function sink:close() end
     return task.spawn(function()                                            -- [core]
       while true do
-        local ok, err = pcall(server.watch, server, node, prefix, cursor, sink)
+        local ok, err = pcall(server.watch, server, node, what, cursor, sink)
         if ok then return end
         if err ~= "gone" then error(err, 0) end
         clock:sleep(1000)                   -- the connection dropped; resume from cursor   -- [host]
@@ -1589,16 +1668,16 @@ return function(c)
   return V
 end
 
-tabs A and B show chat 790 at node 820; both follow latest "viewing/790" and store 820
+tabs A and B show chat 790 at node 820; both follow latest "viewing/790" and the store at 820
 t=0      A: action { type = "send", at = 820, text = "…" }
-t=180ms  store: node 821 under 820, chat/msg at 821 (cursor 99140); in the same action
+t=180ms  store: node 821 under 820, 821's chat.message (cursor 99140); in the same action
          the root sets latest viewing/790 = 821
          A: the action's reply { at = 821, cursor = 99140 }; the batch 99140 is skipped
          B: { children = { 821 } } on 820, then viewing/790 = 821: B follows 821
 t=5s     A: action { type = "view", chat = 790, at = 813 }: a branch switch, no store write
          root: latest viewing/790 = 813; B moves too. With viewing/790/<tab>, only A moves.
 t=9s     a module on the server reverts change 9040
-         A and B: { tracker/time = 1200, by = { revert = 9040 } }
+         A and B: { 790's tracker = { minutes = 1200 }, by = { revert = 9040 } }
 ```
 
 A page keeps its state only by applying the server's batches, and the cursor makes a batch that arrives twice (from the action's reply and from the watch) harmless. Several tabs stay in step because each has its own watches on the same keys. The node a page is viewing is state like any other: a page action sets it in latest and whoever watches the key follows. Whether tabs follow each other is which key the root writes (one per chat, or one per tab); that is a UX decision, the owner's. Batching: the core sends everything bound for one host in one scheduler turn as one frame, in order; there is no promise pipelining, so opening a view is one call to a server export that returns what the view needs and starts its watches. Listing swipes is store:children of the message above. What draw puts on screen is the display handle's (the owner's).
