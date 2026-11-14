@@ -115,7 +115,7 @@ export function EntryText(props: {
                     class="wb-text"
                     role="textbox"
                     tabIndex={0}
-                    aria-label={t('The entry’s text')}
+                    aria-label={t('Content')}
                     onMouseUp={(event) => readSelection(event.currentTarget)}
                     onClick={(event) => {
                         const selection = window.getSelection();
@@ -126,7 +126,7 @@ export function EntryText(props: {
                         if (event.key === 'Enter' && event.target === event.currentTarget) setEditing(true);
                     }}
                 >
-                    <Show when={props.text.trim() !== ''} fallback={<p class="wb-ghost">{t('Write what this is')}</p>}>
+                    <Show when={props.text.trim() !== ''} fallback={<p class="wb-ghost">{t('Content')}</p>}>
                         <For each={paragraphsOf(props.text, props.links)}>
                             {(pieces) => (
                                 <p>
@@ -165,7 +165,7 @@ export function EntryText(props: {
             <Editor
                 text={props.text}
                 links={props.links}
-                label={t('The entry’s text')}
+                label={t('Content')}
                 onSave={props.onSave}
                 onSelect={props.onSelect}
                 onDone={() => setEditing(false)}

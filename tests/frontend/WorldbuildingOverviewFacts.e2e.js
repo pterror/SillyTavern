@@ -118,10 +118,10 @@ test.describe('a world of hundreds of entries, on its page', () => {
         expect((await storedEntry(page, 11)).disable).toBe(false);
     });
 
-    test('every placement field the old editor had is set from the entry\'s "In the prompt" sentence', async ({ page }) => {
+    test('every placement field the old editor had is set from the entry\'s "Entry settings" sentence', async ({ page }) => {
         await card(page, 7).locator('.wb-card-open').click();
-        await pane(page).getByRole('button', { name: 'In the prompt' }).click();
-        const sentence = pane(page).getByRole('dialog', { name: 'In the prompt' });
+        await pane(page).getByRole('button', { name: 'Entry settings' }).click();
+        const sentence = pane(page).getByRole('dialog', { name: 'Entry settings' });
         const more = async (/** @type {string} */ offer) => {
             await sentence.getByRole('button', { name: '+ More' }).click();
             await sentence.locator('.wb-choice', { hasText: offer }).click();
@@ -131,30 +131,30 @@ test.describe('a world of hundreds of entries, on its page', () => {
         await sentence.getByRole('option', { name: 'all of', exact: true }).click();
         await expect.poll(async () => (await storedEntry(page, 7)).selectiveLogic).toBe(3);
 
-        await sentence.getByRole('button', { name: 'before the character’s description' }).click();
-        await sentence.getByRole('option', { name: 'into the chat' }).click();
-        await sentence.getByRole('button', { name: 'the system' }).click();
-        await sentence.getByRole('option', { name: 'the assistant' }).click();
+        await sentence.getByRole('button', { name: 'Before character' }).click();
+        await sentence.getByRole('option', { name: 'At depth' }).click();
+        await sentence.getByRole('button', { name: 'System' }).click();
+        await sentence.getByRole('option', { name: 'Assistant' }).click();
         await expect.poll(async () => (await storedEntry(page, 7))).toMatchObject({ position: 4, role: 2 });
 
-        await more('Isn’t brought up by other entries’ text');
+        await more('Non-recursable');
         await expect.poll(async () => (await storedEntry(page, 7)).excludeRecursion).toBe(true);
-        await expect(sentence).toContainText('Other entries’ text doesn’t bring it up.');
+        await expect(sentence).toContainText('Non-recursable');
 
-        await more('Is more or less likely to be its group’s pick');
-        await sentence.getByRole('textbox', { name: 'Is more or less likely to be its group’s pick' }).fill('250');
+        await more('Group weight');
+        await sentence.getByRole('textbox', { name: 'Group weight' }).fill('250');
         await page.keyboard.press('Enter');
         await expect.poll(async () => (await storedEntry(page, 7)).groupWeight).toBe(250);
 
-        await more('Looks for its keys outside the chat too');
-        await sentence.getByRole('option', { name: 'the scenario' }).click();
+        await more('Additional matching sources');
+        await sentence.getByRole('option', { name: 'Scenario' }).click();
         await expect.poll(async () => (await storedEntry(page, 7)).matchScenario).toBe(true);
 
-        await more('Comes in only for some kinds of reply');
-        await sentence.getByRole('option', { name: 'swipes' }).click();
+        await more('Generation triggers');
+        await sentence.getByRole('option', { name: 'Swipe' }).click();
         await expect.poll(async () => (await storedEntry(page, 7)).triggers).toEqual(['swipe']);
 
-        await sentence.getByRole('button', { name: 'Take away: Isn’t brought up by other entries’ text' }).click();
+        await sentence.getByRole('button', { name: 'Remove Non-recursable' }).click();
         await expect.poll(async () => (await storedEntry(page, 7)).excludeRecursion).toBe(false);
     });
 });

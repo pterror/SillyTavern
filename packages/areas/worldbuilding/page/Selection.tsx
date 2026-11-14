@@ -51,7 +51,7 @@ export function SelectionMenu(props: {
                     <div
                         class="wb-menu list-group st-floating wb-selmenu-items"
                         role="menu"
-                        aria-label={t('Selected words')}
+                        aria-label={t('Selected text')}
                     >
                         <button
                             type="button"
@@ -73,7 +73,7 @@ export function SelectionMenu(props: {
                             {fill(t('New entry “${0}”'), props.selected.words)}
                         </button>
                         <button class="list-group-item" type="button" role="menuitem" onClick={() => setAdding('name')}>
-                            {t('Add as a name of…')}
+                            {t('Add as name key to…')}
                         </button>
                         <button
                             class="list-group-item"
@@ -81,7 +81,7 @@ export function SelectionMenu(props: {
                             role="menuitem"
                             onClick={() => setAdding('trigger')}
                         >
-                            {t('Add as a trigger of…')}
+                            {t('Add as key to…')}
                         </button>
                     </div>
                 }
@@ -90,7 +90,7 @@ export function SelectionMenu(props: {
                     <TargetPicker
                         class="wb-selmenu-pick st-floating"
                         heading={fill(
-                            as === 'name' ? t('Add “${0}” as a name of') : t('Add “${0}” as a trigger of'),
+                            as === 'name' ? t('Add “${0}” as name key to') : t('Add “${0}” as key to'),
                             props.selected.words,
                         )}
                         book={props.book}

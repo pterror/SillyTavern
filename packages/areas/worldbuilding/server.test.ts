@@ -1057,7 +1057,7 @@ test('the opening reads as many top-level entries as the page asks, however many
 
 test('showing more reads the next page and keeps every page read; asking again from the same place reads it once', async () => {
     const w = world(1000);
-    expect(await w.act('worldbuilding.showMore', { to: 2 * PAGE })).toEqual({ refused: 'No world is shown.' });
+    expect(await w.act('worldbuilding.showMore', { to: 2 * PAGE })).toEqual({ refused: 'No world open.' });
     await w.act('worldbuilding.openOverview', open);
     expect(await w.act('worldbuilding.showMore', { to: 2 * PAGE })).toEqual({ changed: [OVERVIEW_VIEW] });
     expect(await w.act('worldbuilding.showMore', { to: 2 * PAGE })).toEqual({ changed: [] });
@@ -1172,7 +1172,7 @@ test('the worlds list opens by its own action and lists every world in name orde
     });
     expect((await w.view<WorldsView>(WORLDS_VIEW)).worlds[1]?.usedInEveryChat).toBe(true);
     expect(await w.act('worldbuilding.setUsedInEveryChat', { changes: [{ book: '9', used: true }] })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
         changed: [WORLDS_VIEW],
     });
 });
@@ -1219,7 +1219,7 @@ test('renaming a world answers the list and the header; a taken name or a gone w
         refused: 'A world named "Lantern" already exists.',
     });
     expect(await w.act('worldbuilding.renameWorld', { book: '9', name: 'x' })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
         changed: [WORLDS_VIEW],
     });
 });
@@ -1232,7 +1232,7 @@ test('duplicating a world opens the copy; importing a file opens what it made, a
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '10', name: 'World 1 (1)' });
     expect(await w.act('worldbuilding.duplicateWorld', { book: '9', overview: drawn })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
         changed: [WORLDS_VIEW],
     });
     expect(await w.act('worldbuilding.importWorld', { overview: drawn })).toEqual({
@@ -1335,7 +1335,7 @@ test('deleting a world another tab shows leaves that tab with no world, and this
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '2' });
     expect(await listedNames(w)).toEqual(['World 2']);
     expect(await w.act('worldbuilding.deleteWorld', { book: '1' })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
         changed: [WORLDS_VIEW],
     });
 });
@@ -1347,7 +1347,7 @@ test("exporting a world answers its file in the action's own answer", async () =
         answer: { fileName: 'World 1.json', json: '{"entries":{}}' },
     });
     expect(await w.act('worldbuilding.exportWorld', { book: '9' })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
         changed: [WORLDS_VIEW],
     });
 });
@@ -1370,7 +1370,7 @@ test('the world schemas take names trimmed and not empty, worlds by id, and the 
 test('kind actions name their world: making one says which it made, renaming answers the kinds and the overview, an unused one is deleted', async () => {
     const w = world(3);
     expect(await w.act('worldbuilding.createRelationKind', { book: '2', name: 'In' })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
     });
     expect(await w.act('worldbuilding.showRelationKinds', { book: '1' })).toEqual({
         changed: [],
@@ -1392,13 +1392,13 @@ test('kind actions name their world: making one says which it made, renaming ans
         own: [RELATION_KINDS_VIEW],
     });
     expect(await w.act('worldbuilding.renameRelationKind', { book: '1', kind: '9', name: 'x' })).toMatchObject({
-        refused: 'This world has no such relation kind.',
+        refused: 'Relation type not found.',
     });
     expect(await w.act('worldbuilding.deleteRelationKind', { book: '1', kind: '1' })).toEqual({
-        refused: 'Relations of this kind still exist.',
+        refused: 'Relations of this type still exist.',
     });
     expect(await w.act('worldbuilding.mergeRelationKind', { book: '1', kind: '2', into: '2' })).toEqual({
-        refused: 'A kind is merged into another kind.',
+        refused: 'A relation type can’t be merged into itself.',
     });
     expect(await w.act('worldbuilding.mergeRelationKind', { book: '1', kind: '2', into: '1' })).toEqual({
         changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW, POINTING_AT_VIEW],
@@ -1410,7 +1410,7 @@ test('kind actions name their world: making one says which it made, renaming ans
         mergingInto: '1',
     });
     expect(await w.act('worldbuilding.mergeRelationKind', { book: '1', kind: '2', into: '1' })).toEqual({
-        refused: 'That kind is being merged, or another kind is being merged into it.',
+        refused: 'That relation type is being merged.',
     });
 });
 
@@ -1608,13 +1608,13 @@ test('opening an entry opens its view: the entry, its keys, placement, tokens an
     expect(w.asked.entryReads.length).toBe(3);
     expect(pagesOf(entryOpen(await w.view<EntryView>(ENTRY_VIEW)))).toEqual([[null, '2.p1', ['m0']]]);
     expect(await w.act('worldbuilding.showMentions', { from: '1.p1', pages: 1 })).toEqual({
-        refused: 'Those mentions are no longer shown.',
+        refused: 'Mentions are out of date.',
         changed: [ENTRY_VIEW],
     });
     expect(await w.act('worldbuilding.closeEntry', {})).toEqual({ changed: [ENTRY_VIEW, POINTING_AT_VIEW] });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
     expect(await w.act('worldbuilding.showMentions', { from: null, pages: 1 })).toEqual({
-        refused: 'No entry is open.',
+        refused: 'No entry open.',
     });
     await w.act('worldbuilding.openEntry', { entry: '404', pointingAt });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
@@ -1643,12 +1643,12 @@ test('an edit names its world and entry, passes the session, answers the entry a
         both,
     );
     expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '404', text: '' })).toEqual({
-        refused: "That entry isn't in this world.",
+        refused: 'Entry not found.',
         changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW, FOUND_VIEW],
         own: [],
     });
     expect(await w.act('worldbuilding.setEntryText', { book: '2', entry: '7', text: '' })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
     });
     expect(w.asked.edits.map(({ edit }) => edit)).toEqual([
         { change: 'text', text: 'Ilse left.' },
@@ -1720,7 +1720,7 @@ test('making an entry places it, opens it when asked and says what it made and w
         refused: "The target isn't an entry of this world.",
     });
     expect(await w.act('worldbuilding.createEntry', { ...make, book: '2', open: null })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
     });
 });
 
@@ -1752,7 +1752,7 @@ test('deleting the open entry closes it and offers it back under its label; rest
         label: named('7', 'name 7'),
     });
     expect(await w.act('worldbuilding.deleteEntry', { book: '1', entry: '7' })).toEqual({
-        refused: "That entry isn't in this world.",
+        refused: 'Entry not found.',
         changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW, FOUND_VIEW],
         own: [],
     });
@@ -1766,7 +1766,7 @@ test('deleting the open entry closes it and offers it back under its label; rest
         unreachedLoops: [LOOP_OF_7],
     });
     expect(await w.act('worldbuilding.restoreEntry', { book: '1', entry: '7' })).toMatchObject({
-        refused: "That entry isn't in this world.",
+        refused: 'Entry not found.',
     });
 });
 
@@ -1775,10 +1775,10 @@ test("a key's other entries open with the key, for the open entry only, and reop
     await w.act('worldbuilding.openOverview', open);
     const ask = { book: '1', entry: '7', key: 'Ilse' };
     expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toEqual({ book: null });
-    expect(await w.act('worldbuilding.showKeySharers', ask)).toEqual({ refused: 'No entry is open.' });
+    expect(await w.act('worldbuilding.showKeySharers', ask)).toEqual({ refused: 'No entry open.' });
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.showKeySharers', { ...ask, entry: '8' })).toEqual({
-        refused: 'No entry is open.',
+        refused: 'No entry open.',
     });
     expect(await w.act('worldbuilding.showKeySharers', ask)).toEqual({ changed: [], opensViews: [KEY_SHARERS_VIEW] });
     expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toEqual({
@@ -1812,7 +1812,7 @@ test('moving the open entry to another world opens that world with the entry ope
     await w.act('worldbuilding.openOverview', { ...open, firstRank: 5, endRank: 15 });
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.moveEntryToWorld', { book: '1', entry: '7', toBook: '1' })).toEqual({
-        refused: 'The entry is in that world already.',
+        refused: 'The entry is already in that world.',
     });
     expect(await w.act('worldbuilding.moveEntryToWorld', { book: '1', entry: '7', toBook: '3' })).toEqual({
         refused: 'The world to move it to no longer exists.',
@@ -1845,7 +1845,7 @@ test('copying an entry to another world leaves the tab where it was; the same wo
     await w.act('worldbuilding.openOverview', open);
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.copyEntryToWorld', { book: '1', entry: '7', toBook: '1' })).toEqual({
-        refused: 'The entry is in that world already.',
+        refused: 'The entry is already in that world.',
     });
     expect(await w.act('worldbuilding.copyEntryToWorld', { book: '1', entry: '7', toBook: '2' })).toMatchObject({
         own: [WORLDS_VIEW, LAST_CHANGE_VIEW],
@@ -1899,7 +1899,7 @@ test('moving an entry that is not the open one leaves the tab on its world, with
 test("an open entry is always the shown world's: another world closes it, the same one keeps it, and none opens none", async () => {
     const w = world(3);
     expect(await w.act('worldbuilding.openEntry', { entry: '7', pointingAt })).toEqual({
-        refused: 'No world is shown.',
+        refused: 'No world open.',
     });
     expect(
         await w.act('worldbuilding.createEntry', {
@@ -1910,7 +1910,7 @@ test("an open entry is always the shown world's: another world closes it, the sa
             open: { pointingAt },
             loopCheckLimit: 10,
         }),
-    ).toEqual({ refused: "That world isn't shown." });
+    ).toEqual({ refused: 'That world isn’t open.' });
     expect(w.asked.created).toEqual([]);
     await w.act('worldbuilding.openOverview', open);
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
@@ -2020,7 +2020,7 @@ test("a section's range is held per session, the one asked last first, and reset
     const w = world(3);
     await w.act('worldbuilding.openOverview', open);
     expect(await w.act('worldbuilding.showPointingAtRange', { kind: '1', firstRank: 0, endRank: 5 })).toEqual({
-        refused: 'No entry is open.',
+        refused: 'No entry open.',
     });
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.showPointingAtRange', { kind: '1', firstRank: 300, endRank: 320 })).toEqual({
@@ -2049,7 +2049,7 @@ test('a step in a section lands where the store says and its range follows; one 
     const w = world(3);
     await w.act('worldbuilding.openOverview', open);
     expect(await w.act('worldbuilding.stepPointingAt', { kind: '1', from: '1@7/1000', by: 1 })).toEqual({
-        refused: 'No entry is open.',
+        refused: 'No entry open.',
     });
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     expect(await w.act('worldbuilding.stepPointingAt', { kind: '1', from: '1@7/1005', by: 1 })).toEqual({
@@ -2074,7 +2074,7 @@ test('a step in a section lands where the store says and its range follows; one 
         changed: [POINTING_AT_VIEW],
     });
     expect(await w.act('worldbuilding.stepPointingAt', { kind: '1', from: '2@7/1000', by: 1 })).toEqual({
-        refused: 'That is no longer shown.',
+        refused: 'That list is out of date.',
         changed: [POINTING_AT_VIEW],
     });
     const far = Math.floor(MAX_CARDS_PER_READ / cardsPerTopLevelEntry(LAYOUT.regionsByNestingLevel));
@@ -2126,14 +2126,14 @@ const filter = { book: '1', query: 'lamp', chips: [inSaltmarrow], pageSize: 2 };
 
 test("the filter is the shown world's: setting it opens the results at their first page, closing an open entry; empty clears it", async () => {
     const w = world(3);
-    expect(await w.act('worldbuilding.setFilter', filter)).toEqual({ refused: 'No world is shown.' });
+    expect(await w.act('worldbuilding.setFilter', filter)).toEqual({ refused: 'No world open.' });
     expect(await w.view<ResultsView>(RESULTS_VIEW)).toEqual({ book: null });
     await w.act('worldbuilding.openOverview', open);
     expect(await w.act('worldbuilding.setFilter', { ...filter, book: '2' })).toEqual({
-        refused: "That world isn't shown.",
+        refused: 'That world isn’t open.',
     });
     expect(await w.act('worldbuilding.setFilter', { ...filter, chips: [{ ...inSaltmarrow, target: '999' }] })).toEqual({
-        refused: "That entry isn't in this world.",
+        refused: 'Entry not found.',
     });
     expect(await w.act('worldbuilding.setFilter', filter)).toEqual({
         changed: [AXES_VIEW],
@@ -2199,13 +2199,13 @@ test('the session holds the run of pages the page asks for, read from its first 
     expect(w.asked.results.at(-1)).toMatchObject({ from: 'c2', pages: 1 });
     await w.act('worldbuilding.setFilter', { ...filter, query: 'oil' });
     expect(await w.act('worldbuilding.showResults', { from: '1.c2', pages: 1 })).toEqual({
-        refused: 'Those results are no longer shown.',
+        refused: 'Results are out of date.',
         changed: [RESULTS_VIEW],
     });
     expect(await w.view<ResultsView>(RESULTS_VIEW)).toMatchObject({ generation: 2 });
     expect(pagesOf(await w.view<ResultsView>(RESULTS_VIEW))).toEqual([[null, '2.c2', ['300', '301']]]);
     expect(await w.other('worldbuilding.showResults', { from: null, pages: 1 })).toEqual({
-        refused: 'Nothing is searched for.',
+        refused: 'Nothing to search for.',
         changed: [RESULTS_VIEW],
     });
 });
@@ -2348,7 +2348,7 @@ test("an imported book's offer is on the world's header; marking answers the car
         changed: [WORLD_VIEW],
     });
     expect(await w.act('worldbuilding.markTitleKeysAsNames', { book: '9' })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
         changed: [WORLDS_VIEW],
     });
 });
@@ -2367,10 +2367,10 @@ test('picking entries selects them as exceptions to nothing; unpicking the last 
     const w = world(3);
     const pick = (entries: string[], selected: boolean, book = '1') =>
         w.act('worldbuilding.select', { book, entries, selected });
-    expect(await pick(['7'], true)).toEqual({ refused: 'No world is shown.' });
+    expect(await pick(['7'], true)).toEqual({ refused: 'No world open.' });
     await w.act('worldbuilding.openOverview', open);
     expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({ book: null });
-    expect(await pick(['7', '8'], true, '2')).toEqual({ refused: "That world isn't shown." });
+    expect(await pick(['7', '8'], true, '2')).toEqual({ refused: 'That world isn’t open.' });
     expect(await pick(['7', '8', '7'], true)).toEqual({ changed: [SELECTION_VIEW] });
     expect(await w.view<SelectionView>(SELECTION_VIEW)).toEqual({
         book: '1',
@@ -2448,7 +2448,7 @@ test('picking one at a time stops at one read of cards', async () => {
         changed: [SELECTION_VIEW],
     });
     expect(await w.act('worldbuilding.select', { book: '1', entries: ['7'], selected: true })).toEqual({
-        refused: `At most ${PICKED_AT_MOST} entries are picked one at a time; select all matching instead.`,
+        refused: `Select up to ${PICKED_AT_MOST} entries one at a time, or use Select all.`,
     });
     await w.act('worldbuilding.selectAllMatching', { book: '1' });
     expect(await w.act('worldbuilding.select', { book: '1', entries: many, selected: false })).toEqual({
@@ -2461,7 +2461,7 @@ test('a bulk action runs over the selection and clears it, answering the cards, 
     await w.act('worldbuilding.openOverview', open);
     const moveTo = { moveTo: { kind: '1', target: '8' } };
     expect(await w.act('worldbuilding.bulk', { book: '1', action: moveTo, loopCheckLimit: 400 })).toEqual({
-        refused: 'Nothing is selected.',
+        refused: 'Nothing selected.',
         changed: [SELECTION_VIEW],
     });
     await w.act('worldbuilding.selectAllMatching', { book: '1' });
@@ -2697,10 +2697,10 @@ test('a world named by its name opens, with its entry by uid opened too; an unkn
     expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ book: '1', entry: '7', deleted: false });
     expect(
         await w.act('worldbuilding.openNamed', { world: 'Nowhere', uid: null, overview: shownWorld, pointingAt }),
-    ).toEqual({ refused: 'That world no longer exists.', changed: [WORLDS_VIEW] });
+    ).toEqual({ refused: 'World not found.', changed: [WORLDS_VIEW] });
     expect(
         await w.act('worldbuilding.openNamed', { world: 'World 1', uid: 3, overview: shownWorld, pointingAt }),
-    ).toEqual({ refused: "That entry isn't in this world." });
+    ).toEqual({ refused: 'Entry not found.' });
     expect(
         await w.act('worldbuilding.openNamed', { world: 'World 1', uid: null, overview: shownWorld, pointingAt }),
     ).toEqual({
@@ -2725,7 +2725,7 @@ test("a character's own lorebook opens as a world that says which character it c
         cameWith: named('42', 'Rhea'),
     });
     expect(await w.act('worldbuilding.openCharacterBook', { character: '43', overview: shownWorld })).toEqual({
-        refused: 'This character has no lorebook of its own.',
+        refused: 'This character has no lorebook.',
     });
 });
 
@@ -2744,7 +2744,7 @@ test("the world's description is set by one action that answers the world", asyn
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ description: 'A drowned delta.' });
     expect(await w.act('worldbuilding.setWorldDescription', { book: '3', description: '' })).toEqual({
-        refused: 'That world no longer exists.',
+        refused: 'World not found.',
         changed: [WORLDS_VIEW],
     });
 });
@@ -2773,7 +2773,7 @@ test("a picture is chosen from the upload and removed, the world's or an entry's
     await w.act('worldbuilding.removePicture', { book: '1', entry: '7' });
     expect(await w.view<OpenEntryView>(ENTRY_VIEW)).toMatchObject({ picture: null });
     expect(await w.act('worldbuilding.removePicture', { book: '1', entry: '404' })).toMatchObject({
-        refused: "That entry isn't in this world.",
+        refused: 'Entry not found.',
     });
     expect(w.asked.pictures.at(-2)).toEqual({ book: '1', entry: '7', file: null });
 });
@@ -2839,7 +2839,7 @@ test('a world opens by its id, with an entry of it opened too; an entry not in i
     });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toMatchObject({ book: '1', entry: '7', deleted: false });
     expect(await w.act('worldbuilding.openAt', { book: '1', entry: '404', overview: shownWorld, pointingAt })).toEqual({
-        refused: "That entry isn't in this world.",
+        refused: 'Entry not found.',
     });
 });
 
@@ -2889,7 +2889,7 @@ test("a world's views are its tabs, the world's first, the reader's changed copi
     const rows = await w.view<OverviewView>(OVERVIEW_VIEW);
     expect(entriesOf(rows)[0]).toMatchObject({ facts: { comesIn: 'broughtUp', tokens: 10 } });
     expect(await w.act('worldbuilding.showView', { book: '1', view: 'gone', overview: shownRange })).toMatchObject({
-        refused: 'This world has no such view.',
+        refused: 'View not found.',
     });
 });
 
@@ -2923,7 +2923,7 @@ test("an entry moves in the world's own order after another, or first, in one ac
         { entry: '7', after: '8' },
     ]);
     expect(await w.act('worldbuilding.placeInWorldOrder', { book: '1', entry: '404', after: null })).toMatchObject({
-        refused: "That entry isn't in this world.",
+        refused: 'Entry not found.',
     });
 });
 
@@ -3001,7 +3001,7 @@ test("a world with no views shows none, and its grouping is the tab's own", asyn
     expect(
         await w.act('worldbuilding.changeView', { book: '1', change: { groupBy: null }, overview: shownRange }),
     ).toMatchObject({
-        refused: 'No view is shown.',
+        refused: 'No view open.',
     });
 });
 
@@ -3037,7 +3037,7 @@ test("a board's columns and a grid's rows are read as cells under the tab's filt
     await w.view(AXES_VIEW);
     expect(w.asked.cells.at(-1)?.cells.map((cell) => cell.limit)).toEqual([0, 0, 0, 6, 12]);
     expect(await w.act('worldbuilding.showMoreInCell', { book: '1', column: 2, row: 0 })).toMatchObject({
-        refused: 'The shown view has no such cell.',
+        refused: 'Cell not found.',
     });
     await w.act('worldbuilding.setFilter', { book: '1', query: 'lamp', chips: [], pageSize: 10 });
     await w.view(AXES_VIEW);
@@ -3104,7 +3104,7 @@ test('a card dropped in another cell changes the relations of the axes it crosse
         { change: 'move', entry: '50', kind: '1', target: '7', newTarget: '7', after: '60', before: null },
     ]);
     expect(await drop({ column: 0, row: 0 }, { column: 2, row: 0 })).toMatchObject({
-        refused: expect.stringContaining('can’t be dropped'),
+        refused: expect.stringContaining('can only be dropped'),
     });
     expect(changes()).toEqual([]);
 });
@@ -3173,7 +3173,7 @@ test("renaming and deleting views: the reader's own outright, the world's in the
     await w.act('worldbuilding.deleteView', { book: '1', view: 'own-1', overview: shownRange });
     expect(w.storedViews.get('1')?.reader.own).toEqual([]);
     expect(await w.act('worldbuilding.deleteView', { book: '1', view: 'gone', overview: shownRange })).toEqual({
-        refused: 'This world has no such view.',
+        refused: 'View not found.',
         changed: [VIEWS_VIEW],
     });
     expect(v.safeParse(actions['worldbuilding.renameView'], { book: '1', view: 'places', name: '  ' }).success).toBe(

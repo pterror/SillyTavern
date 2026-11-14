@@ -174,7 +174,7 @@ function WorldsMenu(props: {
                 role="menuitem"
                 onClick={() =>
                     run(async () => {
-                        const name = await ask({ kind: 'input', message: t('A name for the new world'), value: '' }, t);
+                        const name = await ask({ kind: 'input', message: t('World name'), value: '' }, t);
                         if (name !== null) await wb.act('worldbuilding.createWorld', { name, overview: overview() });
                     })
                 }
@@ -192,7 +192,7 @@ function WorldsMenu(props: {
                     })
                 }
             >
-                {t('Import a world…')}
+                {t('Import world…')}
             </button>
             <button class="list-group-item" type="button" role="menuitem" onClick={() => props.onSettings()}>
                 {t('Activation settings…')}
@@ -213,7 +213,7 @@ function WorldsMenu(props: {
                                 })
                             }
                         >
-                            {t('Choose a picture…')}
+                            {t('Set picture…')}
                         </button>
                         <Show when={world.picture !== null}>
                             <button
@@ -224,7 +224,7 @@ function WorldsMenu(props: {
                                     run(() => wb.act('worldbuilding.removePicture', { book: world.id, entry: null }))
                                 }
                             >
-                                {t('Remove the picture')}
+                                {t('Remove picture')}
                             </button>
                         </Show>
                         <Show when={world.ownBookOf === null}>
@@ -267,13 +267,13 @@ function WorldsMenu(props: {
                                         world.ownBookOf === null
                                             ? {
                                                   kind: 'confirm',
-                                                  message: fill(t('Delete the world ${0}?'), world.name),
-                                                  detail: t('Its entries are deleted with it.'),
+                                                  message: fill(t('Delete “${0}”?'), world.name),
+                                                  detail: t('Its entries are deleted too.'),
                                               }
                                             : {
                                                   kind: 'confirm',
-                                                  message: fill(t('Remove the lorebook from ${0}?'), world.ownBookOf),
-                                                  detail: t('Its entries are deleted with it.'),
+                                                  message: fill(t('Remove the lorebook from “${0}”?'), world.ownBookOf),
+                                                  detail: t('Its entries are deleted too.'),
                                               },
                                         t,
                                     );

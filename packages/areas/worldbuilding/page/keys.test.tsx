@@ -73,7 +73,7 @@ const button = (host: HTMLElement, label: string) =>
 test('names are drawn in the entry’s look and triggers plain; a key brought up by others says how many entries', () => {
     const { host } = stand(ENTRY);
     const keys = [...host.querySelectorAll('.wb-key')];
-    expect(keys.map((key) => key.getAttribute('aria-label'))).toEqual(['“Ilse Varro”, a name', '“ledger”, a trigger']);
+    expect(keys.map((key) => key.getAttribute('aria-label'))).toEqual(['“Ilse Varro”, name', '“ledger”, key']);
     expect(keys[0]?.querySelector('.named-name.look-7')?.textContent).toBe('Ilse Varro');
     expect(keys[1]?.querySelector('.wb-key-trigger')?.textContent).toBe('ledger');
     expect(keys[1]?.querySelector('.wb-key-more')?.textContent).toBe('· 2 entries');
@@ -84,7 +84,7 @@ test('a key shared with other entries asks who they are when opened, and its cho
     const { host, sent } = stand(ENTRY);
     button(host, 'ledger').click();
     expect(sent).toEqual([{ type: 'worldbuilding.showKeySharers', payload: { book: '1', entry: '7', key: 'ledger' } }]);
-    button(host, 'A name').click();
+    [...host.querySelectorAll('button')].find((found) => found.textContent === 'Name')?.click();
     expect(sent.at(-1)).toEqual({
         type: 'worldbuilding.setKeyAs',
         payload: { book: '1', entry: '7', key: 'ledger', as: 'name' },
@@ -93,7 +93,7 @@ test('a key shared with other entries asks who they are when opened, and its cho
 
 test('+ name takes the words typed and adds them as a name on Enter', () => {
     const { host, sent } = stand(ENTRY);
-    button(host, '+ name').click();
+    button(host, '+ Name').click();
     const field = host.querySelector('input') as HTMLInputElement;
     field.value = 'the innkeeper';
     field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));

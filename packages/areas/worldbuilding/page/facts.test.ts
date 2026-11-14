@@ -28,7 +28,7 @@ test('a card says what brings its entry up: always, its keys, or its keys with t
 
 test('where it goes reads as the sentence does, into the chat with its depth', () => {
     expect(goesWords(facts({ position: 4, depth: 2 }), t)).toBe('Into the chat, ${0} up'.replace('${0}', '2'));
-    expect(goesWords(facts({ position: 1 }), t)).toBe('After the character’s description');
+    expect(goesWords(facts({ position: 1 }), t)).toBe('After character');
 });
 
 test('switching an entry turns on what is off and off what comes in, always or not', () => {

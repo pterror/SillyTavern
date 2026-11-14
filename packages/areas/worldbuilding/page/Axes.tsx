@@ -25,7 +25,7 @@ export function ItemValue(props: { header: AxisHeader }) {
             when={typeof props.header.item.is === 'object'}
             fallback={<b class="wb-ax-word">{props.header.item.is === 'any' ? t('any') : t('none')}</b>}
         >
-            <Show when={props.header.target} fallback={<span class="wb-dim">{t('a deleted entry')}</span>}>
+            <Show when={props.header.target} fallback={<span class="wb-dim">{t('Deleted entry')}</span>}>
                 {(target) => <Label named={target()} />}
             </Show>
         </Show>
@@ -221,7 +221,7 @@ export function Axes(props: { axes: Shown; onChange: AxesChange; hover: CardActi
                 change: said
                     .map((one) =>
                         alt
-                            ? fill(t('Also put in ${0}'), one.to)
+                            ? fill(t('Add to ${0}'), one.to)
                             : one.from === null
                               ? `→ ${one.to}`
                               : `${one.from} → ${one.to}`,
@@ -345,10 +345,10 @@ function DepthPill(props: { onToggle: () => void }) {
         <button
             type="button"
             class="tag wb-dep"
-            title={t('Only what is directly in it')}
+            title={t('Click to include only direct members')}
             onClick={() => props.onToggle()}
         >
-            {t('at any depth')}
+            {t('any depth')}
         </button>
     );
 }
@@ -374,7 +374,7 @@ export function AxisControl(props: {
     const chipWords = (item: AxisItem, at: number) => {
         if (typeof item.is !== 'object') return `${kindName(item.kind)}: ${item.is === 'any' ? t('any') : t('none')}`;
         const target = props.headers?.[at]?.target?.text ?? '…';
-        return `${kindName(item.kind)}: ${target}${item.is.depth === 'anyDepth' ? ` · ${t('at any depth')}` : ''}`;
+        return `${kindName(item.kind)}: ${target}${item.is.depth === 'anyDepth' ? ` · ${t('any depth')}` : ''}`;
     };
     const set = (items: AxisItem[]) => {
         props.onChange({ [props.axis]: items });
@@ -388,7 +388,11 @@ export function AxisControl(props: {
                         <button
                             type="button"
                             class="wb-pill-words"
-                            title={typeof item.is === 'object' ? t('Directly in it, or at any depth') : undefined}
+                            title={
+                                typeof item.is === 'object'
+                                    ? t('Click to switch between direct members and any depth')
+                                    : undefined
+                            }
                             disabled={typeof item.is !== 'object'}
                             onClick={() => set(props.items.map((one, i) => (i === at() ? withDepthToggled(one) : one)))}
                         >
@@ -397,7 +401,7 @@ export function AxisControl(props: {
                         <button
                             type="button"
                             class="wb-pill-x"
-                            aria-label={fill(t('Take off ${0}'), chipWords(item, at()))}
+                            aria-label={fill(t('Remove ${0}'), chipWords(item, at()))}
                             onClick={() => set(props.items.filter((_, i) => i !== at()))}
                         >
                             ×
@@ -451,7 +455,7 @@ function AddItem(props: {
                 fallback={
                     <Show
                         when={props.kinds.length > 0}
-                        fallback={<p class="wb-quiet wb-ax-none">{t('This world has no relations yet.')}</p>}
+                        fallback={<p class="wb-quiet wb-ax-none">{t('No relations yet.')}</p>}
                     >
                         <For each={props.kinds}>
                             {(one) => (
@@ -488,7 +492,7 @@ function AddItem(props: {
                         </button>
                         <hr />
                         <TargetPicker
-                            heading={fill(t('${0}: which entry'), chosen().name)}
+                            heading={fill(t('${0}: choose entry'), chosen().name)}
                             book={props.book}
                             kind={null}
                             leaveOut={[]}

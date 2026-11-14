@@ -39,7 +39,7 @@ const SORT_CHOICES: { sort: ViewSort; label: string }[] = [
     { sort: { by: 'order', descending: true }, label: 'Order ↘' },
     { sort: { by: 'uid', descending: false }, label: 'UID ↗' },
     { sort: { by: 'uid', descending: true }, label: 'UID ↘' },
-    { sort: { by: 'probability', descending: false }, label: 'Trigger% ↗' },
+    { sort: { by: 'probability', descending: false }, label: 'Probability ↗' },
     { sort: { by: 'probability', descending: true }, label: 'Trigger% ↘' },
     { sort: { by: 'priority', descending: false }, label: 'Priority' },
 ];
@@ -53,11 +53,11 @@ function sortOf(value: string): ViewSort {
 
 export const FIELD_WORDS: Record<RowField, string> = {
     relations: 'Relations',
-    keys: 'Brought up by',
-    comesIn: 'Comes in',
-    goes: 'Goes',
+    keys: 'Keys',
+    comesIn: 'Status',
+    goes: 'Position',
     order: 'Order',
-    chance: 'Chance',
+    chance: 'Probability',
     tokens: 'Tokens',
 };
 
@@ -95,7 +95,7 @@ export function ViewTabs(props: {
                             <ShapeIcon shape={tab.shape} />
                             {tab.name}
                             <Show when={tab.id === props.views.current && props.views.unsaved}>
-                                <span class="wb-vdot" title={t('Changed')} />
+                                <span class="wb-vdot" title={t('Unsaved changes')} />
                             </Show>
                             <Show when={tab.id === props.views.current}>
                                 <ViewMenuButton
@@ -155,7 +155,7 @@ function ViewMenuButton(props: { name: string; onRename: (name: string) => void;
                                 onClick={() =>
                                     run(async () => {
                                         const name = await ask(
-                                            { kind: 'input', message: t('A name for the view'), value: props.name },
+                                            { kind: 'input', message: t('View name'), value: props.name },
                                             t,
                                         );
                                         if (name !== null && name.trim() !== '') props.onRename(name);
@@ -171,7 +171,7 @@ function ViewMenuButton(props: { name: string; onRename: (name: string) => void;
                                 onClick={() =>
                                     run(async () => {
                                         const sure = await ask(
-                                            { kind: 'confirm', message: fill(t('Delete the view ${0}?'), props.name) },
+                                            { kind: 'confirm', message: fill(t('Delete view “${0}”?'), props.name) },
                                             t,
                                         );
                                         if (sure) props.onDelete();
@@ -236,10 +236,10 @@ export function ViewBar(props: {
                             onChange={props.onChange}
                         />
                     </Show>
-                    <Control label={t('Inside, grouped by')}>
+                    <Control label={t('Group by')}>
                         <select
                             class="text_pole margin0"
-                            aria-label={t('Inside, grouped by')}
+                            aria-label={t('Group by')}
                             value={view().groupBy ?? ''}
                             onChange={(event) =>
                                 props.onChange({
@@ -248,13 +248,13 @@ export function ViewBar(props: {
                             }
                         >
                             <For each={props.kinds}>{(kind) => <option value={kind.id}>{kind.name}</option>}</For>
-                            <option value="">{t('nothing')}</option>
+                            <option value="">{t('None')}</option>
                         </select>
                     </Control>
-                    <Control label={t('Order')}>
+                    <Control label={t('Sort')}>
                         <select
                             class="text_pole margin0"
-                            aria-label={t('Order')}
+                            aria-label={t('Sort')}
                             value={sortValue(view().groupBy === null ? view().sort : WORLD_SORT)}
                             onChange={(event) => props.onChange({ sort: sortOf(event.currentTarget.value) })}
                         >
@@ -309,7 +309,7 @@ export function ViewBar(props: {
                             {t('Apply as Order')}
                         </button>
                     </Show>
-                    <span class="wb-vseg tab-container" aria-label={t('Drawn as')}>
+                    <span class="wb-vseg tab-container" aria-label={t('Layout')}>
                         <label class="tab-title">
                             <input
                                 type="radio"
@@ -364,7 +364,7 @@ export function ViewBar(props: {
                                     class="menu_button margin0 whitespacenowrap"
                                     onClick={() => props.onReset()}
                                 >
-                                    {t('Reset to the world’s')}
+                                    {t('Reset to world version')}
                                 </button>
                             </Show>
                         </span>

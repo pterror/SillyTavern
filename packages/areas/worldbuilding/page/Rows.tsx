@@ -245,7 +245,7 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
                         book={props.context.book}
                         entry={props.cell.entry}
                         value={shown.chance}
-                        label={t('Chance')}
+                        label={t('Probability')}
                         suffix="%"
                         set={(chance) => ({ probability: Math.max(0, Math.min(100, chance)), useProbability: true })}
                     />
@@ -344,7 +344,7 @@ function ComesCell(props: { book: string; entry: string; facts: EntryFacts }) {
             >
                 <select
                     class="wb-cell-edit text_pole margin0"
-                    aria-label={t('Comes in')}
+                    aria-label={t('Status')}
                     value={props.facts.comesIn}
                     ref={(element) => queueMicrotask(() => element.focus())}
                     onBlur={() => setEditing(false)}
@@ -377,7 +377,7 @@ function GoesCell(props: { book: string; entry: string; facts: EntryFacts }) {
             >
                 <select
                     class="wb-cell-edit text_pole margin0"
-                    aria-label={t('Goes')}
+                    aria-label={t('Position')}
                     value={props.facts.position}
                     ref={(element) => queueMicrotask(() => element.focus())}
                     onBlur={() => setEditing(false)}
@@ -441,15 +441,24 @@ function NumberCell(props: {
     );
 }
 
+const isCapped = (selection: Selected): boolean =>
+    selection.matchingCapped || (selection.matching ?? 0) >= SELECTION_COUNTED_UP_TO;
+
 export function selectedWords(selection: Selected, t: (text: string) => string): string {
     if (selection.base === 'none') return fill(t('${0} selected'), count(selection.except.length));
-    const capped = selection.matchingCapped || (selection.matching ?? 0) >= SELECTION_COUNTED_UP_TO;
-    const all = capped
+    const all = isCapped(selection)
         ? `${count(SELECTION_COUNTED_UP_TO)}+`
         : count((selection.matching ?? 0) + selection.except.length);
     return selection.except.length === 0
         ? fill(t('All ${0} matching'), all)
-        : fill(t('All ${0} matching, except ${1}'), all, count(selection.except.length));
+        : fill(t('All ${0} matching except ${1}'), all, count(selection.except.length));
+}
+
+export function deleteQuestion(selection: Selected, t: (text: string) => string): string {
+    const capped = selection.base === 'matching' && isCapped(selection);
+    const selected = selection.base === 'none' ? selection.except.length : (selection.matching ?? 0);
+    if (capped) return fill(t('Delete ${0} entries?'), `${count(SELECTION_COUNTED_UP_TO)}+`);
+    return fill(t(selected === 1 ? 'Delete ${0} entry?' : 'Delete ${0} entries?'), count(selected));
 }
 
 export const hasSelection = (selection: Selected | null): selection is Selected =>
@@ -516,11 +525,11 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                                 class="menu_button margin0 whitespacenowrap"
                                 onClick={() => setMenu(menu() === 'alsoPutIn' ? null : 'alsoPutIn')}
                             >
-                                {t('Also put in…')}
+                                {t('Add to…')}
                             </button>
                             <Show when={menu() === 'alsoPutIn'}>
                                 <BulkPicker
-                                    heading={t('Also put the selected in')}
+                                    heading={t('Add selected to')}
                                     book={props.selection.book}
                                     kind={chosen()}
                                     onPick={(target) => run({ alsoPutIn: { kind: chosen(), target } })}
@@ -566,7 +575,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                         const sure = await ask(
                             {
                                 kind: 'confirm',
-                                message: fill(t('Delete ${0}?'), selectedWords(props.selection, t).toLowerCase()),
+                                message: deleteQuestion(props.selection, t),
                                 detail: t('Each can be restored from its page.'),
                             },
                             t,
@@ -583,7 +592,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                 class="menu_button margin0 whitespacenowrap wb-bulk-clear"
                 onClick={() => void wb.act('worldbuilding.selectNone', { book: props.selection.book })}
             >
-                {t('Clear')}
+                {t('Clear selection')}
             </button>
         </div>
     );
@@ -595,7 +604,7 @@ function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onFillTitles
     dismissOn(() => menu, props.onClose);
     return (
         <div class="wb-menu list-group wb-bulk-menu" role="menu" ref={(element) => (menu = element)}>
-            <div class="wb-menu-head">{t('Comes in')}</div>
+            <div class="wb-menu-head">{t('Status')}</div>
             <For each={COMES}>
                 {(one) => (
                     <button
@@ -609,7 +618,7 @@ function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onFillTitles
                 )}
             </For>
             <hr />
-            <div class="wb-menu-head">{t('Goes')}</div>
+            <div class="wb-menu-head">{t('Position')}</div>
             <For each={WHERES}>
                 {(where) => (
                     <button
@@ -631,8 +640,8 @@ function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onFillTitles
 }
 
 const TRANSFERS = [
-    { menu: 'copyToWorld', button: 'Copy to another world…', heading: 'Copy the selected to' },
-    { menu: 'moveToWorld', button: 'Move to another world…', heading: 'Move the selected to' },
+    { menu: 'copyToWorld', button: 'Copy to world…', heading: 'Copy the selected to' },
+    { menu: 'moveToWorld', button: 'Move to world…', heading: 'Move the selected to' },
 ] as const;
 
 function WorldMenu(props: { heading: string; from: string; onPick: (book: string) => void; onClose: () => void }) {

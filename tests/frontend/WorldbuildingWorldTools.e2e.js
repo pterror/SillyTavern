@@ -52,8 +52,8 @@ test.describe('a world\'s tools in the world switcher and the rows', () => {
         const panel = pane(page).getByRole('dialog', { name: 'Activation settings' });
         await expect(panel).toBeVisible();
         const depth = panel.locator('label', { hasText: 'Scan depth' });
-        await expect(depth).toHaveAttribute('title', 'How many of the newest messages are searched for keys.');
-        for (const name of ['Budget (% of context)', 'Budget cap (tokens)', 'Recursive scan', 'Max recursion steps', 'Min activations', 'Max depth for min activations', 'Case-sensitive keys', 'Match whole words', 'Include names', 'Group scoring', 'Insertion strategy', 'Warn on overflow']) {
+        await expect(depth).toHaveAttribute('title', 'How many of the newest messages are scanned for keys.');
+        for (const name of ['Budget (% of context)', 'Budget cap (tokens)', 'Recursive scan', 'Max recursion steps', 'Min activations', 'Max depth (messages)', 'Case-sensitive', 'Match whole words', 'Include names', 'Use group scoring', 'Insertion strategy', 'Alert on overflow']) {
             await expect(panel.locator('.wi-settings-name').getByText(name, { exact: true })).toHaveCount(1);
         }
         await panel.locator('#wi_scan_depth').fill('7');

@@ -24,7 +24,7 @@ export function WorldChoice(props: { heading: string; from: string; onPick: (boo
                 )}
             </For>
             <Show when={worlds() !== undefined && others().length === 0}>
-                <div class="wb-menu-head">{t('There is no other world.')}</div>
+                <div class="wb-menu-head">{t('No other worlds.')}</div>
             </Show>
         </>
     );

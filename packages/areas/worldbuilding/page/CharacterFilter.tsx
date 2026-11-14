@@ -28,7 +28,7 @@ export function CharacterFilterSentence(props: {
                 {props.filter.exclude ? t('Not for ') : t('Only for ')}
             </button>
             <Show when={which()}>
-                <span class="list-group st-floating wb-choices" role="listbox" aria-label={t('Who it comes in for')}>
+                <span class="list-group st-floating wb-choices" role="listbox" aria-label={t('Character filter')}>
                     <For each={[false, true]}>
                         {(exclude) => (
                             <button
@@ -42,7 +42,7 @@ export function CharacterFilterSentence(props: {
                                     if (props.filter.exclude !== exclude) props.onChange({ exclude });
                                 }}
                             >
-                                {exclude ? t('Not for these characters') : t('Only for these characters')}
+                                {exclude ? t('All except these characters') : t('Only these characters')}
                             </button>
                         )}
                     </For>
@@ -57,7 +57,7 @@ export function CharacterFilterSentence(props: {
                         <button
                             type="button"
                             class="wb-filter-remove"
-                            aria-label={fill(t('Take ${0} out'), character.named?.text ?? character.key)}
+                            aria-label={fill(t('Remove ${0}'), character.named?.text ?? character.key)}
                             onClick={() => props.onChange({ remove: { character: character.key } })}
                         >
                             ×
@@ -68,11 +68,11 @@ export function CharacterFilterSentence(props: {
             <For each={props.filter.tags}>
                 {(tag) => (
                     <span class="tag wb-key wb-filter-item">
-                        <span class="wb-key-trigger">{fill(t('tagged ${0}'), tag.name ?? tag.key)}</span>
+                        <span class="wb-key-trigger">{fill(t('Tag: ${0}'), tag.name ?? tag.key)}</span>
                         <button
                             type="button"
                             class="wb-filter-remove"
-                            aria-label={fill(t('Take ${0} out'), tag.name ?? tag.key)}
+                            aria-label={fill(t('Remove ${0}'), tag.name ?? tag.key)}
                             onClick={() => props.onChange({ remove: { tag: tag.key } })}
                         >
                             ×
@@ -81,7 +81,7 @@ export function CharacterFilterSentence(props: {
                 )}
             </For>
             <Show when={props.filter.more > 0}>
-                <span class="wb-key-more">{fill(t('and ${0} more'), String(props.filter.more))}</span>
+                <span class="wb-key-more">{fill(t('+${0} more'), String(props.filter.more))}</span>
             </Show>
             <button
                 type="button"
@@ -89,7 +89,7 @@ export function CharacterFilterSentence(props: {
                 aria-expanded={props.adding}
                 onClick={() => props.onAdding(!props.adding)}
             >
-                {t('+ character or tag')}
+                {t('+ Character or tag')}
             </button>
             <Show when={props.adding}>
                 <CharacterPicker
@@ -131,7 +131,7 @@ function CharacterPicker(props: { leaveOut: string[]; onPick: (item: FilterItem)
         setAt(0);
         if (text.trim() !== '') void wb.act('worldbuilding.findCharacters', { query: text });
     };
-    const heading = t('Add a character or a tag');
+    const heading = t('Character or tag');
     return (
         <span class="wb-pick wb-filter-pick" role="dialog" aria-label={heading}>
             <label class="wb-pick-field text_pole margin0">
@@ -173,7 +173,7 @@ function CharacterPicker(props: { leaveOut: string[]; onPick: (item: FilterItem)
                                         when={'character' in row.item}
                                         fallback={
                                             <span class="wb-pick-name">
-                                                {fill(t('tagged ${0}'), tag()?.name ?? row.key)}
+                                                {fill(t('Tag: ${0}'), tag()?.name ?? row.key)}
                                             </span>
                                         }
                                     >

@@ -63,10 +63,10 @@ test.describe('sorting a world', () => {
         }
     });
 
-    test('the Order control lists every entry by a field, both ways, and Apply as Order writes that order', async ({ page }) => {
+    test('the Sort control lists every entry by a field, both ways, and Apply as Order writes that order', async ({ page }) => {
         test.setTimeout(120_000);
         await openWorld(page, NAME);
-        const order = pane(page).getByRole('combobox', { name: 'Order', exact: true });
+        const order = pane(page).getByRole('combobox', { name: 'Sort', exact: true });
 
         await order.selectOption({ label: 'Title A-Z' });
         await expect.poll(() => shownTitles(page, 12)).toEqual(titlesBy(byTitle).slice(0, 12));

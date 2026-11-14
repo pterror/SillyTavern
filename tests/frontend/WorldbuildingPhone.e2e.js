@@ -99,7 +99,7 @@ test.describe('the worlds page on a phone', () => {
             await expect(entry.locator('.wb-phone-rels')).toHaveText('in: The Lantern House');
             await expect(entry.locator('.wb-rels')).toBeHidden();
 
-            await entry.getByRole('button', { name: 'Back to the world' }).click();
+            await entry.getByRole('button', { name: 'Back to world' }).click();
             await expect(pane.locator('.wb-entry')).toHaveCount(0);
             await expect(pane.locator('.wb-head')).toBeVisible();
             await expect(region).toBeVisible();

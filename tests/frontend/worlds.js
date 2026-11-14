@@ -24,7 +24,7 @@ export async function makeWorld(page, name, entries = {}, more = {}) {
     if (!await pane.isVisible()) await page.locator('#WIDrawerIcon').click();
     await pane.getByRole('button', { name: 'Switch world' }).click();
     const chooser = page.waitForEvent('filechooser');
-    await pane.getByRole('menuitem', { name: 'Import a world…' }).click();
+    await pane.getByRole('menuitem', { name: 'Import world…' }).click();
     await (await chooser).setFiles({ name: `${name}.json`, mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...more, entries })) });
     await expect(pane.locator('h1.wb-front-name')).toHaveText(name);
     await expect.poll(async () => Object.hasOwn(await heldWorlds(page), name)).toBe(true);

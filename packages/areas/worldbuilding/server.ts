@@ -435,19 +435,19 @@ const VIEWS_OF_A_WORLD = [
     BULK_JOBS_VIEW,
 ];
 
-const NO_WORLD_SHOWN = 'No world is shown.';
-const WORLD_GONE = 'That world no longer exists.';
-const NO_SUCH_KIND = 'This world has no such relation kind.';
-const BEING_MERGED = 'That kind is being merged, or another kind is being merged into it.';
-const NO_SUCH_ENTRY = "That entry isn't in this world.";
-const NO_ENTRY_OPEN = 'No entry is open.';
-const NO_CHARACTER_BOOK = 'This character has no lorebook of its own.';
-const NO_FILTER = 'Nothing is searched for.';
-const RESULTS_GONE = 'Those results are no longer shown.';
-const MENTIONS_GONE = 'Those mentions are no longer shown.';
-const NOT_SHOWN = "That world isn't shown.";
-const NOTHING_SELECTED_REFUSAL = 'Nothing is selected.';
-const TOO_MANY_PICKED = `At most ${PICKED_AT_MOST} entries are picked one at a time; select all matching instead.`;
+const NO_WORLD_SHOWN = 'No world open.';
+const WORLD_GONE = 'World not found.';
+const NO_SUCH_KIND = 'Relation type not found.';
+const BEING_MERGED = 'That relation type is being merged.';
+const NO_SUCH_ENTRY = 'Entry not found.';
+const NO_ENTRY_OPEN = 'No entry open.';
+const NO_CHARACTER_BOOK = 'This character has no lorebook.';
+const NO_FILTER = 'Nothing to search for.';
+const RESULTS_GONE = 'Results are out of date.';
+const MENTIONS_GONE = 'Mentions are out of date.';
+const NOT_SHOWN = 'That world isn’t open.';
+const NOTHING_SELECTED_REFUSAL = 'Nothing selected.';
+const TOO_MANY_PICKED = `Select up to ${PICKED_AT_MOST} entries one at a time, or use Select all.`;
 
 // Grouped by nothing, a top-level entry draws no region, so a page holds a read's worth of plain cards.
 const drawnLayout = ({ groupBy, layout }: Grouping & { layout: OverviewLayout }): OverviewLayout =>
@@ -596,8 +596,8 @@ const sameView = (one: SavedView, other: SavedView): boolean => JSON.stringify(o
 
 const NO_VIEWS: ViewsView = { book: null };
 const NO_AXES: AxesView = { book: null };
-const NOT_A_CELL = 'The shown view has no such cell.';
-const NO_DROP_HERE = 'That cell isn’t made by a relation to one entry, so a card can’t be dropped there.';
+const NOT_A_CELL = 'Cell not found.';
+const NO_DROP_HERE = 'Cards can only be dropped on a cell for a single entry.';
 
 const cellKey = (column: number | null, row: number | null) => `${column ?? '-'}:${row ?? '-'}`;
 
@@ -611,9 +611,9 @@ export const cellsOf = (columns: number, rows: number): { column: number | null;
 
 const directTarget = (item: AxisItem): string | null =>
     typeof item.is === 'object' && item.is.depth === 'directly' ? item.is.target : null;
-const NO_VIEW_SHOWN = 'No view is shown.';
-const NO_SUCH_VIEW = 'This world has no such view.';
-const NOT_THE_WORLDS_VIEW = 'This view is your own, so there is nothing of the world’s to go back to.';
+const NO_VIEW_SHOWN = 'No view open.';
+const NO_SUCH_VIEW = 'View not found.';
+const NOT_THE_WORLDS_VIEW = 'This view is your own; the world has no version to reset to.';
 const NEW_VIEW_NAME = 'New view';
 const RESULTS_PAGE_SIZE = 40;
 
@@ -1434,7 +1434,7 @@ export function worldbuildingArea(ports: Ports) {
                 const done = await ports.deleteRelationKind(who(context), book, kind);
                 if (done === 'missing') return { refused: WORLD_GONE };
                 if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
-                if (done === 'in use') return { refused: 'Relations of this kind still exist.' };
+                if (done === 'in use') return { refused: 'Relations of this type still exist.' };
                 if (done === 'being merged') return { refused: BEING_MERGED };
                 return { changed: [RELATION_KINDS_VIEW] };
             },
@@ -1442,7 +1442,7 @@ export function worldbuildingArea(ports: Ports) {
                 const done = await ports.mergeRelationKind(who(context), book, kind, into);
                 if (done === 'missing') return { refused: WORLD_GONE };
                 if (done === 'no kind') return { refused: NO_SUCH_KIND, changed: [RELATION_KINDS_VIEW] };
-                if (done === 'same kind') return { refused: 'A kind is merged into another kind.' };
+                if (done === 'same kind') return { refused: 'A relation type can’t be merged into itself.' };
                 if (done === 'being merged') return { refused: BEING_MERGED };
                 return {
                     changed: [RELATION_KINDS_VIEW, OVERVIEW_VIEW, RESULTS_VIEW, POINTING_AT_VIEW],
@@ -1478,7 +1478,7 @@ export function worldbuildingArea(ports: Ports) {
                 if (!stepFitsTheBudget(crossed, layout)) return { refused: READ_REFUSAL };
                 const { entry } = shown;
                 const landed = await ports.stepPointingAt(context.user, { book, entry, kind, layout, ...step });
-                if (!landed) return { refused: 'That is no longer shown.', changed: [POINTING_AT_VIEW] };
+                if (!landed) return { refused: 'That list is out of date.', changed: [POINTING_AT_VIEW] };
                 const held = heldRange(shown.pointingAt, kind);
                 const range = {
                     kind,
@@ -1566,7 +1566,7 @@ export function worldbuildingArea(ports: Ports) {
                 };
             },
             'worldbuilding.moveEntryToWorld': async (context, { book, entry, toBook }) => {
-                if (toBook === book) return { refused: 'The entry is in that world already.' };
+                if (toBook === book) return { refused: 'The entry is already in that world.' };
                 const moved = await ports.moveEntryToWorld(who(context), book, entry, toBook);
                 if (typeof moved === 'string' || 'refused' in moved) return refusedWrite(moved);
                 const lastChange = {
@@ -1596,7 +1596,7 @@ export function worldbuildingArea(ports: Ports) {
                 };
             },
             'worldbuilding.copyEntryToWorld': async (context, { book, entry, toBook }) => {
-                if (toBook === book) return { refused: 'The entry is in that world already.' };
+                if (toBook === book) return { refused: 'The entry is already in that world.' };
                 const copied = await ports.copyEntryToWorld(who(context), book, entry, toBook);
                 if (typeof copied === 'string' || 'refused' in copied) return refusedWrite(copied);
                 remember(context.session, {

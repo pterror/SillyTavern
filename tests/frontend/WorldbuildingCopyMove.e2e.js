@@ -80,7 +80,7 @@ test.describe('copying and moving entries between worlds', () => {
         const before = await counts(page);
         await card(page, 'Book 10').hover();
         await card(page, 'Book 10').locator('.wb-card-more').click();
-        await pane(page).getByRole('menuitem', { name: 'Copy to another world…' }).click();
+        await pane(page).getByRole('menuitem', { name: 'Copy to world…' }).click();
         await pane(page).getByRole('menuitem', { name: LIBRARY }).click();
         await expect.poll(async () => (await counts(page))[LIBRARY]).toBe(before[LIBRARY] + 1);
         expect((await counts(page))[SHELF]).toBe(before[SHELF]);
@@ -88,7 +88,7 @@ test.describe('copying and moving entries between worlds', () => {
 
         await card(page, 'Book 11').hover();
         await card(page, 'Book 11').locator('.wb-card-more').click();
-        await pane(page).getByRole('menuitem', { name: 'Move to another world…' }).click();
+        await pane(page).getByRole('menuitem', { name: 'Move to world…' }).click();
         await pane(page).getByRole('menuitem', { name: LIBRARY }).click();
         await expect(card(page, 'Book 11')).toHaveCount(0);
         await expect.poll(async () => counts(page)).toEqual({ ...before, [SHELF]: before[SHELF] - 1, [LIBRARY]: before[LIBRARY] + 2 });
@@ -109,7 +109,7 @@ test.describe('copying and moving entries between worlds', () => {
         const before = await counts(page);
         await card(page, 'Book 20').locator('.wb-card-open').click();
         await pane(page).locator('.wb-entry-more').click();
-        await pane(page).getByRole('menuitem', { name: 'Copy to another world…' }).click();
+        await pane(page).getByRole('menuitem', { name: 'Copy to world…' }).click();
         await pane(page).getByRole('menuitem', { name: LIBRARY }).click();
         await expect.poll(async () => (await counts(page))[LIBRARY]).toBe(before[LIBRARY] + 1);
         await expect(pane(page).locator('.wb-entry')).toBeVisible();
@@ -126,7 +126,7 @@ test.describe('copying and moving entries between worlds', () => {
         }
         const bar = pane(page).locator('.wb-bulk');
         await expect(bar).toContainText('3 selected');
-        await bar.getByRole('button', { name: 'Copy to another world…' }).click();
+        await bar.getByRole('button', { name: 'Copy to world…' }).click();
         await bar.getByRole('menuitem', { name: LIBRARY }).click();
         await expect.poll(async () => (await counts(page))[LIBRARY]).toBe(before[LIBRARY] + 3);
         expect((await counts(page))[SHELF]).toBe(before[SHELF]);
@@ -137,7 +137,7 @@ test.describe('copying and moving entries between worlds', () => {
         await expect(box(0)).toBeChecked();
         await box(0).click();
         await expect(box(0)).not.toBeChecked();
-        await bar.getByRole('button', { name: 'Move to another world…' }).click();
+        await bar.getByRole('button', { name: 'Move to world…' }).click();
         await bar.getByRole('menuitem', { name: LIBRARY }).click();
         await expect.poll(async () => counts(page), { timeout: 20000 }).toEqual({ ...before, [SHELF]: 1, [LIBRARY]: before[LIBRARY] + 3 + COUNT - 1 });
     });

@@ -184,7 +184,7 @@ test('the words that brought an entry in are marked where they were written; poi
         await expect(card).toBeVisible({ timeout: 5000 });
         await expect(card.locator('.wb-hover-name')).toHaveText('The lantern');
         await expect(card.locator('.wb-hover-text')).toHaveText('The lantern never goes out.');
-        await expect(card.locator('.wb-hover-why')).toHaveText('Brought up for the last reply by “lantern”');
+        await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “lantern” in the last reply');
         await page.mouse.move(0, 0);
         await expect(card).toBeHidden();
 

@@ -40,7 +40,7 @@ export function broughtUpSentence(
     const keys = card.broughtUpBy;
     if (keys === null || keys.length === 0) return null;
     const sentence =
-        reply === 'latest' ? t('Brought up for the last reply by ${0}') : t('Brought up for that reply by ${0}');
+        reply === 'latest' ? t('Activated by ${0} in the last reply') : t('Activated by ${0} in that reply');
     return fill(sentence, quotedList(keys, t('and')));
 }
 

@@ -38,7 +38,7 @@ export function RelationsLine(props: {
                 aria-expanded={adding()}
                 onClick={() => setAdding(!adding())}
             >
-                {t('+ relation')}
+                {t('+ Relation')}
             </button>
             <Show when={adding()}>
                 <NewRelation
@@ -127,8 +127,8 @@ function NewRelation(props: {
                     </For>
                     <input
                         class="text_pole margin0 wb-relpop-field"
-                        placeholder={t('other…')}
-                        aria-label={t('Another relation')}
+                        placeholder={t('New relation…')}
+                        aria-label={t('New relation')}
                         onKeyDown={(event) => {
                             const name = event.currentTarget.value.trim();
                             if (event.key !== 'Enter' || name === '') return;
@@ -141,8 +141,8 @@ function NewRelation(props: {
                 <input
                     ref={(element) => (target = element)}
                     class="text_pole margin0 wb-relpop-field wb-relpop-wide"
-                    placeholder={t('Which entry')}
-                    aria-label={t('Which entry')}
+                    placeholder={t('Search entries')}
+                    aria-label={t('Search entries')}
                     value={query()}
                     onInput={(event) => typed(event.currentTarget.value)}
                     onKeyDown={(event) => {

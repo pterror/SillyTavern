@@ -31,7 +31,7 @@ export function SearchBox(props: { typed: Typed; onType: (typed: Typed) => void 
                         {shown().label}
                         <button
                             type="button"
-                            aria-label={t('Search the whole world')}
+                            aria-label={t('Search world')}
                             onClick={(event) => {
                                 event.preventDefault();
                                 props.onType({ ...props.typed, scope: null });
@@ -43,8 +43,8 @@ export function SearchBox(props: { typed: Typed; onType: (typed: Typed) => void 
                 )}
             </Show>
             <input
-                aria-label={t('Search this world')}
-                placeholder={scope() ? fill(t('Search in ${0}'), scope()?.label ?? '') : t('Search this world')}
+                aria-label={t('Search world')}
+                placeholder={scope() ? fill(t('Search in ${0}'), scope()?.label ?? '') : t('Search world')}
                 value={props.typed.query}
                 onInput={(event) => props.onType({ ...props.typed, query: event.currentTarget.value })}
             />
@@ -95,7 +95,7 @@ export function Results(props: {
                 )}
             </Show>
             <Show when={entries().length === 0 && !more()}>
-                <p class="wb-quiet">{t('No entry matches.')}</p>
+                <p class="wb-quiet">{t('No matches.')}</p>
             </Show>
             <div ref={(element) => (end = element)} class="wb-results-end" aria-hidden="true" />
         </>

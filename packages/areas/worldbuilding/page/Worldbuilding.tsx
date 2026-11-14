@@ -406,9 +406,7 @@ function NoWorld(props: { shown: boolean }) {
     const { t } = useUi();
     return (
         <Show when={props.shown}>
-            <p class="wb-quiet wb-no-world">
-                {t('There is no world yet. Make one from the menu by the world’s name.')}
-            </p>
+            <p class="wb-quiet wb-no-world">{t('No worlds yet. Create one from the world menu.')}</p>
         </Show>
     );
 }

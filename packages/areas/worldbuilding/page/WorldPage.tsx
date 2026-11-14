@@ -66,7 +66,7 @@ export function WorldPage(props: {
                         <Show when={!ownBook()} fallback={<h1 class="wb-front-name">{props.world.name}</h1>}>
                             <Editable
                                 class="wb-front-name"
-                                label={t('The world’s name')}
+                                label={t('World name')}
                                 value={props.world.name}
                                 onSave={(name) => void wb.act('worldbuilding.renameWorld', { book: book(), name })}
                             >
@@ -82,16 +82,16 @@ export function WorldPage(props: {
                                     {(character) => (
                                         <>
                                             {' · '}
-                                            {t('came with the character')} <Name named={character()} />
+                                            {t('Lorebook of')} <Name named={character()} />
                                         </>
                                     )}
                                 </Show>
                                 <Show when={props.kinds.length > 0 && !props.viewed}>
                                     {' · '}
-                                    {t('Grouped by')}{' '}
+                                    {t('Group by')}{' '}
                                     <select
                                         class="wb-select"
-                                        aria-label={t('Grouped by')}
+                                        aria-label={t('Group by')}
                                         value={groupBy() ?? ''}
                                         onChange={(event) =>
                                             props.onGroupBy(
@@ -102,7 +102,7 @@ export function WorldPage(props: {
                                         <For each={props.kinds}>
                                             {(kind) => <option value={kind.id}>{kind.name}</option>}
                                         </For>
-                                        <option value="">{t('nothing')}</option>
+                                        <option value="">{t('None')}</option>
                                     </select>
                                 </Show>
                             </span>
@@ -118,7 +118,7 @@ export function WorldPage(props: {
                 <Editable
                     class="wb-front-desc"
                     multiline
-                    label={t('The world’s description')}
+                    label={t('World description')}
                     value={props.world.description}
                     onSave={(description) =>
                         void wb.act('worldbuilding.setWorldDescription', { book: book(), description })
@@ -140,20 +140,17 @@ export function WorldPage(props: {
                             fallback={
                                 <p>
                                     {offer().running === 'marking'
-                                        ? fill(t('Marking names… ${0} done.'), count(offer().marked))
-                                        : t('Taking the names back…')}
+                                        ? fill(t('Marking name keys… ${0} done'), count(offer().marked))
+                                        : t('Undoing…')}
                                 </p>
                             }
                         >
                             <p>
-                                {fill(
-                                    t('No names marked. In ${0} entries a key is the entry’s title'),
-                                    count(offer().entries),
-                                )}
+                                {fill(t('In ${0} entries, a key is the title'), count(offer().entries))}
                                 <Show when={offer().example}>
                                     {(example) => (
                                         <>
-                                            {t(', like ')}
+                                            {t(', e.g. ')}
                                             <b>{example().text}</b>
                                         </>
                                     )}
@@ -166,14 +163,14 @@ export function WorldPage(props: {
                                     class="menu_button menu_button_icon margin0 whitespacenowrap wb-btn"
                                     onClick={() => void wb.act('worldbuilding.markTitleKeysAsNames', { book: book() })}
                                 >
-                                    {t('Mark those keys as names')}
+                                    {t('Mark as name keys')}
                                 </button>
                                 <button
                                     type="button"
                                     class="menu_button menu_button_icon margin0 whitespacenowrap wb-btn"
                                     onClick={() => void wb.act('worldbuilding.declineNamesOffer', { book: book() })}
                                 >
-                                    {t('Leave it')}
+                                    {t('Dismiss')}
                                 </button>
                             </div>
                         </Show>
@@ -182,7 +179,7 @@ export function WorldPage(props: {
             </Show>
             <Show when={marked()}>
                 <div class="wb-offer">
-                    <p>{t('Those keys are marked as names.')}</p>
+                    <p>{t('Marked as name keys.')}</p>
                     <div class="wb-offer-acts">
                         <button
                             type="button"
@@ -275,7 +272,7 @@ export function WorldPage(props: {
             >
                 <div class="wb-tr wb-loadrow">
                     <span />
-                    <span class="wb-dim">{t('Loading as you scroll')}</span>
+                    <span class="wb-dim">{t('Loading…')}</span>
                 </div>
             </Show>
         </div>

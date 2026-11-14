@@ -192,7 +192,7 @@ function DeletedCard() {
             <span class="wb-card-open">
                 <span class="wb-card-pic" aria-hidden="true" />
                 <span class="wb-card-words">
-                    <span class="wb-card-name wb-opening">{t('A deleted entry')}</span>
+                    <span class="wb-card-name wb-opening">{t('Deleted entry')}</span>
                 </span>
             </span>
         </div>
@@ -220,7 +220,7 @@ export function Region(props: { cell: EntryCell; region: Membership; actions: Ca
         <section
             class="wb-region"
             classList={{ 'wb-card-menu-open': arrange.menu(), 'wb-card-off': props.cell.facts?.comesIn === 'never' }}
-            aria-label={fill(t('${0} and what is under it'), label())}
+            aria-label={fill(t('${0} and its contents'), label())}
             data-entry={props.cell.entry}
             {...REGION_ATTRIBUTES(props.cell.entry, label(), props.actions.grouping()?.kind ?? null)}
             ref={arrange.ref}

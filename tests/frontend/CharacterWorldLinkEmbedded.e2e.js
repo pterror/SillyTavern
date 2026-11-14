@@ -77,7 +77,7 @@ test.describe('a link to a name with no World file, on a card with an embedded l
 
             await page.locator('#char-management-dropdown').selectOption({ label: 'View/Edit Embedded Lore' });
             const front = page.locator('#Worldbuilding .wb-front');
-            await expect(front.locator('.wb-front-meta')).toContainText('came with the character');
+            await expect(front.locator('.wb-front-meta')).toContainText('Lorebook of');
             await expect(front.locator('.wb-front-meta')).toContainText('Link Keeper');
             await expect(front.locator('.wb-card').getByText('The lighthouse keeper is named Ida.')).toBeVisible();
             expect(requestedNames).not.toContain(linkName);

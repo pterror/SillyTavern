@@ -127,7 +127,7 @@ function CardMenu(props: {
                                             classList={{ 'wb-on': picking() === 'also' }}
                                             onClick={() => setPicking('also')}
                                         >
-                                            {t('Also put in…')}
+                                            {t('Add to…')}
                                         </button>
                                         <button
                                             class="list-group-item"
@@ -143,7 +143,7 @@ function CardMenu(props: {
                                                 )
                                             }
                                         >
-                                            {fill(t('Take out of ${0}'), region().label.text)}
+                                            {fill(t('Remove from ${0}'), region().label.text)}
                                         </button>
                                     </>
                                 )}
@@ -174,7 +174,7 @@ function CardMenu(props: {
                     classList={{ 'wb-on': picking() === 'copyToWorld' }}
                     onClick={() => setPicking('copyToWorld')}
                 >
-                    {t('Copy to another world…')}
+                    {t('Copy to world…')}
                 </button>
                 <button
                     class="list-group-item"
@@ -183,7 +183,7 @@ function CardMenu(props: {
                     classList={{ 'wb-on': picking() === 'moveToWorld' }}
                     onClick={() => setPicking('moveToWorld')}
                 >
-                    {t('Move to another world…')}
+                    {t('Move to world…')}
                 </button>
             </div>
             <Show when={picking() === 'copyToWorld' || picking() === 'moveToWorld' ? picking() : null} keyed>
@@ -213,10 +213,7 @@ function CardMenu(props: {
                 {(grouping) => (
                     <TargetPicker
                         class="wb-card-pick st-floating"
-                        heading={fill(
-                            picking() === 'move' ? t('Move ${0} to') : t('Also put ${0} in'),
-                            props.label.text,
-                        )}
+                        heading={fill(picking() === 'move' ? t('Move ${0} to') : t('Add ${0} to'), props.label.text)}
                         book={grouping.book}
                         kind={grouping.kind}
                         leaveOut={[props.entry, ...(props.region ? [props.region.entry] : [])]}

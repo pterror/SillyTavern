@@ -64,7 +64,7 @@ test.describe('the worlds page', () => {
         await expect(inn.locator('.wb-card', { hasText: 'Ilse Varro' })).toBeVisible();
         await expect(town.locator('.wb-card', { hasText: 'The Tidegate' })).toBeVisible();
 
-        await pane(page).getByLabel('Grouped by').selectOption({ label: 'nothing' });
+        await pane(page).getByLabel('Group by').selectOption({ label: 'None' });
         await expect(pane(page).locator('.wb-region')).toHaveCount(0);
         await expect(pane(page).locator('.wb-card')).toHaveCount(4);
         await deleteWorld(page, name);
@@ -74,7 +74,7 @@ test.describe('the worlds page', () => {
         const name = unique('Text');
         await openCoast(page, name);
         await openEntry(page, 'The Tidegate');
-        await pane(page).getByRole('textbox', { name: 'The entry’s text' }).click();
+        await pane(page).getByRole('textbox', { name: 'Content' }).click();
         const editor = pane(page).locator('.cm-content');
         await editor.click();
         await page.keyboard.press('Control+End');
@@ -97,20 +97,20 @@ test.describe('the worlds page', () => {
         await openCoast(page, name);
         await openEntry(page, 'Ilse Varro');
         const keys = pane(page).locator('.wb-keys');
-        await keys.locator('.wb-key-add', { hasText: 'name' }).click();
+        await keys.locator('.wb-key-add', { hasText: 'Name' }).click();
         await page.keyboard.type('Ilse');
         await page.keyboard.press('Enter');
-        await expect(keys.getByLabel('“Ilse”, a name')).toBeVisible();
-        await keys.locator('.wb-key-add', { hasText: 'trigger' }).click();
+        await expect(keys.getByLabel('“Ilse”, name')).toBeVisible();
+        await keys.locator('.wb-key-add', { hasText: 'Key' }).click();
         await page.keyboard.type('the innkeeper');
         await page.keyboard.press('Enter');
-        await expect(keys.getByLabel('“the innkeeper”, a trigger')).toBeVisible();
+        await expect(keys.getByLabel('“the innkeeper”, key')).toBeVisible();
 
-        await keys.getByLabel('“ledger”, a trigger').click();
-        await pane(page).getByRole('dialog', { name: 'Key “ledger”' }).getByRole('button', { name: 'A name' }).click();
-        await expect(keys.getByLabel('“ledger”, a name')).toBeVisible();
+        await keys.getByLabel('“ledger”, key').click();
+        await pane(page).getByRole('dialog', { name: 'Key “ledger”' }).getByRole('button', { name: 'Name' }).click();
+        await expect(keys.getByLabel('“ledger”, name')).toBeVisible();
         await pane(page).getByRole('dialog', { name: 'Key “ledger”' }).getByRole('button', { name: 'Remove' }).click();
-        await expect(keys.getByLabel('“ledger”, a name')).toHaveCount(0);
+        await expect(keys.getByLabel('“ledger”, name')).toHaveCount(0);
         await deleteWorld(page, name);
     });
 
@@ -121,7 +121,7 @@ test.describe('the worlds page', () => {
         await pane(page).locator('.wb-rels-add').click();
         const asked = pane(page).getByRole('dialog', { name: 'New relation' });
         await asked.getByRole('tab', { name: 'in', exact: true }).click();
-        await asked.getByLabel('Which entry').fill('Lantern');
+        await asked.getByLabel('Search entries').fill('Lantern');
         await asked.getByRole('option', { name: /The Lantern House/ }).click();
         await expect(pane(page).locator('.wb-rels')).toContainText('in:The Lantern House');
         await pane(page).locator('.wb-rel-target', { hasText: 'The Lantern House' }).click();
@@ -134,8 +134,8 @@ test.describe('the worlds page', () => {
         const name = unique('New');
         await openCoast(page, name);
         await pane(page).getByRole('button', { name: 'New entry' }).click();
-        await expect(pane(page).locator('.wb-entry .wb-entry-name')).toContainText('Add a title');
-        await pane(page).getByRole('button', { name: 'The entry’s title' }).click();
+        await expect(pane(page).locator('.wb-entry .wb-entry-name')).toContainText('Title');
+        await pane(page).getByRole('button', { name: 'Title' }).click();
         await page.keyboard.type('Season of fog');
         await page.keyboard.press('Enter');
         await expect(pane(page).locator('.wb-entry .wb-entry-name')).toContainText('Season of fog');
@@ -164,18 +164,18 @@ test.describe('the worlds page', () => {
         await deleteWorld(page, name);
     });
 
-    test('where an entry goes in the prompt is changed from its "In the prompt" sentence', async ({ page }) => {
+    test('where an entry goes in the prompt is changed from its "Entry settings" sentence', async ({ page }) => {
         const name = unique('Prompt');
         await openCoast(page, name);
         await openEntry(page, 'Ilse Varro');
-        const button = pane(page).getByRole('button', { name: 'In the prompt' });
+        const button = pane(page).getByRole('button', { name: 'Entry settings' });
         await expect(button.locator('.wb-dot')).toHaveCount(0);
         await button.click();
-        const sentence = pane(page).getByRole('dialog', { name: 'In the prompt' });
+        const sentence = pane(page).getByRole('dialog', { name: 'Entry settings' });
         await expect(sentence).toContainText('tokens');
-        await sentence.getByRole('button', { name: 'before the character’s description' }).click();
-        await sentence.getByRole('option', { name: 'after the character’s description' }).click();
-        await expect(sentence).toContainText('Goes after the character’s description');
+        await sentence.getByRole('button', { name: 'Before character' }).click();
+        await sentence.getByRole('option', { name: 'After character' }).click();
+        await expect(sentence).toContainText('Position: After character');
         await page.keyboard.press('Escape');
         await expect(button.locator('.wb-dot')).toHaveCount(1);
         const stored = await page.evaluate(async (name) => {
@@ -195,14 +195,14 @@ test.describe('the worlds page', () => {
         });
         await openWorld(page, name);
         const offer = pane(page).locator('.wb-offer');
-        await expect(offer).toContainText('No names marked. In 2 entries a key is the entry’s title');
-        await offer.getByRole('button', { name: 'Mark those keys as names' }).click();
-        await expect(offer).toContainText('Those keys are marked as names.');
+        await expect(offer).toContainText('In 2 entries, a key is the title');
+        await offer.getByRole('button', { name: 'Mark as name keys' }).click();
+        await expect(offer).toContainText('Marked as name keys.');
         await openEntry(page, 'Rhea');
-        await expect(pane(page).locator('.wb-keys').getByLabel('“Rhea”, a name')).toBeVisible();
+        await expect(pane(page).locator('.wb-keys').getByLabel('“Rhea”, name')).toBeVisible();
         await pane(page).locator('.wb-rels-world').click();
         await pane(page).locator('.wb-offer').getByRole('button', { name: 'Undo' }).click();
-        await expect(pane(page).locator('.wb-offer')).toContainText('No names marked.');
+        await expect(pane(page).locator('.wb-offer')).toContainText('a key is the title');
         await deleteWorld(page, name);
     });
 
@@ -219,7 +219,7 @@ test.describe('the worlds page', () => {
 
         await pane(page).getByRole('button', { name: 'Switch world' }).click();
         const chooser = page.waitForEvent('filechooser');
-        await pane(page).getByRole('menuitem', { name: 'Import a world…' }).click();
+        await pane(page).getByRole('menuitem', { name: 'Import world…' }).click();
         await (await chooser).setFiles({ name: `${imported}.json`, mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ entries: { 0: entry(0, 'Brother Hallam', ['Hallam'], 'A priest.') } })) });
         await expect(pane(page).locator('h1.wb-front-name')).toHaveText(imported);
         await expect(pane(page).locator('.wb-card', { hasText: 'Brother Hallam' })).toBeVisible();

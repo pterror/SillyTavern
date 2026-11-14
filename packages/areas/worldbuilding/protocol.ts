@@ -581,14 +581,14 @@ const layout = v.object({
 const rangeFields = { firstRank: topLevelRank, endRank: topLevelRank };
 type Range = { firstRank: number; endRank: number };
 const rangeRunsForward = <T extends Range>(range: T) => range.endRank >= range.firstRank;
-const RANGE_REFUSAL = 'A range runs from a rank to a later one.';
-export const READ_REFUSAL = `A read draws at most ${MAX_CARDS_PER_READ} cards: fewer top-level entries, levels, columns or rows.`;
+const RANGE_REFUSAL = 'The range must end after it starts.';
+export const READ_REFUSAL = `Too many cards (max ${MAX_CARDS_PER_READ}). Show fewer entries, levels, columns or rows.`;
 
 const betweenMembers = { after: v.nullable(entityId), before: v.nullable(entityId) };
 const relationNamed = { book: entityId, entry: entityId, kind: kindId, target: entityId };
 
 const entryNamed = { book: entityId, entry: entityId };
-const worldName = v.pipe(v.string(), v.trim(), v.minLength(1, 'A world needs a name.'));
+const worldName = v.pipe(v.string(), v.trim(), v.minLength(1, 'Enter a world name.'));
 const fitsOneEntry = <T extends { layout: OverviewLayout }>(read: T) => readFitsTheBudget(1, read.layout);
 // `ahead`: how many top-level entries the page wants read to begin with, as many as fill some screens of it.
 const shownOverview = v.pipe(v.object({ layout, ahead: positiveWholeNumber }), v.check(fitsOneEntry, READ_REFUSAL));
@@ -619,7 +619,7 @@ const cellAt = v.object({
     row: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(0))),
 });
 const viewId = v.pipe(v.string(), v.regex(/^[a-z0-9-]{1,40}$/));
-const viewName = v.pipe(v.string(), v.trim(), v.minLength(1, 'A view needs a name.'), v.maxLength(80));
+const viewName = v.pipe(v.string(), v.trim(), v.minLength(1, 'Enter a view name.'), v.maxLength(80));
 const viewChangeFields = v.partial(
     v.strictObject({
         groupBy: v.nullable(kindId),
@@ -633,11 +633,11 @@ const viewChangeFields = v.partial(
 export type ViewChange = v.InferOutput<typeof viewChangeFields>;
 const viewChange = v.pipe(
     viewChangeFields,
-    v.check((fields: ViewChange) => Object.keys(fields).length > 0, 'Name at least one setting.'),
+    v.check((fields: ViewChange) => Object.keys(fields).length > 0, 'Nothing to change.'),
 );
 const placementChange = v.pipe(
     v.partial(v.omit(v.strictObject(placementFields), ['characterFilter'])),
-    v.check((fields: object) => Object.keys(fields).length > 0, 'Name at least one field.'),
+    v.check((fields: object) => Object.keys(fields).length > 0, 'Nothing to change.'),
 );
 const relationTo = v.object({ kind: kindId, target: entityId });
 const filterKey = v.pipe(v.string(), v.minLength(1), v.maxLength(512));
@@ -666,7 +666,7 @@ export const actions = {
         v.check(
             <T extends { book: string | null; groupBy?: string | null | undefined; around: string | null }>(open: T) =>
                 open.book !== null || ((open.groupBy ?? null) === null && open.around === null),
-            "A world's kinds and occurrences are named only with the world.",
+            'Open a world first.',
         ),
     ),
     // Reads the top-level entries up to `to` as well, keeping every one read; asking twice reads them once.

@@ -58,22 +58,22 @@ test.describe('a world\'s views', () => {
         await expect(region(page, 'Ilse Varro').locator('.wb-card', { hasText: 'Harbormaster Quell' })).toBeVisible();
 
         await tab(page, 'Places').click();
-        await pane(page).getByLabel('Inside, grouped by').selectOption({ label: 'owes' });
+        await pane(page).getByLabel('Group by').selectOption({ label: 'owes' });
         await expect(tab(page, 'Places').locator('.wb-vdot')).toBeVisible();
         await expect(region(page, 'Ilse Varro')).toBeVisible();
         await pane(page).getByRole('button', { name: 'Discard' }).click();
         await expect(tab(page, 'Places').locator('.wb-vdot')).toHaveCount(0);
         await expect(region(page, 'Saltmarrow')).toBeVisible();
 
-        await pane(page).getByLabel('Inside, grouped by').selectOption({ label: 'owes' });
+        await pane(page).getByLabel('Group by').selectOption({ label: 'owes' });
         await pane(page).getByRole('button', { name: 'Save' }).click();
         await expect(tab(page, 'Places').locator('.wb-vdot')).toHaveCount(0);
         await tab(page, 'Debts').click();
         await tab(page, 'Places').click();
-        await expect(pane(page).getByLabel('Inside, grouped by')).toHaveValue('2');
+        await expect(pane(page).getByLabel('Group by')).toHaveValue('2');
 
-        await pane(page).getByRole('button', { name: 'Reset to the world’s' }).click();
-        await expect(pane(page).getByLabel('Inside, grouped by')).toHaveValue('1');
+        await pane(page).getByRole('button', { name: 'Reset to world version' }).click();
+        await expect(pane(page).getByLabel('Group by')).toHaveValue('1');
         await expect(region(page, 'Saltmarrow')).toBeVisible();
 
         await pane(page).getByRole('button', { name: '+ View' }).click();
@@ -89,7 +89,7 @@ test.describe('a world\'s views', () => {
         await expect(row(page, 'Season of fog')).toBeVisible();
 
         await row(page, 'Season of fog').locator('.wb-cell').nth(1).click();
-        await row(page, 'Season of fog').getByLabel('Goes').selectOption({ label: 'Into the chat' });
+        await row(page, 'Season of fog').getByLabel('Position').selectOption({ label: 'At depth' });
         await expect(row(page, 'Season of fog')).toContainText('Into the chat, 4 up');
 
         const box = async (/** @type {string} */ title) => {
@@ -110,7 +110,7 @@ test.describe('a world\'s views', () => {
         await pane(page).getByRole('checkbox', { name: 'Select all matching' }).click();
         await expect(pane(page).locator('.wb-bulk')).toContainText('All 5 matching');
         await row(page, 'Season of fog').locator('.wb-cb').click();
-        await expect(pane(page).locator('.wb-bulk')).toContainText('All 5 matching, except 1');
+        await expect(pane(page).locator('.wb-bulk')).toContainText('All 5 matching except 1');
         await pane(page).locator('.wb-bulk').getByRole('button', { name: 'Set ▾' }).click();
         await pane(page).locator('.wb-bulk-menu').getByRole('menuitem', { name: 'Always' }).click();
         await expect(row(page, 'Saltmarrow')).toContainText('Always');

@@ -10,13 +10,13 @@ import { count, fill } from './words.ts';
 
 // Where an entry goes, in the order the sentence offers them, with upstream's `position` for each.
 export const WHERES: { position: Placement['position']; words: string }[] = [
-    { position: 0, words: 'before the character’s description' },
-    { position: 1, words: 'after the character’s description' },
-    { position: 5, words: 'before the example messages' },
-    { position: 6, words: 'after the example messages' },
-    { position: 2, words: 'at the top of the author’s note' },
-    { position: 3, words: 'at the bottom of the author’s note' },
-    { position: 4, words: 'into the chat' },
+    { position: 0, words: 'Before character' },
+    { position: 1, words: 'After character' },
+    { position: 5, words: 'Before examples' },
+    { position: 6, words: 'After examples' },
+    { position: 2, words: 'Top of Author’s Note' },
+    { position: 3, words: 'Bottom of Author’s Note' },
+    { position: 4, words: 'At depth' },
 ];
 const OUTLET: Placement['position'] = 7;
 const IN_CHAT: Placement['position'] = 4;
@@ -29,22 +29,22 @@ export const comesOf = (placement: Pick<Placement, 'constant' | 'disable' | 'vec
 const COMES: { comes: Comes; words: string; change: Partial<Placement> }[] = [
     {
         comes: 'brought up',
-        words: 'when it’s brought up',
+        words: 'Normal',
         change: { constant: false, vectorized: false, disable: false },
     },
-    { comes: 'always', words: 'always', change: { constant: true, vectorized: false, disable: false } },
+    { comes: 'always', words: 'Constant', change: { constant: true, vectorized: false, disable: false } },
     {
         comes: 'found',
-        words: 'when a vector search finds it',
+        words: 'Vectorized',
         change: { constant: false, vectorized: true, disable: false },
     },
-    { comes: 'never', words: 'never', change: { disable: true } },
+    { comes: 'never', words: 'Disabled', change: { disable: true } },
 ];
 
 const ROLES: { value: Placement['role']; words: string }[] = [
-    { value: 0, words: 'the system' },
-    { value: 1, words: 'the user' },
-    { value: 2, words: 'the assistant' },
+    { value: 0, words: 'System' },
+    { value: 1, words: 'User' },
+    { value: 2, words: 'Assistant' },
 ];
 
 // Upstream's `selectiveLogic`: 0 AND ANY, 1 NOT ALL, 2 NOT ANY, 3 AND ALL.
@@ -56,21 +56,21 @@ export const LOGICS: { value: Placement['selectiveLogic']; words: string }[] = [
 ];
 
 const TRIGGER_WORDS: Record<Placement['triggers'][number], string> = {
-    normal: 'new replies',
-    continue: 'continuing',
-    impersonate: 'impersonating',
-    swipe: 'swipes',
-    regenerate: 'regenerating',
-    quiet: 'quiet prompts',
+    normal: 'Normal',
+    continue: 'Continue',
+    impersonate: 'Impersonate',
+    swipe: 'Swipe',
+    regenerate: 'Regenerate',
+    quiet: 'Quiet',
 };
 
 const SOURCES = [
-    { field: 'matchPersonaDescription', words: 'the persona’s description' },
-    { field: 'matchCharacterDescription', words: 'the character’s description' },
-    { field: 'matchCharacterPersonality', words: 'the character’s personality' },
-    { field: 'matchCharacterDepthPrompt', words: 'the character’s note' },
-    { field: 'matchScenario', words: 'the scenario' },
-    { field: 'matchCreatorNotes', words: 'the creator’s notes' },
+    { field: 'matchPersonaDescription', words: 'Persona description' },
+    { field: 'matchCharacterDescription', words: 'Character description' },
+    { field: 'matchCharacterPersonality', words: 'Character personality' },
+    { field: 'matchCharacterDepthPrompt', words: 'Character’s note' },
+    { field: 'matchScenario', words: 'Scenario' },
+    { field: 'matchCreatorNotes', words: 'Creator’s notes' },
 ] as const;
 
 type Source = (typeof SOURCES)[number]['field'];
@@ -88,7 +88,7 @@ type ChoiceField = 'caseSensitive' | 'matchWholeWords' | 'useGroupScoring';
 type Extra =
     | { kind: 'number'; field: NumberField; offer: string; before: string; after: string }
     | { kind: 'text'; field: TextField; offer: string; before: string; after: string }
-    | { kind: 'flag'; field: FlagField; offer: string; words: string }
+    | { kind: 'flag'; field: FlagField; offer: string; words: string; tip: string }
     | {
           kind: 'choice';
           field: ChoiceField;
@@ -107,122 +107,126 @@ const EXTRAS: Extra[] = [
     {
         kind: 'number',
         field: 'sticky',
-        offer: 'Stays for some replies after coming up',
-        before: 'Stays for ',
-        after: ' replies after coming up.',
+        offer: 'Sticky',
+        before: 'Sticky: ',
+        after: ' replies',
     },
     {
         kind: 'number',
         field: 'cooldown',
-        offer: 'Waits some replies before coming up again',
-        before: 'Waits ',
-        after: ' replies before coming up again.',
+        offer: 'Cooldown',
+        before: 'Cooldown: ',
+        after: ' replies',
     },
     {
         kind: 'number',
         field: 'delay',
-        offer: 'Only after the chat has some messages',
-        before: 'Only after the chat has ',
-        after: ' messages.',
+        offer: 'Delay',
+        before: 'Delay: ',
+        after: ' messages',
     },
     {
         kind: 'text',
         field: 'keysecondary',
-        offer: 'Needs other words written too',
-        before: ' these words written too: ',
-        after: '.',
+        offer: 'Secondary keys',
+        before: ' ',
+        after: '',
     },
     {
         kind: 'text',
         field: 'group',
-        offer: 'Only one of a group comes in',
-        before: 'Only one of the group ',
-        after: ' comes in.',
+        offer: 'Inclusion group',
+        before: 'Inclusion group: ',
+        after: '',
     },
     {
         kind: 'number',
         field: 'groupWeight',
-        offer: 'Is more or less likely to be its group’s pick',
-        before: 'Counts ',
-        after: ' times when its group is picked by chance.',
+        offer: 'Group weight',
+        before: 'Group weight: ',
+        after: '',
     },
     {
         kind: 'flag',
         field: 'groupOverride',
-        offer: 'Wins its group by order',
-        words: 'Wins its group when its order is highest.',
+        offer: 'Prioritize',
+        words: 'Prioritize',
+        tip: 'Wins its inclusion group when its order is highest.',
     },
     {
         kind: 'choice',
         field: 'useGroupScoring',
-        offer: 'Its group picks by matching keys or by chance',
-        before: 'Its group picks ',
-        after: '.',
+        offer: 'Group scoring',
+        before: 'Group scoring: ',
+        after: '',
         options: [
-            { value: true, words: 'the entry matching the most keys' },
-            { value: false, words: 'by chance' },
+            { value: true, words: 'Most key matches' },
+            { value: false, words: 'Random' },
         ],
     },
     {
         kind: 'number',
         field: 'scanDepth',
-        offer: 'Looks further back in the chat for its keys',
-        before: 'Looks ',
-        after: ' messages back in the chat for its keys.',
+        offer: 'Scan depth',
+        before: 'Scan depth: ',
+        after: ' messages',
     },
     {
         kind: 'choice',
         field: 'caseSensitive',
-        offer: 'Matches its keys’ case or not',
-        before: 'Its keys match ',
-        after: '.',
+        offer: 'Case-sensitive',
+        before: 'Case-sensitive: ',
+        after: '',
         options: [
-            { value: true, words: 'only the same case' },
-            { value: false, words: 'any case' },
+            { value: true, words: 'Yes' },
+            { value: false, words: 'No' },
         ],
     },
     {
         kind: 'choice',
         field: 'matchWholeWords',
-        offer: 'Matches whole words or inside words',
-        before: 'Its keys match ',
-        after: '.',
+        offer: 'Match whole words',
+        before: 'Match whole words: ',
+        after: '',
         options: [
-            { value: true, words: 'only whole words' },
-            { value: false, words: 'inside words too' },
+            { value: true, words: 'Yes' },
+            { value: false, words: 'No' },
         ],
     },
-    { kind: 'sources', field: 'sources', offer: 'Looks for its keys outside the chat too' },
-    { kind: 'triggers', field: 'triggers', offer: 'Comes in only for some kinds of reply' },
+    { kind: 'sources', field: 'sources', offer: 'Additional matching sources' },
+    { kind: 'triggers', field: 'triggers', offer: 'Generation triggers' },
     {
         kind: 'flag',
         field: 'excludeRecursion',
-        offer: 'Isn’t brought up by other entries’ text',
-        words: 'Other entries’ text doesn’t bring it up.',
+        offer: 'Non-recursable',
+        words: 'Non-recursable',
+        tip: 'Other entries’ text can’t activate this entry.',
     },
     {
         kind: 'flag',
         field: 'preventRecursion',
-        offer: 'Its text doesn’t bring up other entries',
-        words: 'Its text doesn’t bring up other entries.',
+        offer: 'Prevent further recursion',
+        words: 'Prevent further recursion',
+        tip: 'This entry’s text can’t activate other entries.',
     },
     {
         kind: 'recursionLevel',
         field: 'delayUntilRecursion',
-        offer: 'Comes in only when other entries’ text brings it up',
+        offer: 'Delay until recursion',
     },
     {
         kind: 'flag',
         field: 'ignoreBudget',
-        offer: 'Comes in even when the budget is full',
-        words: 'Comes in even when the budget is full.',
+        offer: 'Ignore budget',
+        words: 'Ignore budget',
+        tip: 'Included even when the budget is full.',
     },
     {
         kind: 'text',
         field: 'automationId',
-        offer: 'Runs an automation when it comes in',
-        before: 'Runs the automation ',
-        after: ' when it comes in.',
+        offer: 'Automation ID',
+        before: 'Automation ID: ',
+        after: '',
     },
 ];
 
@@ -388,7 +392,7 @@ function Choices<T>(props: {
     );
 }
 
-const CHARACTERS_OFFER = 'Only for some characters';
+const CHARACTERS_OFFER = 'Character filter';
 
 type Change = Partial<Omit<Placement, 'characterFilter'>>;
 
@@ -448,7 +452,7 @@ function ExtraSentence(props: {
         props.onSet(extraCleared(props.extra));
     };
     const level = () => (typeof p().delayUntilRecursion === 'number' ? String(p().delayUntilRecursion) : '');
-    const RemoveIt = () => <Remove label={fill(t('Take away: ${0}'), t(props.extra.offer))} onRemove={remove} />;
+    const RemoveIt = () => <Remove label={fill(t('Remove ${0}'), t(props.extra.offer))} onRemove={remove} />;
     const kinded = <K extends Extra['kind']>(kind: K) =>
         props.extra.kind === kind ? (props.extra as Extract<Extra, { kind: K }>) : false;
     const typed = () =>
@@ -461,7 +465,7 @@ function ExtraSentence(props: {
                 {(extra) => (
                     <p>
                         <Show when={extra().field === 'keysecondary'}>
-                            {t('Also needs ')}
+                            {t('Secondary keys: ')}
                             <LogicToken placement={p()} onSet={props.onSet} />
                         </Show>
                         {t(extra().before)}
@@ -485,7 +489,7 @@ function ExtraSentence(props: {
             <Match when={kinded('flag')}>
                 {(extra) => (
                     <p>
-                        {t(extra().words)}
+                        <span title={t(extra().tip)}>{t(extra().words)}</span>
                         <RemoveIt />
                     </p>
                 )}
@@ -516,11 +520,11 @@ function ExtraSentence(props: {
             </Match>
             <Match when={kinded('recursionLevel')}>
                 <p>
-                    {t('Comes in only when other entries’ text brings it up, from step ')}
+                    {t('Delay until recursion, level ')}
                     <Token
                         shown={level() === '' ? t('any') : level()}
                         value={level()}
-                        label={t('From which step of bringing up')}
+                        label={t('Recursion level')}
                         onSet={(typedWords) => {
                             const text = typedWords.trim();
                             const n = Number(text);
@@ -528,14 +532,13 @@ function ExtraSentence(props: {
                             else if (Number.isInteger(n) && n >= 1) props.onSet({ delayUntilRecursion: n });
                         }}
                     />
-                    .
                     <RemoveIt />
                 </p>
             </Match>
             <Match when={kinded('triggers')}>
                 {(extra) => (
                     <p>
-                        {t('Comes in only for ')}
+                        {t('Generation triggers: ')}
                         <button type="button" class="wb-tok" aria-expanded={open()} onClick={() => setOpen(!open())}>
                             {p().triggers.length === 0
                                 ? t('…')
@@ -543,7 +546,6 @@ function ExtraSentence(props: {
                                       .triggers.map((one) => t(TRIGGER_WORDS[one]))
                                       .join(', ')}
                         </button>
-                        .
                         <RemoveIt />
                         <Show when={open()}>
                             <Several
@@ -566,7 +568,7 @@ function ExtraSentence(props: {
             <Match when={kinded('sources')}>
                 {(extra) => (
                     <p>
-                        {t('Also looks for its keys in ')}
+                        {t('Additional matching sources: ')}
                         <button type="button" class="wb-tok" aria-expanded={open()} onClick={() => setOpen(!open())}>
                             {sourcesOf(p()).length === 0
                                 ? t('…')
@@ -574,7 +576,6 @@ function ExtraSentence(props: {
                                       .map((source) => t(source.words))
                                       .join(', ')}
                         </button>
-                        .
                         <RemoveIt />
                         <Show when={open()}>
                             <Several
@@ -604,7 +605,7 @@ function LogicToken(props: { placement: Placement; onSet: (change: Change) => vo
             </button>
             <Show when={open()}>
                 <Choices
-                    label={t('How many of these words')}
+                    label={t('Secondary key logic')}
                     items={LOGICS}
                     chosen={props.placement.selectiveLogic}
                     onPick={(value) => {
@@ -635,7 +636,7 @@ export function PlacementPopover(props: {
     dismissOn(() => box, props.onClose, props.opener);
     const p = () => props.placement;
     const chance = () => chanceOf(p());
-    const wheres = () => [...WHERES, { position: OUTLET, words: 'into an outlet' }];
+    const wheres = () => [...WHERES, { position: OUTLET, words: 'Outlet' }];
     const whereWords = () => t(wheres().find((where) => where.position === p().position)?.words ?? '');
     const toggle = (which: 'comes' | 'where' | 'role' | 'more') => setList(list() === which ? null : which);
     const shownExtras = () => EXTRAS.filter((extra) => extraValue(p(), extra) !== null || adding() === extra.field);
@@ -647,16 +648,16 @@ export function PlacementPopover(props: {
         else setAdding(extra.field);
     };
     return (
-        <div class="wb-place" role="dialog" aria-label={t('In the prompt')} ref={(element) => (box = element)}>
+        <div class="wb-place" role="dialog" aria-label={t('Entry settings')} ref={(element) => (box = element)}>
             <div class="wb-place-head">
-                <b>{t('In the prompt')}</b>
+                <b>{t('Entry settings')}</b>
                 <Show when={props.tokens !== null}>
                     <span>{fill(t('${0} tokens'), count(props.tokens ?? 0))}</span>
                 </Show>
             </div>
             <div class="wb-place-body">
                 <p>
-                    {t('Comes in ')}
+                    {t('Status: ')}
                     <button
                         type="button"
                         class="wb-tok"
@@ -667,19 +668,20 @@ export function PlacementPopover(props: {
                     </button>
                     {', '}
                     <Token
-                        shown={chance() >= 100 ? t('every time') : fill(t('${0}% of the time'), String(chance()))}
+                        shown={
+                            chance() >= 100 ? t('Probability: 100%') : fill(t('Probability: ${0}%'), String(chance()))
+                        }
                         value={String(chance())}
-                        label={t('How often, in percent')}
+                        label={t('Probability (%)')}
                         onSet={(typed) => {
                             const n = Number(typed);
                             if (!Number.isFinite(n) || n < 0 || n > 100) return;
                             props.onSet({ probability: n, useProbability: n < 100 });
                         }}
                     />
-                    .
                     <Show when={list() === 'comes'}>
                         <Choices
-                            label={t('When it comes in')}
+                            label={t('Status')}
                             items={COMES.map((item) => ({ value: item.comes, words: item.words }))}
                             chosen={comesOf(p())}
                             onPick={(comes) => {
@@ -690,7 +692,7 @@ export function PlacementPopover(props: {
                     </Show>
                 </p>
                 <p>
-                    {t('Goes ')}
+                    {t('Position: ')}
                     <button
                         type="button"
                         class="wb-tok"
@@ -702,25 +704,25 @@ export function PlacementPopover(props: {
                     <Show when={p().position === OUTLET}>
                         {' '}
                         <Token
-                            shown={p().outletName.trim() === '' ? t('(no name)') : `“${p().outletName}”`}
+                            shown={p().outletName.trim() === '' ? t('Outlet name') : `“${p().outletName}”`}
                             value={p().outletName}
-                            label={t('The outlet’s name')}
+                            label={t('Outlet name')}
                             wide
                             onSet={(typed) => props.onSet({ outletName: typed.trim() })}
                         />
                     </Show>
                     <Show when={p().position === IN_CHAT}>
-                        {', '}
+                        {' '}
                         <Token
                             shown={String(p().depth)}
                             value={String(p().depth)}
-                            label={t('How many messages up')}
+                            label={t('Depth')}
                             onSet={(typed) => {
                                 const n = Number(typed);
                                 if (Number.isInteger(n) && n >= 0) props.onSet({ depth: n });
                             }}
                         />
-                        {t(' messages up, as ')}
+                        {t(' as ')}
                         <button
                             type="button"
                             class="wb-tok"
@@ -730,10 +732,9 @@ export function PlacementPopover(props: {
                             {t(ROLES.find((role) => role.value === p().role)?.words ?? '')}
                         </button>
                     </Show>
-                    .
                     <Show when={list() === 'where'}>
                         <Choices
-                            label={t('Where it goes')}
+                            label={t('Position')}
                             items={wheres().map((where) => ({ value: where.position, words: where.words }))}
                             chosen={p().position}
                             onPick={(position) => {
@@ -744,7 +745,7 @@ export function PlacementPopover(props: {
                     </Show>
                     <Show when={list() === 'role'}>
                         <Choices
-                            label={t('Whose message it is')}
+                            label={t('Role')}
                             items={ROLES}
                             chosen={p().role}
                             onPick={(role) => {
@@ -755,11 +756,11 @@ export function PlacementPopover(props: {
                     </Show>
                 </p>
                 <p>
-                    {t('Order among entries in the same place: ')}
+                    {t('Order: ')}
                     <Token
                         shown={String(p().order)}
                         value={String(p().order)}
-                        label={t('Order among entries in the same place')}
+                        label={t('Order')}
                         onSet={(typed) => {
                             const n = Number(typed);
                             if (Number.isFinite(n)) props.onSet({ order: n });

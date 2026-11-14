@@ -83,7 +83,7 @@ export function EntryPage(props: {
                 <button
                     type="button"
                     class="right_menu_button interactable wb-icon-button wb-phone-back"
-                    aria-label={t('Back to the world')}
+                    aria-label={t('Back to world')}
                     onClick={() => props.onWorld()}
                 >
                     <Icon name="back" />
@@ -116,7 +116,7 @@ export function EntryPage(props: {
                     <div class="wb-entry-title">
                         <Editable
                             class="wb-entry-name"
-                            label={t('The entry’s title')}
+                            label={t('Title')}
                             value={props.entry.title ?? ''}
                             onSave={(title) => void wb.act('worldbuilding.setEntryTitle', { ...at(), title })}
                         >
@@ -128,7 +128,7 @@ export function EntryPage(props: {
                                     <span>{props.entry.label.text}</span>
                                 </Match>
                                 <Match when={props.entry.label.shownAs === 'opening'}>
-                                    <span class="wb-ghost">{t('Add a title')}</span>
+                                    <span class="wb-ghost">{t('Title')}</span>
                                 </Match>
                             </Switch>
                         </Editable>
@@ -136,8 +136,8 @@ export function EntryPage(props: {
                             <button
                                 type="button"
                                 class="right_menu_button interactable wb-icon-button"
-                                aria-label={t('How this entry’s names look')}
-                                title={t('How this entry’s names look')}
+                                aria-label={t('Look')}
+                                title={t('Look')}
                                 onClick={() => void wb.act('looks.open', { thing: props.entry.entry })}
                             >
                                 <Icon name="pencil" />
@@ -147,8 +147,8 @@ export function EntryPage(props: {
                             ref={(element) => (placeButton = element)}
                             type="button"
                             class="right_menu_button interactable wb-icon-button"
-                            aria-label={t('In the prompt')}
-                            title={t('In the prompt')}
+                            aria-label={t('Entry settings')}
+                            title={t('Entry settings')}
                             aria-expanded={placing()}
                             onClick={() => {
                                 setMenu(false);
@@ -332,7 +332,7 @@ function Mentions(props: {
             <section class="wb-section">
                 <h3>
                     <span class="wb-wide-only">
-                        {t('mentions')} → {props.entry.label.text}
+                        {t('Mentioned in')} → {props.entry.label.text}
                     </span>
                     <span class="wb-phone-only">{t('Mentioned in')}</span>
                 </h3>
@@ -404,7 +404,7 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                             role="menuitem"
                             onClick={() => run(() => wb.act('looks.open', { thing: props.entry.entry }))}
                         >
-                            {t('How its names look')}
+                            {t('Look…')}
                         </button>
                         <hr />
                         <button
@@ -428,7 +428,7 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                             role="menuitem"
                             onClick={() => setSending('copy')}
                         >
-                            {t('Copy to another world…')}
+                            {t('Copy to world…')}
                         </button>
                         <button
                             class="list-group-item"
@@ -436,7 +436,7 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                             role="menuitem"
                             onClick={() => setSending('move')}
                         >
-                            {t('Move to another world…')}
+                            {t('Move to world…')}
                         </button>
                         <button
                             class="list-group-item"
@@ -450,7 +450,7 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                                 })
                             }
                         >
-                            {t('Choose a picture…')}
+                            {t('Set picture…')}
                         </button>
                         <Show when={props.entry.picture !== null}>
                             <button
@@ -459,7 +459,7 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                                 role="menuitem"
                                 onClick={() => run(() => wb.act('worldbuilding.removePicture', at()))}
                             >
-                                {t('Remove the picture')}
+                                {t('Remove picture')}
                             </button>
                         </Show>
                         <button
@@ -498,7 +498,7 @@ function SendTo(props: { entry: OpenEntryView; how: 'move' | 'copy'; onDone: () 
                         {
                             kind: 'confirm',
                             message: fill(t('Move ${0} to ${1}?'), props.entry.label.text, name),
-                            detail: t('Its relations stay behind.'),
+                            detail: t('Its relations stay in this world.'),
                         },
                         t,
                     );

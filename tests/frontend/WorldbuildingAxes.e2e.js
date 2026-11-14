@@ -102,7 +102,7 @@ test.describe('boards and grids', () => {
 
         await bar.getByRole('button', { name: 'Add to Rows' }).click();
         await bar.getByRole('menuitem', { name: 'in…' }).click();
-        await bar.getByRole('textbox', { name: 'in: which entry' }).fill('Saltmarrow');
+        await bar.getByRole('textbox', { name: 'in: choose entry' }).fill('Saltmarrow');
         await bar.locator('.wb-pick-row', { hasText: 'Saltmarrow' }).click();
         await expect(tab(page, 'Places').locator('.wb-vdot')).toBeVisible();
         const saltmarrow = pane(page).locator('.wb-grh', { hasText: 'Saltmarrow' });
@@ -117,16 +117,16 @@ test.describe('boards and grids', () => {
         await expect(card(cell, 'Ilse Varro')).toHaveCount(0);
 
         await bar.getByRole('button', { name: 'in: Saltmarrow', exact: true }).click();
-        await expect(bar.getByRole('button', { name: 'in: Saltmarrow · at any depth', exact: true })).toBeVisible();
+        await expect(bar.getByRole('button', { name: 'in: Saltmarrow · any depth', exact: true })).toBeVisible();
         await expect(card(cell, 'Ilse Varro')).toBeVisible();
         await expect(saltmarrow.locator('.wb-bct')).toHaveText('4');
-        await saltmarrow.getByRole('button', { name: 'at any depth' }).click();
+        await saltmarrow.getByRole('button', { name: 'any depth' }).click();
         await expect(card(cell, 'Ilse Varro')).toHaveCount(0);
 
-        await bar.getByRole('button', { name: 'Take off in: Saltmarrow' }).click();
+        await bar.getByRole('button', { name: 'Remove in: Saltmarrow' }).click();
         await expect(pane(page).locator('.wb-grh')).toHaveCount(0);
         await expect(column(page, 'works at')).toBeVisible();
-        await bar.getByRole('button', { name: 'Take off works at: any' }).click();
+        await bar.getByRole('button', { name: 'Remove works at: any' }).click();
         await expect(pane(page).locator('h1.wb-front-name')).toHaveText(name);
         await expect(tab(page, 'Places').locator('.wb-vdot')).toHaveCount(0);
 

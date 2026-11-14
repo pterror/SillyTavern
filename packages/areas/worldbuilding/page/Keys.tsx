@@ -28,12 +28,12 @@ export function Keys(props: { entry: OpenEntryView }) {
     const shownKey = () => props.entry.keys.find((key) => key.text === open()?.key) ?? null;
     return (
         <div class="wb-keys">
-            <span class="wb-keys-label">{t('Brought up by')}</span>
+            <span class="wb-keys-label">{t('Keys')}</span>
             <Show when={props.entry.placement.constant && !props.entry.placement.disable}>
                 <span class="wb-always">
                     {props.entry.tokens === null
-                        ? t('Always included')
-                        : fill(t('Always included · ${0} tokens'), count(props.entry.tokens))}
+                        ? t('Constant')
+                        : fill(t('Constant · ${0} tokens'), count(props.entry.tokens))}
                 </span>
             </Show>
             <For each={props.entry.keys}>
@@ -43,7 +43,7 @@ export function Keys(props: { entry: OpenEntryView }) {
                         class="tag wb-key"
                         classList={{ 'wb-open': open()?.key === key.text }}
                         aria-expanded={open()?.key === key.text}
-                        aria-label={fill(key.isName ? t('“${0}”, a name') : t('“${0}”, a trigger'), key.text)}
+                        aria-label={fill(key.isName ? t('“${0}”, name') : t('“${0}”, key'), key.text)}
                         onClick={(event) => pick(key, event.currentTarget)}
                     >
                         <Show when={key.isName} fallback={<span class="wb-key-trigger">{key.text}</span>}>
@@ -67,7 +67,7 @@ export function Keys(props: { entry: OpenEntryView }) {
                                 setAdding('name');
                             }}
                         >
-                            {t('+ name')}
+                            {t('+ Name')}
                         </button>
                         <button
                             type="button"
@@ -77,14 +77,14 @@ export function Keys(props: { entry: OpenEntryView }) {
                                 setAdding('trigger');
                             }}
                         >
-                            {t('+ trigger')}
+                            {t('+ Key')}
                         </button>
                     </>
                 }
             >
                 {(as) => (
                     <NewKey
-                        label={as() === 'name' ? t('A name') : t('A trigger')}
+                        label={as() === 'name' ? t('Name') : t('Key')}
                         onDone={(key) => {
                             const kind = as();
                             setAdding(null);
@@ -173,7 +173,7 @@ function KeyPopover(props: {
                 aria-pressed={props.shownKey.isName}
                 onClick={() => setAs('name')}
             >
-                <b>{t('A name')}</b>
+                <b>{t('Name')}</b>
             </button>
             <button
                 type="button"
@@ -182,12 +182,12 @@ function KeyPopover(props: {
                 aria-pressed={!props.shownKey.isName}
                 onClick={() => setAs('trigger')}
             >
-                <b>{t('A trigger')}</b>
+                <b>{t('Key')}</b>
             </button>
             <Show when={props.shownKey.alsoBringsUp > 0 && others()}>
                 {(shown) => (
                     <div class="wb-pop-shared">
-                        {t('Also brings up ')}
+                        {t('Also activates ')}
                         <For each={shown().entries}>
                             {(other, n) => (
                                 <>

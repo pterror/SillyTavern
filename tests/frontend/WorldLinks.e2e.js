@@ -11,7 +11,7 @@ const unique = (/** @type {string} */ name) => `${name} ${Date.now()}${Math.floo
  */
 async function renameShownWorld(page, name) {
     const pane = page.locator('#Worldbuilding');
-    await pane.getByRole('button', { name: 'The world’s name' }).click();
+    await pane.getByRole('button', { name: 'World name' }).click();
     await page.keyboard.press('Control+A');
     await page.keyboard.type(name);
     await page.keyboard.press('Enter');
@@ -99,7 +99,7 @@ test.describe('what links to a world follows it', () => {
             const pane = page.locator('#Worldbuilding');
             await expect(pane.locator('h1.wb-front-name')).toHaveText('Keeper book');
             await pane.locator('.wb-card-open', { hasText: 'The keeper is Ida.' }).click();
-            await pane.getByRole('textbox', { name: 'The entry’s text' }).click();
+            await pane.getByRole('textbox', { name: 'Content' }).click();
             await pane.locator('.cm-content').click();
             await page.keyboard.press('Control+End');
             await page.keyboard.type(' She trims the wick.');

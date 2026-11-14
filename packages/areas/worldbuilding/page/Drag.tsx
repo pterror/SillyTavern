@@ -315,7 +315,7 @@ export function DragLayer(props: { control: DragControl }) {
                                     <span class="wb-intent-kind">{said().kind}</span>
                                     <b>{said().change}</b>
                                     <Show when={said().keepBoth}>
-                                        <span>{t('Alt: keep both')}</span>
+                                        <span>{t('Alt: add instead of move')}</span>
                                     </Show>
                                 </div>
                             )}
@@ -334,13 +334,13 @@ export function DragLayer(props: { control: DragControl }) {
                                     <span class="wb-intent-kind">{holding().dragged.grouping?.kindName ?? ''}</span>
                                     <b>
                                         {holding().alt
-                                            ? fill(t('Also put in ${0}'), over().name)
+                                            ? fill(t('Add to ${0}'), over().name)
                                             : holding().dragged.region
                                               ? `${holding().dragged.region?.label.text ?? ''} → ${over().name}`
                                               : `→ ${over().name}`}
                                     </b>
                                     <Show when={!holding().alt && holding().dragged.region}>
-                                        <span>{t('Alt: keep both')}</span>
+                                        <span>{t('Alt: add instead of move')}</span>
                                     </Show>
                                 </div>
                             )}

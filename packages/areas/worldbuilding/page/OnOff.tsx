@@ -16,8 +16,8 @@ export function OnOff(props: { book: string; entry: string; name: string; facts:
             class="wb-onoff fa-solid fa-fw"
             classList={{ 'fa-toggle-on': on(), 'fa-toggle-off': !on(), 'wb-onoff-off': !on() }}
             aria-checked={on()}
-            aria-label={fill(t('${0} comes into the prompt'), props.name)}
-            title={on() ? t('On: comes into the prompt') : t('Off: never comes into the prompt')}
+            aria-label={fill(t('${0} enabled'), props.name)}
+            title={on() ? t('Enabled') : t('Disabled')}
             onClick={(event) => {
                 event.stopPropagation();
                 void wb.act('worldbuilding.setPlacement', {

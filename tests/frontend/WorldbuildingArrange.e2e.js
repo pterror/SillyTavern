@@ -96,13 +96,13 @@ test.describe('arranging a world', () => {
         await makeWorld(page, name, COAST, { relationKinds: [{ id: 1, name: 'in' }] });
 
         await openMenu(page, 'Sister Oriel');
-        await pickTarget(page, 'Also put in…', 'lantern', 'The Lantern House');
+        await pickTarget(page, 'Add to…', 'lantern', 'The Lantern House');
         await expect(region(page, 'The Lantern House').locator('.wb-card', { hasText: 'Sister Oriel' })).toBeVisible();
         await expect(region(page, 'The Pale Choir').locator('.wb-card', { hasText: 'Sister Oriel' })).toBeVisible();
 
         await region(page, 'The Lantern House').locator('.wb-card', { hasText: 'Sister Oriel' }).hover();
         await region(page, 'The Lantern House').locator('.wb-card', { hasText: 'Sister Oriel' }).locator('.wb-card-more').click();
-        await pane(page).getByRole('menuitem', { name: 'Take out of The Lantern House' }).click();
+        await pane(page).getByRole('menuitem', { name: 'Remove from The Lantern House' }).click();
         await expect(region(page, 'The Lantern House').locator('.wb-card', { hasText: 'Sister Oriel' })).toHaveCount(0);
 
         await openMenu(page, 'The Hymn of Low Water');
@@ -163,18 +163,18 @@ test.describe('arranging a world', () => {
         await expect(pane(page).locator('.wb-text .wb-link', { hasText: 'ledger' })).toBeVisible();
 
         await selectWords('the inn');
-        await pane(page).getByRole('menuitem', { name: 'Add as a name of…' }).click();
+        await pane(page).getByRole('menuitem', { name: 'Add as name key to…' }).click();
         await pane(page).locator('.wb-selmenu input').fill('lantern');
         await pane(page).locator('.wb-selmenu .wb-pick-row', { hasText: 'The Lantern House' }).click();
         await expect(pane(page).locator('.wb-text .wb-link', { hasText: 'the inn' })).toBeVisible();
 
         await selectWords('keeps');
-        await pane(page).getByRole('menuitem', { name: 'Add as a trigger of…' }).click();
+        await pane(page).getByRole('menuitem', { name: 'Add as key to…' }).click();
         await pane(page).locator('.wb-selmenu input').fill('back room');
         await pane(page).locator('.wb-selmenu .wb-pick-row', { hasText: 'The back room' }).click();
         await pane(page).locator('.wb-rels-world').click();
         await card(page, 'The back room').locator('.wb-card-open').click();
-        await expect(pane(page).locator('.wb-keys').getByLabel('“keeps”, a trigger')).toBeVisible();
+        await expect(pane(page).locator('.wb-keys').getByLabel('“keeps”, key')).toBeVisible();
         await deleteWorld(page, name);
     });
 });
