@@ -462,7 +462,7 @@ return function(caps)                     -- caps: sandbox, store, latest, net, 
 end
 ```
 
-Installing a module is the root loading its source and handing it capabilities; nothing else gives a module any power. The model's key never reaches the adapter: secrets:net hands it a net that puts the key into requests (gap 2). This root wires one card; a real install’s root would load a module that picks each chat’s composition.
+Installing a module is the root loading its source and handing it capabilities; nothing else gives a module any power. The model's key never reaches the adapter: secrets:net hands it a net that puts the key into requests (gap 2). This root wires one card; a real install’s root composes each chat’s wiring from the card and what is installed (gap 5, option D).
 
 ## Lorebook activation as a library
 
@@ -1207,7 +1207,7 @@ A page keeps its state only by applying the server's batches, and the cursor mak
 
 ## Gap 5, joining: what every option shares
 
-Decided: what the person installs applies to every chat, and a card can bring its own (decisions of 11-14). Hooks are not in the core. Three options follow for how the two join a card's turn; this section is what they have in common, and the same example runs through all three: the person installs a tracker that adds a step after each reply, a note in the prompt two messages from the end, a button on messages and a settings section; the card Ilse brings its own lorebook activation library.
+Decided: what the person installs applies to every chat, and a card can bring its own (decisions of 11-14). Hooks are not in the core. Three options, A, B and C, were drafted for how the two join a card's turn, and the owner chose a fourth, D, of which each is a special case; A, B and C stay as the record of what each gave up. This section is what they have in common, and the same example runs through all four: the person installs a tracker that adds a step after each reply, a note in the prompt two messages from the end, a button on messages and a settings section; the card Ilse brings its own lorebook activation library.
 
 ```
 The manifest: needs, as in "Capabilities from crescent: needs in a manifest"; a dependency is
@@ -1356,9 +1356,11 @@ t=1.2s   store: tracker/time and tracker/affection/Ilse change at 822 and every 
          reply to the action: { cursor = 99210 }; pages watching the chat get the batch
 ```
 
-The settings section is data about the module's own keys, which the table at the end already gave as a setting schema; a module that needs drawing of its own gets it through the display handle (decided: an allowlisted display API, a framed area where a DOM library needs one). How a card's lore activation and the person's extensions meet is the second half of each option.
+The settings section is data about the module's own keys, which the table at the end already gave as a setting schema; a module that needs drawing of its own gets it through the display handle (decided: an allowlisted display API, a framed area where a DOM library needs one). How a card's lore activation and the person's extensions meet is the second half of each option. Under D the manifest's needs become need nodes and its slot contributions item nodes, and order.lua orders extensions as here.
 
 ## Gap 5, joining, option A: a hook library of named points
+
+Superseded by option D (decisions of 11-14), where a hook point is a node holding a list that extensions insert into. Kept as the record of what A gave up: an extension acts only where a card placed a point.
 
 ```lua
 -- hooks.lua: named points a card runs; installed modules add to them
@@ -1431,6 +1433,8 @@ t=1m     send: ilse's steps run; at lore, the card's own ilse-lore.activate insi
 Hooks are a content library, so whether they are "built in" is whether the app ships one: it does, cards use it or another, and the core is unchanged. The card decides where each point runs, how often (once per speaker in a group) and whether at all; an extension knows only point names. The card's own library is the base a point wraps, so the person's extensions that wrap lore.activate wrap the card's activation too. Order: entries at one point run in the person's installs' order, then the card's; there is nothing to conflict but order, since a wrap point's base is always the card's. Upstream's shape is closest to this. Costs: the point names are a shared vocabulary someone has to keep, and an extension adding to a point a card never runs does nothing, which can only be reported if the card's manifest lists the points it runs; every turn reads the points; a card author has to place points for extensions they haven't seen. Rules out: an extension acting anywhere a card placed no point, short of wrapping the whole card.
 
 ## Gap 5, joining, option B: cards name their steps, extensions edit the list
+
+Superseded by option D (decisions of 11-14), where a named step is a node with a name and the composed value is the whole graph. Kept as the record of what B gave up: an extension goes only after or around a step a card named.
 
 ```lua
 -- compose.lua: a card's named steps with every install's edits applied, and a runner
@@ -1522,6 +1526,8 @@ Hooks here are turn steps that cards declare: the card names its steps, and an e
 
 ## Gap 5, joining, option C: extensions wrap what a card is handed
 
+Superseded by option D (decisions of 11-14), where wrapping a reference is a wrap edit limited to some holders. Kept as the record of what C gave up: an extension sees only what crosses a reference, and guesses the turn's context from it.
+
 ```lua
 -- tracker.lua gains, under C: wrappers made once per chat
 function T.wrappers()
@@ -1582,24 +1588,825 @@ t=1m     send: ilse's own steps, unchanged from "One turn, composed"; chat.appen
 
 There are no hooks: an extension wraps references, the one way this model already composes (revoking, narrowing, logging and the switch are wrappers too). Any card is extended without having anticipated anything, including a card that isn't a chat, and the card's code is the same whether extensions exist or not. Order: an install's wrappers sit outside those of installs it comes after; a card's own modules aren't wrapped, since they are the card's. Costs: a wrapper sees only what crosses its reference, so the tracker has to learn the chat's node from chat.append and can only name the last speaker, not the one about to reply; a card handing its prompt somewhere other than model.generate, or reading lore through a library it brought, goes around the person's wrappers; what put a message into the prompt can be explained only if wrappers report it; a sandbox per open chat. Rules out: an extension placed between two of a card's steps; two turns at once in one chat (a group replying in parallel) with wrappers that keep the chat's state, as the tracker's do.
 
+## Gap 5, joining, option D (decided): the composition is data
+
+Decided by the owner (decisions of 11-14), superseding A, B and C. The root's wiring is one graph the root interprets: which modules exist, what each is handed, how a card's turn is composed, and how the app's UI slots are filled. A card ships its piece of the graph; an extension is a transform of the graph, a list of edits applied in a declared order. The others are special cases: A's hook point is a node holding a list others insert into (the prompt step's notes below), B's named step is a node with a name, and C's wrapped reference is a wrap edit limited to some holders.
+
+```json
+{ "name": "app",
+  "nodes": {
+    "store":           { "kind": "host", "host": "store" },
+    "home":            { "kind": "host", "host": "home" },
+    "kv":              { "kind": "module", "pkg": "kv" },
+    "cond":            { "kind": "module", "pkg": "cond" },
+    "prompt":          { "kind": "module", "pkg": "prompt" },
+    "steps":           { "kind": "module", "pkg": "steps" },
+    "chat":            { "kind": "module", "pkg": "chat", "with": {
+                         "store": { "$ref": "chat-store" }, "kv": { "$ref": "kv" } } },
+    "chat-store":      { "kind": "call", "on": { "$ref": "store" }, "method": "narrow", "with": {
+                         "nodes": [ { "$ref": "home" } ], "prefix": "chat/", "mode": "rw" } },
+    "parts":           { "kind": "module", "pkg": "parts", "with": { "chars": { "$ref": "chars-store" } } },
+    "chars-store":     { "kind": "call", "on": { "$ref": "store" }, "method": "narrow", "with": {
+                         "nodes": [ { "$ref": "home" } ], "prefix": "chars/", "mode": "r" } },
+    "connections":     { "kind": "module", "pkg": "connections", "with": {
+                         "latest": { "$ref": "connections-latest" }, "kv": { "$ref": "kv" },
+                         "switch": { "$ref": "switch" }, "default": "openai",
+                         "adapters": { "openai": { "$ref": "openai" }, "kobold": { "$ref": "kobold" } } } },
+    "message.actions": { "kind": "slot", "name": "message.actions", "items": [] },
+    "settings":        { "kind": "slot", "name": "settings", "items": [] },
+    "commands":        { "kind": "slot", "name": "commands", "items": [] } } }
+```
+
+```
+A piece is { name, nodes, entries }. In the composed graph a node's id is its piece's
+name, a slash, and its id in the piece ("app/chat"); an edge without a slash is to the
+piece's own node. "app" is the app's piece, and the root gives no install that name.
+An edge is { "$ref": id }, with "export" to reach one of the node's exports, and on an
+edge out of a piece "why" (the module's words) and "required": false where it can do
+without. Anything else in a node is a value.
+Kinds, and what each node's value is (wiring.lua):
+  host    one of the root's references; only the app's piece has host nodes
+  need    what grant minted for the piece's install: gap 7's needs, as nodes
+  module  sandbox:load of the package, handed with
+  call    fn(with), or on:method(with): a value made from other values
+  steps   a function running steps in order, setting on ctx what each returns
+  slot    a UI slot's items, in order; which slots exist is the owner's
+  item    one contribution to a slot: data, and an edge to what runs it
+  wrap    with(inner): what with makes of the node it wraps
+A card's piece names its entries, "send" and "reply", which the root's page actions run.
+```
+
+The excerpt leaves out connections' own inputs (its narrowed latest, the switch, the adapters and their secrets), which are nodes of the same kinds. Every edge is a `$ref` wherever it sits, the way a value names a blob with `$blob`, so one walk finds every reference a node holds, and an edit reaches them all without knowing the kind.
+
+```lua
+-- graph.lua: what the graph modules share
+return function(c)
+  local G = {}
+  function G.is_edge(v) return type(v) == "table" and v["$ref"] ~= nil end
+  function G.edges(v, fn)                   -- fn(edge) for every edge in v, however deep
+    if type(v) ~= "table" then return end
+    for _, x in pairs(v) do
+      if G.is_edge(x) then fn(x) else G.edges(x, fn) end
+    end
+  end
+  function G.hash(g, id, pkg)               -- the node, each edge as its target's hash
+    g.hashes = g.hashes or {}
+    if g.hashes[id] then return g.hashes[id] end
+    local n = g.nodes[id]
+    local function canon(v)
+      if type(v) ~= "table" then return v end
+      if G.is_edge(v) then return { ["$ref"] = G.hash(g, v["$ref"], pkg), export = v.export } end
+      local out = {}
+      for k, x in pairs(v) do out[k] = canon(x) end
+      return out
+    end
+    local top = canon(n)
+    top.by, top.inside, top.name = nil, nil, nil   -- bookkeeping that doesn't change the value
+    local of = (n.kind == "module" and n.pkg) or (n.kind == "need" and n.by) or nil
+    g.hashes[id] = c.sha256(c.json.encode{ top, of and pkg(of).hash or false })   -- keys sorted
+    return g.hashes[id]
+  end
+  return G
+end
+
+-- steps.lua: the turn's usual steps, each made from what it's handed (w)
+return function()
+  local S = {}
+  function S.history(w)                     -- w.history: chat's; w.speaker
+    return function(ctx) return { history = w.history(ctx.at), speaker = w.speaker } end
+  end
+  function S.lore(w)                        -- w.library; w.books, w.depth; w.scan: functions giving text or nil
+    return function(ctx)
+      local also = {}
+      for _, f in ipairs(w.scan or {}) do also[#also + 1] = f(ctx) end
+      return { came_up = w.library.activate(ctx, w.books, w.depth, also) }
+    end
+  end
+  function S.prompt(w)                      -- w.assemble, w.at_depth: prompt's; w.parts; w.notes: functions giving a note or nil
+    return function(ctx)
+      local notes = {}
+      for _, f in ipairs(w.notes or {}) do notes[#notes + 1] = f(ctx) end
+      return { messages = w.at_depth(w.assemble(w.parts, ctx), notes) }
+    end
+  end
+  function S.reply(w)                       -- w.model
+    return function(ctx) return { reply = w.model.generate(ctx.messages) } end
+  end
+  function S.append(w)                      -- w.append: chat's; w.role
+    return function(ctx)
+      local user = w.role == "user"
+      return { at = w.append(ctx.at, { role = w.role, name = user and ctx.persona or ctx.speaker,
+                                       text = user and ctx.text or ctx.reply }) }
+    end
+  end
+  return S
+end
+
+-- parts.lua: the usual parts of a prompt, as "One turn, composed" wrote them inline
+return function(c)
+  local P = {}
+  function P.description(ctx)
+    return { { role = "system", content = c.chars:get(ctx.at, "chars/" .. ctx.speaker).description } }  -- [host]
+  end
+  function P.came_up(ctx)
+    local out = {}
+    for _, e in ipairs(ctx.came_up or {}) do out[#out + 1] = { role = "system", content = e.text } end
+    return out
+  end
+  function P.history(ctx)
+    local out = {}
+    for _, h in ipairs(ctx.history) do out[#out + 1] = { role = h.msg.role, content = h.msg.text } end
+    return out
+  end
+  return P
+end
+
+-- wiring.lua: a composed graph's values, each made when first used and shared by hash
+return function(c)
+  local graph, grant, sandbox, pkg = c.graph, c.grant, c.sandbox, c.pkg
+  return function(hosts)                    -- hosts: the root's references, by host node name
+    local made = {}                         -- node hash -> a promise of its value, across compositions
+    return function(g)
+      local value
+      local function resolve(v)             -- v with every edge replaced by what it reaches
+        if type(v) ~= "table" then return v end
+        if graph.is_edge(v) then
+          local x = value(v["$ref"])
+          if v.export then return x[v.export] end
+          return x
+        end
+        local out = {}
+        for k, x in pairs(v) do out[k] = resolve(x) end
+        return out
+      end
+      local kinds = {
+        host   = function(n) return hosts[n.host] end,
+        need   = function(n, id)
+          local v = grant:needs(n.by)[id:sub(#n.by + 2)]                    -- [host]
+          if v == nil and n.required then error(id .. " was not granted", 0) end
+          return v
+        end,
+        module = function(n)
+          local p = pkg(n.pkg)
+          return sandbox:load(p.source, p.runtime or "lua", resolve(n.with or {}))   -- [core]
+        end,
+        call   = function(n)
+          if n.method then
+            local on = resolve(n.on)
+            return on[n.method](on, resolve(n.with or {}))
+          end
+          return resolve(n.fn)(resolve(n.with or {}))
+        end,
+        steps  = function(n)
+          local steps = resolve(n.steps)
+          return function(ctx)
+            for _, step in ipairs(steps) do
+              for k, v in pairs(step(ctx) or {}) do ctx[k] = v end
+            end
+            return ctx
+          end
+        end,
+        slot   = function(n) return resolve(n.items) end,
+        item   = function(n) return resolve(n) end,
+        wrap   = function(n) return resolve(n.with)(resolve(n.inner)) end,
+      }
+      function value(id)
+        local h = graph.hash(g, id, pkg)
+        local p = made[h]
+        if p then
+          local ok, v = pcall(p.get, p)                                     -- [core]
+          if ok then return v end
+          if made[h] == p then error(v, 0) end    -- still being made: this task was cancelled
+          return value(id)                        -- its maker failed or was cancelled: make it here
+        end
+        p = task.promise(); made[h] = p                                     -- [core]
+        local n = g.nodes[id]
+        local ok, v = pcall(kinds[n.kind], n, id)
+        if not ok then made[h] = nil; p:fail(v); error(v, 0) end
+        p:set(v)
+        return v
+      end
+      local W = {}
+      function W.entry(name) return resolve(g.entries[name]) end
+      function W.item(id)                   -- an item, only if one of this graph's slots holds it
+        for _, n in pairs(g.nodes) do
+          if n.kind == "slot" then
+            for _, e in ipairs(n.items) do if e["$ref"] == id then return value(id) end end
+          end
+        end
+      end
+      return W
+    end
+  end
+end
+```
+
+The root interprets the graph with wiring.lua, which is content: each kind is a few lines over sandbox:load and calls through references. A node's value is made the first time something reaches it, so nothing removed or unreached is loaded, and it is kept by the node's hash: the node's definition with each edge replaced by its target's hash, and a module by its package's hash. Two compositions that share a subgraph (every card's use of app/chat, app/steps, app/prompt) share its values, so the app's modules load once and a card's nodes once per card version and installed set. A value two tasks reach at once is made once: the second waits on the first's promise, and makes it itself if the first fails or is cancelled, so a cancel in one turn never fails another. Nothing about a chat lives in a module's memory, as before, so sharing a value between chats changes nothing. The steps list is the turn the card ran by hand in "One turn, composed", now made from data; a card that wants a different loop (per speaker, a game) makes its turn a module node and names it as its entry. Costs: made only grows here; dropping a value when no kept composition reaches it is a count per hash, left out. Which nodes run on a page, and how a page's root gets its part of the graph, isn't worked out here.
+
+## Gap 5, joining, option D: extensions as transforms of the graph
+
+```json
+{ "name": "tracker", "version": "3.0.0", "tags": [ "tracker" ], "after": [ "summarize" ],
+  "nodes": {
+    "main":     { "kind": "module", "pkg": "tracker", "with": {
+                  "store": { "$ref": "store" }, "chats": { "$ref": "chats" },
+                  "settings": { "$ref": "settings" }, "kv": { "$ref": "app/kv" },
+                  "model": { "$ref": "app/connections", "export": "model",
+                             "why": "Asks the model how much time passed in each reply" } } },
+    "store":    { "kind": "need", "what": "store", "mode": "rw", "required": true,
+                  "why": "Keeps the time and each character's affection at every message" },
+    "chats":    { "kind": "need", "what": "store", "of": "chat", "mode": "r", "required": true,
+                  "why": "Reads a reply again when you ask for a recount" },
+    "settings": { "kind": "need", "what": "latest", "mode": "rw", "required": true },
+    "recount":  { "kind": "item", "label": "Recount time and affection",
+                  "run": { "$ref": "main", "export": "recount" } },
+    "panel":    { "kind": "item", "label": "Tracker", "keys": "tracker/settings/", "fields": {
+                  "note":  { "type": "boolean", "default": true, "label": "Tell the model the time and affection" },
+                  "depth": { "type": "number",  "default": 2,    "label": "Messages from the end where that goes" } } } },
+  "edits": [
+    { "op": "insert", "into": [ "kind", "steps" ],
+      "after": [ "all", [ "holds", [ "pkg", "chat" ], "append" ], [ "given", "role", "assistant" ] ],
+      "edge": { "$ref": "main", "export": "step" } },
+    { "op": "insert", "into": [ "holds", [ "pkg", "prompt" ], "assemble" ], "field": "notes",
+      "edge": { "$ref": "main", "export": "note" } },
+    { "op": "insert", "into": [ "holds", [ "pkg", "steps" ], "lore" ], "field": "scan",
+      "edge": { "$ref": "main", "export": "scan" } },
+    { "op": "insert", "into": [ "all", [ "kind", "slot" ], [ "name", "message.actions" ] ],
+      "edge": { "$ref": "recount" } },
+    { "op": "insert", "into": [ "all", [ "kind", "slot" ], [ "name", "settings" ] ],
+      "edge": { "$ref": "panel" } } ] }
+```
+
+```
+An extension is { name, after, nodes, edits }: its own nodes, which are a piece, and
+edits to the graph it's applied to. The manifest's needs are its need nodes; its slot
+contributions are item nodes; a dependency is an edge to another install's node.
+A match is cond.lua data over a node (graph_match.lua):
+  ["kind", k]               the node's kind
+  ["name", n]               the name its piece gave it
+  ["pkg", p]                a module node's package
+  ["from", install]         the piece or extension it came from
+  ["given", field, value]   it is handed value under field
+  ["holds", match, export]  it holds an edge to a node match matches (to that export, if given)
+  and "all", "any", "not" from cond.lua. A wrap answers for what it wraps.
+Edits; each acts on every node its match finds, in id order:
+  insert   { into, edge, field?, after? | before? }   the edge into the list of each node into
+           matches (a steps node's steps, a slot's items, or with[field]); next to each member
+           after or before matches, or at the end. An edge put after m goes after what earlier
+           extensions put after m, so order at one place is install order.
+  wrap     { target, with, holders? }   with(inner) takes the node's place, outside any earlier
+           wrap; with holders, only the edges from nodes holders matches go through it
+  replace  { target, node }   node takes the place of the thing itself; wraps around it stay
+  remove   { target }   the node and the wraps around it; edges to them go
+  connect  { to, field, edge }   the node holds edge under with[field]
+Order: the card's own extensions, then the person's, each set in order.lua's order of
+  "after"; each extension's edits see what those before it made, and its own nodes go in
+  after its edits, so it never matches itself.
+After the last extension: a wrap whose inner is gone goes; an edge to a removed node goes
+  from a list or an optional field; a required one refuses the composition, naming the
+  extension that removed it; so does a cycle (a module can't load holding what holds it).
+  An edit that matched nothing is listed, not an error.
+```
+
+```lua
+-- graph_match.lua: what an edit can match a node by, as cond.lua operators
+return function(c)
+  local cond, graph = c.cond, c.graph       -- a cond of its own, so these names reach nothing else
+  local M
+  cond.define("kind", function(m, kind) return m.node.kind == kind end)
+  cond.define("name", function(m, name) return m.node.name == name end)
+  cond.define("pkg", function(m, pkg) return m.node.pkg == pkg end)
+  cond.define("from", function(m, install) return m.node.by == install end)
+  cond.define("given", function(m, field, value) return m.node.with ~= nil and m.node.with[field] == value end)
+  cond.define("holds", function(m, what, export)
+    local yes = false
+    graph.edges(m.node, function(e)
+      if not yes and (export == nil or e.export == export) then yes = M(m.graph, e["$ref"], what) end
+    end)
+    return yes
+  end)
+  function M(g, id, expr)                   -- a wrap answers for what it wraps
+    local n, seen = g.nodes[id], {}
+    while n and not seen[n] do
+      if cond.holds(expr, { graph = g, node = n }) then return true end
+      seen[n] = true
+      n = n.kind == "wrap" and n.inner and g.nodes[n.inner["$ref"]] or nil
+    end
+    return false
+  end
+  return M
+end
+
+-- compose.lua: pieces and extensions into one graph; pure, so the same inputs give the same graph
+return function(c)
+  local graph, match = c.graph, c.match
+  local LIST = { steps = "steps", slot = "items" }
+
+  local function copy(v, piece)             -- v, its local ids made the piece's
+    if type(v) ~= "table" then return v end
+    local out = {}
+    for k, x in pairs(v) do out[k] = copy(x, piece) end
+    if graph.is_edge(out) and not out["$ref"]:find("/", 1, true) then
+      out["$ref"] = piece .. "/" .. out["$ref"]
+    end
+    return out
+  end
+
+  local function own(n, piece)              -- a node the piece brings
+    if n.kind == "host" and piece ~= "app" then error(piece .. ": only the app's piece has host nodes", 0) end
+    local x = copy(n, piece)
+    x.by = piece
+    return x
+  end
+
+  local function found(g, expr)             -- the ids expr matches, in id order
+    local ids = {}
+    for id, n in pairs(g.nodes) do
+      if not n.inside and match(g, id, expr) then ids[#ids + 1] = id end
+    end
+    table.sort(ids)
+    return ids
+  end
+
+  local function innermost(g, id)           -- the thing itself, inside its wraps
+    while g.nodes[id].kind == "wrap" do id = g.nodes[id].inner["$ref"] end
+    return id
+  end
+
+  local ops = {}
+
+  function ops.insert(g, e, by, hit)
+    local near = e.after or e.before
+    for _, id in ipairs(found(g, e.into)) do
+      local n = g.nodes[innermost(g, id)]
+      local holder, key = n, LIST[n.kind]
+      if e.field then n.with = n.with or {}; holder, key = n.with, e.field end
+      if key then
+        local list, out = holder[key] or {}, {}
+        local function new(placed)
+          local x = copy(e.edge, by)
+          x.by, x.placed = by, placed
+          hit(id)
+          return x
+        end
+        local i = 1
+        while i <= #list do
+          local m = list[i]
+          local here = near and graph.is_edge(m) and match(g, m["$ref"], near)
+          if here and e.before then out[#out + 1] = new(true) end
+          out[#out + 1] = m
+          i = i + 1
+          if here and e.after then
+            while list[i] and list[i].placed == m["$ref"] do out[#out + 1] = list[i]; i = i + 1 end
+            out[#out + 1] = new(m["$ref"])
+          end
+        end
+        if not near then out[#out + 1] = new(true) end
+        holder[key] = out
+      end
+    end
+  end
+
+  function ops.wrap(g, e, by, hit, i)
+    for _, id in ipairs(found(g, e.target)) do
+      local w = { kind = "wrap", with = copy(e.with, by), by = by }
+      local aside = id .. "@" .. by .. "." .. i
+      if e.holders then                     -- the reference those holders are handed
+        w.inner, w.inside = { ["$ref"] = id }, true
+        g.nodes[aside] = w
+        for hid, h in pairs(g.nodes) do
+          if hid ~= aside and match(g, hid, e.holders) then
+            graph.edges(h, function(edge) if edge["$ref"] == id then edge["$ref"] = aside end end)
+          end
+        end
+      else                                  -- the wrap takes the node's place; the node moves aside
+        g.nodes[aside] = g.nodes[id]
+        g.nodes[aside].inside = true
+        w.inner = { ["$ref"] = aside }
+        g.nodes[id] = w
+      end
+      hit(id)
+    end
+  end
+
+  function ops.replace(g, e, by, hit)
+    for _, id in ipairs(found(g, e.target)) do
+      local at = innermost(g, id)
+      local new = own(e.node, by)
+      new.inside = g.nodes[at].inside
+      g.nodes[at] = new
+      hit(id)
+    end
+  end
+
+  function ops.remove(g, e, by, hit)
+    for _, id in ipairs(found(g, e.target)) do
+      local at = id
+      while at do
+        local n = g.nodes[at]
+        g.nodes[at], g.removed[at] = nil, by
+        at = n.kind == "wrap" and n.inner["$ref"] or nil
+      end
+      hit(id)
+    end
+  end
+
+  function ops.connect(g, e, by, hit)
+    for _, id in ipairs(found(g, e.to)) do
+      local n = g.nodes[innermost(g, id)]
+      local x = copy(e.edge, by)
+      x.by = by
+      n.with = n.with or {}
+      n.with[e.field] = x
+      hit(id)
+    end
+  end
+
+  local function gone(g, x) return graph.is_edge(x) and not g.nodes[x["$ref"]] end
+
+  local function drop_gone(g, v, at, problems)   -- v without its edges to removed nodes
+    if type(v) ~= "table" then return v end
+    local out = {}
+    if v[1] ~= nil then
+      for _, x in ipairs(v) do
+        if not gone(g, x) then out[#out + 1] = drop_gone(g, x, at, problems) end
+      end
+      return out
+    end
+    for k, x in pairs(v) do
+      if gone(g, x) then
+        if x.required ~= false then
+          local by = g.removed[x["$ref"]]
+          problems[#problems + 1] = at .. " needs " .. x["$ref"] ..
+            (by and (", which " .. by .. " removed") or ", which isn't there")
+        end
+      else
+        out[k] = drop_gone(g, x, at, problems)
+      end
+    end
+    return out
+  end
+
+  local function prune(g, problems)
+    local again = true
+    while again do
+      again = false
+      for id, n in pairs(g.nodes) do
+        if n.kind == "wrap" and not g.nodes[n.inner["$ref"]] then
+          g.nodes[id], g.removed[id] = nil, g.removed[n.inner["$ref"]]
+          again = true
+        end
+      end
+    end
+    for id, n in pairs(g.nodes) do g.nodes[id] = drop_gone(g, n, id, problems) end
+  end
+
+  local function cycles(g, problems)
+    local state = {}
+    local function visit(id, path)
+      if state[id] == "done" then return end
+      if state[id] == "on" then problems[#problems + 1] = "these hold each other: " .. path; return end
+      state[id] = "on"
+      graph.edges(g.nodes[id], function(e)
+        if g.nodes[e["$ref"]] then visit(e["$ref"], path .. " -> " .. e["$ref"]) end
+      end)
+      state[id] = "done"
+    end
+    for id in pairs(g.nodes) do visit(id, id) end
+  end
+
+  return function(pieces, extensions)        -- pieces[name] = a piece; extensions = { { name, t } }, in order
+    local g = { nodes = {}, entries = {}, removed = {}, log = {}, unmatched = {} }
+    for name, p in pairs(pieces) do
+      for id, n in pairs(p.nodes or {}) do g.nodes[name .. "/" .. id] = own(n, name) end
+      for k, e in pairs(p.entries or {}) do g.entries[k] = copy(e, name) end
+    end
+    for _, x in ipairs(extensions) do
+      for i, e in ipairs(x.t.edits or {}) do
+        if not ops[e.op] then error(x.name .. ": no edit called " .. tostring(e.op), 0) end
+        local hits = 0
+        ops[e.op](g, e, x.name, function(id)
+          hits = hits + 1
+          g.log[#g.log + 1] = { by = x.name, edit = i, op = e.op, at = id }
+        end, i)
+        if hits == 0 then g.unmatched[#g.unmatched + 1] = { by = x.name, edit = i } end
+      end
+      for id, n in pairs(x.t.nodes or {}) do g.nodes[x.name .. "/" .. id] = own(n, x.name) end
+    end
+    local problems = {}
+    prune(g, problems)
+    cycles(g, problems)
+    table.sort(problems)
+    return g, problems
+  end
+end
+```
+
+A transform sees the whole graph, the app's piece included, and matches nodes by what they are: the tracker's step goes after every step that hands chat's append the role "assistant", whatever the card called that step or whether it named it at all, so nothing is missed for lack of a card's cooperation. Names are one operator among several, kept for slots, which are named contracts, and for cards that want to offer a place by name. A wrap goes outside every earlier wrap of the same node, so several nest in install order, the last outermost; a replace puts the new thing inside the wraps, so a later replacement of the model still has the tracker's wrapper (if it had one) around it; a remove takes the wraps with it. Conflicts are settled by order, since each extension edits what those before it made; what order can't settle (an edge someone needs removed, a cycle) refuses the composition and names who did it, so the chat says which extensions can't run together instead of running a broken turn. The card's own extensions go first so that the person's see the card's final composition and a card can't undo what the person installed. Costs: composing tests every edit against every node, once per card version and installed set; a node id that other pieces hold is part of its piece's contract, the way an export name is.
+
+Custom code is an opaque node: the edits can't see into a module's source. It can only act through the references it holds, which are all edges, so a transform reaches every input, output and capability of it: it can wrap what the node is handed, wrap the node itself (seeing each call and what it returns), or insert next to it. Changing what it decides inside takes replacing the node, which the review shows, or patching its stored source, which is possible but breaks when the source changes. The owner calls this limitation a non-issue.
+
+## Gap 5, joining, option D: the review, the cache, the explanation
+
+```lua
+-- review.lua: what an install asks for, read off the edges its nodes and edits add
+return function(c)
+  local graph, words = c.graph, c.words     -- words(edit): the app's text for what an edit hands over
+  return function(install, t)               -- t: an extension's nodes and edits, or a card's piece
+    local needs, changes = {}, {}
+    for id, n in pairs(t.nodes or {}) do
+      if n.kind == "need" then
+        needs[id] = n
+      else
+        graph.edges(n, function(e)
+          local of = e["$ref"]:match("^([^/]+)/")
+          if of and of ~= install then        -- an edge out of this install: a dependency
+            needs[id .. " " .. e["$ref"] .. " " .. (e.export or "")] = { what = "export", of = of,
+              node = e["$ref"], export = e.export, required = e.required ~= false, why = e.why }
+          end
+        end)
+      end
+    end
+    for i, e in ipairs(t.edits or {}) do changes[i] = { text = words(e), why = e.why } end
+    return { needs = needs, changes = changes }
+  end
+end
+```
+
+```
+grant:install(install, review) -> decisions, or nil if the person refused
+  review = { needs = { [id] = a need }, changes = { { text, why }, ... } }
+  needs are as before: the host's text for each, the module's why apart. changes are what
+  the install's edits hand it, in the app's words (the root's), drawn apart from both.
+  Decisions are kept by package hash; an update asks only for a need that is new or
+  wider, and for a change whose edit is new.
+
+Necessary: an edit hands the extension what reaches the edited node (an inserted step
+gets the turn's context, which can carry references such as the page's sink in gap 1;
+a wrap gets every call to what it wraps), and only grant's answer installs, so it has
+to be in what grant asks.
+
+Assumes: what an install can do is what its own nodes hold.
+  Rules out: showing what reaches it through other modules' calls.
+  So: the review has a change for each edit.
+Assumes: the host words every item.
+  Rules out: describing an edit, whose format is the root's and which only content knows.
+  So: the root words changes, shown as the app's words; the host still words what it mints.
+Assumes: a change is reviewed as the nodes it reaches.
+  Rules out: installing once for every chat (decided), since the nodes depend on the card.
+  So: a change is reviewed as its match, once per package hash; each chat's explanation
+  names the nodes.
+
+Still restrictive:
+  the root's words for a change are believed; whoever writes the root holds all
+  authority anyway (core primitive 2);
+  the review says where an extension goes, not which cards that reaches.
+```
+
+This is the only change outside content, and it is to grant, a host module: grant:install took a manifest, and now takes the review the root derives. A need is one of the extension's need nodes (described by the host module that mints it, as before) or an edge from one of its nodes to another install's node (an export, described by what stands behind it, as a contract was through grant:provides). A change is an edit: what the edit adds is edges from other nodes to the extension's, and those are the calls that will reach its code. The capability review falls out of the edges a transform adds, so nothing in the extension's JSON says what to review, and nothing can be left out of it. A card's piece is reviewed the same way at import: its need nodes, its edges into the app's nodes, and its own extensions' edits.
+
+```lua
+-- root.lua under D: the app's piece, a card's, and the installed extensions, composed per card
+return function(caps)
+  local store, home, latest = caps.store, caps.home, caps.latest
+  local function pkg(name) return store:get(home, "pkg/" .. name) end      -- [host] { hash, source, piece, extension }
+  local function lib(name, given) return caps.sandbox:load(pkg(name).source, "lua", given) end   -- [core]
+  local json    = lib("json", {})
+  local sha256  = caps.sandbox:load(pkg("sha256").source, "wasm", {})      -- [core]
+  local graph   = lib("graph", { json = json, sha256 = sha256 })
+  local compose = lib("compose", { graph = graph,
+                                   match = lib("graph_match", { cond = lib("cond", {}), graph = graph }) })
+  local order   = lib("order", {})
+  local explain = lib("explain", { graph = graph })
+  local wire    = lib("wiring", { graph = graph, grant = caps.grant, sandbox = caps.sandbox, pkg = pkg }){
+    store = store, home = home, latest = latest, net = caps.net, clock = caps.clock }
+
+  local composed = {}                       -- by card version and installed set, in memory only
+  local function for_card(card)             -- card: its package, or nil for the app's own screens
+    local installs = latest:get("installed")   -- [host] { hash, names = { [name] = package hash } }
+    local key = (card and card.hash or "none") .. "/" .. installs.hash
+    if not composed[key] then
+      local pieces, list = { app = pkg("app").piece }, {}
+      local function add(xs, prefix)
+        for _, name in ipairs(order(xs)) do list[#list + 1] = { name = prefix .. name, t = xs[name] } end
+      end
+      if card then
+        pieces[card.name] = card.piece
+        add(card.extensions or {}, card.name .. ".")
+      end
+      local mine = {}
+      for name in pairs(installs.names) do mine[name] = pkg(name).extension end
+      add(mine, "")
+      local g, problems = compose(pieces, list)
+      composed[key] = { graph = g, problems = problems, run = problems[1] == nil and wire(g) or nil }
+    end
+    return composed[key]
+  end
+
+  caps.page:on(function(action, conn)                                       -- [host]
+    local chat = for_card(action.chat and pkg(store:get(action.chat, "chat/card")))   -- [host]
+    if action.type == "open" then
+      conn:send{ explained = explain(chat.graph), problems = chat.problems }  -- [host]
+    elseif chat.problems[1] then
+      conn:send{ problems = chat.problems }                                 -- [host]
+    elseif action.type == "send" then
+      local ctx = chat.run.entry("send"){ at = action.at, text = action.text, persona = action.persona }
+      conn:send{ at = ctx.at, reply = ctx.reply }                           -- [host]
+    elseif action.type == "swipe" then
+      local ctx = chat.run.entry("reply"){ at = store:parents(action.reply)[1] }   -- [host]
+      conn:send{ at = ctx.at, reply = ctx.reply }                           -- [host]
+    elseif action.type == "run" then
+      local item = chat.run.item(action.item)
+      if not item then error(action.item .. " isn't in this chat's slots", 0) end
+      item.run(action.at)
+      conn:send{}                                                           -- [host]
+    end
+  end)
+end
+```
+
+```json
+{ "send":  [ { "node": "ilse/user", "from": "ilse", "fn": "app/steps.append" },
+             { "node": "ilse/turn", "from": "ilse" } ],
+  "reply": [ { "node": "ilse/history", "from": "ilse", "fn": "app/steps.history" },
+             { "node": "ilse/lore", "from": "ilse", "fn": "app/steps.lore", "library": "ilse/library",
+               "scan": [ { "node": "tracker/main", "export": "scan", "by": "tracker", "edit": 3 } ] },
+             { "node": "ilse/prompt", "from": "ilse", "fn": "app/steps.prompt",
+               "notes": [ { "node": "tracker/main", "export": "note", "by": "tracker", "edit": 2 } ] },
+             { "node": "ilse/reply", "from": "ilse", "fn": "app/steps.reply" },
+             { "node": "ilse/store", "from": "ilse", "fn": "app/steps.append" },
+             { "node": "summarize/main", "export": "step", "by": "summarize", "edit": 1 },
+             { "node": "tracker/main", "export": "step", "by": "tracker", "edit": 1 } ],
+  "slots": { "message.actions": [ { "item": "tracker/recount", "label": "Recount time and affection", "by": "tracker" } ],
+             "settings": [ { "item": "tracker/panel", "label": "Tracker", "by": "tracker" } ] },
+  "unmatched": [],
+  "removed": [] }
+```
+
+The composed graph is a value, made by a pure function of the app's piece, the card's package and the installed set, so the root keeps it in memory by the card's hash and the installed set's hash, and nothing is stored per card: a card costs nothing until a chat with it opens. An install, an update or a removal changes the installed set's hash, and the next open composes again; values whose node hashes didn't change are reused. Because it's data before it runs, the final composition can always be shown and explained: explain.lua walks from the entries and the slot nodes and reports each node's piece, what it's made from, each edge an extension added (every added edge and node carries by), the edits that matched nothing, and what was removed and by whom; the open's reply carries it with the chat's values, in one response. What the page makes of it (a "what runs in this turn" view) is the owner's.
+
+## Gap 5, joining, option D: the tracker, and Ilse's own lore
+
+```json
+{ "name": "ilse", "version": "4.0.0",
+  "nodes": {
+    "library":   { "kind": "module", "pkg": "ilse-lore", "with": {
+                   "lorebooks": { "$ref": "lorebooks" }, "cond": { "$ref": "app/cond" } } },
+    "lorebooks": { "kind": "need", "what": "store", "of": "lore", "mode": "r", "required": true,
+                   "why": "Reads this card's lorebooks" },
+    "user":      { "kind": "call", "fn": { "$ref": "app/steps", "export": "append" }, "with": {
+                   "append": { "$ref": "app/chat", "export": "append" }, "role": "user" } },
+    "history":   { "kind": "call", "name": "history", "fn": { "$ref": "app/steps", "export": "history" }, "with": {
+                   "history": { "$ref": "app/chat", "export": "history" }, "speaker": "Ilse" } },
+    "lore":      { "kind": "call", "name": "lore", "fn": { "$ref": "app/steps", "export": "lore" }, "with": {
+                   "library": { "$ref": "library" },
+                   "books": [ "bestiary", "places", "capital", "story" ], "depth": 4 } },
+    "prompt":    { "kind": "call", "name": "prompt", "fn": { "$ref": "app/steps", "export": "prompt" }, "with": {
+                   "assemble": { "$ref": "app/prompt", "export": "assemble" },
+                   "at_depth": { "$ref": "app/prompt", "export": "at_depth" },
+                   "parts": [ { "$ref": "app/parts", "export": "description" },
+                              { "$ref": "app/parts", "export": "came_up" },
+                              { "$ref": "app/parts", "export": "history" } ] } },
+    "reply":     { "kind": "call", "name": "reply", "fn": { "$ref": "app/steps", "export": "reply" }, "with": {
+                   "model": { "$ref": "app/connections", "export": "model", "why": "Ilse's replies" } } },
+    "store":     { "kind": "call", "name": "store", "fn": { "$ref": "app/steps", "export": "append" }, "with": {
+                   "append": { "$ref": "app/chat", "export": "append" }, "role": "assistant" } },
+    "turn":      { "kind": "steps", "name": "reply", "steps": [
+                   { "$ref": "history" }, { "$ref": "lore" }, { "$ref": "prompt" },
+                   { "$ref": "reply" }, { "$ref": "store" } ] },
+    "send":      { "kind": "steps", "name": "send", "steps": [ { "$ref": "user" }, { "$ref": "turn" } ] } },
+  "entries": { "send": { "$ref": "send" }, "reply": { "$ref": "turn" } } }
+```
+
+```lua
+-- tracker.lua under D: judge, changes, recount and note as in "what every option shares"
+function T.step(ctx)                        -- inserted after the step that stores a character's reply
+  if ctx.stopped then return end            -- a reply the person stopped isn't judged
+  store:apply(ctx.at, changes(ctx.speaker, judge(ctx.reply)))                  -- [host]
+end
+function T.scan(ctx)                        -- the note's text, for lorebooks to scan too
+  local n = T.note(ctx)
+  return n and n.text
+end
+
+-- lore.lua's activate gains also, the step's extra text, and scans it with the messages:
+local scan = { at = ctx.at, speaker = ctx.speaker, active = {},
+               scanned = table.concat(recent, "\n") .. "\n" .. table.concat(also or {}, "\n") }
+-- ilse-lore.lua's activate gains also, and adds it to what the person said:
+for _, t in ipairs(also or {}) do said[#said + 1] = t end
+```
+
+```
+install  page: action { type = "install", pkg = { "$blob": "sha256:91d4…" } }
+         root: review("tracker", extension): needs store, chats, settings (its need nodes),
+         and exports of app: connections.model, kv; five changes
+         grant: one review: the host's text for the needs and for the model's providers,
+         the app's words for the changes (placeholders: "Runs after each step that stores a
+         character's reply, and gets everything that turn holds", "Adds a note to every
+         prompt the app's prompt step builds", "Adds text for lorebooks to scan in the app's
+         lore step", "Adds a button to messages", "Adds a section to settings"), each why
+         as the tracker's words. Allowed; decisions kept under tracker@sha256:91d4…;
+         latest "installed" gains tracker, with a new hash
+t=0      page: action { type = "open", chat = 790 }; chat/card at 790 is ilse
+         root: no composition for ilse's hash and this installed set: compose app and ilse,
+         then summarize, then tracker (it comes after summarize); nothing unmatched
+         reply: the chat's values and the explanation above, slots included, in one response
+t=1m     send: ilse/user, then the turn: history; lore, the tracker's text scanned with the
+         messages; prompt, the note 2 from the end; reply; store; summarize's step;
+         tracker.step. app/steps, app/chat and app/prompt were loaded once for every
+         composition; ilse's nodes once for this one
+press    as in every option: action { type = "run", item = "tracker/recount", at = 822 };
+         the root runs it only because a slot in this composition holds it
+```
+
+Ilse's lore library is a node of her piece, handed to the app's lore step through an edge, so the person's extensions reach it as they reach any card's: the tracker's scan text goes into its scan list because the step is made from app/steps.lore, which the match names, not because Ilse named anything. Her piece names her steps (history, lore, prompt, reply, store), which B needed and D doesn't.
+
+```json
+"lore": { "kind": "call", "name": "lore", "fn": { "$ref": "library", "export": "step" }, "with": {
+          "books": [ "bestiary", "places", "capital", "story" ], "depth": 4 } }
+```
+
+```lua
+-- ilse-lore.lua 4.1: the same activation, handed out as a step of its own
+function L.step(w)
+  return function(ctx) return { came_up = L.activate(ctx, w.books, w.depth) } end
+end
+```
+
+```
+Ilse 4.1 makes her lore step her own code: a new card hash, so a new composition
+t=0      open: the tracker's third edit matches nothing, since no node holds app/steps.lore;
+         the reply's explanation lists { by = "tracker", edit = 3 } as unmatched, and the
+         lore step as { node = "ilse/lore", fn = "ilse/library.step" }
+t=1m     send: the lore step runs Ilse's code; the note still goes in the prompt and the step
+         after the reply still runs, but lorebooks don't scan the note
+```
+
+When the card's lore step is opaque code, the person's extensions still reach everything it acts through: the lorebooks need and app/cond that ilse/library holds are edges (a wrap of app/cond sees every condition it checks), the step's place in the turn is a list member (an insert goes before or after it), and the step itself can be wrapped, which sees the ctx it's called with and the came_up it returns, so an extension can add to or filter what came up. What it can't reach is how Ilse decides what comes up from what it reads; for that an extension replaces the node, and the review says "Takes the place of" with the match, or patches ilse-lore's stored source, which is a new package hash for every Ilse version it patches. The scan didn't go in because the tracker's match described the app's lore step; an extension that wants every lore step whatever made it matches ["name", "lore"] or what the step holds, and wraps it.
+
+## Gap 5, joining, option D: what it rests on
+
+```
+compose.lua, graph_match.lua, wiring.lua, review.lua, explain.lua: content the root loads.
+Necessary: none of it. Interpreting the graph is sandbox:load and calls through references,
+which the root holds; the root is content, so a root with another graph format, or none,
+is another root, and the core is unchanged.
+
+Assumes: an extension finds its place by names a card gives.
+  Rules out: reaching a card whose author named nothing (A's and B's cost).
+  So: matches by kind, package, what a node is handed and the references it holds; a name
+  is one operator.
+Assumes: the composition is code that runs.
+  Rules out: showing, explaining or reviewing an extension's place before anything runs.
+  So: the composition is data, made by a pure function.
+Assumes: an extension edits only the card's turn.
+  Rules out: changing the app's own wiring (every model call, a UI slot).
+  So: one graph: the app's piece, the card's and every extension's.
+Assumes: edits from different extensions commute.
+  Rules out: knowing what two extensions at one place give.
+  So: a declared order, each extension editing what those before it made.
+Assumes: an edit can reach inside a code node.
+  Rules out: code nodes at all, or edits that parse code.
+  So: code nodes are opaque; every input, output and capability of one is an edge.
+Assumes: a composition per chat.
+  Rules out: opening a card's chats without composing and loading again for each.
+  So: per card version and installed set, in memory, with values shared by node hash.
+Assumes: adding an edge to another's node grants nothing.
+  Rules out: seeing that an inserted step gets the turn's context.
+  So: the review has a change for each edit (grant, above).
+
+Still restrictive:
+  what a code node decides inside is reached only by replacing the node or patching its
+  source (the owner: a non-issue);
+  a node id that other pieces hold is part of its piece's contract, like an export name;
+  nodes can't hold each other; two modules that call each other need one of them handed
+  the other later (a promise, or a directory module);
+  a removal that leaves a required edge refuses the composition, so two extensions can
+  be impossible together; the problems name them;
+  host nodes are the app's piece's alone; an extension asks for authority as a need node,
+  or holds an edge to an app node, and either way the review shows it.
+```
+
+The graph and its interpreter are content, as the root is. The one thing D changes outside content is grant:install's input, run through both tests above, because the review has to show what edits hand an extension and only grant's answer installs. Costs: composing once per card version and installed set; every edit is tested against every node; extension authors write matches, which are data but are a new thing to learn; and the review describes a match, not the cards it reaches, until a chat opens and explains itself.
+
 ## Gap 5, joining: upstream's hook points under each option
 
-| Upstream | A: hook library | B: named steps | C: wrapping |
-|---|---|---|---|
-| `generate_interceptor` in the manifest, called with the chat, the context size, an abort and the generation type | An entry on a point before the prompt, returning a changed history; abort is raising | A wrap of "history" | A wrapper of chat.history |
-| `setExtensionPrompt(key, value, position, depth, scan, role)` | An entry on prompt.notes returning { depth, role, text }; scan is an entry on lore's point that adds its text to what's scanned | A wrap of "prompt" using prompt.at_depth; scan is a wrap of "lore" | A model wrapper; scan has no reference to wrap unless lore is one the card is handed |
-| Post-reply processing on `MESSAGE_RECEIVED`, `CHARACTER_MESSAGE_RENDERED` | An after_reply entry | An edit after "store" | A wrapper of chat.append, or store:watch on chat/ |
-| Message toolbar buttons (`.extraMesButtons`) | The message.actions slot, in every option | | |
-| Settings panels (`#extensions_settings`) | The settings slot, in every option | | |
-| Slash commands (`SlashCommandParser.addCommandObject`) | The commands slot, in every option | | |
-| Other `eventSource` events | A point per event, where the card runs it | A step to go after | store:watch or latest:watch, or a wrapper of what the event was about |
-| `loading_order`, `dependencies`, `requires`, `optional` | "after"; needs on another install's exports; optional needs | The same | The same |
+| Upstream | A: hook library | B: named steps | C: wrapping | D: the graph (decided) |
+|---|---|---|---|---|
+| `generate_interceptor` in the manifest, called with the chat, the context size, an abort and the generation type | An entry on a point before the prompt, returning a changed history; abort is raising | A wrap of "history" | A wrapper of chat.history | A wrap of every step that holds chat's history, returning a changed history; abort is raising |
+| `setExtensionPrompt(key, value, position, depth, scan, role)` | An entry on prompt.notes returning { depth, role, text }; scan is an entry on lore's point that adds its text to what's scanned | A wrap of "prompt" using prompt.at_depth; scan is a wrap of "lore" | A model wrapper; scan has no reference to wrap unless lore is one the card is handed | An insert into the notes of every step that holds prompt's assemble; scan is an insert into the scan list of every app lore step, and a wrap where a card's lore step is its own code |
+| Post-reply processing on `MESSAGE_RECEIVED`, `CHARACTER_MESSAGE_RENDERED` | An after_reply entry | An edit after "store" | A wrapper of chat.append, or store:watch on chat/ | An insert after every step that hands chat's append the role "assistant" |
+| Message toolbar buttons (`.extraMesButtons`) | The message.actions slot, in A, B and C | | | An item node inserted into the message.actions slot node |
+| Settings panels (`#extensions_settings`) | The settings slot, in A, B and C | | | An item node inserted into the settings slot node |
+| Slash commands (`SlashCommandParser.addCommandObject`) | The commands slot, in A, B and C | | | An item node inserted into the commands slot node |
+| Other `eventSource` events | A point per event, where the card runs it | A step to go after | store:watch or latest:watch, or a wrapper of what the event was about | An insert next to the step that causes it, or a wrap of the node it was about; a change to state is store:watch or latest:watch |
+| `loading_order`, `dependencies`, `requires`, `optional` | "after"; needs on another install's exports; optional needs | The same | The same | "after"; an edge to another install's node; "required": false on an edge or a need node |
 
-Upstream extensions aren't supported (project rule), so this is where each purpose lands, not a compatibility layer. In every option a page event that upstream broadcasts becomes the action that caused it, and a change to state is a watch (gap 4), so nothing here needs an event bus.
+Upstream extensions aren't supported (project rule), so this is where each purpose lands, not a compatibility layer. In D an upstream hook is never a place a card has to provide: the match finds the step by what it holds. In every option a page event that upstream broadcasts becomes the action that caused it, and a change to state is a watch (gap 4), so nothing here needs an event bus.
 
 ## Gap 5, joining: what each option costs
 
-A keeps the card in charge of where extensions run and is closest to what extension authors know; it costs a vocabulary of point names, a registry read every turn, and extensions that silently miss a card that doesn't run their point. B makes the turn a value that is composed once, inspected and explained, and reports an extension that found no place; it costs card authors naming their steps and limits extensions to going after or around a step. C needs nothing from cards and adds no concept to the model; it costs extensions seeing only what passes through a reference, so a prompt note that needs the turn's context has to infer it, and it rules out parallel turns in one chat for stateful wrappers. The UI slots, the manifest's needs, ordering by "after", and how a card's brought modules are reviewed are the same in all three. In none does a choice add to the core, and in each, whether the person can turn an installed extension off for one card is a key the root reads (the owner's, as a UX decision). Which option, or which mix (B's named steps with C's wrappers for cards that name none), is the owner's.
+A keeps the card in charge of where extensions run and is closest to what extension authors know; it costs a vocabulary of point names, a registry read every turn, and extensions that silently miss a card that doesn't run their point. B makes the turn a value that is composed once, inspected and explained, and reports an extension that found no place; it costs card authors naming their steps and limits extensions to going after or around a step. C needs nothing from cards and adds no concept to the model; it costs extensions seeing only what passes through a reference, so a prompt note that needs the turn's context has to infer it, and it rules out parallel turns in one chat for stateful wrappers. The UI slots, the manifest's needs, ordering by "after", and how a card's brought modules are reviewed are the same in all three. In none of the three does a choice add to the core, and in each, whether the person can turn an installed extension off for one card is a key the root reads (the owner's, as a UX decision). The owner chose D (decisions of 11-14), which has each of the three as a special case and drops their limits on reach: it finds a card's steps by what they hold rather than by names, reaches the app's wiring as well as the turn, composes once into a value that is explained and reviewed from its edges, and reaches custom code through every edge it holds. Its own costs are under "what it rests on"; it adds nothing to the core, and its one change outside content is to grant:install's input.
 
 ## Gap 6, lifetime outside the store: pins, leases, release
 
@@ -2061,7 +2868,7 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 | What a module asks for, reviewed at install; presets | Needs in its manifest; grant:install, with presets and first-match rules the person writes |
 | What a grant allows, in words | describe on the host module that mints it, followed through providers for content |
 | An admin's limits per person | What that person's grant holds (grant:narrow) |
-| Extensions in every chat, a card's own, their buttons and settings | Gap 5: UI slots as declared data; the turn by option A, B or C, the owner's |
+| Extensions in every chat, a card's own, their buttons and settings | Gap 5, option D: the app's wiring is a graph, a card ships its piece, an extension is a transform of it; buttons and settings are item nodes in slot nodes |
 | Regex, Unicode, tokenizers, zip, PDF | wasm modules, the same build on both sides |
 | Local models, video, a headless browser | Host modules: infer, proc, browser |
 | Code editor, graph view (libraries needing a DOM) | The display handle's surface: the owner's decision |
@@ -2074,10 +2881,8 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 
 ## Questions still open
 
-Decided: modules are Lua, run by LuaJIT on the server and compiled to JavaScript on the page, which the browser's engine JITs, with the compiler deciding every name code can reach; the pure-computation libraries (regex, Unicode, tokenizers, zip, PDF) are wasm, one build for both sides (gap 8).
+Decided: modules are Lua, run by LuaJIT on the server and compiled to JavaScript on the page, which the browser's engine JITs, with the compiler deciding every name code can reach; the pure-computation libraries (regex, Unicode, tokenizers, zip, PDF) are wasm, one build for both sides (gap 8). Question 5, how installed extensions and a card's own join a card's turn, is answered by option D: the composition is data, a graph the root interprets, which a card ships a piece of and an extension transforms (gap 5).
 
-2. **How does someone who doesn’t program build things?** a. Libraries in a module language that read data, as cond.lua reads ["all", …] · b. A declarative form the core itself evaluates, so it can index and explain it without running code. This puts a language in the core, which then has to pass both tests above
-
-5. **How do installed extensions and a card's own join a card's turn?** a. A hook library of named points the card runs · b. Steps the card names, which extensions' edits go after or around · c. Extensions wrapping the references a card is handed (gap 5)
+2. **How does someone who doesn’t program build things?** a. Libraries in a module language that read data, as cond.lua reads ["all", …] · b. A declarative form the core itself evaluates, so it can index and explain it without running code. This puts a language in the core, which then has to pass both tests above. Option D (gap 5) already makes a card's composition data the root explains without running it, with no language in the core; what a code node does inside is still code
 
 Left out: how much control the model gets over state. Each card or world decides that for itself.

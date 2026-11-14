@@ -15,6 +15,14 @@ choice made is marked as such.
 - **How extensions join.** Both: what the person installs applies to every chat; a card can bring its own. Owner: "why
   no hooks? of course, idk if hooks should be *built in*, not sure what's the best arch". Hooks are not in the core;
   whether a hook library (named wrap points, as content) is the shape is to be drafted as options.
+- **How extensions join, the shape** (option D, chosen over the drafted A, B and C; owner: "it *is* what i was
+  thinking of more or less"): the composition itself is data. The root's wiring is one graph the root interprets:
+  which modules exist, what each is handed, how a card's turn is composed, and how the app's UI slots are filled. A
+  card ships its piece of the graph; an extension is a transform of the graph that can insert, wrap, replace or remove
+  any node and add edges, applied in a declared order. A transform sees the whole graph and matches nodes by what they
+  are, not only by names. The capability review falls out of the edges a transform adds, and the final composition
+  can always be shown and explained. Custom code is an opaque node reached through the references it holds; changing
+  what it decides inside takes replacing the node or patching its source, which the owner calls a non-issue.
 - **Tabs and branch switches.** Settled by the tab sessions design: what a tab shows is that tab's session state, so
   tabs are independent. Owner: "isnt this fucking decided by fucking sessions design".
 - **Connection settings** wait for the state model: a connection is which adapter module holds which key.
