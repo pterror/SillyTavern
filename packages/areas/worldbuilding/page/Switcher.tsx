@@ -15,8 +15,9 @@ export type ShownWorld = {
     name: string;
     picture: string | null;
     usedInEveryChat: boolean;
-    // A character's own lorebook can't be renamed, duplicated, exported or deleted as a world.
-    ownBook: boolean;
+    // The character whose own lorebook this is: it can't be renamed, duplicated or exported as a world, and deleting
+    // it takes it off the character.
+    ownBookOf: string | null;
 };
 
 export function chooseFile(accept: string): Promise<File | null> {
@@ -151,7 +152,7 @@ function WorldsMenu(props: {
                 {(world) => (
                     <>
                         <hr />
-                        <Show when={!world.ownBook}>
+                        <Show when={world.ownBookOf === null}>
                             <label class="list-group-item checkbox_label" role="none">
                                 <input
                                     type="checkbox"
@@ -193,7 +194,7 @@ function WorldsMenu(props: {
                                 {t('Remove the picture')}
                             </button>
                         </Show>
-                        <Show when={!world.ownBook}>
+                        <Show when={world.ownBookOf === null}>
                             <button
                                 class="list-group-item"
                                 type="button"
@@ -223,27 +224,33 @@ function WorldsMenu(props: {
                             >
                                 {t('Export')}
                             </button>
-                            <button
-                                type="button"
-                                role="menuitem"
-                                class="list-group-item wb-danger"
-                                onClick={() =>
-                                    run(async () => {
-                                        const sure = await ask(
-                                            {
-                                                kind: 'confirm',
-                                                message: fill(t('Delete the world ${0}?'), world.name),
-                                                detail: t('Its entries are deleted with it.'),
-                                            },
-                                            t,
-                                        );
-                                        if (sure) await wb.act('worldbuilding.deleteWorld', { book: world.id });
-                                    })
-                                }
-                            >
-                                {t('Delete')}
-                            </button>
                         </Show>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            class="list-group-item wb-danger"
+                            onClick={() =>
+                                run(async () => {
+                                    const sure = await ask(
+                                        world.ownBookOf === null
+                                            ? {
+                                                  kind: 'confirm',
+                                                  message: fill(t('Delete the world ${0}?'), world.name),
+                                                  detail: t('Its entries are deleted with it.'),
+                                              }
+                                            : {
+                                                  kind: 'confirm',
+                                                  message: fill(t('Remove the lorebook from ${0}?'), world.ownBookOf),
+                                                  detail: t('Its entries are deleted with it.'),
+                                              },
+                                        t,
+                                    );
+                                    if (sure) await wb.act('worldbuilding.deleteWorld', { book: world.id });
+                                })
+                            }
+                        >
+                            {world.ownBookOf === null ? t('Delete') : fill(t('Remove from ${0}'), world.ownBookOf)}
+                        </button>
                     </>
                 )}
             </Show>

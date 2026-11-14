@@ -17,7 +17,7 @@ export const LENGTH_REFUSAL = 'A world\'s name can be at most 250 bytes long.';
 const MAX_NAME_BYTES = 250;
 export const EMBEDDED_NAME_REFUSAL = `"${EMBEDDED_WORLD_NAME}" is kept for the lorebooks embedded in characters.`;
 const CARD_COPY_REFUSAL = 'This is a copy of a character\'s embedded lorebook; the character keeps its own.';
-export const CARD_BOOK_REFUSAL = 'A character\'s own lorebook stays with its character: it isn\'t renamed, copied, deleted, exported or used in every chat.';
+export const CARD_BOOK_REFUSAL = 'A character\'s own lorebook stays with its character: it isn\'t renamed, copied, exported or used in every chat.';
 // The world's description: a field of the book, carried by a world file and by a card's book as `description`.
 const DESCRIPTION_FIELD = 'description';
 
@@ -331,7 +331,7 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
             const key = await worldKey(lib, id);
             if (key === null) return 'missing';
             const { renamed } = await booksChanged(who.user, async () => {
-                const done = await lib.books.rename(key, name, { relink: true });
+                const done = await lib.books.rename(key, name);
                 return { renamed: done, choosers: done === 'ok' ? await lib.books.choosers(id) : [] };
             });
             if (renamed === 'taken') return { refused: takenRefusal(name) };
@@ -355,10 +355,15 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
         },
         async deleteWorld({ user }, book) {
             const lib = await libOf(user);
-            if ((await lib.books.bookForm(BigInt(book)))?.form === 'card') return { refused: CARD_BOOK_REFUSAL };
+            const worlds = await worldsOf(lib);
+            const [entity] = await lib.entities([BigInt(book)]);
+            const owner = entity ? characterOfBook(entity) : null;
+            if (owner !== null) {
+                const removed = await lib.removeCharacterBook(owner);
+                return removed === 'ok' ? { next: worlds[0] === undefined ? null : String(worlds[0].id) } : 'missing';
+            }
             const key = await worldKey(lib, BigInt(book));
             if (key === null) return 'missing';
-            const worlds = await worldsOf(lib);
             const at = worlds.findIndex(w => w.key === key);
             const next = worlds[at + 1] ?? worlds[at - 1] ?? null;
             const { deleted } = await booksChanged(user, async () => {

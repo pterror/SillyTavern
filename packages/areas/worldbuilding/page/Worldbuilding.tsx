@@ -264,7 +264,7 @@ function Page(props: Props) {
                                       name: shownWorld()?.name ?? '',
                                       picture: shownWorld()?.picture ?? null,
                                       usedInEveryChat: shownWorld()?.usedInEveryChat ?? false,
-                                      ownBook: shownWorld()?.cameWith !== null,
+                                      ownBookOf: shownWorld()?.cameWith?.text ?? null,
                                   }
                                 : null
                         }

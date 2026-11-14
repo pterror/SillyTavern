@@ -83,7 +83,6 @@ test('the character\'s own book opens as a world, is never listed among them, an
     for (const refused of [
         await ports.renameWorld(who, id, 'Other'),
         await ports.duplicateWorld(who, id),
-        await ports.deleteWorld(who, id),
         await ports.exportWorld(uiUser, id),
         await ports.setUsedInEveryChat(who, [{ book: id, used: true }]),
     ]) assert.deepEqual(refused, { refused: CARD_BOOK_REFUSAL });
@@ -152,4 +151,29 @@ test('the character\'s own book has relation kinds and relations, carried in the
     assert.deepEqual(exported.entries[0].extensions.relations.map((/** @type {any} */ r) => [r.kind, r.target]), [[kind, 1]]);
     const shown = await read(String(id), String(inn));
     assert.deepEqual(shown.relations.map((/** @type {any} */ r) => r.kindName), ['is in']);
+});
+
+test('deleting the character\'s own book takes it off the card, with the figures that covered it, in one commit', async () => {
+    const card = { spec: 'chara_card_v2', spec_version: '2.0', name: 'Oda', data: { name: 'Oda', description: '', character_book: { entries: [{ id: 0, keys: ['x'], content: 'X.', enabled: true, insertion_order: 100, extensions: {} }] } } };
+    await lib.writeCard(user.directories, 'oda', JSON.stringify(card));
+    const [oda] = await lib.ids(TYPE.character, ['oda']);
+    const id = /** @type {string} */ (await ports.characterBook(uiUser, String(oda)));
+    const commits = [];
+    const commit = lib.store.commit.bind(lib.store);
+    lib.store.commit = async (/** @type {object[]} */ records) => {
+        commits.push(records);
+        return commit(records);
+    };
+    try {
+        assert.deepEqual(await ports.deleteWorld(who, id), { next: plain });
+    } finally {
+        lib.store.commit = commit;
+    }
+    assert.equal(commits.length, 1);
+    assert.equal(/** @type {any} */ ((await lib.cards(['oda']))[0]).data.character_book, undefined);
+    assert.equal(await ports.characterBook(uiUser, String(oda)), null);
+    const [after] = await lib.entities([oda]);
+    const { computeContentIdentityHash } = await import('../card-identity-hash.js');
+    assert.equal(after?.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex'), computeContentIdentityHash(/** @type {any} */ ((await lib.cards(['oda']))[0])));
+    assert.equal(await ports.deleteWorld(who, id), 'missing');
 });

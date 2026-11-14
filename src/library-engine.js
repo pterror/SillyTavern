@@ -1201,6 +1201,30 @@ export class LibraryEngine {
     }
 
     /**
+     * Takes the character's own lorebook off its card, with the figures that covered it, in one commit.
+     * @param {bigint} id
+     * @returns {Promise<'ok' | 'missing' | 'none'>}
+     */
+    async removeCharacterBook(id) {
+        const [found] = await this.entities([id]);
+        if (!found || found.type !== TYPE.character) return 'missing';
+        return this.serialized(TYPE.character, found.key, async () => {
+            const [e] = await this.entities([id]);
+            if (!e || e.type !== TYPE.character) return 'missing';
+            const records = await this.books.ownedRecords(id, SLOT.characterBook, undefined);
+            if (records.length === 0) return 'none';
+            const card = assembleCard(cardParts(e));
+            const hex = computeContentIdentityHash(card);
+            if (e.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex') !== hex) records.push({ kind: 'cardHash', entity: id, which: HASH.identity, hash: Buffer.from(hex, 'hex') });
+            const { getCharaCardV2 } = await import('./character-card-normalize.js');
+            const size = calculateDataSize(getCharaCardV2(card, false).data ?? {});
+            if (e.dataSize !== size) records.push({ kind: 'dataSize', entity: id, size });
+            await this.store.commit(records);
+            return 'ok';
+        });
+    }
+
+    /**
      * @param {StoredEntity} e
      * @returns {Promise<object | null>}
      */
