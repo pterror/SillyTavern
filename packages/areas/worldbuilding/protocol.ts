@@ -313,6 +313,7 @@ export type Placement = v.InferOutput<v.ObjectSchema<typeof placementFields, und
 export type OpenEntryView = EntryAt & {
     deleted: false;
     entryKey: string;
+    version: EntryVersion;
     label: Named;
     picture: string | null;
     title: string | null;
@@ -422,7 +423,30 @@ export type Chip = { kind: string; target: string; depth: Depth };
 
 // What a drawn card or row shows of how the entry comes into the prompt. `comesIn`: upstream's `constant` and `disable`;
 // `chance` is null when it comes in every time; `tokens` is null unless the view's rows show it.
+// An entry's version: an edit names the one it was made against.
+export type EntryVersion = string;
+
+// An edit that can't merge with what another tab changed since its version: the version the entry now is, and each
+// field both changed (its path in the entry, as `content` or `characterFilter.isExclude`), with both sides' values. For
+// a text field, `merged` holds both texts laid together and `diff` runs from mine to theirs, word by word.
+export type EntryConflict = {
+    book: string;
+    entry: string;
+    version: EntryVersion;
+    fields: ConflictField[];
+};
+export type ConflictField = {
+    field: string;
+    mine: unknown;
+    theirs: unknown;
+    merged: string | null;
+    diff: DiffRun[] | null;
+};
+export type DiffRun = { text: string; in: 'both' | 'mine' | 'theirs' };
+export type ConflictAnswer = { conflict: EntryConflict };
+
 export type EntryFacts = {
+    version: EntryVersion;
     comesIn: 'always' | 'broughtUp' | 'never';
     keysecondary: string[];
     selectiveLogic: Placement['selectiveLogic'];
@@ -597,6 +621,9 @@ const betweenMembers = { after: v.nullable(entityId), before: v.nullable(entityI
 const relationNamed = { book: entityId, entry: entityId, kind: kindId, target: entityId };
 
 const entryNamed = { book: entityId, entry: entityId };
+// `version`: the entry's version the edit was made against.
+const entryVersion = v.pipe(v.string(), v.regex(/^\d{1,20}$/));
+const editedEntry = { ...entryNamed, version: entryVersion };
 const worldName = v.pipe(v.string(), v.trim(), v.minLength(1, 'Enter a world name.'));
 const fitsOneEntry = <T extends { layout: OverviewLayout }>(read: T) => readFitsTheBudget(1, read.layout);
 // `ahead`: how many top-level entries the page wants read to begin with, as many as fill some screens of it.
@@ -708,17 +735,23 @@ export const actions = {
         from: v.nullable(cursor),
         pages: v.pipe(positiveWholeNumber, v.maxValue(MENTION_PAGES_AT_MOST)),
     }),
-    'worldbuilding.setEntryText': v.object({ ...entryNamed, text: v.string() }),
-    'worldbuilding.setEntryTitle': v.object({ ...entryNamed, title: v.string() }),
-    'worldbuilding.addKeys': v.object({ ...entryNamed, keys: v.pipe(v.array(keyText), v.minLength(1)), as: keyAs }),
-    'worldbuilding.renameKey': v.object({ ...entryNamed, key: keyText, to: keyText }),
-    'worldbuilding.setKeyAs': v.object({ ...entryNamed, key: keyText, as: keyAs }),
-    'worldbuilding.removeKey': v.object({ ...entryNamed, key: keyText }),
+    'worldbuilding.setEntryText': v.object({ ...editedEntry, text: v.string() }),
+    'worldbuilding.setEntryTitle': v.object({ ...editedEntry, title: v.string() }),
+    // `version` null: keys added to an entry not read, as it is.
+    'worldbuilding.addKeys': v.object({
+        ...entryNamed,
+        version: v.nullable(entryVersion),
+        keys: v.pipe(v.array(keyText), v.minLength(1)),
+        as: keyAs,
+    }),
+    'worldbuilding.renameKey': v.object({ ...editedEntry, key: keyText, to: keyText }),
+    'worldbuilding.setKeyAs': v.object({ ...editedEntry, key: keyText, as: keyAs }),
+    'worldbuilding.removeKey': v.object({ ...editedEntry, key: keyText }),
     'worldbuilding.showKeySharers': v.object({ ...entryNamed, key: keyText }),
     'worldbuilding.suggestKeys': v.object({ book: entityId, typed: v.string() }),
-    'worldbuilding.setPlacement': v.object({ ...entryNamed, fields: placementChange }),
+    'worldbuilding.setPlacement': v.object({ ...editedEntry, fields: placementChange }),
     'worldbuilding.changeCharacterFilter': v.object({
-        ...entryNamed,
+        ...editedEntry,
         change: v.union([
             v.strictObject({ exclude: v.boolean() }),
             v.strictObject({ add: filterItem }),

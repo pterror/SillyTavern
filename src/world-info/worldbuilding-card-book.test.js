@@ -18,6 +18,13 @@ after(() => user.close());
 const lib = user.store.lib;
 const uiUser = /** @type {import('@st/server-ui').User} */ ({ handle: 'u', directories: user.directories });
 const who = { user: uiUser, session: 's' };
+/**
+ * An edit made against the entry as it is now
+ * @param {string} book
+ * @param {string} entry
+ * @param {import('@st/worldbuilding/server').EntryEdit} change
+ */
+const edit = async (book, entry, change) => ports.editEntry(who, book, entry, change, (await ports.readFacts(uiUser, book, [entry], false))[0]?.version ?? '0');
 const ports = {
     ...worldbuildingWorldPorts({ libOf: async () => lib, booksChanged: async (_user, change) => change() }),
     ...worldbuildingEntryPorts({
@@ -106,11 +113,11 @@ test('the page\'s edits of the character\'s own book write the card\'s fields, a
     const [before] = await lib.entities([nia]);
     const hashBefore = before?.hashes.find(h => h.which === HASH.identity)?.hash.toString('hex');
 
-    assert.equal(await ports.editEntry(who, id, inn, { change: 'text', text: 'An inn by the bridge.' }), 'ok');
-    assert.equal(await ports.editEntry(who, id, inn, { change: 'title', title: 'The Lantern' }), 'ok');
-    assert.equal(await ports.editEntry(who, id, inn, { change: 'setKeyAs', key: 'Lantern Inn', as: 'name' }), 'ok');
-    assert.equal(await ports.editEntry(who, id, river, { change: 'placement', fields: { disable: false, order: 7, probability: 40 } }), 'ok');
-    assert.deepEqual(await ports.editEntry(who, id, river, { change: 'placement', fields: { characterFilter: { isExclude: false, names: ['Nia'], tags: [] } } }), { refused: NOT_IN_CARD_BOOKS('characterFilter') });
+    assert.equal(await edit(id, inn, { change: 'text', text: 'An inn by the bridge.' }), 'ok');
+    assert.equal(await edit(id, inn, { change: 'title', title: 'The Lantern' }), 'ok');
+    assert.equal(await edit(id, inn, { change: 'setKeyAs', key: 'Lantern Inn', as: 'name' }), 'ok');
+    assert.equal(await edit(id, river, { change: 'placement', fields: { disable: false, order: 7, probability: 40 } }), 'ok');
+    assert.deepEqual(await edit(id, river, { change: 'placement', fields: { characterFilter: { isExclude: false, names: ['Nia'], tags: [] } } }), { refused: NOT_IN_CARD_BOOKS('characterFilter') });
     const made = await ports.createEntry(who, id, { after: river, name: 'Bridge', relation: null }, 100);
     assert.ok(typeof made === 'object' && 'entry' in made);
 
@@ -181,10 +188,10 @@ test('every write of the character\'s own book carries the card\'s identity hash
         return done;
     };
     try {
-        assert.equal(await ports.editEntry(who, id, harbour, { change: 'text', text: 'The old harbour.' }), 'ok');
-        assert.equal(await ports.editEntry(who, id, harbour, { change: 'title', title: 'Harbour' }), 'ok');
-        assert.equal(await ports.editEntry(who, id, harbour, { change: 'addKeys', keys: ['quay'], as: 'trigger' }), 'ok');
-        assert.equal(await ports.editEntry(who, id, ferry, { change: 'placement', fields: { order: 3 } }), 'ok');
+        assert.equal(await edit(id, harbour, { change: 'text', text: 'The old harbour.' }), 'ok');
+        assert.equal(await edit(id, harbour, { change: 'title', title: 'Harbour' }), 'ok');
+        assert.equal(await edit(id, harbour, { change: 'addKeys', keys: ['quay'], as: 'trigger' }), 'ok');
+        assert.equal(await edit(id, ferry, { change: 'placement', fields: { order: 3 } }), 'ok');
         const made = await ports.createEntry(who, id, { after: ferry, name: 'Pier', relation: null }, 100);
         assert.ok(typeof made === 'object' && 'entry' in made);
         const kind = await lib.books.createRelationKind(BigInt(id), 'near');

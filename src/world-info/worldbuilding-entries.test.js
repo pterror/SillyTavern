@@ -14,6 +14,13 @@ const user = await emptyUser('st-worldbuilding-entries-test-');
 const lib = user.store.lib;
 const uiUser = /** @type {import('@st/server-ui').User} */ ({ handle: 'u', directories: user.directories });
 const who = { user: uiUser, session: 's' };
+/**
+ * An edit made against the entry as it is now
+ * @param {string} book
+ * @param {string} entry
+ * @param {import('@st/worldbuilding/server').EntryEdit} change
+ */
+const edit = async (book, entry, change) => ports.editEntry(who, book, entry, change, (await ports.readFacts(uiUser, book, [entry], false))[0]?.version ?? '0');
 const ports = worldbuildingEntryPorts({
     libOf: async () => lib,
     referencesOf: async () => new References(lib, { defaults: matchDefaultsOf(worldInfoGlobalsOf(undefined)) }),
@@ -118,28 +125,28 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
     assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Ilse', limit: 0 }), { entries: [], more: true });
     assert.deepEqual(await ports.readKeySharers(uiUser, { book: B, entry: first, key: 'Varro', limit: 5 }), { entries: [], more: false });
     assert.equal(await ports.readKeySharers(uiUser, { book: '424242', entry: first, key: 'Ilse', limit: 5 }), null);
-    assert.equal(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'Ilse', as: 'name' }), 'ok');
+    assert.equal(await edit(B, first, { change: 'setKeyAs', key: 'Ilse', as: 'name' }), 'ok');
     let linked = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(linked && !linked.deleted);
     assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 13, picture: '/look-images/p1' }, { entry: first, from: 14, to: 19, picture: '/look-images/p1' }], 'every name links where it is written, with the picture of what it names');
-    assert.equal(await ports.editEntry(who, B, first, { change: 'addKeys', keys: ['Ilse Varro'], as: 'name' }), 'ok');
+    assert.equal(await edit(B, first, { change: 'addKeys', keys: ['Ilse Varro'], as: 'name' }), 'ok');
     linked = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(linked && !linked.deleted);
     assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 19, picture: '/look-images/p1' }], 'of names written over each other, the longest that starts first links');
-    assert.equal(await ports.editEntry(who, B, first, { change: 'removeKey', key: 'Ilse Varro' }), 'ok');
-    assert.equal(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'Ilse', as: 'trigger' }), 'ok');
+    assert.equal(await edit(B, first, { change: 'removeKey', key: 'Ilse Varro' }), 'ok');
+    assert.equal(await edit(B, first, { change: 'setKeyAs', key: 'Ilse', as: 'trigger' }), 'ok');
 
-    assert.equal(await ports.editEntry(who, B, second, { change: 'addKeys', keys: ['The Lantern House'], as: 'name' }), 'ok');
+    assert.equal(await edit(B, second, { change: 'addKeys', keys: ['The Lantern House'], as: 'name' }), 'ok');
     read = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(read && !read.deleted);
     assert.deepEqual(read.label, { thing: second, text: 'The Lantern House', shownAs: 'name' });
-    assert.equal(await ports.editEntry(who, B, second, { change: 'removeKey', key: 'Ilse' }), 'ok');
+    assert.equal(await edit(B, second, { change: 'removeKey', key: 'Ilse' }), 'ok');
     assert.deepEqual(/** @type {any} */ (await ports.readEntry(uiUser, B, first, FIRST)).keys[0], { text: 'Ilse', isName: false, alsoBringsUp: 0 });
-    assert.equal(await ports.editEntry(who, B, first, { change: 'placement', fields: { depth: 4 } }), 'ok');
+    assert.equal(await edit(B, first, { change: 'placement', fields: { depth: 4 } }), 'ok');
     assert.equal(/** @type {any} */ (await ports.readEntry(uiUser, B, first, FIRST)).placementDiffersFromDefaults, false);
-    assert.deepEqual(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'nope', as: 'name' }), { refused: 'That entry has no such key.' });
-    assert.equal(await ports.editEntry(who, String(other), first, { change: 'text', text: '' }), 'no entry');
-    assert.equal(await ports.editEntry(who, B, first, { change: 'text', text: 'Varro keeps the lamp.' }), 'ok');
+    assert.deepEqual(await edit(B, first, { change: 'setKeyAs', key: 'nope', as: 'name' }), { refused: 'That entry has no such key.' });
+    assert.equal(await edit(String(other), first, { change: 'text', text: '' }), 'no entry');
+    assert.equal(await edit(B, first, { change: 'text', text: 'Varro keeps the lamp.' }), 'ok');
     assert.equal((await lib.books.read('Entries')).entries[1].content, 'Varro keeps the lamp.');
 
     const made = await ports.createEntry(who, B, { after: first, name: 'Saltmarrow', relation: { kind: String(IN), target: second } }, 100);
@@ -167,7 +174,7 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
     assert.ok(back && !back.deleted);
     assert.deepEqual(back.keys.map(k => [k.text, k.alsoBringsUp]), [['house', 0], ['The Lantern House', 0]]);
     assert.equal(await ports.restoreEntry(who, B, second), 'no entry');
-    await ports.editEntry(who, B, first, { change: 'addKeys', keys: ['house'], as: 'trigger' });
+    await edit(B, first, { change: 'addKeys', keys: ['house'], as: 'trigger' });
     assert.deepEqual(/** @type {any} */ (await ports.readEntry(uiUser, B, second, FIRST)).keys[0], { text: 'house', isName: false, alsoBringsUp: 1 }, 'a restored entry\'s keys count again');
 
     const moved = await ports.moveEntryToWorld(who, B, first, String(other));
@@ -223,7 +230,7 @@ test('an entry\'s character filter is stored in upstream\'s form and shown by th
     const [{ entity }] = await lib.books.storedEntries(book);
     const [B, E] = [String(book), String(entity.id)];
     for (const filter of [{ add: { character: 'Wren' } }, { add: { character: 'Gone' } }, { add: { tag: npc } }, { exclude: true }, { add: { character: 'Wren' } }]) {
-        assert.equal(await ports.editEntry(who, B, E, { change: 'characterFilter', filter }), 'ok');
+        assert.equal(await edit(B, E, { change: 'characterFilter', filter }), 'ok');
     }
     assert.deepEqual(asWorld(await lib.books.entryIn(book, entity.id)).characterFilter, { isExclude: true, names: ['Gone', 'Wren'], tags: [npc] });
     const read = /** @type {any} */ (await ports.readEntry(uiUser, B, E, FIRST));
@@ -231,7 +238,7 @@ test('an entry\'s character filter is stored in upstream\'s form and shown by th
     assert.deepEqual(read.characterFilter.characters.map((/** @type {any} */ c) => [c.key, c.named?.text ?? null]), [['Gone', null], ['Wren', 'Wren']]);
     assert.deepEqual(read.characterFilter.tags, [{ key: npc, name: 'npc' }]);
     assert.equal(read.characterFilter.more, 0);
-    assert.equal(await ports.editEntry(who, B, E, { change: 'characterFilter', filter: { remove: { character: 'Gone' } } }), 'ok');
+    assert.equal(await edit(B, E, { change: 'characterFilter', filter: { remove: { character: 'Gone' } } }), 'ok');
     assert.deepEqual(asWorld(await lib.books.entryIn(book, entity.id)).characterFilter.names, ['Wren']);
     const found = await ports.findCharacters(uiUser, { query: 'wre', limit: 20 });
     assert.deepEqual(found.characters.map(c => [c.key, c.named?.text]), [['Wren', 'Wren']]);
@@ -241,4 +248,64 @@ test('an entry\'s character filter is stored in upstream\'s form and shown by th
 after(async () => {
     await user.close();
     setImmediate(() => process.exit(0));
+});
+
+test('an edit made against an older version merges with what another tab changed since, unless both changed one thing', async () => {
+    const entries = {
+        1: { uid: 1, key: ['Ilse'], comment: 'Ilse', content: 'Ilse keeps the lamp by the door. She sleeps late.', displayIndex: 0, depth: 4, extensions: { names: ['Ilse'] } },
+    };
+    await lib.books.write('Two tabs', { entries });
+    const { id: book } = /** @type {{ id: bigint }} */ (await lib.books.find('Two tabs'));
+    const B = String(book);
+    const [{ entity }] = await lib.books.storedEntries(book);
+    const E = String(entity.id);
+    const tab = (/** @type {string} */ session) => ({ user: uiUser, session });
+    const [one, two] = [tab('one'), tab('two')];
+    const version = async () => /** @type {any} */ (await ports.readEntry(uiUser, B, E, FIRST)).version;
+    const shown = async () => /** @type {any} */ (await ports.readEntry(uiUser, B, E, FIRST));
+
+    let v0 = await version();
+    assert.equal(await ports.editEntry(one, B, E, { change: 'text', text: 'Ilse keeps the old lamp by the door. She sleeps late.' }, v0), 'ok');
+    assert.notEqual(await version(), v0, 'an edit makes a new version');
+    assert.equal(await ports.editEntry(two, B, E, { change: 'text', text: 'Ilse keeps the lamp by the door. She wakes early.' }, v0), 'ok');
+    assert.equal((await shown()).text, 'Ilse keeps the old lamp by the door. She wakes early.', 'text changed in different places merges');
+
+    v0 = await version();
+    assert.equal(await ports.editEntry(one, B, E, { change: 'title', title: 'Ilse Varro' }, v0), 'ok');
+    assert.equal(await ports.editEntry(two, B, E, { change: 'placement', fields: { depth: 2 } }, v0), 'ok');
+    assert.equal(await ports.editEntry(two, B, E, { change: 'addKeys', keys: ['lamp'], as: 'trigger' }, v0), 'ok');
+    assert.equal(await ports.editEntry(one, B, E, { change: 'addKeys', keys: ['door'], as: 'trigger' }, v0), 'ok');
+    let read = await shown();
+    assert.equal(read.title, 'Ilse Varro');
+    assert.equal(read.placement.depth, 2);
+    assert.deepEqual(read.keys.map((/** @type {{ text: string }} */ key) => key.text), ['Ilse', 'lamp', 'door'], 'both tabs\' keys are kept');
+
+    v0 = await version();
+    assert.equal(await ports.editEntry(one, B, E, { change: 'placement', fields: { depth: 6 } }, v0), 'ok');
+    assert.equal(await ports.editEntry(one, B, E, { change: 'placement', fields: { depth: 7 } }, v0), 'ok', 'a tab\'s own changes since never conflict');
+    const depth = await ports.editEntry(two, B, E, { change: 'placement', fields: { depth: 1 } }, v0);
+    assert.ok(typeof depth === 'object' && 'conflict' in depth);
+    assert.equal(depth.conflict.version, await version());
+    assert.deepEqual(depth.conflict.fields, [{ field: 'depth', mine: 1, theirs: 7, merged: null, diff: null }]);
+    assert.equal((await shown()).placement.depth, 7, 'a refused edit writes nothing');
+
+    v0 = await version();
+    assert.equal(await ports.editEntry(one, B, E, { change: 'text', text: 'Ilse keeps the old lamp by the window. She wakes early.' }, v0), 'ok');
+    const text = await ports.editEntry(two, B, E, { change: 'text', text: 'Ilse keeps the old lamp by the gate. She wakes early.' }, v0);
+    assert.ok(typeof text === 'object' && 'conflict' in text);
+    const [field] = text.conflict.fields;
+    assert.equal(field.field, 'content');
+    assert.equal(field.mine, 'Ilse keeps the old lamp by the gate. She wakes early.');
+    assert.equal(field.theirs, 'Ilse keeps the old lamp by the window. She wakes early.');
+    assert.equal(field.merged, 'Ilse keeps the old lamp by the windowgate. She wakes early.');
+    assert.deepEqual(field.diff, [
+        { text: 'Ilse keeps the old lamp by the ', in: 'both' },
+        { text: 'gate', in: 'mine' },
+        { text: 'window', in: 'theirs' },
+        { text: '. She wakes early.', in: 'both' },
+    ]);
+    assert.equal(await ports.editEntry(two, B, E, { change: 'text', text: 'Ilse keeps the old lamp by the gate. She wakes early.' }, text.conflict.version), 'ok', 'kept against the version it was refused with');
+    read = await shown();
+    assert.equal(read.text, 'Ilse keeps the old lamp by the gate. She wakes early.');
+    assert.equal(read.title, 'Ilse Varro');
 });

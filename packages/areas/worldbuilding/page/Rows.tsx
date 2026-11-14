@@ -220,6 +220,7 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
                         <KeyChips
                             book={props.context.book}
                             entry={props.cell.entry}
+                            version={shown?.version ?? null}
                             kind="name"
                             chips={props.cell.names.map((text) => ({ text }))}
                             compact
@@ -251,6 +252,7 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
                     <NumberCell
                         book={props.context.book}
                         entry={props.cell.entry}
+                        version={shown.version}
                         value={shown.order}
                         label={t('Order')}
                         set={(order) => ({ order })}
@@ -263,6 +265,7 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
                     <NumberCell
                         book={props.context.book}
                         entry={props.cell.entry}
+                        version={shown.version}
                         value={shown.chance}
                         label={t('Probability')}
                         suffix="%"
@@ -342,8 +345,8 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
     );
 }
 
-function setPlacement(wb: ReturnType<typeof useWb>, book: string, entry: string, fields: Partial<Placement>) {
-    void wb.act('worldbuilding.setPlacement', { book, entry, fields });
+function setPlacement(wb: Wb, book: string, entry: string, version: string, fields: Partial<Placement>) {
+    void wb.edit('worldbuilding.setPlacement', { book, entry, version, fields });
 }
 
 function ComesCell(props: { book: string; entry: string; facts: EntryFacts }) {
@@ -370,7 +373,7 @@ function ComesCell(props: { book: string; entry: string; facts: EntryFacts }) {
                     onChange={(event) => {
                         setEditing(false);
                         const chosen = COMES.find((one) => one.comes === event.currentTarget.value);
-                        if (chosen) setPlacement(wb, props.book, props.entry, chosen.change);
+                        if (chosen) setPlacement(wb, props.book, props.entry, props.facts.version, chosen.change);
                     }}
                 >
                     <For each={COMES}>{(one) => <option value={one.comes}>{t(one.words)}</option>}</For>
@@ -402,7 +405,7 @@ function GoesCell(props: { book: string; entry: string; facts: EntryFacts }) {
                     onBlur={() => setEditing(false)}
                     onChange={(event) => {
                         setEditing(false);
-                        setPlacement(wb, props.book, props.entry, {
+                        setPlacement(wb, props.book, props.entry, props.facts.version, {
                             position: Number(event.currentTarget.value) as Placement['position'],
                         });
                     }}
@@ -417,6 +420,7 @@ function GoesCell(props: { book: string; entry: string; facts: EntryFacts }) {
 function NumberCell(props: {
     book: string;
     entry: string;
+    version: string;
     value: number | null;
     label: string;
     suffix?: string;
@@ -450,7 +454,7 @@ function NumberCell(props: {
                         const value = Number(event.currentTarget.value);
                         setEditing(false);
                         if (Number.isFinite(value) && event.currentTarget.value.trim() !== '')
-                            setPlacement(wb, props.book, props.entry, props.set(value));
+                            setPlacement(wb, props.book, props.entry, props.version, props.set(value));
                     }}
                 />
             </Show>

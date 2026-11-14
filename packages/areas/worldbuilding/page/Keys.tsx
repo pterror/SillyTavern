@@ -15,6 +15,7 @@ export function Names(props: { entry: OpenEntryView }) {
             <KeyChips
                 book={props.entry.book}
                 entry={props.entry.entry}
+                version={props.entry.version}
                 kind="name"
                 chips={props.entry.keys.filter((key) => key.isName)}
                 sharers
@@ -27,7 +28,7 @@ export function Names(props: { entry: OpenEntryView }) {
 export function Triggers(props: { entry: OpenEntryView }) {
     const { t } = useUi();
     const wb = useWb();
-    const at = () => ({ book: props.entry.book, entry: props.entry.entry });
+    const at = () => ({ book: props.entry.book, entry: props.entry.entry, version: props.entry.version });
     const placement = () => props.entry.placement;
     const constant = () => placement().constant && !placement().disable;
     return (
@@ -46,7 +47,7 @@ export function Triggers(props: { entry: OpenEntryView }) {
                             type="button"
                             class="menu_button margin0 whitespacenowrap wb-key-add"
                             onClick={() =>
-                                void wb.act('worldbuilding.setPlacement', { ...at(), fields: { constant: false } })
+                                void wb.edit('worldbuilding.setPlacement', { ...at(), fields: { constant: false } })
                             }
                         >
                             {t('Make normal')}
@@ -57,6 +58,7 @@ export function Triggers(props: { entry: OpenEntryView }) {
                 <KeyChips
                     book={props.entry.book}
                     entry={props.entry.entry}
+                    version={props.entry.version}
                     kind="trigger"
                     chips={props.entry.keys.filter((key) => !key.isName)}
                     sharers
@@ -64,12 +66,13 @@ export function Triggers(props: { entry: OpenEntryView }) {
                 <Show when={placement().keysecondary.length > 0}>
                     <LogicToken
                         placement={placement()}
-                        onSet={(fields) => void wb.act('worldbuilding.setPlacement', { ...at(), fields })}
+                        onSet={(fields) => void wb.edit('worldbuilding.setPlacement', { ...at(), fields })}
                     />
                 </Show>
                 <KeyChips
                     book={props.entry.book}
                     entry={props.entry.entry}
+                    version={props.entry.version}
                     kind="secondary"
                     chips={placement().keysecondary.map((text) => ({ text }))}
                     addWords={placement().keysecondary.length === 0 ? t('+ Secondary') : undefined}
@@ -103,6 +106,7 @@ export function TriggerLine(props: {
             <KeyChips
                 book={props.book}
                 entry={props.entry}
+                version={props.facts?.version ?? null}
                 kind="trigger"
                 chips={triggers().map((text) => ({ text }))}
                 compact
@@ -114,6 +118,7 @@ export function TriggerLine(props: {
                 <KeyChips
                     book={props.book}
                     entry={props.entry}
+                    version={props.facts?.version ?? null}
                     kind="secondary"
                     chips={secondary().map((text) => ({ text }))}
                     compact

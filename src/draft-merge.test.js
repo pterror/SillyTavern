@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { baseOf, draftAfterSend, mergeDraft } from './draft-merge.js';
+import { baseOf, draftAfterSend, mergeApart, mergeDraft, wordRuns } from './draft-merge.js';
 
 test('a save is laid over what the draft had changed since its base', () => {
     assert.equal(mergeDraft('Hello', 'Hello world', 'Hey Hello'), 'Hey Hello world');
@@ -56,4 +56,27 @@ test('the base is the save\'s changes undone on its text; changes that don\'t fi
     assert.equal(baseOf('ab', 'ab'), null);
     assert.equal(baseOf(3, []), null);
     assert.equal(baseOf('ab', [{ from: -1, to: 0, insert: '', deleted: 'x' }]), null);
+});
+
+test('changes apart merge as a draft does, and changes to the same text differently merge to nothing', () => {
+    assert.equal(mergeApart('the cat sat', 'the dog sat', 'the cat sat down'), 'the dog sat down');
+    assert.equal(mergeApart('Hi', 'Hi there', 'Hi there'), 'Hi there', 'the same change on both sides');
+    assert.equal(mergeApart('x', 'x', 'y'), 'y');
+    assert.equal(mergeApart('x', 'y', 'x'), 'y');
+    assert.equal(mergeApart('a b c', 'a B c', 'a β c'), null);
+    assert.equal(mergeApart('Hi', 'Hi friend', 'Hi there'), null, 'both wrote at one place');
+    assert.equal(mergeApart('one two three', 'one 2 three', 'one two 3'), 'one 2 3', 'words side by side are apart');
+    assert.equal(mergeApart('one two three four', 'One two three four', 'one two three Four'), 'One two three Four');
+});
+
+test('word runs tell what both texts have from what only one has, a whole word at a time', () => {
+    assert.deepEqual(wordRuns('the red cat sat', 'the blue cat sat down'), [
+        { text: 'the ', in: 'both' },
+        { text: 'red', in: 'from' },
+        { text: 'blue', in: 'to' },
+        { text: ' cat sat', in: 'both' },
+        { text: ' down', in: 'to' },
+    ]);
+    assert.deepEqual(wordRuns('same', 'same'), [{ text: 'same', in: 'both' }]);
+    assert.deepEqual(wordRuns('a\nb', 'a b').map(run => run.in), ['both', 'from', 'to', 'both']);
 });

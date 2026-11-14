@@ -20,9 +20,10 @@ export function OnOff(props: { book: string; entry: string; name: string; facts:
             title={on() ? t('Enabled') : t('Disabled')}
             onClick={(event) => {
                 event.stopPropagation();
-                void wb.act('worldbuilding.setPlacement', {
+                void wb.edit('worldbuilding.setPlacement', {
                     book: props.book,
                     entry: props.entry,
+                    version: props.facts.version,
                     fields: switched(props.facts),
                 });
             }}

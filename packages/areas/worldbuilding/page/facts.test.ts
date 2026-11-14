@@ -5,6 +5,7 @@ import { goesWords, switched, triggerWords } from './facts.ts';
 const t = (text: string) => text;
 
 const facts = (change: Partial<EntryFacts> = {}): EntryFacts => ({
+    version: '1',
     comesIn: 'broughtUp',
     keysecondary: [],
     selectiveLogic: 0,

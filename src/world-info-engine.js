@@ -7,6 +7,8 @@ import { LOOP_CHECK_VISITS_PER_WRITE, RELATION_CHANGES_PER_STEP, WALK_STEPS_PER_
 import { WorldbuildingJobs } from './world-info/worldbuilding-jobs.js';
 import { SHARED_LOOK_ID, SHARED_LOOK_NAME_AT_MOST, storedLook } from '@st/looks/look';
 import { filterClauses } from './world-info/worldbuilding-search.js';
+import { entityAsOf, mergeEntry, unmerged } from './world-info/entry-merge.js';
+import { SPACE } from './actor-ids.js';
 
 const ENTRY_KEYS = Object.freeze([
     'uid', 'key', 'keysecondary', 'comment', 'content', 'constant', 'vectorized', 'selective', 'selectiveLogic',
@@ -102,6 +104,12 @@ const selectedArgs = (selected, except) => ({
 export const SLOT = Object.freeze({ characterBook: 'c', originalData: 'o' });
 
 /** @typedef {'world' | 'card'} BookForm */
+
+/**
+ * An edit that can't merge with what was changed since its version: the version it now is, and each field both
+ * changed, as a world's entry has it
+ * @typedef {{ version: bigint, fields: import('./world-info/entry-merge.js').FieldConflict[] }} EntryConflict
+ */
 
 /**
  * The character whose own book `book` is, else null.
@@ -1445,19 +1453,24 @@ export class WorldInfoEngine {
     }
 
     /**
-     * Changes one entry of a world, named by entity ids, as `edit` says, from the entry as stored now.
+     * Changes one entry of a world, named by entity ids, as `edit` says. With `madeAt`, the edit was made against that
+     * version of the entry: it applies to the entry as that version had it, and is laid over what other sessions than
+     * the actor's changed since, or refused with both sides of each field that can't merge.
      * @param {bigint} book
      * @param {bigint} entry
      * @param {(current: Record<string, unknown>) => Record<string, unknown> | { refused: string }} edit
      * @param {Actor | null} [actor]
-     * @returns {Promise<'ok' | 'missing' | 'no entry' | { refused: string }>}
+     * @param {bigint | null} [madeAt]
+     * @returns {Promise<'ok' | 'missing' | 'no entry' | { refused: string } | { conflict: EntryConflict }>}
      */
-    editEntryById(book, entry, edit, actor = null) {
+    editEntryById(book, entry, edit, actor = null, madeAt = null) {
         return this.inWorld(book, async (form, commit) => {
             const e = await this.entryIn(book, entry);
             if (!e) return 'no entry';
             const current = entryAsWorld(e, form);
-            const next = edit(current);
+            const over = madeAt === null ? { next: edit(current) } : await this.editOver(e, form, current, edit, actor, madeAt);
+            if ('conflict' in over) return over;
+            const { next } = over;
             if (typeof next.refused === 'string') return { refused: next.refused };
             if (form === 'world') {
                 await this.writeEntry(book, e, next, actor);
@@ -1475,6 +1488,30 @@ export class WorldInfoEngine {
             if (records.length > 0) await commit([...keyed, ...records]);
             return 'ok';
         });
+    }
+
+    /**
+     * @param {import('./entity-values.js').StoredEntity} e
+     * @param {BookForm} form
+     * @param {Record<string, unknown>} current the entry as it is, as a world's entry
+     * @param {(current: Record<string, unknown>) => Record<string, unknown> | { refused: string }} edit
+     * @param {Actor | null} actor
+     * @param {bigint} madeAt
+     * @returns {Promise<{ next: Record<string, unknown> | { refused: string } } | { conflict: EntryConflict }>}
+     */
+    async editOver(e, form, current, edit, actor, madeAt) {
+        const [session] = actor?.session ? await this.store.chatRead('ids', { space: SPACE.session, keys: [actor.session] }) : [null];
+        /** @type {import('./world-info/entry-merge.js').SlotSince[]} */
+        const since = await this.store.worldRead('entryChangesSince', { entity: e.id, since: madeAt, ...(session === null ? {} : { session }) });
+        if (since.length === 0) return { next: edit(current) };
+        const was = entityAsOf(e, since);
+        const base = was ? entryAsWorld(was, form) : current;
+        const mine = edit(base);
+        if (typeof mine.refused === 'string') return { next: mine };
+        const merged = was ? mergeEntry(base, mine, current) : { conflicts: unmerged(mine, current) };
+        if ('merged' in merged) return { next: merged.merged };
+        const [version] = await this.store.worldRead('lastChanges', { entities: [e.id] });
+        return { conflict: { version, fields: merged.conflicts } };
     }
 
     /**

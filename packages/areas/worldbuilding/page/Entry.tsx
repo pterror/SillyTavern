@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Match, Show, Switch, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { Name } from '@st/page/name';
@@ -16,6 +16,7 @@ import { REGION_ATTRIBUTES } from './Drag.tsx';
 import type { CardActions } from './Cards.tsx';
 import { useWb } from './context.ts';
 import { dismissOn } from './dismiss.ts';
+import { copies } from './copies.ts';
 import { Editable } from './Editable.tsx';
 import { hoverCards } from './HoverCard.tsx';
 import { Icon } from './icons.tsx';
@@ -58,6 +59,8 @@ export function EntryPage(props: {
     };
     let swipedFrom: { x: number; y: number } | null = null;
     const at = () => ({ book: props.entry.book, entry: props.entry.entry });
+    const edited = () => ({ ...at(), version: props.entry.version });
+    carryCopies(() => props.entry);
     const newEntryKind = () => {
         const kinds = props.kinds.filter((kind) => kind.mergingInto === null);
         return kinds.find((kind) => kind.id === props.groupBy) ?? kinds[0] ?? null;
@@ -118,7 +121,9 @@ export function EntryPage(props: {
                             class="wb-entry-name"
                             label={t('Title')}
                             value={props.entry.title ?? ''}
-                            onSave={(title) => void wb.act('worldbuilding.setEntryTitle', { ...at(), title })}
+                            onSave={(title) =>
+                                void wb.edit('worldbuilding.setEntryTitle', { ...edited(), title }, 'title')
+                            }
                         >
                             <Switch>
                                 <Match when={props.entry.label.shownAs === 'name'}>
@@ -178,10 +183,10 @@ export function EntryPage(props: {
                                 opener={() => placeButton}
                                 onClose={() => setPlacing(false)}
                                 onSet={(fields: Partial<Omit<Placement, 'characterFilter'>>) =>
-                                    void wb.act('worldbuilding.setPlacement', { ...at(), fields })
+                                    void wb.edit('worldbuilding.setPlacement', { ...edited(), fields })
                                 }
                                 onFilter={(change) =>
-                                    void wb.act('worldbuilding.changeCharacterFilter', { ...at(), change })
+                                    void wb.edit('worldbuilding.changeCharacterFilter', { ...edited(), change })
                                 }
                             />
                         </Show>
@@ -195,8 +200,10 @@ export function EntryPage(props: {
             </header>
             <EntryText
                 text={props.entry.text}
+                version={props.entry.version}
+                copyOf={{ ...at(), field: 'text' }}
                 links={props.entry.links}
-                onSave={(text) => wb.act('worldbuilding.setEntryText', { ...at(), text })}
+                onSave={(text, version) => wb.edit('worldbuilding.setEntryText', { ...at(), version, text }, 'text')}
                 onEnter={(entry, element) => hover.enter(props.entry.book, entry, element)}
                 onLeave={hover.leave}
                 onOpen={(entry) => wb.open(entry)}
@@ -256,6 +263,37 @@ export function EntryPage(props: {
             <Mentions entry={props.entry} onEnter={hover.enter} onLeave={hover.leave} />
             <hover.Drawn />
         </article>
+    );
+}
+
+// The browser's copies of the entry's text and title, of any tab, each sent once when the entry is shown: what the
+// server hasn't got of them merges in, or asks which side to keep.
+function carryCopies(entry: () => OpenEntryView) {
+    const wb = useWb();
+    createEffect(
+        on(
+            () => `${entry().book}:${entry().entry}`,
+            () => {
+                const { book, entry: id } = entry();
+                void (async () => {
+                    for (const copy of copies.of(book, id)) {
+                        const shown = entry();
+                        if (shown.book !== book || shown.entry !== id) return;
+                        const now = copy.field === 'text' ? shown.text : (shown.title ?? '');
+                        if (copy.text !== now) {
+                            const type =
+                                copy.field === 'text' ? 'worldbuilding.setEntryText' : 'worldbuilding.setEntryTitle';
+                            await wb.edit(
+                                type,
+                                { book, entry: id, version: copy.version, [copy.field]: copy.text },
+                                copy.field,
+                            );
+                        }
+                        copies.drop(copy);
+                    }
+                })();
+            },
+        ),
     );
 }
 

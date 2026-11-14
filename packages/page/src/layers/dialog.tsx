@@ -1,8 +1,17 @@
 import { For, Show, createSignal, onMount } from 'solid-js';
+import type { JSX } from 'solid-js';
 import { render } from 'solid-js/web';
 
+// `pick`: one of `options`, as buttons, under what `body` draws; the answer is the option's id.
 export type Question =
-    | { kind: 'input'; message: string; value: string }
+    | { kind: 'input'; message: string; value: string; multiline?: boolean }
+    | {
+          kind: 'pick';
+          message: string;
+          detail?: string;
+          body?: () => JSX.Element;
+          options: { id: string; label: string }[];
+      }
     | {
           kind: 'confirm';
           message: string;
@@ -14,9 +23,11 @@ export type Question =
 
 type Answer<Q extends Question> = Q extends { kind: 'input' }
     ? string
-    : Q extends { kind: 'confirm' }
-      ? { checked: boolean; numbers: Record<string, number> }
-      : string[];
+    : Q extends { kind: 'pick' }
+      ? string
+      : Q extends { kind: 'confirm' }
+        ? { checked: boolean; numbers: Record<string, number> }
+        : string[];
 
 export function ask<Q extends Question>(question: Q, t: (text: string) => string): Promise<Answer<Q> | null> {
     return new Promise((resolve) => {
@@ -52,7 +63,10 @@ function dialog(
             : {},
     );
     const answer = () => {
-        if (question.kind === 'input') return text().trim() === '' ? null : text().trim();
+        if (question.kind === 'input') {
+            if (question.multiline === true) return text();
+            return text().trim() === '' ? null : text().trim();
+        }
         if (question.kind === 'confirm') return { checked: checked(), numbers: numbers() };
         return [...chosen()];
     };
@@ -63,7 +77,10 @@ function dialog(
         setChosen(next);
     };
     const message = question.message;
-    const detail = question.kind === 'confirm' ? question.detail : undefined;
+    const detail = question.kind === 'confirm' || question.kind === 'pick' ? question.detail : undefined;
+    const body = question.kind === 'pick' ? question.body : undefined;
+    const picks = question.kind === 'pick' ? question.options : undefined;
+    const multiline = question.kind === 'input' && question.multiline === true;
     const checkbox = question.kind === 'confirm' ? question.checkbox : undefined;
     const numberFields = question.kind === 'confirm' ? question.numbers : undefined;
     const options = question.kind === 'choose' ? question.options : undefined;
@@ -85,14 +102,15 @@ function dialog(
                 method="dialog"
                 onSubmit={(event) => {
                     event.preventDefault();
-                    onAnswer(answer());
+                    if (question.kind !== 'pick') onAnswer(answer());
                 }}
             >
                 <div class="popup-content">
                     <h3 class="popup-header">{message}</h3>
                     <Show when={detail}>{(shown) => <p>{shown()}</p>}</Show>
+                    <Show when={body}>{(draw) => draw()()}</Show>
                 </div>
-                <Show when={isInput}>
+                <Show when={isInput && !multiline}>
                     {
                         <input
                             class="popup-input text_pole"
@@ -101,6 +119,15 @@ function dialog(
                             onInput={(event) => setText(event.currentTarget.value)}
                         />
                     }
+                </Show>
+                <Show when={multiline}>
+                    <textarea
+                        class="popup-input text_pole"
+                        autofocus
+                        rows={10}
+                        value={text()}
+                        onInput={(event) => setText(event.currentTarget.value)}
+                    />
                 </Show>
                 <Show when={numberFields}>
                     {(fields) => (
@@ -161,9 +188,24 @@ function dialog(
                     )}
                 </Show>
                 <div class="popup-controls">
-                    <button type="submit" class="popup-button-ok menu_button">
-                        {t('OK')}
-                    </button>
+                    <Show
+                        when={picks}
+                        fallback={
+                            <button type="submit" class="popup-button-ok menu_button">
+                                {t('OK')}
+                            </button>
+                        }
+                    >
+                        {(shown) => (
+                            <For each={shown()}>
+                                {(option) => (
+                                    <button type="button" class="menu_button" onClick={() => onAnswer(option.id)}>
+                                        {option.label}
+                                    </button>
+                                )}
+                            </For>
+                        )}
+                    </Show>
                     <button type="button" class="popup-button-cancel menu_button" onClick={() => onAnswer(null)}>
                         {t('Cancel')}
                     </button>

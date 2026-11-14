@@ -150,23 +150,19 @@ function merged(sides, kept, written) {
 }
 
 /**
- * The draft a save makes: what the save changed since its base laid over what the draft has had changed since. Where
- * both changed the same text, a version that holds the other is taken alone, so merging a save that is already in the
- * draft changes nothing; otherwise both are kept, the draft's first.
- * @param {string} base the text the save was written over
- * @param {string} current the draft as it is
- * @param {string} saved the saved text
- * @returns {string}
+ * The base cut into stretches where the draft, the save or both changed it, with the stretch as each has it; stretches
+ * where both changed text that touches are one.
+ * @param {string} base
+ * @param {string} current
+ * @param {string} saved
+ * @returns {{ from: number, to: number, sides: [Hunk[], Hunk[]], kept: string, written: string }[]}
  */
-export function mergeDraft(base, current, saved) {
-    if (saved === base || saved === current) return current;
-    if (current === base) return saved;
+function stretches(base, current, saved) {
     const tagged = [
         ...hunksBetween(base, current).map(hunk => ({ hunk, side: 0 })),
         ...hunksBetween(base, saved).map(hunk => ({ hunk, side: 1 })),
     ].sort((a, b) => a.hunk.from - b.hunk.from || a.hunk.to - b.hunk.to || a.side - b.side);
-    let out = '';
-    let at = 0;
+    const out = [];
     let i = 0;
     while (i < tagged.length) {
         const span = { from: tagged[i].hunk.from, to: tagged[i].hunk.to, insert: '' };
@@ -178,12 +174,59 @@ export function mergeDraft(base, current, saved) {
             span.to = Math.max(span.to, hunk.to);
             i += 1;
         }
-        out += base.slice(at, span.from);
         const [kept, written] = sides.map(hunks => applied(base, span.from, span.to, hunks));
-        out += merged(sides, kept, written);
-        at = span.to;
+        out.push({ from: span.from, to: span.to, sides, kept, written });
+    }
+    return out;
+}
+
+/**
+ * @param {string} base
+ * @param {{ from: number, to: number, text: string }[]} pieces in order, within the base
+ * @returns {string}
+ */
+function laid(base, pieces) {
+    let out = '';
+    let at = 0;
+    for (const piece of pieces) {
+        out += base.slice(at, piece.from) + piece.text;
+        at = piece.to;
     }
     return out + base.slice(at);
+}
+
+/**
+ * The draft a save makes: what the save changed since its base laid over what the draft has had changed since. Where
+ * both changed the same text, a version that holds the other is taken alone, so merging a save that is already in the
+ * draft changes nothing; otherwise both are kept, the draft's first.
+ * @param {string} base the text the save was written over
+ * @param {string} current the draft as it is
+ * @param {string} saved the saved text
+ * @returns {string}
+ */
+export function mergeDraft(base, current, saved) {
+    if (saved === base || saved === current) return current;
+    if (current === base) return saved;
+    return laid(base, stretches(base, current, saved).map(({ from, to, sides, kept, written }) => ({ from, to, text: merged(sides, kept, written) })));
+}
+
+/**
+ * A save laid over what was changed since its base, when the two changed no text in the same place, or changed it
+ * alike
+ * @param {string} base the text the save was written over
+ * @param {string} current the text as it is
+ * @param {string} saved the saved text
+ * @returns {string | null} null when both changed the same text differently
+ */
+export function mergeApart(base, current, saved) {
+    if (saved === base || saved === current) return current;
+    if (current === base) return saved;
+    const pieces = [];
+    for (const { from, to, sides, kept, written } of stretches(base, current, saved)) {
+        if (sides[0].length > 0 && sides[1].length > 0 && kept !== written) return null;
+        pieces.push({ from, to, text: sides[1].length > 0 ? written : kept });
+    }
+    return laid(base, pieces);
 }
 
 /**
@@ -196,4 +239,42 @@ export function mergeDraft(base, current, saved) {
  */
 export function draftAfterSend(base, current, sent) {
     return mergeDraft(sent, mergeDraft(base, current, sent), '');
+}
+
+const WORD = /\s+|[\p{L}\p{N}\p{M}_'’-]+|[^\s\p{L}\p{N}\p{M}_'’-]/gu;
+
+/**
+ * The runs of one text against another, word by word: what both have, and what only one has
+ * @param {string} from
+ * @param {string} to
+ * @returns {{ text: string, in: 'both' | 'from' | 'to' }[]}
+ */
+export function wordRuns(from, to) {
+    /** @type {Map<string, string>} */
+    const codes = new Map();
+    /** @type {string[]} */
+    const words = [];
+    const encode = (/** @type {string} */ text) => (text.match(WORD) ?? []).map(word => {
+        let code = codes.get(word);
+        if (code === undefined) {
+            code = String.fromCharCode(words.length);
+            codes.set(word, code);
+            words.push(word);
+        }
+        return code;
+    }).join('');
+    const [codedFrom, codedTo] = [encode(from), encode(to)];
+    if (words.length > 0xffff) return [{ text: from, in: 'from' }, { text: to, in: 'to' }];
+    const diffs = dmp.diff_main(codedFrom, codedTo, false);
+    dmp.diff_cleanupSemantic(diffs);
+    /** @type {{ text: string, in: 'both' | 'from' | 'to' }[]} */
+    const runs = [];
+    for (const [op, coded] of diffs) {
+        const text = coded.split('').map(code => words[code.charCodeAt(0)]).join('');
+        const side = op === DiffMatchPatch.DIFF_EQUAL ? 'both' : op === DiffMatchPatch.DIFF_DELETE ? 'from' : 'to';
+        const last = runs.at(-1);
+        if (last && last.in === side) last.text += text;
+        else if (text !== '') runs.push({ text, in: side });
+    }
+    return runs;
 }

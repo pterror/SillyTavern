@@ -12,6 +12,7 @@ const ENTRY: OpenEntryView = {
     entry: '7',
     deleted: false,
     entryKey: '7',
+    version: '3',
     label: { thing: '7', text: 'Ilse Varro', shownAs: 'name' },
     picture: null,
     title: 'Ilse Varro',
@@ -50,6 +51,10 @@ function stand(entry: OpenEntryView) {
         act: async (type, payload) => {
             sent.push({ type, payload });
             return { ok: true };
+        },
+        edit: async (type, payload) => {
+            sent.push({ type, payload });
+            return { done: 'saved', text: null };
         },
         layout: () => ({ regionsByNestingLevel: [], cardTextCharacters: 0 }),
         firstRead: () => ({ layout: { regionsByNestingLevel: [], cardTextCharacters: 0 }, ahead: 1 }),
@@ -108,7 +113,7 @@ test('a key shared with other entries asks who they are when clicked; moving it 
     button(host, 'Make it a name').click();
     expect(sent.at(-1)).toEqual({
         type: 'worldbuilding.setKeyAs',
-        payload: { book: '1', entry: '7', key: 'ledger', as: 'name' },
+        payload: { book: '1', entry: '7', version: '3', key: 'ledger', as: 'name' },
     });
 });
 
@@ -127,7 +132,7 @@ test('“+” on the names takes the words typed and adds them as a name on Ente
     press(field, 'Enter');
     expect(sent.at(-1)).toEqual({
         type: 'worldbuilding.addKeys',
-        payload: { book: '1', entry: '7', keys: ['the innkeeper'], as: 'name' },
+        payload: { book: '1', entry: '7', version: '3', keys: ['the innkeeper'], as: 'name' },
     });
 });
 
@@ -140,7 +145,7 @@ test('several keys typed or pasted are added in one action, a comma inside a pat
     expect(sent.filter((one) => one.type === 'worldbuilding.addKeys')).toEqual([
         {
             type: 'worldbuilding.addKeys',
-            payload: { book: '1', entry: '7', keys: ['a', 'b', 'c', '/x{1,2}/i'], as: 'trigger' },
+            payload: { book: '1', entry: '7', version: '3', keys: ['a', 'b', 'c', '/x{1,2}/i'], as: 'trigger' },
         },
     ]);
 });
@@ -156,7 +161,10 @@ test('a key is edited in place: Enter renames it, Escape leaves it', () => {
     sent.length = 0;
     press(field, 'Enter');
     expect(sent).toEqual([
-        { type: 'worldbuilding.renameKey', payload: { book: '1', entry: '7', key: 'ledger', to: 'ledgers' } },
+        {
+            type: 'worldbuilding.renameKey',
+            payload: { book: '1', entry: '7', version: '3', key: 'ledger', to: 'ledgers' },
+        },
     ]);
     expect(host.querySelector('input')).toBe(null);
     labelled(host, '“ledger”, trigger').click();
@@ -182,7 +190,7 @@ test('secondary keys are chips after their logic, edited and added with the plac
     press(field, 'Enter');
     expect(sent.at(-1)).toEqual({
         type: 'worldbuilding.setPlacement',
-        payload: { book: '1', entry: '7', fields: { keysecondary: ['port', 'quay'], selective: true } },
+        payload: { book: '1', entry: '7', version: '3', fields: { keysecondary: ['port', 'quay'], selective: true } },
     });
     labelled(host, 'Add secondary trigger').click();
     const added = host.querySelector('input') as HTMLInputElement;
@@ -193,6 +201,7 @@ test('secondary keys are chips after their logic, edited and added with the plac
         payload: {
             book: '1',
             entry: '7',
+            version: '3',
             fields: { keysecondary: ['harbour', 'quay', 'dock', 'pier'], selective: true },
         },
     });
@@ -208,7 +217,10 @@ test('without secondary keys the row offers “+ Secondary”; a constant entry 
     expect(constant.host.querySelectorAll('.wb-triggers .wb-key').length).toBe(0);
     button(constant.host, 'Make normal').click();
     expect(constant.sent).toEqual([
-        { type: 'worldbuilding.setPlacement', payload: { book: '1', entry: '7', fields: { constant: false } } },
+        {
+            type: 'worldbuilding.setPlacement',
+            payload: { book: '1', entry: '7', version: '3', fields: { constant: false } },
+        },
     ]);
     expect(sent).toEqual([]);
 });

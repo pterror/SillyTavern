@@ -95,6 +95,8 @@ import type {
     SavedView,
     ViewSort,
     ViewsView,
+    ConflictAnswer,
+    EntryVersion,
 } from './protocol.ts';
 import { defineArea, patch, patchOf } from '@st/server-ui';
 import type { ActionContext, ActionResult, Upload, User, ViewContext } from '@st/server-ui';
@@ -344,7 +346,14 @@ export type Ports = {
         user: User,
         query: { book: string; typed: string; limit: number },
     ): Promise<{ text: string; keys: number }[] | null>;
-    editEntry(who: Who, book: string, entry: string, edit: EntryEdit): Promise<'ok' | EntryWriteRefusal>;
+    // `version`: the entry's version the edit was made against; null: applied to the entry as it is.
+    editEntry(
+        who: Who,
+        book: string,
+        entry: string,
+        edit: EntryEdit,
+        version: EntryVersion | null,
+    ): Promise<'ok' | EntryWriteRefusal | ConflictAnswer>;
     createEntry(
         who: Who,
         book: string,
@@ -450,6 +459,7 @@ const WORLD_GONE = 'World not found.';
 const NO_SUCH_KIND = 'Relation type not found.';
 const BEING_MERGED = 'That relation type is being merged.';
 const NO_SUCH_ENTRY = 'Entry not found.';
+const CHANGED_ELSEWHERE = 'Changed in another tab.';
 const NO_ENTRY_OPEN = 'No entry open.';
 const NO_CHARACTER_BOOK = 'This character has no lorebook.';
 const NO_FILTER = 'Nothing to search for.';
@@ -843,12 +853,13 @@ export function worldbuildingArea(ports: Ports) {
 
     const entryEdited = async (
         context: ActionContext,
-        book: string,
-        entry: string,
+        { book, entry, version }: { book: string; entry: string; version: EntryVersion | null },
         edit: EntryEdit,
     ): Promise<ActionResult> => {
-        const done = await ports.editEntry(who(context), book, entry, edit);
-        return done === 'ok' ? { changed: [...VIEWS_OF_CARDS, FOUND_VIEW], own: [ENTRY_VIEW] } : refusedWrite(done);
+        const done = await ports.editEntry(who(context), book, entry, edit, version);
+        if (done === 'ok') return { changed: [...VIEWS_OF_CARDS, FOUND_VIEW], own: [ENTRY_VIEW] };
+        if (typeof done === 'object' && 'conflict' in done) return { refused: CHANGED_ELSEWHERE, answer: done };
+        return refusedWrite(done);
     };
 
     const readEntryView = async (context: ViewContext): Promise<EntryView> => {
@@ -1513,18 +1524,18 @@ export function worldbuildingArea(ports: Ports) {
                 rememberEntry(context.session, { ...shown, mentions: { from: stored, pages, generation } });
                 return { changed: [ENTRY_VIEW] };
             }),
-            'worldbuilding.setEntryText': (context, { book, entry, text }) =>
-                entryEdited(context, book, entry, { change: 'text', text }),
-            'worldbuilding.setEntryTitle': (context, { book, entry, title }) =>
-                entryEdited(context, book, entry, { change: 'title', title }),
-            'worldbuilding.addKeys': (context, { book, entry, keys, as }) =>
-                entryEdited(context, book, entry, { change: 'addKeys', keys, as }),
-            'worldbuilding.renameKey': (context, { book, entry, key, to }) =>
-                entryEdited(context, book, entry, { change: 'renameKey', key, to }),
-            'worldbuilding.setKeyAs': (context, { book, entry, key, as }) =>
-                entryEdited(context, book, entry, { change: 'setKeyAs', key, as }),
-            'worldbuilding.removeKey': (context, { book, entry, key }) =>
-                entryEdited(context, book, entry, { change: 'removeKey', key }),
+            'worldbuilding.setEntryText': (context, { text, ...at }) =>
+                entryEdited(context, at, { change: 'text', text }),
+            'worldbuilding.setEntryTitle': (context, { title, ...at }) =>
+                entryEdited(context, at, { change: 'title', title }),
+            'worldbuilding.addKeys': (context, { keys, as, ...at }) =>
+                entryEdited(context, at, { change: 'addKeys', keys, as }),
+            'worldbuilding.renameKey': (context, { key, to, ...at }) =>
+                entryEdited(context, at, { change: 'renameKey', key, to }),
+            'worldbuilding.setKeyAs': (context, { key, as, ...at }) =>
+                entryEdited(context, at, { change: 'setKeyAs', key, as }),
+            'worldbuilding.removeKey': (context, { key, ...at }) =>
+                entryEdited(context, at, { change: 'removeKey', key }),
             'worldbuilding.showKeySharers': withOpenEntry(async (context, open, { book, entry, key }) => {
                 if (open.book !== book || open.shown.entry !== entry) return { refused: NO_ENTRY_OPEN };
                 rememberEntry(context.session, { ...open.shown, sharersOf: key });
@@ -1534,8 +1545,8 @@ export function worldbuildingArea(ports: Ports) {
                 remember(context.session, { suggestingKeys: { book, typed } });
                 return { changed: [], opensViews: [KEY_SUGGESTIONS_VIEW] };
             },
-            'worldbuilding.setPlacement': (context, { book, entry, fields }) =>
-                entryEdited(context, book, entry, { change: 'placement', fields }),
+            'worldbuilding.setPlacement': (context, { fields, ...at }) =>
+                entryEdited(context, at, { change: 'placement', fields }),
             'worldbuilding.createEntry': async (context, { book, after, name, relation, open, loopCheckLimit }) => {
                 if (open && overviewOf(context.session)?.book !== book) return { refused: NOT_SHOWN };
                 const made = await ports.createEntry(who(context), book, { after, name, relation }, loopCheckLimit);
@@ -1783,8 +1794,8 @@ export function worldbuildingArea(ports: Ports) {
                 remember(context.session, { filter: { ...shown, run: { from: stored, pages } } });
                 return { changed: [RESULTS_VIEW] };
             },
-            'worldbuilding.changeCharacterFilter': (context, { book, entry, change }) =>
-                entryEdited(context, book, entry, { change: 'characterFilter', filter: change }),
+            'worldbuilding.changeCharacterFilter': (context, { change, ...at }) =>
+                entryEdited(context, at, { change: 'characterFilter', filter: change }),
             'worldbuilding.findCharacters': async (context, { query }) => {
                 remember(context.session, { findingCharacters: query });
                 return { changed: [], opensViews: [CHARACTERS_FOUND_VIEW] };

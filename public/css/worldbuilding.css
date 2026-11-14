@@ -2495,3 +2495,54 @@
 .wb-tr-pick > .wb-cb:first-child {
     margin-left: 18px;
 }
+
+/* The conflict dialog: what only mine has and what only theirs has, in the theme's colours. */
+.wb-diff-mine {
+    background-color: color-mix(in srgb, var(--SmartThemeUnderlineColor) 30%, transparent);
+    border-radius: 3px;
+}
+
+.wb-diff-theirs {
+    background-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 30%, transparent);
+    border-radius: 3px;
+}
+
+.wb-conflict-field {
+    text-align: start;
+    margin-block: 8px;
+}
+
+.wb-conflict-field h4 {
+    margin: 0 0 4px;
+}
+
+.wb-diff {
+    white-space: pre-wrap;
+    max-height: 40vh;
+    overflow-y: auto;
+    padding: 6px 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+}
+
+.wb-diff-key {
+    display: flex;
+    gap: 8px;
+    font-size: 0.9em;
+}
+
+.wb-diff-key > span {
+    padding-inline: 4px;
+}
+
+.wb-conflict-values {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 8px;
+    margin: 0;
+}
+
+.wb-conflict-values dd {
+    margin: 0;
+    padding-inline: 4px;
+}

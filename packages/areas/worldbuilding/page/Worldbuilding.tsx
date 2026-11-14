@@ -29,6 +29,7 @@ import type {
     WorldView,
 } from '../protocol.ts';
 import type { CardActions } from './Cards.tsx';
+import { editEntry, isConflict } from './conflict.tsx';
 import type { Target } from './compat.ts';
 import { WbProvider } from './context.ts';
 import type { Wb } from './context.ts';
@@ -125,9 +126,10 @@ function Page(props: Props) {
     };
     const act: Wb['act'] = async (type, payload, file) => {
         const done = await client.send(type, payload, file);
-        if (!done.ok) say(done.error);
+        if (!done.ok && !isConflict(done.answer)) say(done.error);
         return done;
     };
+    const edit: Wb['edit'] = (type, payload, text) => editEntry({ act }, t, type, payload, text);
     const firstRead = () => ({
         layout: layout().overview,
         ahead: aheadIn(height() > 0 ? height() : 820, layout().columns),
@@ -144,7 +146,16 @@ function Page(props: Props) {
         void act('worldbuilding.openEntry', { entry, pointingAt: pointingAtShown() });
     };
     const drag = dragControl(act);
-    const wb: Wb = { act, layout: () => layout().overview, firstRead, pointingAt: pointingAtShown, open, say, drag };
+    const wb: Wb = {
+        act,
+        edit,
+        layout: () => layout().overview,
+        firstRead,
+        pointingAt: pointingAtShown,
+        open,
+        say,
+        drag,
+    };
     const shownViews = () => viewsOf(views(), shownWorld()?.id ?? null);
     const viewActions = viewActionsOf(wb, () => shownWorld()?.id ?? null);
     const shownSelection = () => {

@@ -3,10 +3,14 @@ import type { Accessor } from 'solid-js';
 import type { ActionResult } from '@st/page/client';
 import type { OverviewLayout, PointingAtShown } from '../protocol.ts';
 import type { DragControl } from './Drag.tsx';
+import type { Edited, EntryEditPayload } from './conflict.tsx';
+import type { TextField } from './copies.ts';
 
 export type Wb = {
     // Sends one action; a refusal is said on the page and comes back as the result.
     act(type: string, payload: unknown, file?: File): Promise<ActionResult>;
+    // Sends one edit of an entry, made against the version in `payload`; see `editEntry`.
+    edit(type: string, payload: EntryEditPayload, text?: TextField): Promise<Edited>;
     layout: Accessor<OverviewLayout>;
     // The top-level entries a newly shown world reads first.
     firstRead: Accessor<{ layout: OverviewLayout; ahead: number }>;

@@ -3,7 +3,7 @@ import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
 import { KEY_SHARERS_VIEW, KEY_SUGGESTIONS_VIEW } from '../protocol.ts';
-import type { KeySharersView, KeySuggestionsView } from '../protocol.ts';
+import type { EntryVersion, KeySharersView, KeySuggestionsView } from '../protocol.ts';
 import { useWb } from './context.ts';
 import { dismissOn } from './dismiss.ts';
 import { isPattern, splitKeys } from './keyText.ts';
@@ -32,6 +32,8 @@ const lastWord = (text: string): { before: string; word: string } => {
 export function KeyChips(props: {
     book: string;
     entry: string;
+    // The entry's version the chips show; null for chips not read with one.
+    version: EntryVersion | null;
     kind: KeyKind;
     chips: KeyChip[];
     // The open entry's page: a key says which other entries it brings up, and asks who they are when opened.
@@ -46,26 +48,28 @@ export function KeyChips(props: {
     const [editing, setEditing] = createSignal<string | null>(null);
     const [adding, setAdding] = createSignal(false);
     const at = () => ({ book: props.book, entry: props.entry });
+    const edited = () => ({ ...at(), version: props.version });
     const texts = () => props.chips.map((chip) => chip.text);
     const secondary = (keysecondary: string[]) =>
-        wb.act('worldbuilding.setPlacement', { ...at(), fields: { keysecondary, selective: true } });
+        wb.edit('worldbuilding.setPlacement', { ...edited(), fields: { keysecondary, selective: true } });
     const add = (keys: string[]) => {
         const fresh = keys.filter((key) => !texts().includes(key));
         if (fresh.length === 0) return;
         if (props.kind === 'secondary') void secondary([...texts(), ...fresh]);
-        else void wb.act('worldbuilding.addKeys', { ...at(), keys: fresh, as: props.kind });
+        else void wb.edit('worldbuilding.addKeys', { ...edited(), keys: fresh, as: props.kind });
     };
     const rename = (key: string, to: string) => {
         if (to === '' || to === key) return;
         if (props.kind === 'secondary') {
             void secondary(texts().flatMap((text) => (text === key ? (texts().includes(to) ? [] : [to]) : [text])));
-        } else void wb.act('worldbuilding.renameKey', { ...at(), key, to });
+        } else void wb.edit('worldbuilding.renameKey', { ...edited(), key, to });
     };
     const remove = (key: string) => {
         if (props.kind === 'secondary') void secondary(texts().filter((text) => text !== key));
-        else void wb.act('worldbuilding.removeKey', { ...at(), key });
+        else void wb.edit('worldbuilding.removeKey', { ...edited(), key });
     };
-    const move = (key: string, as: 'name' | 'trigger') => void wb.act('worldbuilding.setKeyAs', { ...at(), key, as });
+    const move = (key: string, as: 'name' | 'trigger') =>
+        void wb.edit('worldbuilding.setKeyAs', { ...edited(), key, as });
     const edit = (chip: KeyChip) => {
         setAdding(false);
         setEditing(chip.text);

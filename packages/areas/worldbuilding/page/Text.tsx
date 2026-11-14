@@ -1,12 +1,15 @@
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { EditorState, RangeSetBuilder, StateEffect, StateField } from '@codemirror/state';
+import { Annotation, ChangeSet, EditorState, RangeSetBuilder, StateEffect, StateField } from '@codemirror/state';
 import type { Extension, Range } from '@codemirror/state';
 import { Decoration, EditorView, keymap } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { useUi } from '@st/page/context';
 import { Name, nameClass } from '@st/page/name';
-import type { TextLink } from '../protocol.ts';
+import type { EntryVersion, TextLink } from '../protocol.ts';
+import type { Edited } from './conflict.tsx';
+import { copies } from './copies.ts';
+import type { CopyOf } from './copies.ts';
 import { wordsOf } from './Selection.tsx';
 import type { Selected } from './Selection.tsx';
 
@@ -87,8 +90,10 @@ const look: Extension = EditorView.theme({
 
 export function EntryText(props: {
     text: string;
+    version: EntryVersion;
+    copyOf: CopyOf;
     links: TextLink[];
-    onSave: (text: string) => Promise<unknown>;
+    onSave: (text: string, version: EntryVersion) => Promise<Edited>;
     onEnter: (entry: string, at: HTMLElement) => void;
     onLeave: (event: MouseEvent) => void;
     onOpen: (entry: string) => void;
@@ -164,6 +169,8 @@ export function EntryText(props: {
         >
             <Editor
                 text={props.text}
+                version={props.version}
+                copyOf={props.copyOf}
                 links={props.links}
                 label={t('Content')}
                 onSave={props.onSave}
@@ -174,26 +181,79 @@ export function EntryText(props: {
     );
 }
 
+// The change from one text to another as one replacement, from where they first differ to where they last do.
+function oneChange(from: string, to: string): { from: number; to: number; insert: string } | null {
+    if (from === to) return null;
+    let start = 0;
+    while (start < from.length && start < to.length && from[start] === to[start]) start++;
+    let end = 0;
+    while (end < from.length - start && end < to.length - start && from.at(-1 - end) === to.at(-1 - end)) end++;
+    return { from: start, to: from.length - end, insert: to.slice(start, to.length - end) };
+}
+
+const fromServer = Annotation.define<boolean>();
+
 function Editor(props: {
     text: string;
+    version: EntryVersion;
+    copyOf: CopyOf;
     links: TextLink[];
     label: string;
-    onSave: (text: string) => Promise<unknown>;
+    onSave: (text: string, version: EntryVersion) => Promise<Edited>;
     onSelect: (selected: Selected) => void;
     onDone: () => void;
 }) {
     let host: HTMLDivElement | undefined;
     let view: EditorView | undefined;
-    // The text last sent; saves go one at a time, each sending the text as it is when the one before is answered.
+    // The text as the server has it at `base.version`, which what is typed is written over. Saves go one at a time:
+    // `sent` is the one on its way, `typedSince` what was typed after it.
+    let base = { text: props.text, version: props.version };
     let sent: string | null = null;
-    let saving: Promise<void> = Promise.resolve();
-    const sendLatest = async () => {
-        const text = view?.state.doc.toString();
-        if (text === undefined || text === sent) return;
-        sent = text;
-        await props.onSave(text);
+    let typedSince: ChangeSet | null = null;
+    let flight: Promise<void> = Promise.resolve();
+    const doc = () => view?.state.doc.toString() ?? '';
+    // Takes what the server changed, from `from` to `to`, into the text, past what was typed since `from`.
+    const take = (from: string, to: string, past: ChangeSet | null) => {
+        const change = oneChange(from, to);
+        if (!view || !change) return;
+        const changes = ChangeSet.of(change, from.length);
+        view.dispatch({ changes: past ? changes.map(past) : changes, annotations: fromServer.of(true) });
     };
-    const save = (): Promise<void> => (saving = saving.then(sendLatest));
+    const send = () => {
+        if (sent !== null || !view) return;
+        const text = doc();
+        if (text === base.text) {
+            copies.confirm(props.copyOf, text);
+            return;
+        }
+        sent = text;
+        typedSince = ChangeSet.empty(text.length);
+        flight = (async () => {
+            const edited = await props.onSave(text, base.version);
+            const theirs =
+                edited.done === 'theirs'
+                    ? edited.conflict.fields.find((field) => field.field === 'content')?.theirs
+                    : undefined;
+            const now =
+                edited.done === 'theirs'
+                    ? { text: typeof theirs === 'string' ? theirs : '', version: edited.conflict.version }
+                    : edited.done === 'saved'
+                      ? { text: props.text, version: props.version }
+                      : null;
+            if (now) take(text, now.text, typedSince);
+            if (now) base = now;
+            sent = null;
+            typedSince = null;
+            if (edited.done !== 'refused') send();
+        })();
+    };
+    const settled = async () => {
+        let waited: Promise<void> | null = null;
+        while (waited !== flight) {
+            waited = flight;
+            await waited;
+        }
+    };
     const selected = () => {
         if (!view) return;
         const { from, to, empty } = view.state.selection.main;
@@ -225,11 +285,15 @@ function Editor(props: {
                     gaps,
                     look,
                     EditorView.updateListener.of((update) => {
-                        if (update.docChanged) void save();
+                        if (!update.docChanged || update.transactions.some((tr) => tr.annotation(fromServer) === true))
+                            return;
+                        if (typedSince) typedSince = typedSince.compose(update.changes);
+                        copies.keep(props.copyOf, { text: doc(), version: base.version });
+                        send();
                     }),
                     EditorView.domEventHandlers({
                         blur: () => {
-                            void save().then(() => props.onDone());
+                            void settled().then(() => props.onDone());
                         },
                         mouseup: () => {
                             requestAnimationFrame(selected);
@@ -249,15 +313,20 @@ function Editor(props: {
                 ],
             }),
         });
-        sent = view.state.doc.toString();
         view.dispatch({ effects: linksSet.of(props.links) });
         view.focus();
     });
     createEffect(
         on(
-            () => [props.text, props.links] as const,
-            ([text, links]) => {
-                if (view && view.state.doc.toString() === text) view.dispatch({ effects: linksSet.of(links) });
+            () => [props.text, props.version, props.links] as const,
+            ([text, version, links]) => {
+                if (sent === null && version !== base.version) {
+                    if (doc() === base.text) {
+                        take(base.text, text, null);
+                        base = { text, version };
+                    } else send();
+                }
+                if (view && doc() === text) view.dispatch({ effects: linksSet.of(links) });
             },
             { defer: true },
         ),

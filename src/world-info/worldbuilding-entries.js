@@ -1,4 +1,5 @@
 import { FILTER_ITEMS_SHOWN, MENTIONS_PER_PAGE } from '@st/worldbuilding/protocol';
+import { wordRuns } from '../draft-merge.js';
 import { FIELD, TYPE } from '../library-codes.js';
 import { thumbnailsOf } from '../thumbnail-urls.js';
 import { entryAsWorld, keysOfEntry } from '../world-info-engine.js';
@@ -184,6 +185,15 @@ export function editedEntry(current, edit) {
         case 'characterFilter':
             return { ...current, characterFilter: changedFilter(filterOf(current), edit.filter) };
     }
+}
+
+/**
+ * @param {import('./entry-merge.js').FieldConflict} conflict
+ * @returns {import('@st/worldbuilding/protocol').ConflictField}
+ */
+function conflictShown({ field, mine, theirs, merged }) {
+    const diff = merged === null ? null : wordRuns(String(mine ?? ''), String(theirs ?? '')).map(run => ({ text: run.text, in: run.in === 'from' ? 'mine' : run.in === 'to' ? 'theirs' : 'both' }));
+    return { field, mine: mine ?? null, theirs: theirs ?? null, merged, diff };
 }
 
 /**
@@ -374,15 +384,18 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             const lib = await libOf(user);
             const b = BigInt(book);
             const form = await lib.books.bookForm(b);
+            /** @type {bigint[]} */
+            const versions = await lib.store.worldRead('lastChanges', { entities: entries.map(BigInt) });
             const stored = await Promise.all(entries.map(entry => lib.books.entryIn(b, BigInt(entry))));
             const worlds = stored.map(one => (one && form ? entryAsWorld(one, form.form) : null));
             const counts = tokens ? await countTokens(user, worlds.flatMap(world => (world ? [String(world.content ?? '')] : []))) : null;
             let counted = 0;
-            return worlds.map(world => {
+            return worlds.map((world, at) => {
                 if (!world) return null;
                 const { placement } = placementOf(world);
                 const chance = placement.useProbability && Number(placement.probability) < 100 ? Number(placement.probability) : null;
                 return {
+                    version: String(versions[at]),
                     comesIn: placement.disable ? 'never' : placement.constant ? 'always' : 'broughtUp',
                     keysecondary: /** @type {string[]} */ (placement.keysecondary),
                     selectiveLogic: /** @type {import('@st/worldbuilding/protocol').Placement['selectiveLogic']} */ (placement.selectiveLogic),
@@ -409,6 +422,7 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             const linkedPictures = new Map((await picturesOf(lib, b, linked)).map((picture, i) => [linked[i], picture]));
             return {
                 ...read,
+                version: String(read.version),
                 picture: read.picture === null ? null : lookImageUrl(read.picture),
                 links: found.links.map(link => ({ ...link, entry: String(link.entry), picture: linkedPictures.get(link.entry) ?? null })),
                 linksComplete: found.complete,
@@ -440,9 +454,11 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             const lib = await libOf(user);
             return lib.store.worldRead('worldbuildingKeySharers', { book: BigInt(book), entry: BigInt(entry), key, limit });
         },
-        async editEntry(who, book, entry, edit) {
+        async editEntry(who, book, entry, edit, version) {
             const lib = await libOf(who.user);
-            return lib.books.editEntryById(BigInt(book), BigInt(entry), current => editedEntry(current, edit), actorOf(who));
+            const done = await lib.books.editEntryById(BigInt(book), BigInt(entry), current => editedEntry(current, edit), actorOf(who), version === null ? null : BigInt(version));
+            if (typeof done !== 'object' || !('conflict' in done)) return done;
+            return { conflict: { book, entry, version: String(done.conflict.version), fields: done.conflict.fields.map(conflictShown) } };
         },
         async createEntry(who, book, { after, name, relation }, loopCheckLimit) {
             const lib = await libOf(who.user);

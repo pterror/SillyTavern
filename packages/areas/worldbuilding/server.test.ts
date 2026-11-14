@@ -206,6 +206,7 @@ const resultCard = (rank: number): EntryCell => {
     return {
         ...cell,
         facts: {
+            version: '1',
             comesIn: 'broughtUp',
             keysecondary: [],
             selectiveLogic: 0,
@@ -318,7 +319,7 @@ function world(
         step: (Grouping & OverviewStep)[];
         changes: { book: string; change: RelationChange; loopCheckLimit: number; session: string }[];
         writes: number[];
-        edits: { book: string; entry: string; edit: EntryEdit; session: string }[];
+        edits: { book: string; entry: string; edit: EntryEdit; session: string; version: string | null }[];
         created: { book: string; creation: EntryCreation; loopCheckLimit: number }[];
         entryReads: { book: string; entry: string; mentions: PagesRun }[];
         deleted: string[];
@@ -435,6 +436,7 @@ function world(
         return {
             deleted: false,
             entryKey: entry,
+            version: '1',
             label: named(entry, `name ${entry}`),
             picture: found.picture,
             title: null,
@@ -500,6 +502,7 @@ function world(
         },
         readFacts: async (_u, _book, entries, tokens) =>
             entries.map((entry) => ({
+                version: '1',
                 comesIn: 'broughtUp',
                 keysecondary: [],
                 selectiveLogic: 0,
@@ -779,9 +782,18 @@ function world(
             if (book !== '1') return null;
             return typed.startsWith('la') ? [{ text: 'lamp', keys: 2 }] : [];
         },
-        editEntry: async ({ session }, book, entry, edit) => {
-            asked.edits.push({ book, entry, edit, session });
+        editEntry: async ({ session }, book, entry, edit, version) => {
+            asked.edits.push({ book, entry, edit, session, version });
             if (book !== '1') return 'missing';
+            if (version === '0')
+                return {
+                    conflict: {
+                        book,
+                        entry,
+                        version: '2',
+                        fields: [{ field: 'depth', mine: 1, theirs: 2, merged: null, diff: null }],
+                    },
+                };
             const found = entries.get(entry);
             if (!found || found.deleted) return 'no entry';
             if (edit.change === 'setKeyAs' && edit.key !== `name ${entry}`)
@@ -1639,31 +1651,50 @@ test('an edit names its world and entry, passes the session, answers the entry a
         changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW, FOUND_VIEW],
         own: [ENTRY_VIEW],
     };
-    expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '7', text: 'Ilse left.' })).toEqual(both);
-    expect(entryOpen(await w.view<EntryView>(ENTRY_VIEW)).text).toBe('Ilse left.');
-    expect(await w.act('worldbuilding.setEntryTitle', { book: '1', entry: '7', title: '' })).toEqual(both);
     expect(
-        await w.act('worldbuilding.addKeys', { book: '1', entry: '8', keys: [' lamp ', 'a'], as: 'trigger' }),
+        await w.act('worldbuilding.setEntryText', { version: '1', book: '1', entry: '7', text: 'Ilse left.' }),
     ).toEqual(both);
-    expect(await w.act('worldbuilding.setKeyAs', { book: '1', entry: '7', key: 'name 7', as: 'trigger' })).toEqual(
+    expect(entryOpen(await w.view<EntryView>(ENTRY_VIEW)).text).toBe('Ilse left.');
+    expect(await w.act('worldbuilding.setEntryTitle', { version: '1', book: '1', entry: '7', title: '' })).toEqual(
         both,
     );
-    expect(await w.act('worldbuilding.setKeyAs', { book: '1', entry: '7', key: 'x', as: 'name' })).toEqual({
+    expect(
+        await w.act('worldbuilding.addKeys', {
+            version: '1',
+            book: '1',
+            entry: '8',
+            keys: [' lamp ', 'a'],
+            as: 'trigger',
+        }),
+    ).toEqual(both);
+    expect(
+        await w.act('worldbuilding.setKeyAs', { version: '1', book: '1', entry: '7', key: 'name 7', as: 'trigger' }),
+    ).toEqual(both);
+    expect(
+        await w.act('worldbuilding.setKeyAs', { version: '1', book: '1', entry: '7', key: 'x', as: 'name' }),
+    ).toEqual({
         refused: 'That entry has no such key.',
     });
-    expect(await w.act('worldbuilding.renameKey', { book: '1', entry: '7', key: 'name 7', to: ' name 8 ' })).toEqual(
+    expect(
+        await w.act('worldbuilding.renameKey', { version: '1', book: '1', entry: '7', key: 'name 7', to: ' name 8 ' }),
+    ).toEqual(both);
+    expect(await w.act('worldbuilding.removeKey', { version: '1', book: '1', entry: '7', key: 'name 7' })).toEqual(
         both,
     );
-    expect(await w.act('worldbuilding.removeKey', { book: '1', entry: '7', key: 'name 7' })).toEqual(both);
-    expect(await w.act('worldbuilding.setPlacement', { book: '1', entry: '7', fields: { depth: 2, role: 1 } })).toEqual(
-        both,
-    );
-    expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '404', text: '' })).toEqual({
+    expect(
+        await w.act('worldbuilding.setPlacement', {
+            version: '1',
+            book: '1',
+            entry: '7',
+            fields: { depth: 2, role: 1 },
+        }),
+    ).toEqual(both);
+    expect(await w.act('worldbuilding.setEntryText', { version: '1', book: '1', entry: '404', text: '' })).toEqual({
         refused: 'Entry not found.',
         changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW, FOUND_VIEW],
         own: [],
     });
-    expect(await w.act('worldbuilding.setEntryText', { book: '2', entry: '7', text: '' })).toEqual({
+    expect(await w.act('worldbuilding.setEntryText', { version: '1', book: '2', entry: '7', text: '' })).toEqual({
         refused: 'World not found.',
     });
     expect(w.asked.edits.map(({ edit }) => edit)).toEqual([
@@ -1678,7 +1709,14 @@ test('an edit names its world and entry, passes the session, answers the entry a
         { change: 'text', text: '' },
         { change: 'text', text: '' },
     ]);
-    expect(w.asked.edits[0]).toMatchObject({ book: '1', entry: '7', session: 's' });
+    expect(w.asked.edits[0]).toMatchObject({ book: '1', entry: '7', session: 's', version: '1' });
+    const refused = await w.act('worldbuilding.setPlacement', {
+        book: '1',
+        entry: '7',
+        version: '0',
+        fields: { depth: 1 },
+    });
+    expect(refused).toMatchObject({ refused: 'Changed in another tab.', answer: { conflict: { version: '2' } } });
 });
 
 test('making an entry places it, opens it when asked and says what it made and which loops it left; a refused one changes nothing', async () => {
@@ -1965,7 +2003,7 @@ test("an open entry is always the shown world's: another world closes it, the sa
 
 test('the entry schemas take worlds and entries by id, keys trimmed and not empty, and placement fields each by its own type and range', () => {
     const ok = (type: keyof typeof actions, payload: unknown) => v.safeParse(actions[type], payload).success;
-    const at = { book: '1', entry: '7' };
+    const at = { book: '1', entry: '7', version: '1' };
     expect(ok('worldbuilding.openEntry', { entry: '7', pointingAt })).toBe(true);
     expect(ok('worldbuilding.openEntry', { entry: '7' })).toBe(false);
     expect(ok('worldbuilding.openEntry', { entry: 'seven', pointingAt })).toBe(false);
@@ -1975,6 +2013,9 @@ test('the entry schemas take worlds and entries by id, keys trimmed and not empt
     expect(ok('worldbuilding.renameKey', { ...at, key: 'Ilse', to: 'Ilsa' })).toBe(true);
     expect(ok('worldbuilding.renameKey', { ...at, key: 'Ilse', to: '  ' })).toBe(false);
     expect(ok('worldbuilding.setEntryTitle', { ...at, title: '' })).toBe(true);
+    expect(ok('worldbuilding.setEntryTitle', { book: '1', entry: '7', title: '' })).toBe(false);
+    expect(ok('worldbuilding.setEntryTitle', { ...at, version: null, title: '' })).toBe(false);
+    expect(ok('worldbuilding.addKeys', { ...at, version: null, keys: ['Ilse'], as: 'name' })).toBe(true);
     const placing = (fields: unknown) => ok('worldbuilding.setPlacement', { ...at, fields });
     const { characterFilter: _filter, ...settable } = PLACEMENT;
     expect(placing(settable)).toBe(true);
@@ -2274,9 +2315,11 @@ test('what changes cards answers the results; another world clears them, the sam
     const w = world(3);
     await w.act('worldbuilding.openOverview', open);
     await w.act('worldbuilding.setFilter', filter);
-    expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '7', text: 'x' })).toMatchObject({
-        changed: expect.arrayContaining([RESULTS_VIEW, FOUND_VIEW]),
-    });
+    expect(await w.act('worldbuilding.setEntryText', { version: '1', book: '1', entry: '7', text: 'x' })).toMatchObject(
+        {
+            changed: expect.arrayContaining([RESULTS_VIEW, FOUND_VIEW]),
+        },
+    );
     expect(
         await w.act('worldbuilding.addRelation', {
             book: '1',
@@ -2613,8 +2656,8 @@ test("every action's first part, with every view at the most, reads within one p
         ['worldbuilding.moveRelation', () => ({ ...relation, newTarget: '7', after: null, before: null })],
         ['worldbuilding.removeRelation', () => relation],
         ['worldbuilding.setRelationWeak', () => ({ ...relation, weak: true })],
-        ['worldbuilding.setEntryText', () => ({ book: '1', entry: '7', text: 'Ilse keeps the lamp.' })],
-        ['worldbuilding.setPlacement', () => ({ book: '1', entry: '7', fields: { order: 5 } })],
+        ['worldbuilding.setEntryText', () => ({ version: '1', book: '1', entry: '7', text: 'Ilse keeps the lamp.' })],
+        ['worldbuilding.setPlacement', () => ({ version: '1', book: '1', entry: '7', fields: { order: 5 } })],
         [
             'worldbuilding.createEntry',
             ({ shownAtTheMost }) => ({
@@ -3147,9 +3190,12 @@ test('a card dropped in another cell changes the relations of the axes it crosse
 
 test("an entry's character filter changes by one item or its sense per action, and the characters to add are found by name", async () => {
     const w = world(3);
-    const at = { book: '1', entry: '7' };
+    const at = { book: '1', entry: '7', version: '1' };
     expect(
-        await w.act('worldbuilding.changeCharacterFilter', { ...at, change: { add: { character: 'Wren' } } }),
+        await w.act('worldbuilding.changeCharacterFilter', {
+            ...at,
+            change: { add: { character: 'Wren' } },
+        }),
     ).toEqual({
         changed: expect.any(Array),
         own: [ENTRY_VIEW],
