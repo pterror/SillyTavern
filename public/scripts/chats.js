@@ -1389,8 +1389,8 @@ export function initChatUtilities() {
         expandMessageMedia(messageId, mediaIndex);
     });
     initImageLightbox(showMediaLightbox);
-    chatElement.on('click', '.mes_text img, .mes_reasoning img, .mes_bias img', onLightboxImageClick);
-    $(document).on('click', '.field_preview img', onLightboxImageClick);
+    chatElement.on('click dblclick', '.mes_text img, .mes_reasoning img, .mes_bias img', onLightboxImageClick);
+    $(document).on('click dblclick', '.field_preview img', onLightboxImageClick);
     chatElement.on('click', '.mes_media_enlarge', async function () {
         const { messageId, mediaIndex } = getMediaContainerInfo.call(this);
         expandMessageMedia(messageId, mediaIndex).click();

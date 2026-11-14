@@ -310,10 +310,11 @@ describe('chat text, a click on it', () => {
 describe('an image in chat text, clicked', () => {
     /**
      * @param {string} html the text, an image in it
+     * @param {'click' | 'dblclick'} [type]
      * @returns {{ shown: string[], prevented: boolean, edit: number | null }} what the lightbox showed, whether the
      *   browser was told not to act on the click, and the edit it starts
      */
-    async function clickImage(html) {
+    async function clickImage(html, type = 'click') {
         const { initImageLightbox, onLightboxImageClick } = await import('../public/scripts/image-lightbox.js');
         /** @type {string[]} */
         const shown = [];
@@ -321,8 +322,9 @@ describe('an image in chat text, clicked', () => {
         const rendered = document.createElement('div');
         rendered.innerHTML = html;
         const image = /** @type {HTMLImageElement} */ (rendered.querySelector('img'));
-        image.addEventListener('click', (event) => {
+        image.addEventListener(type, (event) => {
             const jq = {
+                type,
                 delegateTarget: rendered,
                 isDefaultPrevented: () => event.defaultPrevented,
                 preventDefault: () => event.preventDefault(),
@@ -332,8 +334,8 @@ describe('an image in chat text, clicked', () => {
         });
         /** @type {number | null} */
         let edit = null;
-        rendered.addEventListener('click', event => { edit = surface.editPosition(/** @type {MouseEvent} */ (event), rendered, true); });
-        const event = new window.MouseEvent('click', { bubbles: true, cancelable: true });
+        rendered.addEventListener(type, event => { edit = surface.editPosition(/** @type {MouseEvent} */ (event), rendered, true); });
+        const event = new window.MouseEvent(type, { bubbles: true, cancelable: true });
         image.dispatchEvent(event);
         return { shown, prevented: event.defaultPrevented, edit };
     }
@@ -341,6 +343,13 @@ describe('an image in chat text, clicked', () => {
     test('opens it in the lightbox, starting no edit', async () => {
         const { shown, prevented, edit } = await clickImage('<p><img src="http://localhost:8000/x.png"></p>');
         expect(shown).toEqual(['http://localhost:8000/x.png']);
+        expect(prevented).toBe(true);
+        expect(edit).toBeNull();
+    });
+
+    test('twice, as a double-click, starts no edit and opens no second lightbox', async () => {
+        const { shown, prevented, edit } = await clickImage('<p><img src="http://localhost:8000/x.png"></p>', 'dblclick');
+        expect(shown).toEqual([]);
         expect(prevented).toBe(true);
         expect(edit).toBeNull();
     });

@@ -9,20 +9,21 @@ export function initImageLightbox(show) {
 }
 
 /**
- * Shows a clicked image in the lightbox, unless what holds it handles the click (a link, a button)
+ * Shows a clicked image in the lightbox, unless what holds it handles the click (a link, a button). The image's
+ * double-click is taken too, as its own: the clicks it is made of showed the lightbox.
  * @this {HTMLImageElement}
- * @param {JQuery.ClickEvent} event
+ * @param {JQuery.ClickEvent | JQuery.DoubleClickEvent} event
  */
 export function onLightboxImageClick(event) {
     if (event.isDefaultPrevented() || handledInside(this, event.delegateTarget)) return;
     event.preventDefault();
     event.stopPropagation();
-    showLightbox(this.src, this.alt || '');
+    if (event.type === 'click') showLightbox(this.src, this.alt || '');
 }
 
 /**
  * @param {HTMLElement|JQuery<HTMLElement>} element
  */
 export function addImageLightbox(element) {
-    $(element).addClass('image_lightbox').on('click', 'img', onLightboxImageClick);
+    $(element).addClass('image_lightbox').on('click dblclick', 'img', onLightboxImageClick);
 }
