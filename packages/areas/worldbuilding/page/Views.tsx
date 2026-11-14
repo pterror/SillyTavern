@@ -76,6 +76,10 @@ export function ViewTabs(props: {
     onAdd: () => void;
     onRename: (view: string, name: string) => void;
     onDelete: (view: string) => void;
+    // Whether the world's entries are drawn as cards or rows, which a tap selects in select mode.
+    selectable: boolean;
+    selecting: boolean;
+    onSelecting: (on: boolean) => void;
 }) {
     const { t } = useUi();
     return (
@@ -112,6 +116,17 @@ export function ViewTabs(props: {
             <button type="button" class="menu_button margin0 whitespacenowrap wb-vt-add" onClick={() => props.onAdd()}>
                 {t('+ View')}
             </button>
+            <Show when={props.selectable}>
+                <button
+                    type="button"
+                    class="menu_button margin0 whitespacenowrap wb-select-mode"
+                    classList={{ 'wb-on': props.selecting }}
+                    aria-pressed={props.selecting}
+                    onClick={() => props.onSelecting(!props.selecting)}
+                >
+                    {t('Select')}
+                </button>
+            </Show>
         </div>
     );
 }

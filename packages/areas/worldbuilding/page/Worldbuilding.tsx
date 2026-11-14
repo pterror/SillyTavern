@@ -44,7 +44,8 @@ import { Switcher } from './Switcher.tsx';
 import { shownView } from './views.ts';
 import { WorldPage } from './WorldPage.tsx';
 import { ViewBar, ViewTabs, viewActions as viewActionsOf, viewsOf } from './Views.tsx';
-import { BulkBar, hasSelection, rowPicking } from './Rows.tsx';
+import { BulkBar, hasSelection } from './Rows.tsx';
+import { picking } from './picking.ts';
 import type { RowsContext } from './Rows.tsx';
 
 const POINTING_AT_SHOWN = 12;
@@ -162,18 +163,21 @@ function Page(props: Props) {
         const shown = selection();
         return shown && shown.book !== null && shown.book === shownWorld()?.id ? shown : null;
     };
-    const picking = rowPicking(
-        wb,
-        () => shownWorld()?.id ?? '',
-        shownSelection,
-        () => pane(),
-    );
     const shownAxes = () => {
         const shown = axes();
         const view = shownViews()?.shown;
         const drawsAxes = view !== null && view !== undefined && (view.columns.length > 0 || view.rows.length > 0);
         return drawsAxes && shown && shown.book !== null && shown.book === shownWorld()?.id ? shown : null;
     };
+    // The world's entries are drawn as cards or rows, which can be selected.
+    const listed = () => props.shown && Boolean(shownWorld()) && !shownEntry() && !shownAxes();
+    const pick = picking(
+        wb,
+        () => shownWorld()?.id ?? '',
+        shownSelection,
+        () => pane(),
+        listed,
+    );
     const rows = (): RowsContext | null => {
         const shown = shownViews()?.shown;
         const book = shownWorld()?.id;
@@ -189,9 +193,7 @@ function Page(props: Props) {
             book,
             fields: shown.fields,
             selection: shownSelection(),
-            isSelected: picking.isSelected,
-            press: picking.press,
-            enter: picking.enter,
+            pick,
             open,
             reorders: actions.worldOrder?.() === true ? book : null,
         };
@@ -341,6 +343,9 @@ function Page(props: Props) {
                                 onAdd={viewActions.add}
                                 onRename={viewActions.rename}
                                 onDelete={viewActions.delete}
+                                selectable={!shownAxes()}
+                                selecting={pick.selecting()}
+                                onSelecting={(on) => pick.setSelecting(on)}
                             />
                             <ViewBar
                                 views={shown()}
@@ -369,7 +374,7 @@ function Page(props: Props) {
                                         lastChange={lastChange() ?? null}
                                         pane={pane() as HTMLElement}
                                         resultsPageSize={resultsPageSize()}
-                                        actions={actions}
+                                        actions={{ ...actions, pick }}
                                         onGroupBy={(groupBy) => void openWorld(shown().id, groupBy)}
                                         viewed={(shownViews()?.tabs.length ?? 0) > 0}
                                         rows={rows()}
@@ -401,7 +406,7 @@ function Page(props: Props) {
                     </Show>
                 </main>
                 <DragLayer control={drag} />
-                <Show when={rows() && !shownEntry() && hasSelection(shownSelection())}>
+                <Show when={listed() && hasSelection(shownSelection())}>
                     <BulkBar
                         selection={shownSelection() as NonNullable<ReturnType<typeof shownSelection>>}
                         kinds={shownKinds()}

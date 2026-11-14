@@ -1,8 +1,8 @@
-import { For, Match, Show, Switch, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Match, Show, Switch, createSignal } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
-import { LOOP_CHECK_VISITS_PER_WRITE, PICKED_AT_MOST, SELECTION_COUNTED_UP_TO } from '../protocol.ts';
+import { LOOP_CHECK_VISITS_PER_WRITE, SELECTION_COUNTED_UP_TO } from '../protocol.ts';
 import type {
     BulkAction,
     EntryCell,
@@ -26,6 +26,7 @@ import { goesWords, triggersOf } from './facts.ts';
 import { KeyChips } from './KeyChips.tsx';
 import { TriggerLine } from './Keys.tsx';
 import { count, fill } from './words.ts';
+import type { Picking } from './picking.ts';
 
 export const ROW_HEIGHT = 40;
 
@@ -57,83 +58,11 @@ export type RowsContext = {
     book: string;
     fields: RowField[];
     selection: Selected | null;
-    isSelected: (entry: string) => boolean;
-    press: (entry: string, event: PointerEvent) => void;
-    enter: (entry: string) => void;
+    pick: Picking;
     // The world whose own order the rows are drawn in: each top-level row has a grip that moves it there.
     reorders: string | null;
     open: (entry: string) => void;
 };
-
-// Picks rows: a click toggles one, Shift extends from the last clicked, pressing and dragging down the boxes picks the
-// run; each gesture is one action.
-export function rowPicking(
-    wb: Wb,
-    book: () => string,
-    selection: () => Selected | null,
-    list: () => HTMLElement | undefined,
-) {
-    let anchor: string | null = null;
-    let run: { from: string; to: string; selected: boolean } | null = null;
-    const isSelected = (entry: string) => {
-        const shown = selection();
-        if (!shown) return false;
-        return shown.base === 'none' ? shown.except.includes(entry) : !shown.except.includes(entry);
-    };
-    const drawn = () =>
-        [...(list()?.querySelectorAll<HTMLElement>('.wb-tr[data-entry]') ?? [])].map(
-            (row) => row.dataset['entry'] ?? '',
-        );
-    const between = (from: string, to: string): string[] => {
-        const order = [...new Set(drawn())];
-        const [a, b] = [order.indexOf(from), order.indexOf(to)];
-        if (a < 0 || b < 0) return [to];
-        return order.slice(Math.min(a, b), Math.max(a, b) + 1);
-    };
-    const mark = () => {
-        for (const row of list()?.querySelectorAll<HTMLElement>('.wb-tr[data-entry]') ?? [])
-            row.classList.remove('wb-tr-run');
-        if (!run) return;
-        const picked = new Set(between(run.from, run.to));
-        for (const row of list()?.querySelectorAll<HTMLElement>('.wb-tr[data-entry]') ?? [])
-            if (picked.has(row.dataset['entry'] ?? '')) row.classList.add('wb-tr-run');
-    };
-    const send = (entries: string[], selected: boolean) => {
-        const unique = [...new Set(entries)].slice(0, PICKED_AT_MOST);
-        if (unique.length > 0) void wb.act('worldbuilding.select', { book: book(), entries: unique, selected });
-    };
-    const release = () => {
-        if (!run) return;
-        const { from, to, selected } = run;
-        run = null;
-        mark();
-        send(between(from, to), selected);
-    };
-    onMount(() => {
-        window.addEventListener('pointerup', release);
-        onCleanup(() => window.removeEventListener('pointerup', release));
-    });
-    return {
-        isSelected,
-        press: (entry: string, event: PointerEvent) => {
-            event.preventDefault();
-            const selected = !isSelected(entry);
-            if (event.shiftKey && anchor !== null) {
-                send(between(anchor, entry), isSelected(anchor));
-                anchor = entry;
-                return;
-            }
-            anchor = entry;
-            run = { from: entry, to: entry, selected };
-            mark();
-        },
-        enter: (entry: string) => {
-            if (!run) return;
-            run = { ...run, to: entry };
-            mark();
-        },
-    };
-}
 
 export function RowsHead(props: { fields: RowField[]; selection: Selected | null; book: string }) {
     const { t } = useUi();
@@ -202,7 +131,7 @@ export function EntryRows(props: { cell: RegionCell; depth: number; context: Row
 function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
     const { t } = useUi();
     const wb = useWb();
-    const selected = () => props.context.isSelected(props.cell.entry);
+    const selected = () => props.context.pick.isSelected(props.cell.entry);
     const facts = () => props.cell.facts;
     const relations = () =>
         props.cell.relations
@@ -283,8 +212,9 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
             class="wb-tr"
             classList={{ 'wb-tr-sel': selected(), 'wb-tr-off': facts()?.comesIn === 'never' }}
             data-entry={props.cell.entry}
+            data-pick={props.cell.entry}
             style={{ 'grid-template-columns': columnsOf(props.context.fields) }}
-            onPointerEnter={() => props.context.enter(props.cell.entry)}
+            onPointerEnter={() => props.context.pick.enter(props.cell.entry)}
         >
             <span class="wb-tr-pick">
                 <Show when={props.depth === 0 && props.context.reorders}>
@@ -315,7 +245,7 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
                     class="wb-cb"
                     checked={selected()}
                     aria-label={fill(t('Select ${0}'), props.cell.label.text)}
-                    onPointerDown={(event) => props.context.press(props.cell.entry, event)}
+                    onPointerDown={(event) => props.context.pick.press(props.cell.entry, event)}
                     onClick={(event) => event.preventDefault()}
                 />
             </span>
@@ -335,7 +265,9 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
                 type="button"
                 class="wb-nmc"
                 style={{ 'padding-left': `${props.depth * 20}px` }}
-                onClick={() => props.context.open(props.cell.entry)}
+                onClick={(event) => {
+                    if (!props.context.pick.click(props.cell.entry, event)) props.context.open(props.cell.entry);
+                }}
             >
                 <Picture url={props.cell.picture} class="wb-pk" />
                 <Label named={props.cell.label} />

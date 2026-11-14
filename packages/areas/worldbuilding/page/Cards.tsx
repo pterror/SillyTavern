@@ -14,6 +14,7 @@ import { OnOff } from './OnOff.tsx';
 import { goesWords, triggerWords, triggersOf } from './facts.ts';
 import { TriggerLine } from './Keys.tsx';
 import { count, fill } from './words.ts';
+import type { Picking } from './picking.ts';
 
 export type CardActions = {
     open(entry: string): void;
@@ -26,6 +27,8 @@ export type CardActions = {
     worldOrder?(): boolean;
     // Pointing at a card shows its hover card.
     hover?: { enter(entry: string, element: HTMLElement): void; leave(event: MouseEvent): void; hide(): void };
+    // The cards can be selected, as the world's rows are.
+    pick?: Picking;
 };
 
 // A card's menu, its drag and Alt+arrows, which move it among the cards of its region.
@@ -82,8 +85,9 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
     const key = (event: KeyboardEvent) => {
         reorder(event, props.entry, props.region, props.actions.grouping());
     };
-    const open = () => {
-        if (!wb.drag.clickIsDrop()) props.actions.open(props.entry);
+    const open = (event: MouseEvent) => {
+        if (wb.drag.clickIsDrop() || props.actions.pick?.click(props.entry, event) === true) return;
+        props.actions.open(props.entry);
     };
     const enter = (event: MouseEvent) => {
         if (!menu()) props.actions.hover?.enter(props.entry, event.currentTarget as HTMLElement);
@@ -110,6 +114,23 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
     return { menu, Menu, press, key, open, enter, leave, ref: (element: HTMLElement) => (root = element) };
 }
 
+// A card's checkbox, shown while it is pointed at or anything is selected.
+function PickBox(props: { entry: string; label: Named; pick: Picking }) {
+    const { t } = useUi();
+    return (
+        <input
+            type="checkbox"
+            class="wb-cb wb-card-cb"
+            checked={props.pick.isSelected(props.entry)}
+            aria-label={fill(t('Select ${0}'), props.label.text)}
+            onPointerDown={(event) => props.pick.press(props.entry, event)}
+            onClick={(event) => event.preventDefault()}
+        />
+    );
+}
+
+const picked = (actions: CardActions, entry: string) => actions.pick?.isSelected(entry) === true;
+
 // What a card says under the name: the text's first paragraph, or nothing when the name already is the opening.
 export const gistOf = (cell: Pick<EntryCell, 'label' | 'text'>): string =>
     cell.label.shownAs === 'opening' ? '' : (cell.text.split(/\n/u).find((line) => line.trim() !== '') ?? '');
@@ -132,11 +153,18 @@ export function Card(props: { cell: EntryCell; region: Membership; actions: Card
     return (
         <div
             class="wb-card"
-            classList={{ 'wb-card-menu-open': arrange.menu(), 'wb-card-off': props.cell.facts?.comesIn === 'never' }}
+            classList={{
+                'wb-card-menu-open': arrange.menu(),
+                'wb-card-off': props.cell.facts?.comesIn === 'never',
+                'wb-sel': picked(props.actions, props.cell.entry),
+                'wb-picking': props.actions.pick?.showing() === true,
+            }}
             data-entry={props.cell.entry}
+            data-pick={props.actions.pick ? props.cell.entry : undefined}
             ref={arrange.ref}
             onMouseEnter={arrange.enter}
             onMouseLeave={arrange.leave}
+            onPointerEnter={() => props.actions.pick?.enter(props.cell.entry)}
         >
             <button
                 type="button"
@@ -155,6 +183,9 @@ export function Card(props: { cell: EntryCell; region: Membership; actions: Card
             </button>
             <Facts cell={props.cell} actions={props.actions} />
             <arrange.Menu />
+            <Show when={props.actions.pick}>
+                {(pick) => <PickBox entry={props.cell.entry} label={props.cell.label} pick={pick()} />}
+            </Show>
         </div>
     );
 }
@@ -230,13 +261,27 @@ export function Region(props: { cell: EntryCell; region: Membership; actions: Ca
     return (
         <section
             class="wb-region"
-            classList={{ 'wb-card-menu-open': arrange.menu(), 'wb-card-off': props.cell.facts?.comesIn === 'never' }}
+            classList={{
+                'wb-card-menu-open': arrange.menu(),
+                'wb-card-off': props.cell.facts?.comesIn === 'never',
+                'wb-sel': picked(props.actions, props.cell.entry),
+                'wb-picking': props.actions.pick?.showing() === true,
+            }}
             aria-label={fill(t('${0} and its contents'), label())}
             data-entry={props.cell.entry}
+            data-pick={props.actions.pick ? props.cell.entry : undefined}
             {...REGION_ATTRIBUTES(props.cell.entry, label(), props.actions.grouping()?.kind ?? null)}
             ref={arrange.ref}
         >
-            <div class="wb-region-top" onMouseEnter={arrange.enter} onMouseLeave={arrange.leave}>
+            <div
+                class="wb-region-top"
+                onMouseEnter={arrange.enter}
+                onMouseLeave={arrange.leave}
+                onPointerEnter={() => props.actions.pick?.enter(props.cell.entry)}
+            >
+                <Show when={props.actions.pick}>
+                    {(pick) => <PickBox entry={props.cell.entry} label={props.cell.label} pick={pick()} />}
+                </Show>
                 <button
                     type="button"
                     class="wb-region-head"

@@ -1643,7 +1643,7 @@
 }
 
 .wb-tr.wb-tr-sel,
-.wb-tr.wb-tr-run {
+.wb-tr.wb-run {
     background: var(--wb-accent-10);
 }
 
@@ -2545,4 +2545,42 @@
 .wb-conflict-values dd {
     margin: 0;
     padding-inline: 4px;
+}
+
+/* Selecting cards: a checkbox on each, shown while pointed at or while anything is selected. */
+.wb .wb-card-cb {
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    z-index: 2;
+    margin: 0;
+    opacity: 0;
+}
+
+.wb-card:hover > .wb-card-cb,
+.wb-card:focus-within > .wb-card-cb,
+.wb-region-top:hover > .wb-card-cb,
+.wb-region-top:focus-within > .wb-card-cb,
+.wb-picking > .wb-card-cb,
+.wb-picking > .wb-region-top > .wb-card-cb {
+    opacity: 1;
+}
+
+.wb-card.wb-sel,
+.wb-card.wb-run {
+    border-color: var(--wb-accent-35);
+    background: var(--wb-accent-10);
+}
+
+.wb-region.wb-sel,
+.wb-region.wb-run {
+    border-color: var(--wb-accent-35);
+}
+
+.wb .wb-select-mode {
+    margin-left: auto;
+}
+
+.wb .wb-select-mode.wb-on {
+    background-color: var(--wb-accent-25);
 }
