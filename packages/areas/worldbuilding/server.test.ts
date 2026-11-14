@@ -118,7 +118,6 @@ const NOTHING_CHANGED: LastChangeView = {
     createdKind: null,
     changedRelation: null,
     createdEntry: null,
-    deletedEntry: null,
     movedEntry: null,
     markedTitleKeys: null,
     unreachedLoops: [],
@@ -320,7 +319,7 @@ function world(
         changes: { book: string; change: RelationChange; loopCheckLimit: number; session: string }[];
         writes: number[];
         edits: { book: string; entry: string; edit: EntryEdit; session: string; version: string | null }[];
-        restoredDeleted: { book: string; since: string; until: string | null; session: string }[];
+        restoredDeleted: { book: string; set: string; session: string }[];
         created: { book: string; creation: EntryCreation; loopCheckLimit: number }[];
         entryReads: { book: string; entry: string; mentions: PagesRun }[];
         deleted: string[];
@@ -742,12 +741,15 @@ function world(
             }
             bulkJobs.push({ job: String(bulkJobs.length + 1), action, target: null, done: 1000 });
             if ('delete' in action)
-                return { unreachedLoops: [], deleted: { since: String(100 + bulkJobs.length), one: null } };
+                return { unreachedLoops: [], deleted: { set: String(100 + bulkJobs.length), one: null } };
             return { unreachedLoops: 'moveTo' in action ? [{ entry: '7', kind: '1', entries: ['7', '8'] }] : [] };
         },
-        restoreDeleted: async ({ session }, book, since, until) => {
-            asked.restoredDeleted.push({ book, since, until, session });
-            return { restored: 2, unreachedLoops: [] };
+        restoreDeleted: async ({ session }, book, set) => {
+            asked.restoredDeleted.push({ book, set, session });
+            return {
+                restored: asked.restoredDeleted.filter((one) => one.set === set).length === 1 ? 2 : 0,
+                unreachedLoops: [],
+            };
         },
         readBulkJobs: async (_u, book) => (book === '1' ? bulkJobs : null),
         createRelationKind: async (_w, book, name) => {
@@ -826,7 +828,7 @@ function world(
             const found = entries.get(entry);
             if (!found || found.deleted) return 'no entry';
             found.deleted = true;
-            return { label: named(entry, `name ${entry}`), unreachedLoops: [] };
+            return { label: named(entry, `name ${entry}`), set: `5${entry}`, unreachedLoops: [] };
         },
         restoreEntry: async (_w, book, entry) => {
             asked.restored.push(entry);
@@ -1787,7 +1789,7 @@ test('making an entry places it, opens it when asked and says what it made and w
     });
 });
 
-test('deleting the open entry closes it and offers it back under its label; restoring answers the loops it left', async () => {
+test('deleting the open entry closes it and answers what undoes it, under its label; restoring answers the loops it left', async () => {
     const w = world(3);
     await w.act('worldbuilding.openOverview', open);
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
@@ -1807,13 +1809,9 @@ test('deleting the open entry closes it and offers it back under its label; rest
     expect(await w.act('worldbuilding.deleteEntry', { book: '1', entry: '7' })).toEqual({
         ...all,
         own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW, ENTRY_VIEW, POINTING_AT_VIEW],
+        answer: { deleted: { book: '1', set: '57', one: named('7', 'name 7') } },
     });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
-    expect((await w.view<LastChangeView>(LAST_CHANGE_VIEW)).deletedEntry).toEqual({
-        book: '1',
-        entry: '7',
-        label: named('7', 'name 7'),
-    });
     expect(await w.act('worldbuilding.deleteEntry', { book: '1', entry: '7' })).toEqual({
         refused: 'Entry not found.',
         changed: [OVERVIEW_VIEW, RESULTS_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, SELECTION_VIEW, AXES_VIEW, FOUND_VIEW],
@@ -2543,30 +2541,30 @@ test('picking one at a time stops at one read of cards', async () => {
     });
 });
 
-test('a bulk delete answers what undoes it; an undo restores from its change up to the next delete, once', async () => {
+test('a delete answers its own id, which its Undo names: each undo restores its delete alone, once', async () => {
     const w = world(3);
     await w.act('worldbuilding.openOverview', open);
     const del = async (entry: string) => {
         await w.act('worldbuilding.select', { book: '1', entries: [entry], selected: true });
         return (await w.act('worldbuilding.bulk', { book: '1', action: { delete: true }, loopCheckLimit: 10 })) as {
-            answer: { deleted: { book: string; since: string } };
+            answer: { deleted: { book: string; set: string } };
         };
     };
     const first = await del('7');
-    expect(first.answer).toEqual({ deleted: { book: '1', since: '101', one: null } });
+    expect(first.answer).toEqual({ deleted: { book: '1', set: '101', one: null } });
     const second = await del('8');
-    expect(await w.act('worldbuilding.undoDelete', { book: '1', since: '101' })).toMatchObject({
+    expect(await w.act('worldbuilding.undoDelete', { book: '1', set: '101' })).toMatchObject({
         changed: expect.any(Array),
     });
-    expect(await w.act('worldbuilding.undoDelete', { book: '1', since: '101' })).toEqual({
-        refused: 'Nothing to undo.',
-    });
+    expect(await w.act('worldbuilding.undoDelete', { book: '1', set: '101' })).toEqual({ refused: 'Nothing to undo.' });
     expect(await w.act('worldbuilding.undoDelete', second.answer.deleted)).toMatchObject({
         changed: expect.any(Array),
     });
+    expect(await w.act('worldbuilding.undoDelete', { book: '1', set: '0' })).toEqual({ refused: 'Nothing to undo.' });
     expect(w.asked.restoredDeleted).toEqual([
-        { book: '1', since: '101', until: '102', session: 's' },
-        { book: '1', since: '102', until: null, session: 's' },
+        { book: '1', set: '101', session: 's' },
+        { book: '1', set: '101', session: 's' },
+        { book: '1', set: '102', session: 's' },
     ]);
 });
 

@@ -478,9 +478,10 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             /** @type {(import('@st/worldbuilding/protocol').Named | null)[]} */
             const [label] = await lib.store.worldRead('worldbuildingLabels', { book: b, entities: [e] });
             if (!label) return 'no entry';
-            const done = await lib.books.deleteEntryById(b, e, actorOf(who));
+            const set = await lib.books.newDeleteSet();
+            const done = await lib.books.deleteEntryById(b, e, actorOf(who), set);
             if (typeof done === 'string' || 'refused' in done) return done;
-            return { label, unreachedLoops: done.unreachedLoops };
+            return { label, set: String(set), unreachedLoops: done.unreachedLoops };
         },
         async restoreEntry(who, book, entry) {
             const lib = await libOf(who.user);

@@ -5,7 +5,7 @@ import { ask } from '@st/page/dialog';
 import { LOOP_CHECK_VISITS_PER_WRITE, SELECTION_COUNTED_UP_TO } from '../protocol.ts';
 import type {
     BulkAction,
-    BulkDeleted,
+    Deleted,
     EntryCell,
     Placement,
     RegionCell,
@@ -445,11 +445,11 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
             action,
             loopCheckLimit: LOOP_CHECK_VISITS_PER_WRITE,
         });
-        const answer = done.ok ? (done.answer as BulkDeleted | undefined) : undefined;
+        const answer = done.ok ? (done.answer as Deleted | undefined) : undefined;
         if (!answer) return;
-        const { book, since, one } = answer.deleted;
+        const { book, set, one } = answer.deleted;
         const words = one ? fill(t('Deleted ${0}'), one.text) : many;
-        wb.offerUndo(words, () => void wb.act('worldbuilding.undoDelete', { book, since }));
+        wb.offerUndo(words, () => void wb.act('worldbuilding.undoDelete', { book, set }));
     };
     return (
         <div class="st-floating wb-bulk">

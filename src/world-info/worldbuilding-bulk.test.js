@@ -197,22 +197,29 @@ test('filling titles from keys gives each selected entry with no title its keys,
     assert.equal(stored[3].comment, '');
 });
 
-test('undoing a delete restores what the tab deleted from its mark up to the next, not another tab\'s deletions', async () => {
-    const shelf = await write('Undo', [1, 2, 3, 4, 5].map(uid => entry(uid, `entry ${uid}`)));
+test('undoing a delete restores exactly what it took, across its steps and as a job past one chunk, and nothing else', async () => {
+    const count = RELATION_CHANGES_PER_STEP + 5;
+    const shelf = await write('Undo', Array.from({ length: count + 3 }, (_, i) => entry(i, `entry ${i}`)));
     const tab = { user: 'u', session: 'undo-tab' };
-    const other = { user: 'u', session: 'other-tab' };
-    const del = async (uids, actor) => {
-        const since = await lib.books.changeMark();
-        await lib.books.startBulk(shelf.book, { selected: { entries: uids.map(shelf.id) }, except: [] }, { delete: true }, LOOPS, actor);
-        return since;
+    const del = async (selected, actor) => {
+        const set = await lib.books.newDeleteSet();
+        await lib.books.startBulk(shelf.book, { selected, except: [] }, { delete: true }, LOOPS, actor, set);
+        return set;
     };
-    const first = await del([1, 2], tab);
-    await del([3], other);
-    const second = await del([4], tab);
-    assert.deepEqual(Object.keys(await entriesOf('Undo')).sort(), ['5']);
-    assert.deepEqual(await lib.books.restoreDeletedSince(shelf.book, first, second, tab), { restored: 2, unreachedLoops: [] });
-    assert.deepEqual(Object.keys(await entriesOf('Undo')).sort(), ['1', '2', '5']);
-    assert.deepEqual(await lib.books.restoreDeletedSince(shelf.book, first, second, tab), { restored: 0, unreachedLoops: [] }, 'once');
-    assert.deepEqual(await lib.books.restoreDeletedSince(shelf.book, second, null, tab), { restored: 1, unreachedLoops: [] });
-    assert.deepEqual(Object.keys(await entriesOf('Undo')).sort(), ['1', '2', '4', '5']);
+    const many = await del({ entries: Array.from({ length: count }, (_, i) => shelf.id(i)) }, tab);
+    await lib.books.jobs.settled();
+    const other = await del({ entries: [shelf.id(count)] }, { user: 'u', session: 'other-tab' });
+    const single = await lib.books.newDeleteSet();
+    await lib.books.deleteEntryById(shelf.book, BigInt(shelf.id(count + 1)), tab, single);
+    assert.deepEqual(Object.keys(await entriesOf('Undo')), [String(count + 2)]);
+
+    const first = await lib.books.restoreSet(shelf.book, many, tab);
+    assert.equal(/** @type {any} */ (first).restored, RELATION_CHANGES_PER_STEP, 'a chunk in the request');
+    await lib.books.jobs.settled();
+    assert.equal(Object.keys(await entriesOf('Undo')).length, count + 1, 'the rest as a job, and only that delete\'s');
+    assert.deepEqual(await lib.books.bulkJobs(shelf.book), [], 'a restore isn\'t listed as a bulk action');
+    assert.deepEqual(await lib.books.restoreSet(shelf.book, many, tab), { restored: 0, unreachedLoops: [] }, 'once');
+    assert.deepEqual(await lib.books.restoreSet(shelf.book, single, tab), { restored: 1, unreachedLoops: [] });
+    assert.equal(String(count) in (await entriesOf('Undo')), false, 'another delete stays deleted');
+    assert.deepEqual(await lib.books.restoreSet(shelf.book, other, tab), { restored: 1, unreachedLoops: [] });
 });

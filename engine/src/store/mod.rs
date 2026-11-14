@@ -889,6 +889,23 @@ impl Store {
         ));
     }
 
+    pub fn sets_and_versions_conversion_step(
+        &self,
+        after: Option<u64>,
+        batch: usize,
+        done: Box<dyn FnOnce(StoreResult<Option<u64>>) + Send>,
+    ) {
+        let next = Arc::new(Mutex::new(None));
+        let found = next.clone();
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| {
+                *found.lock().unwrap() = history::sets_and_versions_conversion_step(view, out, after, batch)?;
+                Ok(())
+            }),
+            Box::new(move |r| done(r.map(|()| *next.lock().unwrap()))),
+        ));
+    }
+
     pub fn world_order_conversion_step(
         &self,
         after: Option<Vec<u8>>,

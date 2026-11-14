@@ -28,8 +28,11 @@ pub const DELETED: u64 = 214;
 pub const MARKS: u64 = 215;
 pub const FORGET: u64 = 216;
 pub const KEEP: u64 = 217;
-// A world's deleted entries by the session that deleted them and the deletion's change.
-pub const DELETED_BY: u64 = 254;
+// A world's deleted entries by the delete that took them (its set), and each one's set.
+pub const DELETED_SET: u64 = 254;
+pub const DELETED_SET_OF: u64 = 255;
+// The set of the entries deleted before deletes had sets of their own; it isn't undone as one.
+pub const EARLIER_SET: u64 = 0;
 
 pub const FORGET_SLICE: usize = 256;
 
@@ -769,22 +772,27 @@ fn deleted_key(book: u64, e: u64) -> Vec<u8> {
     key::ids(DELETED, book, e)
 }
 
-fn deleted_by_key(book: u64, session: Option<u64>, c: u64) -> Vec<u8> {
-    let mut k = key::ids(DELETED_BY, book, session.unwrap_or(0));
-    put_u64(&mut k, c);
+fn deleted_set_key(book: u64, set: u64, e: u64) -> Vec<u8> {
+    let mut k = key::ids(DELETED_SET, book, set);
+    put_u64(&mut k, e);
     k
 }
 
-// The key of a deleted entry's place among its session's deletions, from its deletion's change.
-fn deletion_key(view: &View, book: u64, e: u64) -> Result<Option<Vec<u8>>, StoreError> {
-    let Some((c, None)) = latest(view, e, None, VALUES)? else {
-        return Ok(None);
-    };
-    let (_, r) = change(view, None, c)?;
-    if r.kind.name != "histEntityDelete" {
-        return Ok(None);
+// Puts a deleted entry in a delete's set.
+fn file_in_set(out: &mut Out, book: u64, set: u64, e: u64) {
+    out.put(deleted_set_key(book, set, e), Vec::new());
+    out.put(key::id(DELETED_SET_OF, e), varints(&[book, set]));
+}
+
+// Takes a deleted entry out of its delete's set, as it is restored or erased.
+fn unfile_from_set(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError> {
+    let k = key::id(DELETED_SET_OF, e);
+    if let Some(b) = view.get(&k)? {
+        let [book, set] = parse_varints::<2>(&b)?;
+        out.del(deleted_set_key(book, set, e));
+        out.del(k);
     }
-    Ok(Some(deleted_by_key(book, Meta::of(&r).session, c)))
+    Ok(())
 }
 
 pub fn is_deleted_entry_of_book(view: &View, book: u64, e: u64) -> Result<bool, StoreError> {
@@ -1172,7 +1180,6 @@ impl Deriver for EntityDelete {
                 deleted_key(book, e),
                 varints(&[flags, place.unwrap_or(0), index.map_or(0, f64::to_bits)]),
             );
-            out.put(deleted_by_key(book, m.session, m.change()), uvarint(e));
         }
         let made = take_down(view, out, e, kind, &k, at, false)?;
         out.put(key::id(GONE, e), varints(&[made.pos, made.len, at.pos]));
@@ -1265,9 +1272,7 @@ pub fn erase(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<bool, StoreE
             if id(&was, 1) == ENTRY {
                 let (book, _) = books::parse_entry_key(bytes(&was, 2))?;
                 out.del(deleted_key(book, e));
-                if let Some(k) = deletion_key(view, book, e)? {
-                    out.del(k);
-                }
+                unfile_from_set(view, out, e)?;
                 super::relations::deleted_entry_erased(view, out, book, e)?;
             }
             out.del(key::id(GONE, e));
@@ -1380,9 +1385,7 @@ impl Deriver for Restore {
         o.del(key::id(GONE, e));
         if let Some(book) = book {
             o.del(deleted_key(book, e));
-            if let Some(k) = deletion_key(view, book, e)? {
-                o.del(k);
-            }
+            unfile_from_set(view, &mut o, e)?;
         }
         o.del(key::ids(key::ENTITY_CHANGE, deleted_at, e));
         out.entries.extend(o.entries.iter().cloned());
@@ -2204,25 +2207,84 @@ pub fn changes_since(
     Ok(Js::Arr(out))
 }
 
-// The entries of a world that `session` deleted with changes from `from` on, and before `to` when given, still deleted,
-// oldest first: at most `limit`.
-pub fn deleted_by(
-    view: &View,
-    book: u64,
-    session: Option<u64>,
-    (from, to): (u64, Option<u64>),
-    limit: usize,
-) -> Result<Js, StoreError> {
-    let end = match to {
-        Some(to) => deleted_by_key(book, session, to),
-        None => key::prefix_end(&key::ids(DELETED_BY, book, session.unwrap_or(0))),
-    };
-    let found = view.scan(&deleted_by_key(book, session, from), &end, limit)?;
+// The entries of a world in a delete's set that are still deleted: at most `limit`.
+pub fn deleted_in(view: &View, book: u64, set: u64, limit: usize) -> Result<Js, StoreError> {
+    let p = key::ids(DELETED_SET, book, set);
+    let found = view.scan(&p, &key::prefix_end(&p), limit)?;
     let mut out = Vec::with_capacity(found.len());
-    for (_, v) in found {
-        out.push(Js::Big(parse_uvarint(&v)?));
+    for (k, _) in found {
+        let mut at = p.len();
+        out.push(Js::Big(get_u64(&k, &mut at).ok_or_else(|| corrupt("a deleted set key doesn't decode"))?));
     }
     Ok(Js::Arr(out))
+}
+
+// Puts a deleted entry of a world in a delete's set: the record follows the entry's deletion in the delete's commit.
+struct DeletedIn;
+
+impl Deriver for DeletedIn {
+    fn derive(&self, rec: &Record, _: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        let (e, book, set) = (id(rec, 0), id(rec, 1), id(rec, 2));
+        if !is_deleted_entry_of_book(view, book, e)? {
+            return Err(refused(format!("entry {e} isn't a deleted entry of book {book}")));
+        }
+        unfile_from_set(view, out, e)?;
+        file_in_set(out, book, set, e);
+        Ok(())
+    }
+
+    fn is_live(&self, rec: &Record, _: u64, view: &View) -> Result<bool, StoreError> {
+        let (e, book, set) = (id(rec, 0), id(rec, 1), id(rec, 2));
+        Ok(view.get(&key::id(DELETED_SET_OF, e))?.is_some_and(|b| b == varints(&[book, set])))
+    }
+
+    fn repoint(&self, _: &Record, _: u64, _: Loc, _: &View, _: &mut Out) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+// One step of putting the entries deleted before deletes had sets in the earlier set, and of keeping each entity's
+// version: the entities with a history after `after`, `batch` of them. The next step's `after`, or None when done.
+pub fn sets_and_versions_conversion_step(
+    view: &View,
+    out: &mut Out,
+    after: Option<u64>,
+    batch: usize,
+) -> Result<Option<u64>, StoreError> {
+    let end = key::prefix_end(&key::of(HIST));
+    let mut from = match after {
+        Some(e) => key::prefix_end(&key::id(HIST, e)),
+        None => key::of(HIST),
+    };
+    let mut last = None;
+    for _ in 0..batch {
+        let Some((hk, _)) = view.scan(&from, &end, 1)?.into_iter().next() else {
+            return Ok(None);
+        };
+        let mut at = key::of(HIST).len();
+        let e = get_u64(&hk, &mut at).ok_or_else(|| corrupt("a history key doesn't decode"))?;
+        let mut newest = 0;
+        for slot in slots(view, e)? {
+            for part in [VALUES, PLACES] {
+                if let Some((c, _)) = latest(view, e, slot.as_ref(), part)? {
+                    newest = newest.max(c);
+                }
+            }
+        }
+        out.max(key::id(LAST, e), newest);
+        if let Some([gp, _, _]) = gone(view, e)?
+            && view.get(&key::id(DELETED_SET_OF, e))?.is_none()
+        {
+            let (was, _) = view.record(gp)?;
+            if id(&was, 1) == ENTRY {
+                let (book, _) = books::parse_entry_key(bytes(&was, 2))?;
+                file_in_set(out, book, EARLIER_SET, e);
+            }
+        }
+        last = Some(e);
+        from = key::prefix_end(&key::id(HIST, e));
+    }
+    Ok(last)
 }
 
 static VALUE_CHANGE: ValueChange = ValueChange;
@@ -2235,6 +2297,7 @@ pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {
         "histRestore" => &Restore,
         "histRevert" => &Revert,
         "histForget" => &Forget,
+        "deletedIn" => &DeletedIn,
         _ => return None,
     })
 }

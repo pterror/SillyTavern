@@ -4,6 +4,7 @@ import { ask } from '@st/page/dialog';
 import { Name } from '@st/page/name';
 import { LOOP_CHECK_VISITS_PER_WRITE, MAX_CARDS_PER_READ, MENTION_PAGES_AT_MOST } from '../protocol.ts';
 import type {
+    Deleted,
     MentionsPage,
     OpenEntryView,
     Placement,
@@ -505,7 +506,18 @@ function EntryMenu(props: { entry: OpenEntryView; opener: () => HTMLElement | un
                             type="button"
                             role="menuitem"
                             class="list-group-item wb-danger"
-                            onClick={() => run(() => wb.act('worldbuilding.deleteEntry', at()))}
+                            onClick={() =>
+                                run(async () => {
+                                    const done = await wb.act('worldbuilding.deleteEntry', at());
+                                    const answer = done.ok ? (done.answer as Deleted | undefined) : undefined;
+                                    if (!answer) return;
+                                    const { book, set, one } = answer.deleted;
+                                    wb.offerUndo(
+                                        fill(t('Deleted ${0}'), one?.text ?? ''),
+                                        () => void wb.act('worldbuilding.undoDelete', { book, set }),
+                                    );
+                                })
+                            }
                         >
                             {t('Delete')}
                         </button>

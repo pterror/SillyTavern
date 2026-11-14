@@ -1574,32 +1574,90 @@ fn the_kept_version_is_the_newest_change_through_random_writes_deletes_restores_
     }
 }
 
-#[test]
-fn a_sessions_deletions_in_a_world_are_listed_from_a_change_on_until_restored() {
-    let dir = temp_dir("deleted-by");
-    let s = open(&dir);
-    let listed = |s: &Store, session: Option<u64>, from: u64| -> Vec<u64> {
-        let Js::Arr(rows) = s
-            .chat_read(|v| history::deleted_by(v, BOOK_ID, session, (from, None), 10))
-            .unwrap()
-        else {
-            panic!()
-        };
-        rows.iter().map(|r| match r { Js::Big(e) => *e, _ => panic!("{r:?}") }).collect()
+fn derive_now<T: Send + 'static>(
+    s: &Store,
+    f: impl FnOnce(&super::derive::View, &mut super::derive::Out) -> Result<T, StoreError> + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let got = Arc::new(Mutex::new(None));
+    let put = got.clone();
+    s.inner.submit(Job::Derive(
+        Box::new(move |view, out| {
+            *put.lock().unwrap() = Some(f(view, out)?);
+            Ok(())
+        }),
+        Box::new(move |r| tx.send(r).unwrap()),
+    ));
+    rx.recv().unwrap().unwrap();
+    got.lock().unwrap().take().unwrap()
+}
+
+fn deleted_in(e: u64, set: u64) -> Record {
+    rec(
+        "deletedIn",
+        vec![Value::Id(e), Value::Id(BOOK_ID), Value::UInt(set)],
+    )
+}
+
+fn listed(s: &Store, set: u64) -> Vec<u64> {
+    let Js::Arr(rows) = s
+        .chat_read(|v| history::deleted_in(v, BOOK_ID, set, 10))
+        .unwrap()
+    else {
+        panic!()
     };
-    s.commit_wait(vec![set(100, &content(), "x", false, by(TAB))]).unwrap();
-    let mut gone = entity_delete(101);
-    gone.values[3] = Value::Id(TAB);
-    s.commit_wait(vec![gone]).unwrap();
-    assert_eq!(listed(&s, Some(TAB), 101), vec![ENTRY_ID]);
-    assert_eq!(listed(&s, Some(TAB), 102), Vec::<u64>::new(), "deleted before the change asked from");
-    assert_eq!(listed(&s, Some(OTHER_TAB), 0), Vec::<u64>::new(), "another session's");
-    let before = s
-        .chat_read(|v| history::deleted_by(v, BOOK_ID, Some(TAB), (0, Some(101)), 10))
+    rows.iter()
+        .map(|r| match r {
+            Js::Big(e) => *e,
+            _ => panic!("{r:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_deleted_entry_is_in_its_deletes_set_until_restored_and_only_a_deleted_one_is() {
+    let dir = temp_dir("deleted-in");
+    let s = open(&dir);
+    s.commit_wait(vec![set(100, &content(), "x", false, NOBODY)])
         .unwrap();
-    assert_eq!(before, Js::Arr(Vec::new()), "deleted at the change it ends before");
+    assert!(refused(&s, vec![deleted_in(ENTRY_ID, 7)]), "a live entry");
+    s.commit_wait(vec![entity_delete(101), deleted_in(ENTRY_ID, 7)])
+        .unwrap();
+    assert_eq!(listed(&s, 7), vec![ENTRY_ID]);
+    assert_eq!(listed(&s, 8), Vec::<u64>::new(), "another delete's set");
     s.commit_wait(vec![restore(102, "1:0")]).unwrap();
-    assert_eq!(listed(&s, Some(TAB), 0), Vec::<u64>::new(), "restored");
+    assert_eq!(listed(&s, 7), Vec::<u64>::new(), "restored");
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_conversion_keeps_each_version_and_puts_earlier_deletions_in_the_earlier_set() {
+    let dir = temp_dir("sets-and-versions");
+    let s = open(&dir);
+    s.commit_wait(vec![set(100, &content(), "x", false, NOBODY)])
+        .unwrap();
+    s.commit_wait(vec![set(101, &content(), "y", false, NOBODY)])
+        .unwrap();
+    s.commit_wait(vec![entity_delete(102)]).unwrap();
+    derive_now(&s, |_, out| {
+        out.del(super::kinds::key::id(history::LAST, ENTRY_ID));
+        Ok(())
+    });
+    assert_eq!(s.chat_read(|v| history::last_change(v, ENTRY_ID)).unwrap(), 0);
+    assert_eq!(listed(&s, history::EARLIER_SET), Vec::<u64>::new());
+    let mut after = None;
+    loop {
+        let next = derive_now(&s, move |view, out| {
+            history::sets_and_versions_conversion_step(view, out, after, 1)
+        });
+        if next.is_none() {
+            break;
+        }
+        after = next;
+    }
+    assert_eq!(s.chat_read(|v| history::last_change(v, ENTRY_ID)).unwrap(), 102);
+    assert_eq!(listed(&s, history::EARLIER_SET), vec![ENTRY_ID]);
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }

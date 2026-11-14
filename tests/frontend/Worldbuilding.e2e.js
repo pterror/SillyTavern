@@ -316,16 +316,16 @@ test.describe('the worlds page', () => {
         await deleteWorld(page, name);
     });
 
-    test('an entry deleted from its menu can be restored', async ({ page }) => {
+    test('an entry deleted from its menu comes back with the toast\'s Undo', async ({ page }) => {
         const name = unique('Delete');
         await openCoast(page, name);
         await openEntry(page, 'The Tidegate');
         await pane(page).getByRole('button', { name: 'More' }).click();
         await pane(page).getByRole('menuitem', { name: 'Delete', exact: true }).click();
-        const said = pane(page).locator('.wb-offer', { hasText: 'Deleted' });
-        await expect(said).toContainText('The Tidegate');
+        const said = page.locator('#toast-container .toast', { hasText: 'Deleted The Tidegate' });
         await expect(pane(page).locator('.wb-front-meta')).toContainText('3 entries');
-        await said.getByRole('button', { name: 'Restore' }).click();
+        await expect(pane(page).locator('.wb-offer', { hasText: 'Deleted' })).toHaveCount(0);
+        await said.getByRole('button', { name: 'Undo' }).click();
         await expect(pane(page).locator('.wb-front-meta')).toContainText('4 entries');
         await expect(pane(page).locator('.wb-card', { hasText: 'The Tidegate' })).toBeVisible();
         await deleteWorld(page, name);

@@ -1544,6 +1544,28 @@ impl Store {
     }
 
     #[napi(
+        ts_args_type = "after: bigint | null, batch: number",
+        ts_return_type = "Promise<bigint | null>"
+    )]
+    pub fn sets_and_versions_conversion_step<'env>(
+        &self,
+        env: &'env Env,
+        after: Option<BigInt>,
+        batch: u32,
+    ) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.sets_and_versions_conversion_step(
+            after.map(|b| b.get_u64().1),
+            batch.max(1) as usize,
+            Box::new(move |r| match r {
+                Ok(next) => deferred.resolve(move |_| Ok(next.map(BigInt::from))),
+                Err(e) => deferred.reject(store_error(e)),
+            }),
+        );
+        Ok(promise)
+    }
+
+    #[napi(
         ts_args_type = "after: Buffer | null, batch: number",
         ts_return_type = "Promise<Buffer | null>"
     )]
@@ -3551,14 +3573,10 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
-        "deletedBy" => {
-            let (book, from) = (req_integer(a, "book")?, req_integer(a, "from")?);
-            let (session, to) = (opt_integer(a, "session")?, opt_integer(a, "to")?);
+        "deletedIn" => {
+            let (book, set) = (req_integer(a, "book")?, req_integer(a, "set")?);
             let limit = req_integer(a, "limit")? as usize;
-            Box::new(move |s| {
-                s.chat_read(|v| h::deleted_by(v, book, session, (from, to), limit))
-                    .map(JsTree)
-            })
+            Box::new(move |s| s.chat_read(|v| h::deleted_in(v, book, set, limit)).map(JsTree))
         }
         "lastChanges" => {
             let entities = integers(a, "entities")?;

@@ -32,18 +32,18 @@ export function worldbuildingBulkPorts({ libOf }) {
         async startBulk(who, selection, action, loopCheckLimit) {
             const lib = await libOf(who.user);
             const book = BigInt(selection.book);
-            const since = 'delete' in action ? await lib.books.changeMark() : null;
+            const set = 'delete' in action ? await lib.books.newDeleteSet() : null;
             /** @type {(import('@st/worldbuilding/protocol').Named | null)[]} */
-            const [one] = since !== null && selection.base === 'none' && selection.except.length === 1
+            const [one] = set !== null && selection.base === 'none' && selection.except.length === 1
                 ? await lib.store.worldRead('worldbuildingLabels', { book, entities: [BigInt(selection.except[0])] })
                 : [null];
-            const done = await lib.books.startBulk(book, bulkSelection(selection), action, loopCheckLimit, { user: who.user.handle, session: who.session });
-            if (since === null || typeof done === 'string' || 'refused' in done) return done;
-            return { ...done, deleted: { since: String(since), one: one ?? null } };
+            const done = await lib.books.startBulk(book, bulkSelection(selection), action, loopCheckLimit, { user: who.user.handle, session: who.session }, set);
+            if (set === null || typeof done === 'string' || 'refused' in done) return done;
+            return { ...done, deleted: { set: String(set), one: one ?? null } };
         },
-        async restoreDeleted(who, book, since, until) {
+        async restoreDeleted(who, book, set) {
             const lib = await libOf(who.user);
-            return lib.books.restoreDeletedSince(BigInt(book), BigInt(since), until === null ? null : BigInt(until), { user: who.user.handle, session: who.session });
+            return lib.books.restoreSet(BigInt(book), BigInt(set), { user: who.user.handle, session: who.session });
         },
         async readBulkJobs(user, book) {
             const lib = await libOf(user);

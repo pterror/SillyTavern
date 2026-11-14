@@ -988,6 +988,16 @@ pub static KINDS: &[Kind] = &[
         internal: false,
     },
     Kind {
+        name: "deletedIn",
+        base: 900,
+        slots: &[
+            req("entry", Ty::Id(Space::Entity)),
+            req("book", Ty::Id(Space::Entity)),
+            req("set", Ty::UInt),
+        ],
+        internal: false,
+    },
+    Kind {
         name: "histRestore",
         base: 316,
         slots: &[

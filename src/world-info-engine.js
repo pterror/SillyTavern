@@ -79,7 +79,8 @@ export const namesOfferShown = read => read.state === null && read.namedEntries 
 /**
  * @typedef {{ delete: true } | { set: Record<string, unknown> } | { moveTo: { kind: string, target: string } } | { alsoPutIn: { kind: string, target: string } } | { moveToWorld: string } | { copyToWorld: string } | { fillTitles: true }} BulkAction
  * @typedef {{ entries: string[] } | { world: true } | { query: string, chips: { kind: string, target: string, depth: 'directly' | 'anyDepth' }[] }} BulkSelected
- * @typedef {{ action: BulkAction, selected: BulkSelected, except: string[], actor: Actor | null }} BulkJob
+ * `set`: a delete's own id, which its deletions are kept under for undoing (`restoreSet`), the same in every step.
+ * @typedef {{ action: BulkAction | { restoreSet: string }, selected: BulkSelected, except: string[], actor: Actor | null, set?: string }} BulkJob
  */
 
 /**
@@ -1225,14 +1226,15 @@ export class WorldInfoEngine {
      * @param {{ uid: string | number, base_hash?: number | null, data?: object | null }[]} entryChanges
      * @param {{ key: string, base_hash?: number | null, value?: unknown }[]} fieldChanges
      * @param {Actor | null} [actor]
+     * @param {bigint | null} [deleteSet] the delete's own id, which the entries it deletes are kept under
      * @returns {Promise<null | 'card copy' | { ok: true, entries: Record<string, object>, deleted: string[], fields: Record<string, unknown>, conflicts: object[], unreachedLoops: UnreachedLoop[] }>}
      */
-    apply(name, entryChanges, fieldChanges, actor = null) {
+    apply(name, entryChanges, fieldChanges, actor = null, deleteSet = null) {
         const key = bookKey(name);
         return this.lane([key], async () => {
             const found = await this.find(name);
             if (!found?.defined) return null;
-            return this.applyInLane(found.id, entryChanges, fieldChanges, actor);
+            return this.applyInLane(found.id, entryChanges, fieldChanges, actor, [], deleteSet);
         });
     }
 
@@ -1245,7 +1247,7 @@ export class WorldInfoEngine {
      * @param {object[]} [also]
      * @returns {Promise<'card copy' | { ok: true, entries: Record<string, object>, deleted: string[], fields: Record<string, unknown>, conflicts: object[], unreachedLoops: UnreachedLoop[] }>}
      */
-    async applyInLane(book, entryChanges, fieldChanges, actor, also = []) {
+    async applyInLane(book, entryChanges, fieldChanges, actor, also = [], deleteSet = null) {
         const [bookEntity] = await this.lib.entities([book]);
         const copying = fieldChanges.some(c => c.key === 'originalData' && isCardBookCopy({ originalData: c.value }));
         if (copying && !(await this.cardCopies([{ id: book, entity: bookEntity }]))[0]) return 'card copy';
@@ -1294,7 +1296,11 @@ export class WorldInfoEngine {
                 writes.set(k, nextJson);
             } else {
                 current.delete(k);
-                if (touched.has(k)) records.push({ kind: 'histEntityDelete', entity: /** @type {any} */ (touched.get(k)).entity.id, ...stamp() });
+                if (touched.has(k)) {
+                    const id = /** @type {any} */ (touched.get(k)).entity.id;
+                    records.push({ kind: 'histEntityDelete', entity: id, ...stamp() });
+                    if (deleteSet !== null) records.push({ kind: 'deletedIn', entry: id, book, set: deleteSet });
+                }
                 touched.delete(k);
                 gone.add(k);
                 writes.delete(k);
@@ -1691,9 +1697,10 @@ export class WorldInfoEngine {
      * @param {bigint} book
      * @param {bigint} entry
      * @param {Actor | null} [actor]
+     * @param {bigint | null} [deleteSet] the delete's own id, which the entry is kept under
      * @returns {Promise<{ unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing' | 'no entry'>}
      */
-    async deleteEntryById(book, entry, actor = null) {
+    async deleteEntryById(book, entry, actor = null, deleteSet = null) {
         const [bookEntity] = await this.lib.entities([book]);
         if (bookEntity && characterOfBook(bookEntity) !== null) {
             return this.inWorld(book, async (form, commit) => {
@@ -1703,6 +1710,7 @@ export class WorldInfoEngine {
                 const records = [];
                 const stamp = await this.stamper(actor, records);
                 records.push({ kind: 'histEntityDelete', entity: e.id, ...stamp() });
+                if (deleteSet !== null) records.push({ kind: 'deletedIn', entry: e.id, book, set: deleteSet });
                 const sources = await this.store.worldRead('worldbuildingSourcesTargeting', { book, entities: [e.id], limit: RELATION_CHANGES_PER_STEP });
                 await commit(records);
                 this.jobs.start(book);
@@ -1715,7 +1723,7 @@ export class WorldInfoEngine {
             if (!e) return 'no entry';
             const current = entryObject(e, false, await this.keysOfTargets(book, [e]));
             const uid = e.key.slice(e.key.indexOf(':') + 1);
-            const result = await this.apply(bookEntity.key, [{ uid, base_hash: jsonHash(current), data: null }], [], actor);
+            const result = await this.apply(bookEntity.key, [{ uid, base_hash: jsonHash(current), data: null }], [], actor, deleteSet);
             if (result === null || result === 'card copy') return 'missing';
             if (result.deleted.length > 0) return { unreachedLoops: result.unreachedLoops };
         }
@@ -1991,56 +1999,84 @@ export class WorldInfoEngine {
     }
 
     /**
-     * The id the next change will have: a deletion made after reading it is one of the deletions `restoreDeletedSince`
-     * restores from it.
+     * A new delete's own id: the id the next change will have, which the delete's first deletion takes, so no other
+     * delete has it.
      * @returns {Promise<bigint>}
      */
-    async changeMark() {
+    async newDeleteSet() {
         return (await this.lib.nextIds()).change;
     }
 
     /**
-     * Restores every entry of the book the actor's session deleted from change `since` on (and before `until`, when
-     * given), after stopping the session's bulk deletes still running there.
+     * Restores the entries of the book a delete took (its set), after stopping that delete if it is still running: a
+     * chunk in this request, the rest as a job.
      * @param {bigint} book
-     * @param {bigint} since
-     * @param {bigint | null} until
+     * @param {bigint} set
      * @param {Actor} actor
      * @returns {Promise<{ restored: number, unreachedLoops: UnreachedLoop[] } | 'missing' | { refused: string }>}
      */
-    restoreDeletedSince(book, since, until, actor) {
+    restoreSet(book, set, actor) {
         return this.inWorld(book, async (form, commit) => {
             const [bookEntity] = await this.lib.entities([book]);
-            const running = bulkJobFields(bookEntity?.values ?? []).filter(({ state }) => 'delete' in state.action && state.actor?.session === actor.session);
-            if (running.length > 0) {
-                await commit(running.flatMap(({ job }) => [
+            const jobs = bulkJobFields(bookEntity?.values ?? []);
+            const deleting = jobs.filter(({ state }) => state.set === String(set));
+            if (deleting.length > 0) {
+                await commit(deleting.flatMap(({ job }) => [
                     { kind: 'valueDelete', entity: book, field: `${BULK_JOB_FIELD}${job}` },
                     { kind: 'valueDelete', entity: book, field: `${BULK_JOB_CURSOR_FIELD}${job}` },
                 ]));
             }
-            const [session] = actor.session ? await this.store.chatRead('ids', { space: SPACE.session, keys: [actor.session] }) : [null];
-            let restored = 0;
-            /** @type {UnreachedLoop[]} */
-            const unreachedLoops = [];
-            for (;;) {
-                /** @type {bigint[]} */
-                const ids = await this.store.worldRead('deletedBy', { book, from: since, limit: RELATION_CHANGES_PER_STEP, ...(until === null ? {} : { to: until }), ...(session === null ? {} : { session }) });
-                /** @type {object[]} */
-                const records = [];
-                const back = [];
-                for (const id of ids) {
-                    const done = await this.restoreOne(book, id, commit, actor);
-                    if (done === 'full') return { refused: 'This world has no free entry number left.' };
-                    if (typeof done === 'string') continue;
-                    pushAll(records, done.records);
-                    back.push(id);
-                }
-                restored += back.length;
-                unreachedLoops.push(...await this.unreachedLoops(book, records, back));
-                if (ids.length < RELATION_CHANGES_PER_STEP || back.length === 0) break;
-            }
-            return { restored, unreachedLoops };
+            const job = 1 + Math.max(0, ...jobs.map(field => field.job));
+            /** @type {BulkJob} */
+            const state = { action: { restoreSet: String(set) }, selected: { entries: [] }, except: [], actor };
+            const step = await this.restoreChunk(book, job, state, commit, false);
+            if ('refused' in step) return step;
+            if (step.more) this.jobs.start(book);
+            return { restored: step.restored, unreachedLoops: step.unreachedLoops };
         });
+    }
+
+    /**
+     * Runs in the book's lane. One chunk of restoring a delete's set: each entry its own commit, then the job's fields,
+     * written when more is left and deleted (if `stored`) when not.
+     * @param {bigint} book
+     * @param {number} job
+     * @param {BulkJob} state
+     * @param {(records: object[]) => Promise<void>} commit
+     * @param {boolean} stored
+     * @returns {Promise<{ restored: number, more: boolean, unreachedLoops: UnreachedLoop[] } | { refused: string }>}
+     */
+    async restoreChunk(book, job, state, commit, stored) {
+        const set = BigInt(/** @type {{ restoreSet: string }} */ (state.action).restoreSet);
+        /** @type {bigint[]} */
+        const ids = await this.store.worldRead('deletedIn', { book, set, limit: RELATION_CHANGES_PER_STEP });
+        /** @type {object[]} */
+        const records = [];
+        const back = [];
+        /** @type {{ refused: string } | null} */
+        let refused = null;
+        for (const id of ids) {
+            const done = await this.restoreOne(book, id, commit, state.actor);
+            if (done === 'full') {
+                refused = { refused: 'This world has no free entry number left.' };
+                break;
+            }
+            if (typeof done === 'string') continue;
+            pushAll(records, done.records);
+            back.push(id);
+        }
+        const more = refused === null && ids.length === RELATION_CHANGES_PER_STEP && back.length > 0;
+        const fields = [`${BULK_JOB_FIELD}${job}`, `${BULK_JOB_CURSOR_FIELD}${job}`];
+        if (more) {
+            await commit([
+                ...(stored ? [] : [{ kind: 'textValue', entity: book, field: fields[0], text: JSON.stringify(state) }]),
+                { kind: 'textValue', entity: book, field: fields[1], text: JSON.stringify({ cursor: null, done: back.length }) },
+            ]);
+        } else if (stored) {
+            await commit(fields.map(field => ({ kind: 'valueDelete', entity: book, field })));
+        }
+        if (refused) return refused;
+        return { restored: back.length, more, unreachedLoops: await this.unreachedLoops(book, records, back) };
     }
 
     /**
@@ -2401,9 +2437,10 @@ export class WorldInfoEngine {
      * @param {BulkAction} action
      * @param {number} loopCheckLimit
      * @param {Actor | null} [actor]
+     * @param {bigint | null} [deleteSet] a delete's own id, which the entries it deletes are kept under
      * @returns {Promise<{ unreachedLoops: UnreachedLoop[] } | { refused: string } | 'missing'>}
      */
-    startBulk(book, { selected, except }, action, loopCheckLimit, actor = null) {
+    startBulk(book, { selected, except }, action, loopCheckLimit, actor = null, deleteSet = null) {
         const world = transferTargetOf(action);
         if (world !== null) {
             return this.transferLane(book, world, async () => {
@@ -2419,7 +2456,8 @@ export class WorldInfoEngine {
             if (form === 'card') return { refused: CARD_BOOK_BULK_REFUSAL };
             const [bookEntity] = await this.lib.entities([book]);
             const job = 1 + Math.max(0, ...bulkJobFields(bookEntity?.values ?? []).map(field => field.job));
-            const step = await this.bulkChunk(book, job, { action, selected, except, actor }, { cursor: null, done: 0 }, false);
+            const set = deleteSet === null ? {} : { set: String(deleteSet) };
+            const step = await this.bulkChunk(book, job, { action, selected, except, actor, ...set }, { cursor: null, done: 0 }, false);
             if ('ended' in step) return { refused: step.ended };
             if (step.more) this.jobs.start(book);
             return { unreachedLoops: step.unreachedLoops ?? (await this.unreachedLoops(book, [], step.changedSources, loopCheckLimit)) };
@@ -2450,6 +2488,10 @@ export class WorldInfoEngine {
             const [bookEntity] = await this.lib.entities([book]);
             const found = bulkJobFields(bookEntity?.values ?? []).find(field => field.job === job);
             if (!found) return { book, changedSources: [], touched: 'entries' };
+            if ('restoreSet' in found.state.action) {
+                const restoring = await this.restoreChunk(book, job, found.state, commit, true);
+                return { book, changedSources: [], unreachedLoops: restoring.unreachedLoops, touched: 'entries' };
+            }
             const step = await this.bulkChunk(book, job, found.state, found.at, true);
             return 'ended' in step
                 ? { book, changedSources: [], touched: 'entries' }
@@ -2465,7 +2507,7 @@ export class WorldInfoEngine {
     async bulkJobs(book) {
         const [bookEntity] = await this.lib.entities([book]);
         if (!bookEntity || bookEntity.type !== TYPE.book) return [];
-        return bulkJobFields(bookEntity.values).map(({ job, state, at }) => ({ job, action: state.action, done: at.done }));
+        return bulkJobFields(bookEntity.values).flatMap(({ job, state, at }) => ('restoreSet' in state.action ? [] : [{ job, action: state.action, done: at.done }]));
     }
 
     /**
@@ -2521,7 +2563,7 @@ export class WorldInfoEngine {
         if ('delete' in action) {
             const keyOfEntity = await this.keysOfTargets(book, entities);
             const changes = entities.map(e => ({ uid: e.key.slice(e.key.indexOf(':') + 1), base_hash: jsonHash(entryObject(e, false, keyOfEntity)), data: null }));
-            const done = await this.applyInLane(book, changes, [], state.actor, also);
+            const done = await this.applyInLane(book, changes, [], state.actor, also, state.set === undefined ? null : BigInt(state.set));
             return { more, changedSources: [], unreachedLoops: typeof done === 'object' ? done.unreachedLoops : [] };
         }
         /** @type {object[]} */

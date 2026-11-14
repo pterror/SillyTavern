@@ -42,10 +42,6 @@ export function WorldPage(props: {
     const book = () => props.world.id;
     const ownBook = () => props.world.cameWith !== null;
     const groupBy = () => props.overview?.groupBy ?? null;
-    const deleted = () => {
-        const gone = props.lastChange?.deletedEntry;
-        return gone && gone.book === book() ? gone : null;
-    };
     const marked = () => props.lastChange?.markedTitleKeys?.book === book() && props.world.namesOffer === null;
     const hover = hoverCards();
     const actions: CardActions = {
@@ -190,29 +186,6 @@ export function WorldPage(props: {
                         </button>
                     </div>
                 </div>
-            </Show>
-            <Show when={deleted()}>
-                {(gone) => (
-                    <div class="wb-offer">
-                        <p>
-                            {t('Deleted')} <Name named={gone().label} />.
-                        </p>
-                        <div class="wb-offer-acts">
-                            <button
-                                type="button"
-                                class="menu_button menu_button_icon margin0 whitespacenowrap wb-btn"
-                                onClick={() =>
-                                    void wb.act('worldbuilding.restoreEntry', {
-                                        book: gone().book,
-                                        entry: gone().entry,
-                                    })
-                                }
-                            >
-                                {t('Restore')}
-                            </button>
-                        </div>
-                    </div>
-                )}
             </Show>
             <Show when={props.rows}>
                 {(rows) => <RowsHead fields={rows().fields} selection={rows().selection} book={book()} />}

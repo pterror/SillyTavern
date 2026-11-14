@@ -232,7 +232,6 @@ export type LastChangeView = {
     createdKind: { book: string; kind: string } | null;
     changedRelation: ChangedRelation | null;
     createdEntry: EntryAt | null;
-    deletedEntry: (EntryAt & { label: Named }) | null;
     movedEntry: (EntryAt & { toBook: string; newEntry: string }) | null;
     markedTitleKeys: { book: string } | null;
 } & ShownLoops;
@@ -559,8 +558,8 @@ export type SelectionView =
 
 export type RelationTo = { kind: string; target: string };
 
-// A bulk delete's answer: what undoing it names, and the entry's label when it was one.
-export type BulkDeleted = { deleted: { book: string; since: string; one: Named | null } };
+// A delete's answer: its own id, which undoing it names, and the entry's label when it took one.
+export type Deleted = { deleted: { book: string; set: string; one: Named | null } };
 
 export type BulkAction =
     | { delete: true }
@@ -844,8 +843,8 @@ export const actions = {
     'worldbuilding.selectAllMatching': v.object({ book: entityId }),
     'worldbuilding.selectNone': v.object({ book: entityId }),
     'worldbuilding.bulk': v.object({ book: entityId, action: bulkAction, loopCheckLimit }),
-    // `since`: as a delete's answer named it.
-    'worldbuilding.undoDelete': v.object({ book: entityId, since: entryVersion }),
+    // `set`: the delete's own id, as its answer named it.
+    'worldbuilding.undoDelete': v.object({ book: entityId, set: entryVersion }),
     // Shows a saved view of the shown world (null: none, as a world with no views is shown).
     'worldbuilding.showView': v.object({ book: entityId, view: v.nullable(viewId), overview: shownOverview }),
     // Changes the shown view for this tab only, until it is saved or discarded.
