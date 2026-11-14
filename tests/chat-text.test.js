@@ -217,6 +217,21 @@ describe('chat text, with ranges drawn over it', () => {
     });
 });
 
+describe('a macro in an editor', () => {
+    test('is a pill whatever its value: what it is when the text came without one, marked only when known when sent', () => {
+        const pill = macros.macroPills({ get: source => ({ '{{char}}': 'Mac', '{{input}}': null })[source] }, () => null, translate, () => false);
+        const drawn = (/** @type {string} */ source) => /** @type {HTMLElement} */ (pill(source)?.draw());
+        expect(drawn('{{char}}').className).toBe('macro-pill macro-pill-mention');
+        expect(drawn('{{char}}').textContent).toBe('Mac');
+        expect(drawn('{{input}}').getAttribute('data-macro-note')).toBe('Filled in when sent');
+        const unknown = drawn('{{random::a::b}}');
+        expect(unknown.className).toBe('macro-pill macro-pill-unknown');
+        expect(unknown.textContent).toBe('random · a · b');
+        expect(unknown.hasAttribute('data-macro-note')).toBe(false);
+        expect(macros.macroPills({ get: () => 'x' }, () => null, translate, () => true)('{{char}}')).toBeUndefined();
+    });
+});
+
 describe('chat text, a place in it', () => {
     test('is the source position the reader drew there, past the markup and the macros before it', () => {
         const source = 'Some *em* and {{user}} **strong** target.';

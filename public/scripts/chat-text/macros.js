@@ -70,8 +70,8 @@ export function macroValuePieces(values, person, t) {
 }
 
 /**
- * Macros drawn as pills, for editing: one token Backspace deletes whole, showing its value. A macro whose value didn't
- * come with the text, or every macro while they are shown as written, is drawn as written.
+ * Macros drawn as pills, for editing: one token Backspace deletes whole, showing its value; one whose value didn't come
+ * with the text shows what it is, unmarked. Every macro while they are shown as written is drawn as written.
  * @param {MacroValueSource} values
  * @param {(macroName: string) => MacroPerson | null} person
  * @param {import('../macro-pill.js').Translate} t
@@ -81,7 +81,7 @@ export function macroValuePieces(values, person, t) {
 export function macroPills(values, person, t, asWritten) {
     return (source) => {
         const value = values.get(source);
-        if (value === undefined || asWritten()) return undefined;
+        if (asWritten()) return undefined;
         const name = macroNameOf(source);
         const macro = { source, name, value };
         const shownPerson = macroPillContent(macro, t).kind === 'mention' && name ? person(name) : null;

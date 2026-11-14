@@ -58,7 +58,7 @@ const MENTIONS = new Set(['user', 'char', 'charifnotgroup']);
  * @property {string} source
  * @property {string} [name]
  * @property {string} [category]
- * @property {string | null} value
+ * @property {string | null} [value] null when only known when sent; none when the text came without it
  */
 
 /**
@@ -81,10 +81,13 @@ function describe(source) {
  * @param {MacroShown} macro
  * @param {Translate} t
  * @param {boolean} [compact]
- * @returns {{ kind: 'mention' | 'value' | 'empty' | 'later', label: string, icon: string | null, note: string }}
+ * @returns {{ kind: 'mention' | 'value' | 'empty' | 'later' | 'unknown', label: string, icon: string | null, note: string }}
  */
 export function macroPillContent({ source, name, category, value }, t, compact = false) {
     const icon = CATEGORY_ICONS[/** @type {keyof typeof CATEGORY_ICONS} */ (category)] ?? DEFAULT_ICON;
+    if (value === undefined) {
+        return { kind: 'unknown', label: shorten(describe(source), SHOWN_LENGTH), icon, note: '' };
+    }
     if (value === null) {
         return { kind: 'later', label: shorten(describe(source), SHOWN_LENGTH), icon, note: t`Filled in when sent` };
     }

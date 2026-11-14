@@ -1686,7 +1686,8 @@ textarea.autoSetHeight {
 }
 
 .macro-pill-later,
-.macro-pill-empty {
+.macro-pill-empty,
+.macro-pill-unknown {
     border-style: dashed;
     border-color: color-mix(in srgb, var(--macro-color) 60%, transparent);
     background-color: transparent;
