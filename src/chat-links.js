@@ -327,25 +327,47 @@ async function relink(session, held, store) {
     store.events.emit(CHAT_LINKS_EVENT, { session, links });
 }
 
+/** @type {Set<Promise<void>>} */
+const relinking = new Set();
+
+/**
+ * Resolves once no push of relinked chats is running or waiting.
+ * @returns {Promise<void>}
+ */
+export async function chatLinksSettled() {
+    while (relinking.size > 0) await Promise.all(relinking);
+}
+
+// One relink at a time per store, each reading the store after every commit it covers: pushes leave in the order of
+// the commits they answer, so the last one a tab gets is never older than one before it.
 onUserStoreOpened(({ events, lib, root }) => {
     let pending = /** @type {any[] | null} */ (null);
+    let running = /** @type {Promise<void> | null} */ (null);
+    const drain = async () => {
+        await new Promise(resolve => setImmediate(resolve));
+        while (pending) {
+            const seen = pending;
+            pending = null;
+            if (!await touchesNames(lib, seen)) continue;
+            for (const [session, held] of [...heldBySession]) {
+                if (held.directories.root !== root) continue;
+                await relink(session, held, await userStore(held.directories, held.handle));
+            }
+        }
+    };
+    const start = () => {
+        const run = drain().catch(error => console.error('[chat links] not pushed:', error)).finally(() => {
+            relinking.delete(run);
+            running = null;
+            if (pending) start();
+        });
+        running = run;
+        relinking.add(run);
+    };
     events.on('commit', (/** @type {any[]} */ records) => {
         if (![...heldBySession.values()].some(h => h.directories.root === root)) return;
-        if (pending) {
-            pending.push(...records);
-            return;
-        }
-        pending = [...records];
-        setImmediate(() => {
-            const seen = /** @type {any[]} */ (pending);
-            pending = null;
-            void (async () => {
-                if (!await touchesNames(lib, seen)) return;
-                for (const [session, held] of [...heldBySession]) {
-                    if (held.directories.root !== root) continue;
-                    await relink(session, held, await userStore(held.directories, held.handle));
-                }
-            })().catch(error => console.error('[chat links] not pushed:', error));
-        });
+        if (pending) pending.push(...records);
+        else pending = [...records];
+        if (!running) start();
     });
 });

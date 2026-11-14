@@ -14,7 +14,7 @@ setConfigFilePath(path.join(__dirname, '..', 'config.yaml'));
 
 const { router: chatsRouter } = await import('./endpoints/chats.js');
 const { newSessionKey } = await import('./chat-engine.js');
-const { chatReadsBook, chatWorlds, linksOfTexts, CHAT_LINKS_EVENT } = await import('./chat-links.js');
+const { chatReadsBook, chatWorlds, chatLinksSettled, linksOfTexts, CHAT_LINKS_EVENT } = await import('./chat-links.js');
 const { References } = await import('./world-info/references.js');
 const { writeAllSettings } = await import('./settings-store.js');
 const { getStringHash } = await import('../public/scripts/hash-utils.js');
@@ -127,6 +127,7 @@ test('the texts share one bound: the first one cut is answered as far as it got,
 
 test('a renamed name is linked as it is now, and the tab holding the chat\'s links is pushed them again', async () => {
     await post('/api/chats/open', { avatar_url: 'alice.png' });
+    await chatLinksSettled();
     const pushed = new Promise(resolve => store.events.once(CHAT_LINKS_EVENT, resolve));
     await writeWorld('Harbour', [{ uid: 1, names: ['Ilse'], keys: ['Ilse Varro'] }, { uid: 2, names: ['the Lantern'], keys: ['lamp'] }]);
     const { session, links } = /** @type {any} */ (await pushed);
