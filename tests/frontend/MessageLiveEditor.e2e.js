@@ -102,13 +102,21 @@ test.describe('message edits in the live editor', () => {
     test('the editor draws its text where the message drew it, with no box of its own, and its toolbar\'s icons', async ({ page }) => {
         const id = await chatWithUserMessage(page, 'Some *text*.');
         const mes = page.locator(`#chat .mes[mesid="${id}"]`);
-        const readLeft = await mes.locator('.mes_text .chat-text').evaluate(element => element.getBoundingClientRect().left);
+        /** @param {Element} element */
+        const textAt = (element) => {
+            const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+            const range = document.createRange();
+            range.selectNodeContents(/** @type {Node} */ (walker.nextNode()));
+            const { left, top } = range.getBoundingClientRect();
+            return { left, top };
+        };
+        const read = await mes.locator('.mes_text .chat-text').evaluate(textAt);
         await mes.locator('.mes_edit').click();
         const editor = mes.locator('.cm-editor');
         await expect(editor).toBeVisible();
         expect(await editor.evaluate(element => getComputedStyle(element).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
-        const editLeft = await mes.locator('.cm-content .cm-line').first().evaluate(element => element.getBoundingClientRect().left);
-        expect(Math.abs(editLeft - readLeft)).toBeLessThan(1);
+        const edited = await mes.locator('.cm-content').evaluate(textAt);
+        expect(Math.abs(edited.left - read.left)).toBeLessThan(1);
         const icon = mes.locator('.chat-editor-toolbar button[data-tool="bold"] i');
         await expect(icon).toBeVisible();
         expect(await icon.evaluate(element => getComputedStyle(element, '::before').content)).not.toBe('none');
