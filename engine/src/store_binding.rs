@@ -1525,6 +1525,28 @@ impl Store {
         ts_args_type = "after: Buffer | null, batch: number",
         ts_return_type = "Promise<Buffer | null>"
     )]
+    pub fn book_stats_recount_step<'env>(
+        &self,
+        env: &'env Env,
+        after: Option<Buffer>,
+        batch: u32,
+    ) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.book_stats_recount_step(
+            after.map(|b| b.to_vec()),
+            batch.max(1) as usize,
+            Box::new(move |r| match r {
+                Ok(next) => deferred.resolve(move |_| Ok(next.map(Buffer::from))),
+                Err(e) => deferred.reject(store_error(e)),
+            }),
+        );
+        Ok(promise)
+    }
+
+    #[napi(
+        ts_args_type = "after: Buffer | null, batch: number",
+        ts_return_type = "Promise<Buffer | null>"
+    )]
     pub fn world_order_conversion_step<'env>(
         &self,
         env: &'env Env,

@@ -871,6 +871,23 @@ impl Store {
         ));
     }
 
+    pub fn book_stats_recount_step(
+        &self,
+        after: Option<Vec<u8>>,
+        batch: usize,
+        done: Box<dyn FnOnce(StoreResult<Option<Vec<u8>>>) + Send>,
+    ) {
+        let next = Arc::new(Mutex::new(None));
+        let found = next.clone();
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| {
+                *found.lock().unwrap() = book_stats::recount_step(view, out, after.as_deref(), batch)?;
+                Ok(())
+            }),
+            Box::new(move |r| done(r.map(|()| next.lock().unwrap().take()))),
+        ));
+    }
+
     pub fn world_order_conversion_step(
         &self,
         after: Option<Vec<u8>>,

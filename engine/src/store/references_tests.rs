@@ -786,3 +786,38 @@ fn the_entries_with_a_key_are_listed_by_id_without_the_entry_asking() {
     assert_eq!(sharers(10, 10).0, vec![thing(12), thing(14)]);
     assert_eq!(read(&s, |v| references::key_sharers(v, 99, 10, b"ledger", 3)), Js::Null);
 }
+
+#[test]
+fn recounting_from_nothing_gives_the_counts_the_writes_kept() {
+    let dir = temp_dir("recount");
+    let s = Store::open_in(&dir, SMALL, pool()).unwrap();
+    let mut m = Model::default();
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut next = 100;
+    setup(&s, &mut m);
+    for _ in 0..300 {
+        step(&s, &mut m, &mut rng, &mut next);
+    }
+    m.check(&s);
+    super::relations_tests::derive_job(&s, |view, out| {
+        for structure in [book_stats::STAT_FIELD, book_stats::STAT_ENTRY, book_stats::STAT_BOOK] {
+            let p = super::kinds::key::of(structure);
+            for (k, _) in view.scan(&p, &super::kinds::key::prefix_end(&p), usize::MAX)? {
+                out.del(k);
+            }
+        }
+        Ok(())
+    });
+    assert_eq!(read(&s, |v| book_stat(v, 1)), Default::default());
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let from = after.clone();
+        after = super::relations_tests::derive_job(&s, move |view, out| {
+            book_stats::recount_step(view, out, from.as_deref(), 3)
+        });
+        if after.is_none() {
+            break;
+        }
+    }
+    m.check(&s);
+}

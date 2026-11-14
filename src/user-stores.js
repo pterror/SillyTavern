@@ -14,15 +14,16 @@ export const GREETING_LINKS = 'greeting-links';
 export const GREETINGS_UNIQUE = 'greetings-unique';
 export const WORLDBUILDING_INDEXED = 'worldbuilding-indexed';
 export const WORLDBUILDING_KEYS_AND_NAMES_INDEXED = 'worldbuilding-keys-and-names-indexed';
+export const WORLDBUILDING_ENTRIES_COUNTED = 'worldbuilding-entries-counted';
 export const CARD_BOOK_COPIES_DELETED = 'card-lorebook-copies-deleted';
 export const MESSAGE_ORDER = 'message-order';
 // A store the lorebook conversion has run on has every marker; one marked only by an earlier run is converted again.
-export const WORLDBUILDING_MARKERS = Object.freeze([WORLDBUILDING_INDEXED, WORLDBUILDING_KEYS_AND_NAMES_INDEXED]);
+export const WORLDBUILDING_MARKERS = Object.freeze([WORLDBUILDING_INDEXED, WORLDBUILDING_KEYS_AND_NAMES_INDEXED, WORLDBUILDING_ENTRIES_COUNTED]);
 
 const CONVERSIONS = Object.freeze([
     { markers: [GREETINGS_BY_ID, GREETING_LINKS], script: 'convert-greeting-choices.mjs', why: 'has chats whose greetings aren\'t kept by greeting id yet' },
     { markers: [GREETINGS_UNIQUE], script: 'convert-greeting-duplicates.mjs', why: 'has cards with the same greeting twice' },
-    { markers: WORLDBUILDING_MARKERS, script: 'convert-lorebooks-to-worldbuilding.mjs', why: 'has lorebooks whose entries aren\'t yet ordered, linked and counted for worldbuilding' },
+    { markers: WORLDBUILDING_MARKERS, script: 'convert-lorebooks-to-worldbuilding.mjs', why: 'has lorebooks whose entries aren\'t yet ordered, linked and counted for worldbuilding, or were counted before every entry was' },
     { markers: [CARD_BOOK_COPIES_DELETED], script: 'convert-card-lorebook-copies.mjs', why: 'has lorebooks made from a character\'s own lorebook (by "Import Card Lore")' },
     { markers: [MESSAGE_ORDER], script: 'convert-message-order.mjs', why: 'has chats whose alternatives aren\'t yet kept in an order of their own' },
 ]);

@@ -41,7 +41,7 @@ test('a store without the worldbuilding marker is refused, naming the script; a 
     await lib.close();
     for (const marker of [stores.GREETINGS_BY_ID, stores.GREETING_LINKS, stores.GREETINGS_UNIQUE, stores.CARD_BOOK_COPIES_DELETED]) fs.writeFileSync(path.join(dir, marker), '');
     const line = await stores.oldFormatLine({ root });
-    expect(line).toBe(`${root} has lorebooks whose entries aren't yet ordered, linked and counted for worldbuilding: run node scripts/convert-lorebooks-to-worldbuilding.mjs --data-root <the folder holding it> once, with the server stopped`);
+    expect(line).toBe(`${root} has lorebooks whose entries aren't yet ordered, linked and counted for worldbuilding, or were counted before every entry was: run node scripts/convert-lorebooks-to-worldbuilding.mjs --data-root <the folder holding it> once, with the server stopped`);
     await expect(stores.assertConverted([{ root }])).rejects.toThrow(stores.OldFormatError);
     await expect(stores.userStore({ root })).rejects.toThrow('convert-lorebooks-to-worldbuilding.mjs');
     expect(() => stores.engineStoreHere({ root })).toThrow(stores.OldFormatError);
@@ -71,12 +71,14 @@ test('the script converts a store without the markers, keeps its counts, lists a
         offer: await lib.books.namesOffer(book),
         keys: await Promise.all(entities.map(async entry => (await lib.store.worldRead('worldbuildingEntry', { book, entry })).keys)),
         sharers: await lib.store.worldRead('worldbuildingKeySharers', { book, entry: entities[0], key: 'Ilse', limit: 5 }),
+        stats: await lib.store.worldRead('bookStats', { book, entries: [] }),
         links: (await lib.store.worldRead('textLinkCandidates', { book, entry: entities[0], text: 'Ilse keeps the lamp of Varro.', readsAtMost: 1000 })).candidates,
     });
     const before = await counts(store.lib);
     expect(before.offer).toMatchObject({ namedEntries: 1, offeredEntries: 1 });
     expect(before.keys[0]).toEqual([{ text: 'Ilse', isName: false, alsoBringsUp: 1 }, { text: 'lamp', isName: false, alsoBringsUp: 0 }]);
     expect(before.sharers).toEqual({ entries: [{ thing: String(entities[1]), text: 'The House', shownAs: 'title' }], more: false });
+    expect(before.stats.entries).toBe(3);
     expect(before.links).toEqual([{ entry: entities[2], names: ['Varro'], caseSensitive: null, matchWholeWords: null }]);
     await stores.closeUserStores();
 

@@ -48,10 +48,14 @@ for (const handle of users) {
             after = await lib.store.worldOrderConversionStep(after, 2000);
             steps++;
         } while (after !== null);
+        let counted = null;
+        do {
+            counted = await lib.store.bookStatsRecountStep(counted, 2000);
+        } while (counted !== null);
     } finally {
         await lib.close();
     }
     for (const marker of markers) fs.writeFileSync(marker, '');
 }
 
-console.log(`Users: ${users.length} (${skipped} already converted). Relations fields rewritten to name targets by entity: ${rewritten}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed and placed among their target's sources, its keys counted with the entries that have them, its names indexed, and whether it is named or offered names kept.`);
+console.log(`Users: ${users.length} (${skipped} already converted). Relations fields rewritten to name targets by entity: ${rewritten}. Steps of 2000 entries: ${steps}. Every entry of every lorebook is in its world's order, with its relations indexed and placed among their target's sources, its keys counted with the entries that have them, its names indexed, whether it is named or offered names kept, and every book's entries, size and hash counted again.`);

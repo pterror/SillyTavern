@@ -191,6 +191,18 @@ fn owned_value_changed(
         super::relations::refresh_kind_merge_state(&mut writes, e, kind, None, Some(into))?;
         writes.finish(out);
     }
+    stat_written(view, out, o, e, f, json, new)
+}
+
+fn stat_written(
+    view: &View,
+    out: &mut Out,
+    o: &Owner,
+    e: u64,
+    f: &FieldRef,
+    json: bool,
+    new: Option<&[u8]>,
+) -> Result<(), StoreError> {
     let old = field_stat(view, e, f, json)?;
     let now = match new {
         Some(v) => Stat {
@@ -254,6 +266,64 @@ pub fn created(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Resul
         super::names_offer::entry_came(view, out, *book, e)?;
     }
     Ok(())
+}
+
+/// One step of counting every live entry and book again from its stored fields, for a store whose counts predate the
+/// derivers that keep them. The first step (`after` none) drops every count; each step then counts `batch` entities of
+/// the entity index (books, owned books, entries) in key order and returns the last key read, or none at the end.
+pub fn recount_step(
+    view: &View,
+    out: &mut Out,
+    after: Option<&[u8]>,
+    batch: usize,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    let first = key::id(key::ENTITY_KEY, BOOK);
+    let end = key::id(key::ENTITY_KEY, ENTRY + 1);
+    let start = match after {
+        Some(at) => {
+            let mut k = at.to_vec();
+            k.push(0);
+            k
+        }
+        None => first.to_vec(),
+    };
+    let mut local = BTreeMap::new();
+    if after.is_none() {
+        let mut cleared = Out::default();
+        for structure in [STAT_FIELD, STAT_ENTRY, STAT_BOOK] {
+            let p = key::of(structure);
+            for (k, _) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+                cleared.del(k);
+            }
+        }
+        out.entries.extend(cleared.entries.iter().cloned());
+        cleared.apply(&mut local);
+    }
+    let found = view.scan(&start, &end, batch)?;
+    for (_, value) in &found {
+        let e = super::library::parse_uvarint(value)?;
+        let layered = view.with_layer(&local);
+        let Some(o) = owner(&layered, e)? else {
+            continue;
+        };
+        let mut counted = Out::default();
+        if let Owner::Entry { book, .. } = &o {
+            counted.add(key::ids(STAT_BOOK, *book, ENTRIES), 1);
+        }
+        let p = key::id(key::HEAD, e);
+        for (hk, _) in layered.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+            let f = super::library::field_after(&hk, key::HEAD)?;
+            if let Some(t) = super::kinds::text_value(&layered, e, &f)? {
+                stat_written(&layered, &mut counted, &o, e, &f, false, Some(&t))?;
+            }
+            if let Some(j) = super::history::json_value(&layered, e, &f)? {
+                stat_written(&layered, &mut counted, &o, e, &f, true, Some(&j))?;
+            }
+        }
+        out.entries.extend(counted.entries.iter().cloned());
+        counted.apply(&mut local);
+    }
+    Ok((found.len() == batch).then(|| found.last().map(|(k, _)| k.clone())).flatten())
 }
 
 fn drop_fields(view: &View, out: &mut Out, e: u64) -> Result<(), StoreError> {
