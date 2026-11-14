@@ -71,6 +71,9 @@ const KEYS = [
     { id: 'macros', keys: `${MOD}+shift+m` },
 ];
 
+/** Find and replace, which an editor may not have */
+const SEARCH_TOOLS = ['find'];
+
 /** @type {ReturnType<typeof modifierHeld> | undefined} one for every editor, so an editor taken out with its message holds nothing on the window */
 let shortcutsShown;
 
@@ -172,8 +175,8 @@ export function commandKeys(view, byId) {
 }
 
 /**
- * The tools an editor's toolbar shows: those the person chose, in their order, of the editor's own; every formatting
- * command when they chose none
+ * The tools an editor's toolbar shows: those the person chose, in their order, of the editor's own; when they chose
+ * none, every formatting command and, where the editor has it, find and replace
  * @param {ReadonlyMap<string, Tool>} byId the editor's tools by id
  * @returns {import('@pterror/interact-editor/toolbar').Watched<readonly Tool[]>}
  */
@@ -181,7 +184,7 @@ export function shownTools(byId) {
     return {
         get() {
             const chosen = page.toolbarChoice();
-            const ids = chosen.length ? chosen : formatTools().map(tool => tool.id);
+            const ids = chosen.length ? chosen : [...formatTools().map(tool => tool.id), ...SEARCH_TOOLS];
             return ids.map(id => byId.get(id)).filter(tool => tool !== undefined);
         },
         watch: () => () => {},

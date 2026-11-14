@@ -39,10 +39,12 @@ editing begins.
 
 - Slash-command suggestions are the editor's own, the same mechanism as macro suggestions.
 - Find and replace and its presets move over unchanged; their redesign is a separate item.
-- Every editor's toolbar holds every formatting command by default.
+- Every editor's toolbar holds every formatting command by default, and find and replace where the editor has
+  it.
 - Open: which commands the bar beside the selection holds, and how a person chooses the toolbar's. Until that is
-  decided the toolbar holds the commands a person's `editor_toolbar` setting lists, every formatting command when it
-  lists none, there is no bar beside the selection, and every formatting command is also reachable by its key.
+  decided the toolbar holds the commands a person's `editor_toolbar` setting lists; when it lists none, every
+  formatting command and, where the editor has it, find and replace. There is no bar beside the
+  selection, and every formatting command is also reachable by its key.
 
 ## Taken from cyoa, and what changes
 
