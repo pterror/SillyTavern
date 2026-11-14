@@ -220,7 +220,7 @@ test.describe('Hotkeys', () => {
 
     test('the setting turns it off', async ({ page }) => {
         await page.keyboard.down('Control');
-        await expect(overlay(page)).toContainText('Show this list of hotkeys');
+        await expect(overlay(page)).toContainText('Show hotkeys');
         await page.keyboard.up('Control');
 
         const toggle = page.locator('#hotkey_overlay');

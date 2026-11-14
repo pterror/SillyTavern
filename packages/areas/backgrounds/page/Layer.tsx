@@ -25,9 +25,7 @@ export function AnimationOption() {
         <label
             for="animated_thumbnails"
             class="checkbox_label"
-            title={t(
-                'Show animated images (characters, personas, backgrounds) moving in every list. Off shows their first frame.',
-            )}
+            title={t('Animate characters, personas and backgrounds in lists. Off shows the first frame.')}
         >
             <input
                 id="animated_thumbnails"

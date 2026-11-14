@@ -237,7 +237,7 @@ function Panel(props: Handlers & { view: Accessor<Open>; markdown: Accessor<bool
                             <div>
                                 {results().map((f) => f.element)}
                                 <Show when={settled() && matched().length === 0}>
-                                    <div class="helpNoResults">{t('Nothing in help matches this search.')}</div>
+                                    <div class="helpNoResults">{t('No results.')}</div>
                                 </Show>
                             </div>
                         )}
@@ -275,7 +275,7 @@ function TopicSection(props: { topic: Topic; markdown: boolean; old: OldPage; on
     return (
         <div class="helpSection" data-topic={props.topic} ref={(el: HTMLDivElement) => (section = el)}>
             <Switch>
-                <Match when={failed()}>{t('This help topic could not be shown.')}</Match>
+                <Match when={failed()}>{t('Couldn’t load this topic.')}</Match>
                 <Match when={props.topic === 'overview'}>
                     <Overview t={t} onTopic={(next) => props.onTopic(next)} />
                 </Match>

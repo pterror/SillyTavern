@@ -115,7 +115,7 @@ export function createClient({ headers, looks }: ClientOptions): Client {
                 return { ok: true, views, ...(answer.answer === undefined ? {} : { answer: answer.answer }) };
             return {
                 ok: false,
-                error: typeof answer?.error === 'string' ? answer.error : 'The server refused it.',
+                error: typeof answer?.error === 'string' ? answer.error : 'Request refused.',
                 views,
                 ...(answer?.answer === undefined ? {} : { answer: answer.answer }),
             };
@@ -144,7 +144,7 @@ export function createClient({ headers, looks }: ClientOptions): Client {
             head['Content-Type'] = 'application/json';
         }
         const response = await fetch(ENDPOINT, { method: 'POST', headers: head, body });
-        const refused = { ok: false, error: `The server answered ${response.status}.` };
+        const refused = { ok: false, error: `Server error (${response.status}).` };
         if (!(response.headers.get('Content-Type') ?? '').includes('ndjson') || !response.body) {
             return response.json().catch(() => refused);
         }

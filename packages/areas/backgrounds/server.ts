@@ -199,7 +199,7 @@ export function backgroundsArea(ports: Ports) {
     };
 
     const changed: ActionResult = { changed: [VIEW, CHAT_VIEW] };
-    const noChat: ActionResult = { refused: "Open a chat first: this is the chat's." };
+    const noChat: ActionResult = { refused: 'Open a chat first.' };
 
     const setUsers = async (user: User, file: string) => {
         const stored = await ports.options.read(user);
@@ -232,8 +232,8 @@ export function backgroundsArea(ports: Ports) {
                 return changed;
             },
             'backgrounds.upload': async (context, { chat: toChat }) => {
-                if (!context.upload) return { refused: 'No file came with the upload.' };
-                if (!context.upload.type.startsWith('image/')) return { refused: 'A background is an image.' };
+                if (!context.upload) return { refused: 'Choose a file.' };
+                if (!context.upload.type.startsWith('image/')) return { refused: 'Backgrounds must be images.' };
                 if (!toChat) {
                     const file = await ports.files.save(context.user, context.upload);
                     await setUsers(context.user, file);
@@ -250,7 +250,7 @@ export function backgroundsArea(ports: Ports) {
                 const to = `${name}${extension}`;
                 if (to === file) return changed;
                 if (!(await ports.files.rename(context.user, file, to)))
-                    return { refused: `Can't rename it to ${to}: that name is taken, or the file is gone.` };
+                    return { refused: `Can’t rename to “${to}”: the name is taken or the file is missing.` };
                 const stored = await ports.options.read(context.user);
                 if (stored.name === file) await setUsers(context.user, to);
                 const chat = await ports.chat.read(context);
@@ -306,7 +306,7 @@ export function backgroundsArea(ports: Ports) {
                     files.map((f) => f.file),
                     reply,
                 );
-                if (match === null) return { refused: 'No background matches that.' };
+                if (match === null) return { refused: 'No matching background.' };
                 if (isLocked(await ports.chat.read(context))) return lock(context, { file: match, chat: false });
                 await setUsers(context.user, match);
                 return changed;

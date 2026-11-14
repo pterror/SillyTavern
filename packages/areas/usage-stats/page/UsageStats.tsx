@@ -22,7 +22,7 @@ export function UsageStats(props: { buttons: Buttons; old: OldPage }) {
     const show = async (of: Shown) => {
         const answer = await client.send('usageStats.show', of);
         if (!answer.ok) {
-            props.old.failed(t('Stats could not be loaded. Try reloading the page.'));
+            props.old.failed(t('Couldn’t load stats. Reload the page.'));
             return;
         }
         setOpened(true);
@@ -132,14 +132,14 @@ function Panel(props: { old: Pick<OldPage, 'dialogsChanged'>; onClosed: () => vo
             </div>
             <div
                 class="popup-button-close right_menu_button fa-solid fa-circle-xmark"
-                title={t('Close popup')}
+                title={t('Close')}
                 onClick={close}
             />
         </dialog>
     );
 }
 
-export function generationTime(ms: number): string {
+export function generationTime(ms: number, t: (text: string) => string): string {
     let rest = Math.floor(ms / 1000);
     const seconds = rest % 60;
     rest = Math.floor(rest / 60);
@@ -147,11 +147,14 @@ export function generationTime(ms: number): string {
     rest = Math.floor(rest / 60);
     const hours = rest % 24;
     const days = Math.floor(rest / 24);
-    let text = '';
-    if (days > 0) text += `${String(days)} Days, `;
-    if (hours > 0) text += `${String(hours)} Hours, `;
-    if (minutes > 0) text += `${String(minutes)} Minutes, `;
-    return `${text}${String(seconds)} Seconds`;
+    const unit = (n: number, one: string, other: string) => t(n === 1 ? one : other).replace('${0}', String(n));
+    const parts = [
+        days > 0 ? unit(days, '${0} day', '${0} days') : null,
+        hours > 0 ? unit(hours, '${0} hour', '${0} hours') : null,
+        minutes > 0 ? unit(minutes, '${0} minute', '${0} minutes') : null,
+        unit(seconds, '${0} second', '${0} seconds'),
+    ];
+    return parts.filter((part) => part !== null).join(', ');
 }
 
 function Block(props: { name: string; value: string | number }) {
@@ -173,10 +176,10 @@ function Report(props: { shown: Exclude<ShownView, { of: null }> }) {
         return first !== null && first > 0 && first < Date.now() ? moment(first).fromNow() : t('Never');
     };
     const time = () => {
-        const text = generationTime(counts().generationMs);
+        const text = generationTime(counts().generationMs, t);
         const unknown = counts().repliesWithoutTime;
         return unknown > 0
-            ? `${text} ${t('(plus ${0} replies saved without their generation time)').replace('${0}', String(unknown))}`
+            ? `${text} ${t('(+${0} replies without generation time)').replace('${0}', String(unknown))}`
             : text;
     };
     const oldStatsFile = () => (props.shown.of === 'all' ? props.shown.oldStatsFile : null);

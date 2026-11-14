@@ -352,11 +352,11 @@ function Dialog(props: {
 
     const whyNotGo = (item: Item, index: number): string | null => {
         if (greetingsList) {
-            if (list()?.chatOpen !== true) return t('Open a chat with this character to show a greeting in it.');
-            if (item.opening === null) return t("This greeting isn't one the chat can show.");
+            if (list()?.chatOpen !== true) return t('Open a chat with this character first.');
+            if (item.opening === null) return t('The chat can’t show this greeting.');
             return null;
         }
-        if (index === current()) return t('The chat shows this one.');
+        if (index === current()) return t('Already shown in the chat.');
         return mesId === null ? null : props.old.cantGo(mesId);
     };
     const go = async (item: Item, index: number) => {
@@ -599,7 +599,7 @@ function Dialog(props: {
                             aria-disabled={selectedWhy() !== null}
                             title={selectedWhy() ?? undefined}
                         >
-                            {greetingsList ? t('Show in chat') : t('Go')}
+                            {greetingsList ? t('Show in chat') : t('Switch')}
                         </button>
                     </form>
                 </div>
@@ -617,7 +617,10 @@ function Dialog(props: {
                             fallback={
                                 shownCount() === 0
                                     ? t('Nothing matches.')
-                                    : t('${0} match').replace('${0}', String(shownCount()))
+                                    : t(shownCount() === 1 ? '${0} match' : '${0} matches').replace(
+                                          '${0}',
+                                          String(shownCount()),
+                                      )
                             }
                         >
                             {t('Searching… ${0} of ${1} checked, ${2} found')
@@ -665,7 +668,7 @@ function Dialog(props: {
                                                 class="alternative-drag fa-solid fa-grip-vertical"
                                                 role="button"
                                                 tabindex="0"
-                                                title={t('Drag to reorder (or use the arrow keys, Home and End)')}
+                                                title={t('Drag to reorder')}
                                                 aria-label={t('Reorder')}
                                                 onPointerDown={(event) => dragFrom(item, event)}
                                                 onKeyDown={(event) => keyMove(item, event)}
@@ -707,7 +710,7 @@ function Dialog(props: {
                                                 title={whyNotGo(item, item.index) ?? undefined}
                                                 onClick={() => void go(item, item.index)}
                                             >
-                                                {greetingsList ? t('Show in chat') : t('Go')}
+                                                {greetingsList ? t('Show in chat') : t('Switch')}
                                             </button>
                                             <button
                                                 type="button"
@@ -741,8 +744,8 @@ function Dialog(props: {
                                                 <button
                                                     type="button"
                                                     class="alternative-button alternative-delete-greeting fa-solid fa-trash-can"
-                                                    title={t('Delete from the card')}
-                                                    aria-label={t('Delete from the card')}
+                                                    title={t('Delete from card')}
+                                                    aria-label={t('Delete from card')}
                                                     onClick={() => void removeGreeting(item)}
                                                 />
                                             </Show>
@@ -750,8 +753,8 @@ function Dialog(props: {
                                                 <button
                                                     type="button"
                                                     class="alternative-button alternative-delete fa-solid fa-comment-slash"
-                                                    title={t('Delete from the chat')}
-                                                    aria-label={t('Delete from the chat')}
+                                                    title={t('Delete from chat')}
+                                                    aria-label={t('Delete from chat')}
                                                     onClick={() => void remove(item.index)}
                                                 />
                                             </Show>

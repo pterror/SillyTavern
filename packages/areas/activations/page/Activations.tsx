@@ -72,11 +72,11 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
     const reason = (entry: Shown) => {
         switch (entry.why) {
             case 'always':
-                return t('Always used');
+                return t('Constant');
             case 'sticky':
-                return t('Still in effect from an earlier reply');
+                return t('Sticky, from an earlier reply');
             case 'decorator':
-                return t('Turned on by @@activate in its text');
+                return t('Activated by @@activate in its text');
             case 'key': {
                 const found = entry.keys.filter((k) => k.where.length > 0);
                 if (found.length === 0) return null;
@@ -92,11 +92,11 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
     const cutReason = (cut: Cut) => {
         switch (cut.why) {
             case 'budget':
-                return t('the lorebook budget was full');
+                return t('Budget full');
             case 'chance':
-                return t('its chance roll failed');
+                return t('Failed probability roll');
             case 'group':
-                return t('another entry in its group was picked');
+                return t('Another entry in its inclusion group was chosen');
         }
     };
 
@@ -146,7 +146,7 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
                 {(panel) => (
                     <>
                         <Show when={panel().entries.length === 0}>
-                            <p class="activations-note">{t('No entries were used.')}</p>
+                            <p class="activations-note">{t('No entries used.')}</p>
                         </Show>
                         <ol class="activations-list">
                             <For each={panel().entries}>
@@ -163,7 +163,7 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
                                         </Show>
                                         <Show when={entry.via.length > 0}>
                                             <div class="activation-via">
-                                                {t('Brought in by')}{' '}
+                                                {t('Via')}{' '}
                                                 <For each={entry.via.flatMap((i) => panel().entries[i] ?? [])}>
                                                     {(by, i) => (
                                                         <>

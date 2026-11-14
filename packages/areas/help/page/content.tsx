@@ -31,9 +31,7 @@ export function Overview(props: { t: T; onTopic: (topic: Topic) => void }) {
     const or = () => props.t('or', 'help_or');
     return (
         <>
-            <span>
-                {props.t('Hello there! Please select the help topic you would like to learn more about:', 'help_1')}
-            </span>
+            <span>{props.t('Choose a topic:', 'help_1')}</span>
             <ul>
                 <li>
                     {link('slash', ['Slash Commands', 'help_2'])} ({or()} <tt>/help slash</tt>)
@@ -50,11 +48,11 @@ export function Overview(props: { t: T; onTopic: (topic: Topic) => void }) {
             </ul>
             <br />
             <b>
-                <span>{props.t('Still got questions left? The', 'help_6')}</span>{' '}
+                <span>{props.t('More in the', 'help_6')}</span>{' '}
                 <a target="_blank" href="https://docs.sillytavern.app/">
-                    {props.t('Official SillyTavern Documentation Website', 'help_7')}
+                    {props.t('SillyTavern documentation', 'help_7')}
                 </a>
-                <span>{props.t(' has much more information!', 'help_8')}</span>
+                <span>.</span>
             </b>
         </>
     );
@@ -98,7 +96,7 @@ export function Formatting(props: { t: T }) {
                 {line(
                     ['~~text~~', 'help_format_14'],
                     ['displays as a ', 'help_format_15'],
-                    <del>{t('strikethough', 'help_format_16')}</del>,
+                    <del>{t('strikethrough', 'help_format_16')}</del>,
                 )}
                 {line(
                     ['[text](url)', 'help_format_17'],
@@ -155,8 +153,8 @@ type Hotkey = {
 
 const CHAT: Text = ['Chat Hotkeys', 'help_hotkeys_0'];
 const MARKDOWN: Text = ['Markdown Hotkeys', 'help_hotkeys_20'];
-const SUGGESTIONS: Text = ['Suggestions while typing'];
-const EDITING: Text = ['Editing fields'];
+const SUGGESTIONS: Text = ['Autocomplete'];
+const EDITING: Text = ['Editing'];
 const POPUPS: Text = ['Popups'];
 const OTHER: Text = ['Other'];
 
@@ -164,19 +162,19 @@ const OTHER: Text = ['Other'];
 export const HOTKEYS: readonly Hotkey[] = [
     { category: CHAT, keys: ['Up'], label: ['Edit last message in chat', 'help_hotkeys_2'] },
     { category: CHAT, keys: ['Ctrl+Up'], label: ['Edit last USER message in chat', 'help_hotkeys_4'] },
-    { category: CHAT, keys: ['Left'], label: ['swipe left', 'help_hotkeys_6'] },
-    { category: CHAT, keys: ['Right'], label: ['swipe right'] },
-    { category: CHAT, keys: ['Enter'], label: ['send your message to AI', 'help_hotkeys_10_1'] },
+    { category: CHAT, keys: ['Left'], label: ['Swipe left', 'help_hotkeys_6'] },
+    { category: CHAT, keys: ['Right'], label: ['Swipe right'] },
+    { category: CHAT, keys: ['Enter'], label: ['Send message', 'help_hotkeys_10_1'] },
     { category: CHAT, keys: ['Ctrl+Enter'], label: ['Regenerate the last AI response', 'help_hotkeys_12'] },
     { category: CHAT, keys: ['Alt+Enter'], label: ['Continue the last AI response', 'help_hotkeys_14'] },
     {
         category: CHAT,
         keys: ['Escape'],
-        label: ['stop AI response generation, close UI panels, cancel message edit', 'help_hotkeys_16'],
+        label: ['Stop generating, close panels, cancel message edit', 'help_hotkeys_16'],
     },
     { category: CHAT, keys: ['Ctrl+Shift+Up'], label: ['Scroll to context line', 'help_hotkeys_18'] },
     { category: CHAT, keys: ['Ctrl+Shift+Down'], label: ['Scroll chat to bottom'] },
-    { category: CHAT, keys: ['Space'], label: ["On a message's swipe counter: pick a swipe from a list"] },
+    { category: CHAT, keys: ['Space'], label: ['Pick a swipe from a list (on the swipe counter)'] },
 
     { category: MARKDOWN, keys: ['Ctrl+B'], label: ['**bold**', 'help_hotkeys_22'], markdown: true },
     { category: MARKDOWN, keys: ['Ctrl+I'], label: ['*italic*', 'help_hotkeys_23'], markdown: true },
@@ -187,47 +185,43 @@ export const HOTKEYS: readonly Hotkey[] = [
     {
         category: SUGGESTIONS,
         keys: ['Ctrl+Space'],
-        label: ["Show suggestions, or show and hide a suggestion's details"],
+        label: ['Show suggestions; toggle details'],
     },
-    { category: SUGGESTIONS, keys: ['Up', 'Down'], label: ['Move through the suggestions'] },
-    { category: SUGGESTIONS, keys: ['Tab', 'Enter'], label: ['Use the selected suggestion'] },
-    { category: SUGGESTIONS, keys: ['Escape'], label: ['Close the suggestions'] },
+    { category: SUGGESTIONS, keys: ['Up', 'Down'], label: ['Move through suggestions'] },
+    { category: SUGGESTIONS, keys: ['Tab', 'Enter'], label: ['Accept suggestion'] },
+    { category: SUGGESTIONS, keys: ['Escape'], label: ['Close suggestions'] },
 
-    { category: EDITING, keys: ['Ctrl+Enter'], label: ['In a character field being edited: save it'] },
+    { category: EDITING, keys: ['Ctrl+Enter'], label: ['Save a character field'] },
     {
         category: EDITING,
         keys: ['Escape'],
-        label: [
-            'In a character field being edited: stop editing (asks first if your change would be lost; with autosave on, it saves)',
-        ],
+        label: ['Stop editing a character field (asks first if changes would be lost; saves if autosave is on)'],
     },
-    { category: EDITING, keys: ['Tab', 'Shift+Tab'], label: ['In an expanded editor: indent or unindent'] },
-    { category: EDITING, keys: ['Ctrl+F'], label: ['In the slash command or macro list: jump to its search box'] },
-    { category: EDITING, keys: ['Ctrl+F'], label: ["In a field's editor: find and replace"] },
+    { category: EDITING, keys: ['Tab', 'Shift+Tab'], label: ['Indent or unindent in an expanded editor'] },
+    { category: EDITING, keys: ['Ctrl+F'], label: ['Search the slash command or macro list'] },
+    { category: EDITING, keys: ['Ctrl+F'], label: ['Find and replace in a field editor'] },
     {
         category: EDITING,
         keys: ['Ctrl+Alt+V'],
-        label: [
-            "Right after pasting into a field's editor: switch how the paste went in (keep formatting, keep as HTML, text only)",
-        ],
+        label: ['After a paste: switch paste mode (formatted, HTML, plain text)'],
     },
     {
         category: EDITING,
         keys: ['Escape'],
-        label: ["Right after pasting into a field's editor: put the paste options away"],
+        label: ['After a paste: dismiss paste options'],
     },
 
     { category: POPUPS, keys: ['Enter'], label: ['Confirm'] },
     { category: POPUPS, keys: ['Escape'], label: ['Close'] },
-    { category: POPUPS, keys: ['Shift+Enter', 'Alt+Enter'], label: ['In a text box with several lines: new line'] },
+    { category: POPUPS, keys: ['Shift+Enter', 'Alt+Enter'], label: ['New line in a multi-line box'] },
 
-    { category: OTHER, keys: ['Enter'], label: ['Press the button or control that has focus'] },
+    { category: OTHER, keys: ['Enter'], label: ['Activate the focused control'] },
     {
         category: OTHER,
         mouse: ['Shift+click or Alt+click on the persona or chat lorebook button'],
-        label: ['Pick a different lorebook instead of opening the current one'],
+        label: ['Choose a different lorebook'],
     },
-    { category: OTHER, keys: ['Hold Ctrl'], label: ['Show this list of hotkeys'] },
+    { category: OTHER, keys: ['Hold Ctrl'], label: ['Show hotkeys'] },
 ];
 
 export type HotkeyGroup = { category: string; hotkeys: { combos: string[]; label: string; markdown: boolean }[] };

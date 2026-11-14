@@ -320,14 +320,14 @@ export function alternativesArea(ports: Ports) {
             },
             'alternatives.search': async (context, { query }) => {
                 const look = lookOf(context);
-                if (!look) return { refused: 'Nothing is open to search.' };
+                if (!look) return { refused: 'Nothing to search.' };
                 look.query = query;
                 return { changed: [MATCHES_VIEW] };
             },
             'alternatives.greeting': async (context, op) => {
                 const look = lookOf(context);
                 const avatar = look ? ('greetings' in look.target ? look.target.greetings : look.card?.avatar) : null;
-                if (avatar === null || avatar === undefined) return { refused: 'These have no card to change.' };
+                if (avatar === null || avatar === undefined) return { refused: 'No card to change.' };
                 const sent: GreetingOp =
                     op.op === 'edit' && op.text.trim() === ''
                         ? { op: 'delete', position: op.position, hash: op.hash }
@@ -344,9 +344,10 @@ export function alternativesArea(ports: Ports) {
             },
             'alternatives.move': async (context, { nodeId, side, target }) => {
                 const look = lookOf(context);
-                if (!look || !('message' in look.target)) return { refused: "Only a message's alternatives move." };
+                if (!look || !('message' in look.target))
+                    return { refused: 'Only a message’s alternatives can be reordered.' };
                 const at = look.items.findIndex((item) => item.nodeId === target);
-                if (at < 0 || nodeId === target) return { refused: "That alternative isn't in this list." };
+                if (at < 0 || nodeId === target) return { refused: 'Alternative not found.' };
                 const above = look.items
                     .slice(0, at)
                     .reverse()

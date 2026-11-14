@@ -155,7 +155,7 @@ test('the topic shown is the one the view names; a pick and an overview link ask
     expect(topics(root)).toEqual(['overview', 'slash', 'format', 'hotkeys', 'macros']);
     root.querySelector<HTMLElement>('.helpTopic[data-topic="format"]')?.click();
     expect(s.sent.at(-1)).toEqual({ type: 'help.show', payload: { topic: 'format' } });
-    expect(text(root.querySelector('.helpContent'))).toContain('Hello there!');
+    expect(text(root.querySelector('.helpContent'))).toContain('Choose a topic:');
     s.setPanel({ open: true, topic: 'format' });
     expect(text(root.querySelector('.helpContent'))).toContain('italics');
     expect(root.querySelector('.helpTopic.active')?.getAttribute('data-topic')).toBe('format');
@@ -190,11 +190,11 @@ test('a search filters what the panel holds as it is typed, asking the server no
     const root = s.panelElement() as HTMLElement;
     const input = root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement;
     const sentBefore = s.sent.length;
-    type(input, 'strikethrough');
+    type(input, 'autocomplete');
     await flush();
     expect(text(root.querySelector('.helpHeaderTitle'))).toBe('Search results');
     expect(topics(root)).toEqual(['hotkeys']);
-    expect(text(root.querySelector('.helpTopic[data-topic="hotkeys"] .helpTopicCount'))).toBe('1');
+    expect(text(root.querySelector('.helpTopic[data-topic="hotkeys"] .helpTopicCount'))).toBe('4');
     const section = (topic: string) => root.querySelector<HTMLElement>(`.helpSection[data-topic="${topic}"]`);
     expect(section('hotkeys')?.hidden).toBe(false);
     expect(section('macros')?.hidden).toBe(true);
@@ -245,7 +245,7 @@ test('while every topic is being counted, the side menu keeps the topics it list
     const s = stand({ open: false }, false, loaded);
     await s.compat.open('');
     const root = s.panelElement() as HTMLElement;
-    type(root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement, 'strikethrough');
+    type(root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement, 'autocomplete');
     await flush();
     expect(topics(root)).toEqual(['overview', 'slash', 'format', 'hotkeys', 'macros']);
     expect(root.querySelector('.helpTopic.active')?.getAttribute('data-topic')).toBe('overview');

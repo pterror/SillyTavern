@@ -18,8 +18,7 @@ export async function pickByModel(
     t: (text: string) => string,
 ): Promise<string | null> {
     const titles = (view()?.system ?? []).map((b) => b.title).filter((title) => title.length > 0);
-    if (titles.length === 0)
-        return t('No backgrounds to choose from. Please upload some images to the "backgrounds" folder.');
+    if (titles.length === 0) return t('No backgrounds. Add images to the backgrounds folder.');
     const reply = await quietPrompt(AUTO_PROMPT + titles.map((title) => `- ${title}`).join('\n'));
     const result = await client.send('backgrounds.pickByTitle', { reply });
     return result.ok ? null : result.error;
@@ -117,7 +116,7 @@ export function Backgrounds(props: {
     };
 
     const rename = async (background: Background) => {
-        const name = await ask({ kind: 'input', message: t('Enter new background name:'), value: background.title }, t);
+        const name = await ask({ kind: 'input', message: t('Background name'), value: background.title }, t);
         if (name !== null && name !== background.title) void act('backgrounds.rename', { file: background.file, name });
     };
 
@@ -125,8 +124,8 @@ export function Backgrounds(props: {
         const answer = await ask(
             {
                 kind: 'confirm',
-                message: t('Delete the background?'),
-                ...(chat ? { checkbox: { label: t('Also delete file from server'), checked: true } } : {}),
+                message: t('Delete background?'),
+                ...(chat ? { checkbox: { label: t('Also delete the file'), checked: true } } : {}),
             },
             t,
         );
@@ -134,7 +133,7 @@ export function Backgrounds(props: {
     };
 
     const copyToSystem = async (background: Background) => {
-        const name = await ask({ kind: 'input', message: t('Enter new background name:'), value: background.title }, t);
+        const name = await ask({ kind: 'input', message: t('Background name'), value: background.title }, t);
         if (name !== null) void act('backgrounds.copyToSystem', { file: background.file, name });
     };
 
@@ -151,12 +150,12 @@ export function Backgrounds(props: {
     };
 
     const assignFolders = async (background: Background) => {
-        const chosen = await chooseFolders(t('Assign to folders'), (f) => background.folders.includes(f.id));
+        const chosen = await chooseFolders(t('Folders'), (f) => background.folders.includes(f.id));
         if (chosen !== null) void act('backgrounds.folders.set', { file: background.file, folders: chosen });
     };
 
     const addTickedToFolders = async () => {
-        const chosen = await chooseFolders(t('Add selected backgrounds to folders'), () => false);
+        const chosen = await chooseFolders(t('Add to folders'), () => false);
         if (chosen === null || chosen.length === 0) return;
         if (await act('backgrounds.folders.add', { files: [...ticked()], folders: chosen })) stopTicking();
     };
@@ -168,12 +167,12 @@ export function Backgrounds(props: {
     };
 
     const createFolder = async () => {
-        const name = await ask({ kind: 'input', message: t('Enter folder name:'), value: '' }, t);
+        const name = await ask({ kind: 'input', message: t('Folder name'), value: '' }, t);
         if (name !== null) void act('backgrounds.folders.create', { name });
     };
 
     const renameFolder = async (target: Folder) => {
-        const name = await ask({ kind: 'input', message: t('Enter new folder name:'), value: target.name }, t);
+        const name = await ask({ kind: 'input', message: t('Folder name'), value: target.name }, t);
         if (name !== null && name !== target.name) void act('backgrounds.folders.rename', { id: target.id, name });
     };
 
@@ -181,8 +180,8 @@ export function Backgrounds(props: {
         const answer = await ask(
             {
                 kind: 'confirm',
-                message: `${t('Delete folder')} "${target.name}"?`,
-                detail: t('Images will not be deleted, only the folder grouping.'),
+                message: t('Delete folder “${0}”?').replace('${0}', target.name),
+                detail: t('The images are kept.'),
             },
             t,
         );
@@ -205,19 +204,19 @@ export function Backgrounds(props: {
         const convert = (globalThis as { convertVideoToAnimatedWebp?: VideoConverter }).convertVideoToAnimatedWebp;
         if (!convert) {
             setNotice(
-                t('Video background uploads require a downloadable add-on') +
+                t('Video backgrounds need an add-on') +
                     ': https://github.com/SillyTavern/Extension-VideoBackgroundLoader',
             );
             return null;
         }
-        setBusy(t('Preparing video for upload. This may take several minutes.'));
+        setBusy(t('Converting video… this can take several minutes.'));
         try {
             const converted = await convert({ buffer: new Uint8Array(await video.arrayBuffer()), name: video.name });
             return new File([new Uint8Array(converted)], video.name.replace(/\.[^/.]+$/, '.webp'), {
                 type: 'image/webp',
             });
         } catch {
-            setNotice(t('Error converting video to animated webp'));
+            setNotice(t('Couldn’t convert the video.'));
             return null;
         } finally {
             setBusy(null);
@@ -225,7 +224,7 @@ export function Backgrounds(props: {
     };
 
     const autoSelect = async () => {
-        setBusy(t('Choosing a background...'));
+        setBusy(t('Choosing a background…'));
         try {
             const refused = await pickByModel(client, view, props.options.quietPrompt, t);
             if (refused !== null) setNotice(refused);
@@ -267,7 +266,7 @@ export function Backgrounds(props: {
                     <select
                         id="background_fitting"
                         class="text_pole"
-                        title={t('Background Fitting')}
+                        title={t('Fit')}
                         value={view()?.options.fitting ?? 'classic'}
                         onChange={(event) => {
                             const select = event.currentTarget;
@@ -284,7 +283,7 @@ export function Backgrounds(props: {
                         id="auto_background"
                         type="button"
                         class="menu_button menu_button_icon"
-                        title={t('Automatically select a background based on the chat context')}
+                        title={t('Pick a background that matches the chat')}
                         disabled={busy() !== null}
                         onClick={() => void autoSelect()}
                     >
@@ -305,7 +304,7 @@ export function Backgrounds(props: {
                         for="add_bg_button"
                         id="add_background_button_top"
                         class="menu_button menu_button_icon"
-                        title={t('Add a new background')}
+                        title={t('Add background')}
                     >
                         <i class="fa-solid fa-upload" />
                         <span>{t('Add Background')}</span>
@@ -316,14 +315,14 @@ export function Backgrounds(props: {
                         id="bg-filter"
                         class="text_pole"
                         type="search"
-                        placeholder={t('Search...')}
+                        placeholder={t('Search…')}
                         value={search()}
                         onInput={(event) => setSearch(event.currentTarget.value)}
                     />
                     <select
                         id="bg-sort"
                         class="text_pole margin0"
-                        title={t('Sort backgrounds')}
+                        title={t('Sort')}
                         value={view()?.options.sortOrder ?? 'az'}
                         onChange={(event) => {
                             const select = event.currentTarget;
@@ -388,7 +387,7 @@ export function Backgrounds(props: {
                                             id="bg_folder_remove_selected_button"
                                             type="button"
                                             class="menu_button menu_button_icon"
-                                            title={t('Remove selected backgrounds from this folder')}
+                                            title={t('Remove from folder')}
                                             onClick={() => void removeTickedFromFolder()}
                                         >
                                             <i class="fa-solid fa-folder-minus" />
@@ -501,7 +500,7 @@ export function Backgrounds(props: {
                                 </span>
                             }
                         >
-                            {<span>{t('Select a chat to upload a background for it')}</span>}
+                            {<span>{t('Open a chat to add a background to it.')}</span>}
                         </Show>
                     </div>
                 </div>
@@ -512,7 +511,7 @@ export function Backgrounds(props: {
                                 id="bg_group_add_to_folder_button"
                                 type="button"
                                 class="menu_button menu_button_icon"
-                                title={t('Add selected backgrounds to folder')}
+                                title={t('Add to folder')}
                                 onClick={() => void addTickedToFolders()}
                             >
                                 <i class="fa-solid fa-folder-tree" />
@@ -526,7 +525,7 @@ export function Backgrounds(props: {
                                 id="bg_selection_mode_button"
                                 type="button"
                                 class={classes('menu_button menu_button_icon', { active: ticking() })}
-                                title={t('Select backgrounds for bulk folder actions')}
+                                title={t('Select backgrounds')}
                                 onClick={() => (ticking() ? stopTicking() : setTicking(true))}
                             >
                                 <i class="fa-solid fa-edit" />
@@ -540,7 +539,7 @@ export function Backgrounds(props: {
                         id="bg_thumb_zoom_out"
                         type="button"
                         class="menu_button menu_button_icon"
-                        title={t('Make thumbnails smaller')}
+                        title={t('Smaller thumbnails')}
                         disabled={columns() >= COLUMNS.max}
                         onClick={() => setColumns(columns() + 1)}
                     >
@@ -550,7 +549,7 @@ export function Backgrounds(props: {
                         id="bg_thumb_zoom_in"
                         type="button"
                         class="menu_button menu_button_icon"
-                        title={t('Make thumbnails larger')}
+                        title={t('Larger thumbnails')}
                         disabled={columns() <= COLUMNS.min}
                         onClick={() => setColumns(columns() - 1)}
                     >
@@ -570,7 +569,7 @@ export function Backgrounds(props: {
                 id="bg-scroll-top"
                 type="button"
                 class={classes('menu_button menu_button_icon', { visible: scrolled() })}
-                title={t('Scroll backgrounds to top')}
+                title={t('Back to top')}
                 onClick={() => panels?.scrollTo({ top: 0, behavior: 'smooth' })}
             >
                 <i class="fa-solid fa-chevron-up" aria-hidden="true" />
@@ -584,9 +583,9 @@ type ThumbnailAction = 'lock' | 'unlock' | 'copy' | 'edit' | 'delete' | 'folder'
 const THUMBNAIL_BUTTONS: { action: ThumbnailAction; icon: string; title: string }[] = [
     { action: 'lock', icon: 'jg-lock fa-lock', title: 'Lock' },
     { action: 'unlock', icon: 'jg-unlock fa-lock-open', title: 'Unlock' },
-    { action: 'copy', icon: 'jg-copy fa-file-arrow-up', title: 'Copy to global backgrounds' },
-    { action: 'edit', icon: 'jg-edit fa-pen-to-square', title: 'Rename Background' },
-    { action: 'delete', icon: 'jg-delete fa-trash-can', title: 'Delete Background' },
+    { action: 'copy', icon: 'jg-copy fa-file-arrow-up', title: 'Copy to global' },
+    { action: 'edit', icon: 'jg-edit fa-pen-to-square', title: 'Rename' },
+    { action: 'delete', icon: 'jg-delete fa-trash-can', title: 'Delete' },
     { action: 'folder', icon: 'jg-folder fa-folder', title: 'Add to folder' },
     { action: 'set-cover', icon: 'jg-set-cover fa-image', title: 'Set as folder cover' },
 ];

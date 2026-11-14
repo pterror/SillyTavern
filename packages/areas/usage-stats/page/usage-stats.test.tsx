@@ -118,7 +118,7 @@ test('the user stats are shown once the server answers, and closed at once, the 
     expect(stand.host.querySelector('h3')?.textContent).toBe('User Stats');
     expect(rows(stand.host)).toEqual([
         ['Chatting Since:', 'Never'],
-        ['Chat Time:', '1 Days, 1 Hours, 1 Minutes, 1 Seconds (plus 2 replies saved without their generation time)'],
+        ['Chat Time:', '1 day, 1 hour, 1 minute, 1 second (+2 replies without generation time)'],
         ['User Messages:', '4'],
         ['Character Messages:', '3'],
         ['User Words:', '40'],
@@ -186,12 +186,14 @@ test('a refused show says the stats could not be loaded and shows nothing', asyn
     const stand = mount(true);
     stand.all.click();
     await stand.settle();
-    expect(stand.failed).toEqual(['Stats could not be loaded. Try reloading the page.']);
+    expect(stand.failed).toEqual(['Couldn’t load stats. Reload the page.']);
     expect(stand.host.querySelector('dialog')).toBeNull();
 });
 
 test('generation time names each unit above seconds only when it has any', () => {
-    expect(generationTime(0)).toBe('0 Seconds');
-    expect(generationTime(61_500)).toBe('1 Minutes, 1 Seconds');
-    expect(generationTime(3_600_000)).toBe('1 Hours, 0 Seconds');
+    const same = (text: string) => text;
+    expect(generationTime(0, same)).toBe('0 seconds');
+    expect(generationTime(61_500, same)).toBe('1 minute, 1 second');
+    expect(generationTime(3_600_000, same)).toBe('1 hour, 0 seconds');
+    expect(generationTime(183_925_000, same)).toBe('2 days, 3 hours, 5 minutes, 25 seconds');
 });
