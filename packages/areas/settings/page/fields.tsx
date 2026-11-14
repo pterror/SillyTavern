@@ -110,7 +110,7 @@ export function UnsetButton(props: { field: FieldState }) {
             <button
                 type="button"
                 class="settings_unset fa-solid fa-xmark"
-                title={t("Take this chat's value away")}
+                title={t('Remove override')}
                 onClick={() => props.field.unset()}
             />
         </Show>
@@ -467,7 +467,7 @@ export function JsonArea(props: { field: FieldState; class?: string; rows?: numb
                 }}
             />
             <Show when={invalid()}>
-                <small class="settings_refusal">{t('Not valid JSON.')}</small>
+                <small class="settings_refusal">{t('Invalid JSON.')}</small>
             </Show>
         </>
     );

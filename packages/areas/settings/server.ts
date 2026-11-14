@@ -196,7 +196,7 @@ export function settingsArea(ports: Ports) {
         actions: {
             'settings.set': async (context, { path, value }) => {
                 const field = fieldAt(path);
-                if (!field) return { refused: `${path} is not a setting of this panel.` };
+                if (!field) return { refused: `Unknown setting: ${path}` };
                 const owner = await ownerOf(context);
                 const range = rangeOfTab(context.session);
                 const shown = await ports.view(context.user, owner, range);
@@ -212,25 +212,25 @@ export function settingsArea(ports: Ports) {
                     value === 1 &&
                     MINUS_ONE_BACKENDS.includes(textAt(shown.settings, 'textgenerationwebui_settings.type'))
                 )
-                    return { refused: 'This backend has no mirostat mode 1.' };
+                    return { refused: 'Mirostat mode 1 isn’t available on this backend.' };
                 const entries: [string, unknown][] = [[path, value]];
                 if (field.excludes !== undefined && value !== 0) entries.push([field.excludes, 0]);
                 await ports.write(context.user, owner, range, entries);
                 return changed;
             },
             'settings.unset': async (context, { path }) => {
-                if (!fieldAt(path)) return { refused: `${path} is not a setting of this panel.` };
+                if (!fieldAt(path)) return { refused: `Unknown setting: ${path}` };
                 const range = rangeOfTab(context.session);
-                if (range.to === 'default') return { refused: "The defaults can't be taken away." };
+                if (range.to === 'default') return { refused: 'Defaults can’t be removed.' };
                 await ports.write(context.user, await ownerOf(context), range, [[path, undefined]]);
                 return changed;
             },
             'settings.reset': async (context, { path }) => {
                 const field = fieldAt(path);
-                if (!field) return { refused: `${path} is not a setting of this panel.` };
+                if (!field) return { refused: `Unknown setting: ${path}` };
                 const owner = await ownerOf(context);
                 const range = rangeOfTab(context.session);
-                if (range.to === 'default') return { refused: 'The defaults are already the defaults.' };
+                if (range.to === 'default') return { refused: 'Already at the default.' };
                 await ports.write(context.user, owner, range, [
                     [path, structuredClone(valueAt(ports.defaults(), path))],
                 ]);
@@ -239,9 +239,9 @@ export function settingsArea(ports: Ports) {
             'settings.fitContext': async (context, { size }) => {
                 const owner = await ownerOf(context);
                 const range = rangeOfTab(context.session);
-                if (range.to === 'default') return { refused: "The defaults can't be changed." };
+                if (range.to === 'default') return { refused: 'Defaults can’t be changed.' };
                 if (size > LIMITS.context.unlocked.max)
-                    return { refused: `A context of ${size} is past the largest (${LIMITS.context.unlocked.max}).` };
+                    return { refused: `Context size can’t exceed ${LIMITS.context.unlocked.max}.` };
                 const entries: [string, unknown][] = [['max_context', size]];
                 if (size > LIMITS.context.locked.max) entries.push(['power_user.max_context_unlocked', true]);
                 await ports.write(context.user, owner, range, entries);
@@ -250,7 +250,7 @@ export function settingsArea(ports: Ports) {
             'settings.neutralize': async (context) => {
                 const owner = await ownerOf(context);
                 const range = rangeOfTab(context.session);
-                if (range.to === 'default') return { refused: "The defaults can't be changed." };
+                if (range.to === 'default') return { refused: 'Defaults can’t be changed.' };
                 const shown = await ports.view(context.user, owner, range);
                 const neutral = neutralOf(textAt(shown.settings, 'textgenerationwebui_settings.type'));
                 const entries = Object.entries(neutral).map(([key, value]): [string, unknown] => [
@@ -293,7 +293,7 @@ export function settingsArea(ports: Ports) {
             },
             'settings.range': async (context, range) => {
                 if (LEVELS.indexOf(range.from) > LEVELS.indexOf(range.to))
-                    return { refused: 'A range goes from a farther level to a closer one.' };
+                    return { refused: 'The range must go from a broader level to a narrower one.' };
                 ranges.set(context.session, range);
                 return changed;
             },

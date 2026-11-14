@@ -148,7 +148,7 @@ export const FIELDS: readonly Field[] = [
         id: 'n_openai',
         path: 'oai_settings.n',
         kind: 'number',
-        label: 'Multiple swipes per generation',
+        label: 'Swipes per generation',
         min: 1,
         family: 'cc',
         sources: ['openai', 'custom', 'xai', 'aimlapi', 'moonshot', 'azure_openai'],
@@ -355,7 +355,7 @@ export const FIELDS: readonly Field[] = [
         path: 'oai_settings.impersonation_prompt',
         kind: 'text',
         label: 'Impersonation prompt',
-        tip: 'Restore default prompt',
+        tip: 'Restore default',
         family: 'cc',
     },
     {
@@ -363,7 +363,7 @@ export const FIELDS: readonly Field[] = [
         path: 'oai_settings.wi_format',
         kind: 'text',
         label: 'World Info format template',
-        tip: 'Restore default format',
+        tip: 'Restore default',
         family: 'cc',
     },
     {
@@ -371,7 +371,7 @@ export const FIELDS: readonly Field[] = [
         path: 'oai_settings.scenario_format',
         kind: 'text',
         label: 'Scenario format template',
-        tip: 'Restore default format',
+        tip: 'Restore default',
         family: 'cc',
     },
     {
@@ -379,7 +379,7 @@ export const FIELDS: readonly Field[] = [
         path: 'oai_settings.personality_format',
         kind: 'text',
         label: 'Personality format template',
-        tip: 'Restore default format',
+        tip: 'Restore default',
         family: 'cc',
     },
     {
@@ -387,7 +387,7 @@ export const FIELDS: readonly Field[] = [
         path: 'oai_settings.group_nudge_prompt',
         kind: 'text',
         label: 'Group Nudge prompt template',
-        tip: 'Restore default format',
+        tip: 'Restore default',
         family: 'cc',
     },
     {
@@ -395,7 +395,7 @@ export const FIELDS: readonly Field[] = [
         path: 'oai_settings.new_chat_prompt',
         kind: 'text',
         label: 'New Chat',
-        tip: 'Restore new chat prompt',
+        tip: 'Restore default',
         family: 'cc',
     },
     {
@@ -403,7 +403,7 @@ export const FIELDS: readonly Field[] = [
         path: 'oai_settings.new_group_chat_prompt',
         kind: 'text',
         label: 'New Group Chat',
-        tip: 'Restore new group chat prompt',
+        tip: 'Restore default',
         family: 'cc',
     },
     {
@@ -411,7 +411,7 @@ export const FIELDS: readonly Field[] = [
         path: 'oai_settings.new_example_chat_prompt',
         kind: 'text',
         label: 'New Example Chat',
-        tip: 'Restore default prompt',
+        tip: 'Restore default',
         family: 'cc',
     },
     {
@@ -419,7 +419,7 @@ export const FIELDS: readonly Field[] = [
         path: 'oai_settings.continue_nudge_prompt',
         kind: 'text',
         label: 'Continue nudge',
-        tip: 'Restore new chat prompt',
+        tip: 'Restore default',
         family: 'cc',
     },
     {
@@ -563,7 +563,7 @@ export const FIELDS: readonly Field[] = [
         id: 'tool_call_recurse_limit',
         path: 'oai_settings.tool_call_recurse_limit',
         kind: 'range',
-        label: 'Tool Call Recurse Limit',
+        label: 'Tool Call Recursion Limit',
         tip: 'Maximum number of tool call recursion steps per generation.',
         min: 1,
         max: 50,
@@ -815,7 +815,7 @@ export const FIELDS: readonly Field[] = [
         id: 'n_textgenerationwebui',
         path: 'textgenerationwebui_settings.n',
         kind: 'number',
-        label: 'Multiple swipes per generation',
+        label: 'Swipes per generation',
         min: 1,
         step: 1,
         family: 'textgen',
@@ -965,7 +965,7 @@ export const FIELDS: readonly Field[] = [
         id: 'rep_pen_textgenerationwebui',
         path: 'textgenerationwebui_settings.rep_pen',
         kind: 'range',
-        label: 'rep.pen',
+        label: 'Repetition Penalty',
         min: 1,
         max: 3,
         step: 0.01,
@@ -977,7 +977,7 @@ export const FIELDS: readonly Field[] = [
         id: 'rep_pen_range_textgenerationwebui',
         path: 'textgenerationwebui_settings.rep_pen_range',
         kind: 'range',
-        label: 'rep.pen range',
+        label: 'Repetition Penalty Range',
         min: -1,
         max: 8192,
         step: 1,
@@ -990,7 +990,7 @@ export const FIELDS: readonly Field[] = [
         id: 'rep_pen_slope_textgenerationwebui',
         path: 'textgenerationwebui_settings.rep_pen_slope',
         kind: 'range',
-        label: 'Rep. Pen. Slope',
+        label: 'Repetition Penalty Slope',
         min: 0,
         max: 10,
         step: 0.01,
@@ -1002,7 +1002,7 @@ export const FIELDS: readonly Field[] = [
         id: 'rep_pen_decay_textgenerationwebui',
         path: 'textgenerationwebui_settings.rep_pen_decay',
         kind: 'range',
-        label: 'rep.pen decay',
+        label: 'Repetition Penalty Decay',
         min: -1,
         max: 8192,
         step: 1,
@@ -1015,7 +1015,7 @@ export const FIELDS: readonly Field[] = [
         id: 'encoder_rep_pen_textgenerationwebui',
         path: 'textgenerationwebui_settings.encoder_rep_pen',
         kind: 'range',
-        label: 'Encoder Rep. Pen.',
+        label: 'Encoder Repetition Penalty',
         min: 0.8,
         max: 1.5,
         step: 0.01,
@@ -1085,7 +1085,7 @@ export const FIELDS: readonly Field[] = [
         id: 'max_tokens_second_textgenerationwebui',
         path: 'textgenerationwebui_settings.max_tokens_second',
         kind: 'range',
-        label: 'Max Tokens Second',
+        label: 'Max Tokens per Second',
         min: 0,
         max: 20,
         step: 1,
@@ -1292,7 +1292,7 @@ export const FIELDS: readonly Field[] = [
         max: 2,
         step: 1,
         family: 'textgen',
-        group: { id: 'mirostat_block_ooba', label: 'Mirostat (mode=1 is only for llama.cpp)' },
+        group: { id: 'mirostat_block_ooba', label: 'Mirostat' },
         textgen: { only: ['ooba', 'infermaticai', 'koboldcpp', 'llamacpp', 'tabby'] },
         samplers: ['mirostat_mode'],
     },
@@ -1305,7 +1305,7 @@ export const FIELDS: readonly Field[] = [
         max: 20,
         step: 0.01,
         family: 'textgen',
-        group: { id: 'mirostat_block_ooba', label: 'Mirostat (mode=1 is only for llama.cpp)' },
+        group: { id: 'mirostat_block_ooba', label: 'Mirostat' },
         textgen: { only: ['ooba', 'infermaticai', 'koboldcpp', 'llamacpp', 'tabby'] },
         samplers: ['mirostat_tau'],
     },
@@ -1318,7 +1318,7 @@ export const FIELDS: readonly Field[] = [
         max: 1,
         step: 0.01,
         family: 'textgen',
-        group: { id: 'mirostat_block_ooba', label: 'Mirostat (mode=1 is only for llama.cpp)' },
+        group: { id: 'mirostat_block_ooba', label: 'Mirostat' },
         textgen: { only: ['ooba', 'infermaticai', 'koboldcpp', 'llamacpp', 'tabby'] },
         samplers: ['mirostat_eta'],
     },
@@ -1458,7 +1458,7 @@ export const FIELDS: readonly Field[] = [
         id: 'include_reasoning_textgenerationwebui',
         path: 'textgenerationwebui_settings.include_reasoning',
         kind: 'checkbox',
-        label: 'Request Model Reasoning',
+        label: 'Request model reasoning',
         family: 'textgen',
         textgen: { only: ['openrouter'] },
         samplers: ['include_reasoning'],
@@ -1572,7 +1572,7 @@ export const FIELDS: readonly Field[] = [
         id: 'amount_gen',
         path: 'amount_gen',
         kind: 'range',
-        label: 'response legth(tokens)',
+        label: 'Response length (tokens)',
         min: 16,
         max: 2048,
         step: 1,
@@ -1584,7 +1584,7 @@ export const FIELDS: readonly Field[] = [
         id: 'max_context',
         path: 'max_context',
         kind: 'range',
-        label: 'context size(tokens)',
+        label: 'Context size (tokens)',
         min: 512,
         max: 8192,
         step: 64,
@@ -1596,7 +1596,7 @@ export const FIELDS: readonly Field[] = [
         id: 'max_context_unlocked',
         path: 'power_user.max_context_unlocked',
         kind: 'checkbox',
-        label: 'unlocked',
+        label: 'Unlocked',
         family: 'common',
         api: ['kobold', 'novel', 'textgenerationwebui', 'koboldhorde'],
     },
@@ -1628,8 +1628,8 @@ export const FIELDS: readonly Field[] = [
         id: 'wi_scan_depth',
         path: 'world_info_settings.world_info_depth',
         kind: 'number',
-        label: 'Scan depth',
-        tip: 'How many of the newest messages are searched for keys.',
+        label: 'Scan depth (messages)',
+        tip: 'How many of the newest messages are scanned for keys.',
         min: 0,
         max: 1000,
         step: 1,
@@ -1641,7 +1641,7 @@ export const FIELDS: readonly Field[] = [
         path: 'world_info_settings.world_info_budget',
         kind: 'number',
         label: 'Budget (% of context)',
-        tip: 'The share of the context that entries can take; entries past it are left out.',
+        tip: 'Entries past this share of the context are left out.',
         min: 1,
         max: 100,
         step: 1,
@@ -1653,7 +1653,7 @@ export const FIELDS: readonly Field[] = [
         path: 'world_info_settings.world_info_budget_cap',
         kind: 'number',
         label: 'Budget cap (tokens)',
-        tip: 'A hard limit in tokens on top of the budget; 0 for none.',
+        tip: 'A token limit on top of the percentage. 0 for no cap.',
         min: 0,
         max: 65536,
         step: 1,
@@ -1665,7 +1665,7 @@ export const FIELDS: readonly Field[] = [
         path: 'world_info_settings.world_info_min_activations',
         kind: 'number',
         label: 'Min activations',
-        tip: "Older messages are searched until this many entries come in; 0 turns it off, and it can't be used with recursion.",
+        tip: 'Keeps scanning older messages until this many entries activate or the budget is full. 0 to disable. Disables recursion.',
         min: 0,
         max: 100,
         step: 1,
@@ -1677,8 +1677,8 @@ export const FIELDS: readonly Field[] = [
         id: 'wi_min_activations_depth_max',
         path: 'world_info_settings.world_info_min_activations_depth_max',
         kind: 'number',
-        label: 'Max depth for min activations',
-        tip: 'How far back min activations may search, in messages; 0 for the whole chat.',
+        label: 'Max depth (messages)',
+        tip: '0 for the whole chat.',
         min: 0,
         max: 100,
         step: 1,
@@ -1690,7 +1690,7 @@ export const FIELDS: readonly Field[] = [
         path: 'world_info_settings.world_info_max_recursion_steps',
         kind: 'number',
         label: 'Max recursion steps',
-        tip: "The most rounds of recursion that run (0 for no limit, 1 for none); it can't be used with min activations.",
+        tip: '0 for no limit, 1 for no recursion, 2 for one round, and so on. Disables Min activations.',
         min: 0,
         max: 10,
         step: 1,
@@ -1703,7 +1703,7 @@ export const FIELDS: readonly Field[] = [
         path: 'world_info_settings.world_info_character_strategy',
         kind: 'select',
         label: 'Insertion strategy',
-        tip: "Which worlds' entries go in first when the budget runs out; chat and persona lore always come first.",
+        tip: 'Chat and persona lorebooks always come first.',
         options: [
             { value: 0, label: 'Sorted evenly' },
             { value: 1, label: 'Character lore first' },
@@ -1716,7 +1716,7 @@ export const FIELDS: readonly Field[] = [
         path: 'world_info_settings.world_info_include_names',
         kind: 'checkbox',
         label: 'Include names',
-        tip: "Searches each message with its sender's name in front of it.",
+        tip: 'Each message is scanned with its sender’s name in front.',
         family: 'worldInfo',
     },
     {
@@ -1724,15 +1724,15 @@ export const FIELDS: readonly Field[] = [
         path: 'world_info_settings.world_info_recursive',
         kind: 'checkbox',
         label: 'Recursive scan',
-        tip: "Searches the text of entries that come in for other entries' keys.",
+        tip: 'The text of activated entries is scanned for more keys.',
         family: 'worldInfo',
     },
     {
         id: 'wi_case_sensitive',
         path: 'world_info_settings.world_info_case_sensitive',
         kind: 'checkbox',
-        label: 'Case-sensitive keys',
-        tip: 'Keys match only with the same capital letters: “Rose” doesn’t find “rose”.',
+        label: 'Case-sensitive',
+        tip: '“Rose” won’t match “rose”.',
         family: 'worldInfo',
     },
     {
@@ -1740,23 +1740,23 @@ export const FIELDS: readonly Field[] = [
         path: 'world_info_settings.world_info_match_whole_words',
         kind: 'checkbox',
         label: 'Match whole words',
-        tip: 'Keys match only whole words: “cat” doesn’t find “category”.',
+        tip: '“cat” won’t match “category”.',
         family: 'worldInfo',
     },
     {
         id: 'wi_use_group_scoring',
         path: 'world_info_settings.world_info_use_group_scoring',
         kind: 'checkbox',
-        label: 'Group scoring',
-        tip: 'An inclusion group picks only among its entries that match the most keys.',
+        label: 'Use group scoring',
+        tip: 'Within an inclusion group, only the entries with the most key matches can be picked.',
         family: 'worldInfo',
     },
     {
         id: 'wi_overflow_alert',
         path: 'world_info_settings.world_info_overflow_alert',
         kind: 'checkbox',
-        label: 'Warn on overflow',
-        tip: 'Shows a notice when entries were left out because the budget ran out.',
+        label: 'Alert on overflow',
+        tip: 'Shows a notice when entries were left out of the budget.',
         family: 'worldInfo',
     },
 ];
@@ -1823,24 +1823,24 @@ export function refusalOf(field: Field, value: unknown, range: Range): string | 
     switch (field.kind) {
         case 'range':
         case 'number': {
-            if (typeof value !== 'number' || !Number.isFinite(value)) return `${field.label}: not a number`;
-            if (field.whole === true && !Number.isInteger(value)) return `${field.label}: a whole number`;
-            if (range.min !== undefined && value < range.min) return `${field.label}: at least ${range.min}`;
-            if (range.max !== undefined && value > range.max) return `${field.label}: at most ${range.max}`;
+            if (typeof value !== 'number' || !Number.isFinite(value)) return `${field.label} must be a number.`;
+            if (field.whole === true && !Number.isInteger(value)) return `${field.label} must be a whole number.`;
+            if (range.min !== undefined && value < range.min) return `${field.label} must be at least ${range.min}.`;
+            if (range.max !== undefined && value > range.max) return `${field.label} must be at most ${range.max}.`;
             return null;
         }
         case 'checkbox':
-            return typeof value === 'boolean' ? null : `${field.label}: on or off`;
+            return typeof value === 'boolean' ? null : `${field.label} must be on or off.`;
         case 'text':
-            return typeof value === 'string' ? null : `${field.label}: not text`;
+            return typeof value === 'string' ? null : `${field.label} must be text.`;
         case 'json':
             return value === null || (typeof value === 'object' && !Array.isArray(value))
                 ? null
-                : `${field.label}: a JSON object, or nothing`;
+                : `${field.label} must be a JSON object or empty.`;
         case 'select':
         case 'choice':
             return (field.options ?? []).some((option) => option.value === value)
                 ? null
-                : `${field.label}: not one of its choices`;
+                : `${field.label} isn’t a valid choice.`;
     }
 }

@@ -93,7 +93,7 @@ export function CcContext() {
             <FieldBlock id="n_openai">
                 {(field) => (
                     <>
-                        <Title field={field} text="Multiple swipes per generation" />
+                        <Title field={field} text="Swipes per generation" />
                         <div class="wide100p">
                             <NumberBox field={field} />
                         </div>
@@ -138,7 +138,6 @@ function UtilityPrompt(props: {
     title: string;
     i18n?: string;
     restoreId?: string;
-    restoreTitle?: string;
     name?: string;
     children: JSX.Element;
 }) {
@@ -159,7 +158,7 @@ function UtilityPrompt(props: {
                         <Show when={props.restoreId}>
                             <div
                                 id={props.restoreId}
-                                title={t(props.restoreTitle ?? 'Restore default prompt')}
+                                title={t('Restore default')}
                                 class="right_menu_button"
                                 onClick={() => field.reset()}
                             >
@@ -195,14 +194,13 @@ export function CcUtility() {
                         restoreId="impersonation_prompt_restore"
                         name="impersonation_prompt"
                     >
-                        {t('Prompt that is used for Impersonation function')}
+                        {t('Prompt used when impersonating.')}
                     </UtilityPrompt>
                     <UtilityPrompt
                         id="wi_format_textarea"
                         title="World Info format template"
                         i18n="World Info Format Template"
                         restoreId="wi_format_restore"
-                        restoreTitle="Restore default format"
                     >
                         <span>{t('Wraps activated World Info entries before inserting into the prompt.')}</span>{' '}
                         <span>{use()}</span>
@@ -213,7 +211,6 @@ export function CcUtility() {
                         title="Scenario format template"
                         i18n="Scenario Format Template"
                         restoreId="scenario_format_restore"
-                        restoreTitle="Restore default format"
                     >
                         <span>{use()}</span> <code>{'{{scenario}}'}</code> <span>{place()}</span>
                     </UtilityPrompt>
@@ -222,7 +219,6 @@ export function CcUtility() {
                         title="Personality format template"
                         i18n="Personality Format Template"
                         restoreId="personality_format_restore"
-                        restoreTitle="Restore default format"
                     >
                         <span>{use()}</span> <code>{'{{personality}}'}</code> <span>{place()}</span>
                     </UtilityPrompt>
@@ -231,24 +227,21 @@ export function CcUtility() {
                         title="Group Nudge prompt template"
                         i18n="Group Nudge Prompt Template"
                         restoreId="group_nudge_prompt_restore"
-                        restoreTitle="Restore default format"
                     >
-                        {t('Sent at the end of the group chat history to force reply from a specific character.')}
+                        {t('Sent at the end of a group chat to make a specific character reply.')}
                     </UtilityPrompt>
                     <UtilityPrompt
                         id="newchat_prompt_textarea"
                         title="New Chat"
                         restoreId="newchat_prompt_restore"
-                        restoreTitle="Restore new chat prompt"
                         name="new_chat"
                     >
-                        {t('Set at the beginning of the chat history to indicate that a new chat is about to start.')}
+                        {t('Added at the start of the chat history to mark a new chat.')}
                     </UtilityPrompt>
                     <UtilityPrompt
                         id="newgroupchat_prompt_textarea"
                         title="New Group Chat"
                         restoreId="newgroupchat_prompt_restore"
-                        restoreTitle="Restore new group chat prompt"
                         name="new_group_chat"
                     >
                         {t(
@@ -259,7 +252,6 @@ export function CcUtility() {
                         id="newexamplechat_prompt_textarea"
                         title="New Example Chat"
                         restoreId="newexamplechat_prompt_restore"
-                        restoreTitle="Restore new example chat prompt"
                         name="new_example_chat"
                     >
                         {t(
@@ -270,13 +262,12 @@ export function CcUtility() {
                         id="continue_nudge_prompt_textarea"
                         title="Continue nudge"
                         restoreId="continue_nudge_prompt_restore"
-                        restoreTitle="Restore new chat prompt"
                         name="continue_nudge"
                     >
-                        {t('Set at the end of the chat history when the continue button is pressed.')}
+                        {t('Added at the end of the chat history when you continue a message.')}
                     </UtilityPrompt>
                     <UtilityPrompt id="send_if_empty_textarea" title="Replace empty message" name="send_if_empty">
-                        {t('Send this text instead of nothing when the text box is empty.')}
+                        {t('Sent when you submit an empty message.')}
                     </UtilityPrompt>
                 </div>
             </div>
@@ -285,7 +276,7 @@ export function CcUtility() {
                     <>
                         <Title field={field} text="Seed" class="range-block-title justifyLeft" />
                         <div class="toggle-description justifyLeft">
-                            {t('Set to get deterministic results. Use -1 for random seed.')}
+                            {t('A fixed seed gives repeatable results. -1 for a random seed.')}
                         </div>
                         <div class="wide100p">
                             <NumberBox field={field} />
@@ -400,7 +391,7 @@ export function CcOptions(props: { support: () => Support }) {
             <ChoiceDrawer
                 id="continue_postfix"
                 title="Continue Postfix"
-                tip="The next chunk of the continued message will be appended using this as a separator."
+                tip="Separator placed between a continued message and its new text."
                 name="continue_postfix"
                 displayId="continue_postfix_display"
                 class="inline-drawer wide100p flexFlowColumn marginBot10"
@@ -409,9 +400,7 @@ export function CcOptions(props: { support: () => Support }) {
             <CheckboxBlock id="continue_prefill" label="Continue prefill">
                 <div class="toggle-description justifyLeft">
                     <span>
-                        {t(
-                            'Continue sends the last message as assistant role instead of system message with instruction.',
-                        )}
+                        {t('Continue sends the last message as an assistant message instead of a system instruction.')}
                     </span>
                 </div>
             </CheckboxBlock>
@@ -490,7 +479,7 @@ export function CcOptions(props: { support: () => Support }) {
                             {(limit) => (
                                 <>
                                     <div class="range-block-title">
-                                        <small>{t('Tool Call Recurse Limit')}</small>
+                                        <small>{t('Tool Call Recursion Limit')}</small>
                                         <div
                                             class="fa-solid fa-circle-info opacity50p margin5"
                                             title={t('Maximum number of tool call recursion steps per generation.')}
@@ -803,7 +792,7 @@ function ClaudePrefills() {
                         field={prefill}
                         rows={2}
                         name="assistant_prefill"
-                        placeholder={t("Start Claude's answer with...")}
+                        placeholder={t('Start Claude’s reply with…')}
                     />
                     <div
                         class="flex-container alignItemsCenter"
@@ -818,7 +807,7 @@ function ClaudePrefills() {
                         field={impersonation}
                         rows={2}
                         name="assistant_impersonation"
-                        placeholder={t("Start Claude's answer with...")}
+                        placeholder={t('Start Claude’s reply with…')}
                     />
                     <Show when={prefill.refusal() ?? impersonation.refusal()}>
                         {(text) => <small class="settings_refusal">{text()}</small>}

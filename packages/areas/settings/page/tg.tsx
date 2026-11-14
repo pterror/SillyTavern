@@ -157,7 +157,7 @@ export function TgTop() {
             >
                 {(field) => (
                     <>
-                        <small>{t('Multiple swipes per generation')}</small>
+                        <small>{t('Swipes per generation')}</small>
                         <NumberBox field={field} class="text_pole textAlignCenter" />
                     </>
                 )}
@@ -220,7 +220,7 @@ function SamplerSelectDialog(props: { onClose: () => void }) {
                                 />
                             </div>
                         </div>
-                        <small>{t('Here you can toggle the display of individual samplers. (WIP)')}</small>
+                        <small>{t('Choose which samplers are shown.')}</small>
                     </div>
                     <hr />
                     <div id="apiSamplersList" class="flex-container flexNoGap">
@@ -336,16 +336,21 @@ export function TgSamplers() {
                 tipI18n="Eta_Cutoff_desc"
             />
             <TgSlider name="rep_pen" label="Repetition Penalty" i18n="rep.pen" />
-            <TgSlider name="rep_pen_range" label="Rep Pen Range" i18n="rep.pen range" unlocked={useUnlocked()()} />
-            <TgSlider name="rep_pen_slope" label="Rep Pen Slope" i18n="Rep. Pen. Slope" />
-            <TgSlider name="rep_pen_decay" label="Rep Pen Decay" i18n="rep.pen decay" />
-            <TgSlider name="encoder_rep_pen" label="Encoder Penalty" i18n="Encoder Rep. Pen." />
+            <TgSlider
+                name="rep_pen_range"
+                label="Repetition Penalty Range"
+                i18n="rep.pen range"
+                unlocked={useUnlocked()()}
+            />
+            <TgSlider name="rep_pen_slope" label="Repetition Penalty Slope" i18n="Rep. Pen. Slope" />
+            <TgSlider name="rep_pen_decay" label="Repetition Penalty Decay" i18n="rep.pen decay" />
+            <TgSlider name="encoder_rep_pen" label="Encoder Repetition Penalty" i18n="Encoder Rep. Pen." />
             <TgSlider name="freq_pen" label="Frequency Penalty" />
             <TgSlider name="presence_pen" label="Presence Penalty" />
             <TgSlider name="no_repeat_ngram_size" label="No Repeat Ngram Size" />
             <TgSlider name="skew" label="Skew" />
             <TgSlider name="min_length" label="Min Length" />
-            <TgSlider name="max_tokens_second" label="Maximum tokens/second" i18n="Max Tokens Second" />
+            <TgSlider name="max_tokens_second" label="Max Tokens per Second" i18n="Max Tokens Second" />
 
             <Block id="adaptive_p_block" class="wide100p" types={{ only: ['koboldcpp', 'llamacpp', 'ooba', 'tabby'] }}>
                 <h4 class="wide100p textAlignCenter">
@@ -437,7 +442,7 @@ export function TgSamplers() {
                                         field={field}
                                         class="text_pole textarea_compact"
                                         name="sequence_breakers"
-                                        placeholder={t('JSON-serialized array of strings.')}
+                                        placeholder={t('JSON array of strings')}
                                     />
                                 </>
                             )}
@@ -479,7 +484,7 @@ export function TgSamplers() {
                         types={{ only: ['ooba', 'infermaticai', 'koboldcpp', 'llamacpp', 'tabby'] }}
                     >
                         <h4 class="wide100p textAlignCenter">
-                            <label>{t('Mirostat', 'Mirostat (mode=1 is only for llama.cpp)')}</label>
+                            <label>{t('Mirostat')}</label>
                             <Info
                                 class=" fa-solid fa-circle-info opacity50p "
                                 tip={
@@ -522,7 +527,7 @@ export function TgSamplers() {
                                     field={field}
                                     rows={4}
                                     class="text_pole textarea_compact monospace"
-                                    placeholder={t('Type in the desired custom grammar')}
+                                    placeholder={t('Custom grammar')}
                                 />
                             )}
                         </FieldBlock>
@@ -543,7 +548,7 @@ export function TgSamplers() {
                             </a>
                         </h4>
                         <FieldBlock id="tabby_json_schema" class="wide100p">
-                            {(field) => <JsonArea field={field} placeholder={t('Type in the desired JSON schema')} />}
+                            {(field) => <JsonArea field={field} placeholder={t('JSON schema')} />}
                         </FieldBlock>
                         <FieldBlock id={`json_schema_allow_empty${KEY}`} class="wide100p">
                             {(field) => (
@@ -631,7 +636,7 @@ export function TgSamplers() {
                         grow={false}
                     />
                     <TgCheckbox name="skip_special_tokens" label="Skip Special Tokens" />
-                    <TgCheckbox name="include_reasoning" label="Request Model Reasoning" />
+                    <TgCheckbox name="include_reasoning" label="Request model reasoning" />
                     <TgCheckbox
                         name="temperature_last"
                         label="Temperature Last"
@@ -665,7 +670,7 @@ export function TgSamplers() {
                             <small>{t('Seed')}</small>
                             <Info
                                 class="fa-solid fa-circle-info opacity50p "
-                                tip="A random seed to use for deterministic and reproducable outputs. Set to -1 to use a random seed."
+                                tip="A fixed seed gives repeatable results. -1 for a random seed."
                                 i18n="Seed_desc"
                             />
                         </label>
@@ -764,7 +769,7 @@ export function TgCfg() {
                 <span>{t('CFG')}</span>
                 <Info
                     class="margin5 fa-solid fa-circle-info opacity50p "
-                    tip="Classifier Free Guidance. More helpful tip coming soon."
+                    tip="Classifier-free guidance."
                     i18n="Classifier Free Guidance. More helpful tip coming soon"
                 />
             </h4>
