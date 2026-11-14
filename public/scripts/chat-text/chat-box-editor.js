@@ -9,6 +9,7 @@ import {
     view as cmView,
 } from '../../live-editor-lib.js';
 import { boxSize } from './box-size.js';
+import { caretInTextColor } from './caret.js';
 import { commandKeys, drawnWith, editorPage, formatTools, shownTools, toolbarFor } from './editor.js';
 import { macroPills } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
@@ -76,6 +77,7 @@ export function chatBoxEditor({ parent, text, setup, macroValue, label, keys, sl
             keymap.of([...keys, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
             EditorView.lineWrapping,
             drawSelection(),
+            caretInTextColor(),
             overtype(),
             markdownPaste({ shows: markdown => drawnText(markdown, setup).textContent ?? '' }),
             suggestions([slashSuggestions(slashParser, slashWanted), macroSuggestions(macroValue, page.t), mentionSuggestions(name => page.person(name, ''))]),

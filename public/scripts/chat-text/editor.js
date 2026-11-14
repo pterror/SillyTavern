@@ -20,6 +20,7 @@ import {
 } from '../../live-editor-lib.js';
 import { liveSearch, showPresets } from '../live-editor/search.js';
 import { boxSize } from './box-size.js';
+import { caretInTextColor } from './caret.js';
 import { macroPills } from './macros.js';
 import { savedText } from './saved-text.js';
 import { macroSuggestions, mentionSuggestions } from './suggest.js';
@@ -303,6 +304,7 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
             EditorView.lineWrapping,
             boxSize('75dvh'),
             drawSelection(),
+            caretInTextColor(),
             liveSearch({ context: presetContext ?? (() => ({ characterName: speaker })) }),
             overtype(),
             markdownPaste({ shows: markdown => drawnText(markdown, setup).textContent ?? '' }),
