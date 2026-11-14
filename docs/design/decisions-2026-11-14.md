@@ -94,9 +94,25 @@ choice made is marked as such.
   this point, character (in a group: the speaking character, then the group; a card's own statements are the character
   level), world, device, user, default. Containment-relation follows apply within the levels whose subject is an entry
   or world.
-- **Still open from this:** which order resolves the order itself (the model proposes the shipped order, fixed);
-  whether `settings-scopes.md`'s table of which levels a kind of setting may use survives ("what's per what: incorrect
-  mental model", 2026-10-17); what "group" is called as a relation.
+- **Resolving `order/` and `on/` themselves** (2026-11-15). Owner: "themselves, except if it'd cause a cycle, starting
+  from shipped order?? or shipped order -> recalc until entering/exiting a cycle". Start from the shipped order, resolve
+  `order/` and `on/` with it, resolve them again with the result, and repeat until the order stops changing (a fixed
+  point). If an order repeats without being a fixed point (a cycle), stop at the first repeat and use that order. The
+  explanation shows the steps and the cycle. Iterations are bounded by the number of distinct orders seen, which is
+  finite. Replaces the earlier proposal of a fixed shipped order. `state-model.md` has settings.lua and a worked example
+  with a fixed point after two steps and a cycle, run under LuaJIT.
+- **Unknown and missing levels** (2026-11-15). Owner: "whatever idk tbh" (the choice is the model's). An unknown level
+  stays in the stated list and does nothing, so a level an extension adds later takes effect where it was placed. A
+  level the statement leaves out goes after the listed ones, in the shipped order.
+- **The group relation is named "member of"** (a character is a member of a group). It replaces the placeholder "group".
+  How the groups feature stores membership is not designed here.
+- **No level restrictions.** Owner: "yeah" (to dropping `settings-scopes.md`'s table of which levels a kind of setting
+  may use). Reason: "what's per what: incorrect mental model" (2026-10-17). No level is switched off by default for any
+  setting: a theme can be stated per chat and per character like backgrounds, presets per device. A person switches
+  levels off with `on/` statements ("never let chats change my theme" at device or user level). The table's rationale,
+  that a chat-level theme in a shared chat changes every participant's screen, is now a choice each person makes with
+  `on/`, not a rule. The schema-level restriction of levels is removed from the state model; a schema's order is only a
+  default order.
 
 ## Worldbuilding
 

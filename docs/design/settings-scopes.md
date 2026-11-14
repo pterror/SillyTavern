@@ -12,7 +12,8 @@ One order for every setting, closest first:
 2. chat
 3. **bookmarks**: the pinned bookmarks above this point in the chat, nearest first (a following bookmark states
    nothing of its own for others; see `state-model.md`).
-4. character (in a group: the speaking character, then the group). A card's own statements are the character level.
+4. character (in a group: the speaking character, then the groups it is a member of). A card's own statements are the
+   character level.
 5. **world**: the world the chat or entry belongs to. Where a setting's subject is an entry or a world, containment
    relations are followed within these levels, as the world names them.
 6. **device**: one browser on one machine, for one user.
@@ -23,25 +24,20 @@ Bundles, overrides, resolution, edits, history and forgetting work at the new le
 
 No level for guests or drafts: "multiplayer guests: no such thing", "drafts: tf" (owner, 2026-10-17T03:28:40).
 
-## Which levels a setting may use
+## No level is barred from any setting
 
-Precedence never differs by kind; what a kind may do does (as VS Code restricts settings to scopes rather than
-reordering them). Each row of `settings-mapping.tsv` gets a `levels` column.
+Every setting can be stated at every level, and no level is switched off by default for any setting. An earlier draft
+had a table of which levels a kind of setting may use (reader-bound settings at tab, device and user only; generation
+at tab, chat, character and user; and so on). It is gone. The owner on deciding per setting what it's per: "what's per
+what: incorrect mental model" (2026-10-17T03:28:40), and, asked whether to drop the table: "yeah" (2026-11-15).
 
-| Kind | Levels |
-|---|---|
-| Reader-bound: theme and its fields, font size, chat width, motion and blur, mobile view, input area, movingUI, language | tab, device, user, default |
-| Background image | every level |
-| Generation: presets, templates, connection, persona, Author's Note, CFG | tab, chat, character, user, default |
-| Capabilities run in the browser: TTS voice, speech recognition, WebLLM | the generation levels plus device |
+So a theme can be stated per chat and per character, as backgrounds already can, and presets per device. The table's
+reason, that a chat-level theme in a shared chat changes every participant's screen, is no longer a rule. It is a choice
+each person makes with `on/` statements: "never let chats change my theme" is an `on/` statement at device or user
+level, and it is a statement like any other, in history and undoable. Nothing in the model restricts levels per setting
+(`state-model.md`, "Settings: one cascade along a path"): a schema's order is only a setting's default order.
 
-No chat or character can change a reader-bound setting, and output in a shared chat never depends on a device.
-
-The owner on deciding per setting what it's per: "what's per what: incorrect mental model" (2026-10-17T03:28:40).
-Whether that rules out this table is not decided. Until it is, the table stays as data: it is each setting's schema
-restricting which levels the setting uses (`state-model.md`, "Settings: one cascade along a path"), so it can be
-changed or removed without touching the model. World and bookmark levels are not in the rows above yet; which kinds
-may use them is open.
+World and bookmark levels are on the path for every setting like the others.
 
 ## The order is a setting
 
@@ -57,10 +53,16 @@ list. A toggle is a statement like any other: kept in history, undoable, and ove
 ("on this phone, chat-level presets are off"). The order and the toggles are shown, edited, kept in history and reset
 like every other value.
 
-Which order resolves the order itself: the owner has not decided. The model's answer, a proposal, is that the order
-and the toggles resolve along the shipped order, fixed: they are read at every level, and no statement can switch off
-the level that holds it. There is no more general answer here: a statable order of the order has to be resolved
-before it is known. Worked example, with real JSON and Lua: `state-model.md`.
+Which order resolves `order/` and `on/` themselves. The owner: "themselves, except if it'd cause a cycle, starting from
+shipped order?? or shipped order -> recalc until entering/exiting a cycle". Start from the shipped order and read
+`order/` and `on/` along it; read them again along the result; repeat until the order stops changing (a fixed point). If
+an order repeats without being a fixed point, the steps loop: stop at the first repeat and use that order. The
+explanation shows the steps and, for a loop, that it is one. The steps are bounded by the number of distinct orders,
+which is finite. Worked example, with real JSON and Lua, one case reaching a fixed point after two steps and one cycling:
+`state-model.md`.
+
+An id in a stated order that is not a level stays in the list and does nothing, so a level an extension adds later takes
+effect where the list placed it. A level the list leaves out goes after the listed ones, in the shipped order.
 
 ## Device
 
@@ -81,11 +83,11 @@ position does. The tab shows what it states ("this tab: preset X") with a reset.
 
 ## Fit
 
-- The level picker gains "this tab" and "this device (name)" and hides levels a setting doesn't allow. An edit goes
+- The level picker gains "this tab" and "this device (name)" and shows every level. An edit goes
   to the level supplying the value, so after one "this device only" later edits stay on the device.
 - movingUI: the user's desktop and mobile layouts stay the user-level value; a device or tab may name its own layout.
   "movingui saved on device: data loss risk" (owner, 2026-10-17T03:28:40).
 - Import: an import lands at user level; upstream's `chat_metadata.custom_background` ("lock background") becomes the
   chat's background statement; upstream's localStorage language becomes a device-level statement.
-- Cost: at most 8 levels, so O(levels) point reads per resolved slot, plus the reads of the order and its toggles; one localStorage read and one header per
+- Cost: at most 8 levels, so O(levels) point reads per resolved slot, plus the reads of the order and its toggles (the order of orders is a few steps, normally one or two, each reading `order/` and `on/` once per level); one localStorage read and one header per
   request; one small record per device. Nothing is O(devices) or O(sessions) on a request path.

@@ -1210,10 +1210,12 @@ A setting's value is the first statement found along a path of places, most spec
 
 **The order is a setting.** The order of the levels is not fixed anywhere. For a setting `x` it is two settings, resolved through this same cascade, statable at any level, for `x` or for every setting under a prefix of its name (`order/generation/` for all generation settings, `order/` for all):
 
-- `order/x`, a list of item ids, closest first. A stated list puts those items first, in that order; items it doesn't list follow, in the schema's order.
+- `order/x`, a list of item ids, closest first. A stated list puts those items first, in that order; an id in it that is not a level (yet) stays in the list and does nothing, so a level an extension adds later takes effect where it was placed; items it leaves out follow the listed ones, in the shipped order.
 - `on/x`, a table from item id to true or false, merged field by field: the most specific place that states an id decides it, and an id nobody states is on. An item that is off is skipped when resolving `x`; its place in the order is not touched, so switching it back on puts it exactly where it was, and moving it while it is off moves it there.
 
-Both are statements like any other: kept in history, undone and branched by the store, shown and reset like every value, and overridable at a more specific level ("on this phone, chat-level presets are off" is a device statement of `on/`; "my preset over characters' presets" is a user statement of `order/` for presets). Read together they are the list of `{ id, on }` the user sees. An item is a level, with the walk the level needs at that point: plain, a `follow` along relation kinds (a character's groups; an entry's containers), or an `ancestry` (the pinned bookmarks above). The default order, closest first, is tab, chat, the pinned bookmarks above this point, character (in a group: the speaking character, then the group; a card's own statements are the character level), world, device, user, and then the setting's default, which is not an item: it is the value when no item states one, so it can be neither moved nor switched off. A schema may restrict the items a setting uses (a reader-bound setting names tab, device and user only); a statement can reorder or switch off only items the schema has, and a level the schema doesn't name is refused. Which order resolves `order/` and `on/` themselves is not decided by the owner; the model's answer is that they resolve along the shipped default order, fixed, so nothing can switch off the level that holds the statement that switches it off (the bootstrap is a proposal, listed under "Still restrictive").
+Both are statements like any other: kept in history, undone and branched by the store, shown and reset like every value, and overridable at a more specific level ("on this phone, chat-level presets are off" is a device statement of `on/`; "my preset over characters' presets" is a user statement of `order/` for presets). Read together they are the list of `{ id, on }` the user sees. An item is a level, with the walk the level needs at that point: plain, a `follow` along relation kinds (a character's groups; an entry's containers), or an `ancestry` (the pinned bookmarks above). The default order, closest first, is tab, chat, the pinned bookmarks above this point, character (in a group: the speaking character, then the group; a card's own statements are the character level), world, device, user, and then the setting's default, which is not an item: it is the value when no item states one, so it can be neither moved nor switched off. A schema's order is only the setting's default order, and restricts nothing: every setting can be stated and reordered at every level, and no level is switched off by default for any setting. A person switches levels off with `on/` statements ("never let chats change my theme" is an `on/` statement at device or user level). Which order resolves `order/` and `on/` themselves is the next paragraph.
+
+**Resolving `order/` and `on/` themselves.** The owner: "themselves, except if it'd cause a cycle, starting from shipped order?? or shipped order -> recalc until entering/exiting a cycle". Reading `order/` needs an order, and the order is what it states, so the cascade settles it in steps. Step 0 is the shipped order. Each next step reads `order/` and `on/` (the statements for every setting) along the order of the step before and arranges the shipped items by what they state. It stops at the first order that has been seen before, and uses that order: when it repeats the step before it, it is a fixed point; when it repeats an earlier one, the steps loop, and the order used is the one the loop was entered at. Every step is a new order or the last, so the steps are at most the number of distinct orders, which is finite because they arrange the same items. All other `order/…` and `on/…` names, and every setting's own order, are then read along that one order. The explanation lists the steps, and for a loop says it is one and names the orders in it. Worked example below. Cost: a step is one read of `order/` and of `on/` per level on the order; the steps are normally one or two.
 
 Three kinds of chain feed that order in the owner's designs, and here they are one mechanism:
 
@@ -1226,7 +1228,7 @@ Three kinds of chain feed that order in the owner's designs, and here they are o
     { "id": "tab",       "level": "tab" },
     { "id": "chat",      "level": "chat" },
     { "id": "bookmarks", "level": "bookmark",  "ancestry": { "start": "at", "filter": "pinned" } },
-    { "id": "character", "level": "character", "follow": { "kinds": [ "group" ] } },
+    { "id": "character", "level": "character", "follow": { "kinds": [ "member of" ] } },
     { "id": "world",     "level": "world" },
     { "id": "device",    "level": "device" },
     { "id": "user",      "level": "user" } ],
@@ -1244,7 +1246,7 @@ Three kinds of chain feed that order in the owner's designs, and here they are o
     "theme":     { "kept": "store",  "node": "home",   "of": "theme",     "prefix": "settings/theme/{id}/" } },
   "schemas": {
     "generation/preset": { "default": "Default" },
-    "looks/text_size":  { "default": 16, "order": [ "tab", "device", "user" ] },
+    "looks/text_size":  { "default": 16 },
     "look/name":        { "default": { "color": "#dddddd" }, "combine": "merge",
                           "order": [ { "id": "entry", "level": "entry", "follow": { "kinds": [] } }, { "id": "theme", "level": "theme" } ] },
     "tags":             { "default": [], "combine": "union",
@@ -1255,14 +1257,15 @@ Three kinds of chain feed that order in the owner's designs, and here they are o
     "order/":           { },
     "on/":              { "default": {}, "combine": "merge" },
     "compose":          { "combine": "rules",
-                          "order": [ "tab", "chat", "character", "device", "user", { "id": "declared", "level": "declared" } ] } } }
+                          "order": [ "tab", "chat", "bookmarks", "character", "world", "device", "user", { "id": "declared", "level": "declared" } ] } } }
 ```
 
 ```
 An item of an order is { id, level, follow?, ancestry? }; the id names it in "order/x" and
   "on/x", and the level says where its statements are. The shipped "order" above is the
-  default for every setting; a schema's own "order" lists the items it allows (a string is the
-  id of a shipped item, a table is an item of its own), in its default order.
+  default for every setting; a schema's own "order" is that setting's default order (a string
+  is the id of a shipped item, a table is an item of its own); the shipped items it leaves out
+  follow in the shipped order.
 A level is data: where its statements are kept, and what of the context names its place.
   A filter is data too: { "pinned": ["=", "mode", "pinned"] } is a cond over a bookmark's
   own fields, declared in the app's piece; the store keeps one index per declared filter.
@@ -1281,7 +1284,8 @@ A level is data: where its statements are kept, and what of the context names it
           belongs to the context's own subject, so a follow reads it at its start only
   name    what the source is called in "from" reports (default: the level)
 A schema, which the module that owns the keys ships (the "setting schema" row at the end):
-  order   the items the setting may use, in its default order; absent: the shipped order.
+  order   the setting's default order of items; absent: the shipped order. It restricts
+          nothing: shipped items it omits follow, in the shipped order.
           What an item walks is the item's own:
             plain                           that level's place
             "follow": { kinds, start?, most? }  the place of the level's subject (start: the
@@ -1303,11 +1307,11 @@ A schema, which the module that owns the keys ships (the "setting schema" row at
                                              the store answers it from an index declared
                                              for that filter, below
           The order a setting resolves along is the settings "order/<name>" and "on/<name>",
-          or those of "<a prefix of name>/", or "order/" and "on/", stated along the shipped
-          order; the schema's order is the default. Which levels a setting may use is which
-          levels its schema's items name: settings-scopes' table is these orders. Which
-          relation kinds a setting follows is therefore data, and a world states it at its
-          own level (as an item with a follow, on a level the schema allows).
+          or those of "<a prefix of name>/", or "order/" and "on/", stated along the order of
+          orders (below); the schema's order is the default. No level is barred from any
+          setting: which levels a setting uses is only what is stated and switched off, so
+          settings-scopes has no table of levels per kind. Which relation kinds a setting
+          follows is data, and a world states it at its own level (as an item with a follow).
   combine how the statements found along the order become the value, a property of the
           setting:
             "first" (the default)  the first place that states it
@@ -1327,7 +1331,7 @@ The tree comes from the store: a statement at node 800 is a change at 800, so re
   any node below sees it, and a statement lower down shadows it from there on. A branch
   from above 800 doesn't see it. Undo and branching are the store's.
 Writes: settings.state(level, name, statement, ctx, field?) at the level's place; a level
-  the setting's order doesn't name is refused. nil takes a statement back. With field, the
+  that is not defined, or whose place the context can't name, is refused. nil takes a statement back. With field, the
   change is kv.set_field, an op (old, { field, value }) -> old with that field set, so a
   node's table of notes keeps the others and a revert restores the old table.
 ```
@@ -1386,8 +1390,9 @@ return function(c)
     return function(key) return ref:get(prefix .. key) end                     -- [host]
   end
 
-  local function sources(level)             -- a level is one source, or a list of them, nearest first
+  local function sources(level)             -- a level is one source, or a list of them, nearest first; none for a level not defined
     local spec = levels[level]
+    if not spec then return {} end
     return spec[1] and spec or { spec }
   end
 
@@ -1397,11 +1402,11 @@ return function(c)
     return by_id
   end
 
-  local function expand(list, known, allowed)   -- a string is the id of an item in known; a table is an item, kept if its level is allowed
+  local function expand(list, known)        -- a string is the id of an item in known, or of none yet; a table is an item
     local out, seen = {}, {}
     for _, e in ipairs(list or {}) do
-      local it = type(e) == "string" and known[e] or (type(e) == "table" and (not allowed or allowed[e.level]) and e)
-      if it and not seen[it.id] then seen[it.id] = true; out[#out + 1] = it end
+      local it = type(e) == "table" and e or known[e] or { id = e }   -- an unknown id stays in the list and does nothing
+      if not seen[it.id] then seen[it.id] = true; out[#out + 1] = it end
     end
     return out, seen
   end
@@ -1417,9 +1422,10 @@ return function(c)
     end
   end
 
-  local function base_of(s)                 -- the items a setting may use, in its schema's own order
-    if not s.order then return default_order end
-    return (expand(s.order, index(default_order)))
+  local function default_of(s)              -- the schema's own order, then the shipped items it leaves out, in the shipped order
+    local items, seen = expand(s.order, index(default_order))
+    for _, it in ipairs(default_order) do if not seen[it.id] then items[#items + 1] = it end end
+    return items
   end
 
   local function places(items, ctx)         -- { { name, read } }, most specific first
@@ -1441,27 +1447,30 @@ return function(c)
       return reads[1]
     end
     for _, item in ipairs(items) do
-      local of = sources(item.level)[1].of
-      local f, a = item.follow, item.ancestry
-      if f then
-        local seen = {}
-        local function visit(id, depth)
-          if seen[id] and (not f.most or seen[id] <= depth) then return end   -- a repeat, or no nearer than before
-          seen[id] = depth
-          local read = place(item, id, depth == 0)
-          if not read or (f.most and depth >= f.most) then return end
-          for _, kind in ipairs(f.kinds) do
-            for _, next_id in ipairs(read("relation/" .. kind) or {}) do visit(next_id, depth + 1) end
+      local srcs = sources(item.level)
+      if #srcs > 0 then
+        local of = srcs[1].of
+        local f, a = item.follow, item.ancestry
+        if f then
+          local seen = {}
+          local function visit(id, depth)
+            if seen[id] and (not f.most or seen[id] <= depth) then return end   -- a repeat, or no nearer than before
+            seen[id] = depth
+            local read = place(item, id, depth == 0)
+            if not read or (f.most and depth >= f.most) then return end
+            for _, kind in ipairs(f.kinds) do
+              for _, next_id in ipairs(read("relation/" .. kind) or {}) do visit(next_id, depth + 1) end
+            end
           end
+          local start = ctx[f.start or of]
+          if start ~= nil then visit(start, 0) end
+        elseif a then
+          if ctx[a.start] ~= nil then
+            for _, id in ipairs(ancestry(a.filter, ctx[a.start])) do place(item, id) end
+          end
+        else
+          place(item, of and ctx[of], true)
         end
-        local start = ctx[f.start or of]
-        if start ~= nil then visit(start, 0) end
-      elseif a then
-        if ctx[a.start] ~= nil then
-          for _, id in ipairs(ancestry(a.filter, ctx[a.start])) do place(item, id) end
-        end
-      else
-        place(item, of and ctx[of], true)
       end
     end
     return out
@@ -1487,51 +1496,13 @@ return function(c)
     end
   end
 
-  local function ordered(name, s, ctx)      -- every item the setting may use, in the order the cascade states, with whether it is on
-    local base, out = base_of(s), {}
-    if name:find("^order/") or name:find("^on/") then       -- the order of the order is the shipped one
-      for _, it in ipairs(base) do out[#out + 1] = { item = it, on = true } end
-      return out
-    end
-    local known, allowed = index(base), {}
-    for _, it in ipairs(base) do allowed[it.level] = true end
-    local listed
-    for p in prefixes(name) do
-      listed = S.get("order/" .. p, ctx)
-      if listed ~= nil then break end
-    end
-    local items, seen = expand(listed, known, allowed)
-    for _, it in ipairs(base) do if not seen[it.id] then items[#items + 1] = it end end   -- unlisted: after, in the schema's order
-    local off = {}
-    for p in prefixes(name) do
-      for id, on in pairs(S.get("on/" .. p, ctx)) do
-        if off[id] == nil then off[id] = (on == false) end                  -- the most specific name states each id
-      end
-    end
-    for _, it in ipairs(items) do out[#out + 1] = { item = it, on = not off[it.id] } end
-    return out
-  end
-
-  local function live(name, s, ctx)         -- the items to walk
-    local out = {}
-    for _, o in ipairs(ordered(name, s, ctx)) do if o.on then out[#out + 1] = o.item end end
-    return out
-  end
-
   local function has(list, x)
     for _, v in ipairs(list) do if v == x then return true end end
     return false
   end
 
-  function S.order(name, ctx)               -- the order of levels that applies to name: { { id, on } }
-    local out = {}
-    for _, o in ipairs(ordered(name, schema(name), ctx)) do out[#out + 1] = { id = o.item.id, on = o.on } end
-    return out
-  end
-
-  function S.get(name, ctx)                 -- the value, and where it came from
-    local s = schema(name)
-    local ps = places(live(name, s, ctx), ctx)
+  local function resolve(name, s, ctx, items)   -- the value, and where it came from, along these items
+    local ps = places(items, ctx)
     local how = s.combine or "first"
     if how == "rules" then
       local rules = {}
@@ -1575,12 +1546,97 @@ return function(c)
     return fn(found, s.default), { levels = found }
   end
 
+  local function arrange(base, listed, off)     -- the listed items first, the rest of base after them in base's order; { item, on } each
+    local items = base
+    if listed ~= nil then
+      local seen
+      items, seen = expand(listed, index(base))
+      for _, it in ipairs(base) do if not seen[it.id] then items[#items + 1] = it end end
+    end
+    local out = {}
+    for _, it in ipairs(items) do out[#out + 1] = { item = it, on = not off[it.id] } end
+    return out
+  end
+
+  local function walk(order)                -- the items that are on
+    local out = {}
+    for _, o in ipairs(order) do if o.on then out[#out + 1] = o.item end end
+    return out
+  end
+
+  local function stated_order(name, ctx, along)   -- the list and the toggles stated for name or a prefix of it, read along `along`
+    local listed, off = nil, {}
+    for p in prefixes(name) do
+      if listed == nil then listed = resolve("order/" .. p, schema("order/" .. p), ctx, along) end
+      for id, on in pairs(resolve("on/" .. p, schema("on/" .. p), ctx, along)) do
+        if off[id] == nil then off[id] = (on == false) end        -- the most specific name states each id
+      end
+    end
+    return listed, off
+  end
+
+  local function key(order)
+    local k = {}
+    for _, o in ipairs(order) do k[#k + 1] = o.item.id .. (o.on and "" or "-") end
+    return table.concat(k, ",")
+  end
+
+  -- The order that "order/" and "on/" themselves resolve along. Reading them needs an order, and
+  -- the order is what they state: start from the shipped order, read them along it, read them
+  -- again along the result, and stop at the first order seen twice. That order is a fixed point
+  -- when it repeats its predecessor, and the entry into a cycle otherwise. Each step is a new
+  -- order or the last one, so the steps are at most the number of distinct orders.
+  local function order_of_orders(ctx)
+    local base = default_order
+    local current = arrange(base, nil, {})
+    local steps, seen = { current }, { [key(current)] = 1 }
+    while true do
+      local listed, off = stated_order("", ctx, walk(current))
+      local nxt = arrange(base, listed, off)
+      local at = seen[key(nxt)]
+      if at then
+        return steps[at], { steps = steps, kind = at == #steps and "fixed" or "cycle", back_to = at }
+      end
+      steps[#steps + 1] = nxt
+      seen[key(nxt)] = #steps
+      current = nxt
+    end
+  end
+
+  local function is_order_name(name) return name:find("^order/") or name:find("^on/") end
+
+  local function ordered(name, s, ctx)      -- every item, in the order the cascade states, with whether it is on
+    local along = order_of_orders(ctx)
+    if is_order_name(name) then return along end
+    local listed, off = stated_order(name, ctx, walk(along))
+    return arrange(default_of(s), listed, off)
+  end
+
+  function S.order(name, ctx)               -- the order of levels that applies to name: { { id, on, unknown? } }
+    local out = {}
+    for _, o in ipairs(ordered(name, schema(name), ctx)) do
+      out[#out + 1] = { id = o.item.id, on = o.on, unknown = #sources(o.item.level) == 0 or nil }
+    end
+    return out
+  end
+
+  function S.order_of_orders(ctx)           -- the order for "order/" and "on/", and how it was reached: { steps, kind, back_to }
+    local along, why = order_of_orders(ctx)
+    local out = {}
+    for _, o in ipairs(along) do out[#out + 1] = { id = o.item.id, on = o.on } end
+    return out, why
+  end
+
+  function S.get(name, ctx)                 -- the value, and where it came from
+    local s = schema(name)
+    return resolve(name, s, ctx, walk(ordered(name, s, ctx)))
+  end
+
   function S.state(level, name, statement, ctx, field)   -- field: set only that field of the table already there
-    local s, named, spec = schema(name), false, nil
-    for _, it in ipairs(base_of(s)) do if it.level == level then named = true end end
+    local spec
     for _, src in ipairs(sources(level)) do if src.kept then spec = src; break end end
     local frame = setmetatable({ id = spec and spec.of and ctx[spec.of] }, { __index = ctx })
-    local prefix = named and spec and fill(spec.prefix or "", frame)
+    local prefix = spec and fill(spec.prefix or "", frame)
     if not prefix then error(name .. " can't be stated at " .. level .. " here", 0) end
     local change = { field == nil and { prefix .. name, kv.set, statement }
                      or { prefix .. name, kv.set_field, { field, statement } } }
@@ -1598,7 +1654,7 @@ end
 ```
 
 ```
-levels of context: looks/text_size, order tab, device, user
+levels of context: looks/text_size, which states no order, so every shipped item applies
 t=0      laptop: action { type = "state", level = "user", name = "looks/text_size", value = 15 }
          store: settings/user/looks/text_size = 15 at home; every device reads 15
 t=1m     phone (device 3f0c…): the same at level "device", 17: settings/device/looks/text_size
@@ -1606,10 +1662,16 @@ t=1m     phone (device 3f0c…): the same at level "device", 17: settings/device
          laptop still 15
 t=2m     phone, tab 9a71…: level "tab", 20, at the tab's node; that tab reads 20 (from
          "tab"), the phone's other tabs 17. Undoing it at the tab's node brings 17 back
-t=3m     a "state" at level "chat" for it is refused: its order names no chat item
+t=3m     the chat states 18 (level "chat"): no kind of setting is limited to some levels, so
+         it is accepted. The phone's other tabs read 18 (the chat outranks the device), tab
+         9a71 still 20, the laptop 18
+t=4m     phone: level "device", name "on/looks/", field "chat", value false ("never let chats
+         change my text size", for everything under looks/). The phone's other tabs read 17
+         again; the laptop, which states no on/, reads 18. This is a statement the person
+         made, in history and undoable, not a rule about reader settings. Run under LuaJIT.
 
-the order: generation/preset, whose schema states no order of its own, so every shipped item
-         applies. user states "Balanced", chat "Chat-X", character mira "Mira-tuned"; the
+the order: generation/preset, whose schema states no order of its own, so every shipped
+         item applies. user states "Balanced", chat "Chat-X", character mira "Mira-tuned"; the
          phone is device 3f0c…, no world is open. S.order(name, ctx) is the list of
          { id, on } and S.get the value; the lines below are the output of the Lua above run
          under LuaJIT, the statements as the calls that wrote them:
@@ -1634,9 +1696,48 @@ t4       phone: S.state("device", "order/generation/preset", nil, ctx), taking t
            chat is on and back at its shipped place
            Chat-X (from chat)
            [tab, chat, bookmarks, character, world, device, user]
-         The laptop states neither, so at every step it reads t0. Every step is a change at the
-         device's node: undoing t3 turns chat off again, undoing t2 puts chat back in front of
-         user.
+t5       phone: S.state("device", "order/generation/preset", ["scene","chat","user"], ctx)
+           "scene" is not a level yet: it stays in the list, does nothing, and the levels the
+           list leaves out follow the listed ones in the shipped order
+           Chat-X (from chat)
+           [scene (unknown), chat, user, tab, bookmarks, character, world, device]
+t6       an extension adds the level "scene" (statements at settings/scene/{id}/) and the item
+           { id = "scene", level = "scene" } to the shipped order, placed second, after tab; scene
+           "harbor" is open and states "Harbor-tuned". The statement of t5 was not touched
+           Harbor-tuned (from scene harbor)
+           [scene, chat, user, tab, bookmarks, character, world, device]
+         with no scene open the same list reads Chat-X (from chat): the scene level has no place
+t7       phone: S.state("device", "order/generation/preset", nil, ctx)
+           scene is where the extension put it in the shipped order
+           Harbor-tuned (from scene harbor)
+           [tab, scene, chat, bookmarks, character, world, device, user]
+
+the order of the orders: one chat (790), open on two devices. The statements of "order/":
+           chat 790:        ["device", "chat"]
+           phone  (3f0c…):  ["device", "user"]
+           tablet (b2e8…):  ["chat", "device"]
+         S.order_of_orders(ctx) gives the order used and the steps (output under LuaJIT):
+         phone, a fixed point after two steps
+           step 0   [tab, chat, bookmarks, character, world, device, user]   the shipped order
+                    chat is ahead of device, so the chat's list is read
+           step 1   [device, chat, tab, bookmarks, character, world, user]
+                    device is ahead now, so the phone's own list is read
+           step 2   [device, user, tab, chat, bookmarks, character, world]
+                    the phone's list again: step 3 would equal step 2. Fixed point; used: step 2
+         tablet, a cycle
+           step 0   the shipped order; the chat's list is read
+           step 1   [device, chat, tab, bookmarks, character, world, user]
+                    device is ahead, so the tablet's list is read
+           step 2   [chat, device, tab, bookmarks, character, world, user]
+                    chat is ahead again, so the chat's list is read: step 3 would equal step 1.
+                    A cycle (step 1 -> step 2 -> step 1), stopped at the first repeat;
+                    used: step 1, where the loop was entered
+         The explanation shows these steps, and for the tablet says that its order of orders
+         is a cycle and names the two orders in it. The effect: the chat states
+         order/generation/preset ["chat","user"] and the user ["user","chat"], "Balanced" at
+         user and "Chat-X" at chat. The phone reads the user's list first (user is ahead of
+         chat in its order of orders): [user, chat, …], Balanced (from user). The tablet reads
+         the chat's: [chat, user, …], Chat-X (from chat).
 
 relations: look/name, merged; which relations it follows is each world's own statement
          The app ships order look/name = follow nothing, then theme: a look applies to exactly
@@ -1735,7 +1836,7 @@ Necessary: the store alone holds the ancestry. Assumes: the filter is a cond ove
   So: a filter is declared data, and the store keeps one index per filter.
 ```
 
-Every setting resolves this way, so a setting's levels, their order, the relation kinds it follows, how statements combine and where each level is kept are data: settings-scopes' table is the schemas' orders, its "the order is a setting" is "order/<name>" with "on/<name>", and its levels are the levels list, which content can add to (a preset level, settings-reorganization's, is a level whose prefix names the preset the context carries and an item in the order; settings-scopes' group, after the speaking character, is the follow on the character item). Every level is kept in the version store, a tab's and a device's under nodes of their own, so every statement at every level branches and undoes the same way; latest holds caches, progress, sessions and drafts, never a setting. Costs: a resolve is one read per place on its order (a follow, one per entry it passes and kind it follows), plus the reads of "order/" and "on/" for the name and each prefix of it, themselves resolved along the shipped order; that is a constant number of reads per setting, never per card; a "rules" setting is one read per level; no setting costs anything per card, chat or row. Nothing here is a host module or a primitive, so both tests are only the assumptions:
+Every setting resolves this way, so a setting's levels, their order, the relation kinds it follows, how statements combine and where each level is kept are data: settings-scopes has no table of levels per kind, its "the order is a setting" is "order/<name>" with "on/<name>", and its levels are the levels list, which content can add to (a preset level, settings-reorganization's, is a level whose prefix names the preset the context carries and an item in the order; settings-scopes' group, after the speaking character, is the follow of "member of" on the character item). Every level is kept in the version store, a tab's and a device's under nodes of their own, so every statement at every level branches and undoes the same way; latest holds caches, progress, sessions and drafts, never a setting. Costs: a resolve is one read per place on its order (a follow, one per entry it passes and kind it follows), plus the reads of "order/" and "on/" for the name and each prefix of it, themselves resolved along the order of orders (a few steps, each one read of "order/" and "on/" per level); that is a constant number of reads per setting, never per card; a "rules" setting is one read per level; no setting costs anything per card, chat or row. Nothing here is a host module or a primitive, so both tests are only the assumptions:
 
 ```
 settings.lua, context_cond.lua: content.
@@ -1750,6 +1851,11 @@ Assumes: one order of levels for every setting.
   pass along its relations next to one whose looks don't.
   So: the order is itself a setting ("order/<name>"), statable at any level and per
   setting, and each level in it can be switched off ("on/<name>") with its place kept.
+Assumes: which levels a kind of setting may use is fixed by its kind (reader settings at tab, device
+  and user only, as settings-scopes once tabulated).
+  Rules out: a theme per chat or per character, as backgrounds already are, and a person who
+  wants it; the owner: "what's per what: incorrect mental model".
+  So: no level is barred from any setting; a person switches levels off with on/ statements.
 Assumes: a level is either always consulted or never.
   Rules out: "on this phone, chat-level presets are off" without losing where chat sits.
   So: on/ is a statement apart from order/: a toggle never edits the list.
@@ -1773,16 +1879,15 @@ Still restrictive:
   every level has history, so a tab's and a device's statements are at nodes of their own
   in the store; what keeps those nodes from piling up for every tab ever opened is not
   designed here;
-  which order resolves "order/" and "on/" is the shipped one, fixed, so a statement of
-  either is read at every level and none can be switched off by itself; this is the model's
-  answer, not the owner's decision; an order of the order that is itself statable would have
-  to be resolved before it is known;
+  the order of orders is reached by steps from the shipped order, so a loop of orders is
+  cut at its first repeat, and which order that is depends on the shipped order the steps
+  start from; the explanation says so;
   the order is data, and which level outranks which is only the order of that list;
-  a statement of "order/" that lists an unknown id drops it silently, and one that omits a
-  shipped item leaves that item after the listed ones; whether either should be refused is
-  not decided;
-  the shipped order's "group" kind is the one name this model gives a relation, standing in
-  for whatever the groups feature will call its membership;
+  an id in a stated "order/" that is no level stays in the list and does nothing, and the
+  levels it omits follow the listed ones in the shipped order: no refusal, no warning,
+  though a misspelt level silently does nothing;
+  "member of", the relation a character has to its groups, is only named here: how the
+  groups feature keeps membership is not designed here;
   a "follow" that loops (an entry in itself, through others) stops at the repeat, with
   no error, and an entry reached two ways is one place at its first position.
 ```
