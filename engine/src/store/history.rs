@@ -2047,6 +2047,140 @@ pub fn deleted_page(
     ]))
 }
 
+// The entity's version: the id of its newest change to a field or a place, 0 for one with none.
+pub fn last_change(view: &View, e: u64) -> Result<u64, StoreError> {
+    let mut last = 0;
+    for slot in slots(view, e)? {
+        for part in [VALUES, PLACES] {
+            if let Some((c, _)) = latest(view, e, slot.as_ref(), part)? {
+                last = last.max(c);
+            }
+        }
+    }
+    Ok(last)
+}
+
+enum Was<T> {
+    Known(T),
+    Unknown,
+}
+
+// The changes after `since` in one part of a slot, newest first, and the newest at or before it.
+fn part_since(
+    view: &View,
+    e: u64,
+    slot: &FieldRef,
+    part: Part,
+    since: u64,
+) -> Result<(Vec<(u64, Option<u64>)>, Option<(u64, Option<u64>)>), StoreError> {
+    let mut after = Vec::new();
+    let mut before = None;
+    walk_back(view, e, Some(slot), part, None, 32, |c, marker| {
+        if c <= since {
+            before = Some((c, marker));
+            return Ok(false);
+        }
+        after.push((c, marker));
+        Ok(true)
+    })?;
+    Ok((after, before))
+}
+
+fn by_others(
+    view: &View,
+    changes: &[(u64, Option<u64>)],
+    session: Option<u64>,
+) -> Result<bool, StoreError> {
+    for &(c, marker) in changes {
+        if marker.is_some() || session.is_none() {
+            return Ok(true);
+        }
+        if Meta::of(&change(view, None, c)?.1).session != session {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+// Each field and place of the entity that changes made after change `since`, by other sessions than `session`, have
+// touched, with what it was as of `since`. A slot only `session` changed since is left out: its changes are what that
+// session made its edit after. A slot whose value as of `since` the history no longer holds is `unknown`.
+pub fn changes_since(
+    view: &View,
+    e: u64,
+    since: u64,
+    session: Option<u64>,
+) -> Result<Js, StoreError> {
+    let forgetting = pending_forget(view, e)?;
+    let mut out = Vec::new();
+    for slot in slots(view, e)? {
+        let Some(f) = slot else { continue };
+        let (values_after, values_before) = part_since(view, e, &f, VALUES, since)?;
+        let place_of = item_of(&f);
+        let (places_after, places_before) = if place_of.is_some() {
+            part_since(view, e, &f, PLACES, since)?
+        } else {
+            (Vec::new(), None)
+        };
+        if !by_others(view, &values_after, session)? && !by_others(view, &places_after, session)? {
+            continue;
+        }
+        let hidden_before = |part: Part, before: Option<(u64, Option<u64>)>| match before {
+            Some((c, _)) => hidden(view, e, &forgetting, Some(&f), part, c),
+            None => Ok(false),
+        };
+        let mut row = vec![("field", field_js(&Some(f.clone())))];
+        let mut unknown = false;
+        if !values_after.is_empty() {
+            let was = match values_before {
+                _ if hidden_before(VALUES, values_before)? => Was::Unknown,
+                Some((_, Some(_))) => Was::Unknown,
+                Some((c, None)) => match value_at(view, e, &f, c) {
+                    Ok(v) => Was::Known(v),
+                    Err(StoreError::Entry(_)) => Was::Unknown,
+                    Err(other) => return Err(other),
+                },
+                None => {
+                    let (oldest, _) = values_after[values_after.len() - 1];
+                    let created = change(view, None, oldest)?.1.kind.name == "histSet";
+                    if created { Was::Known(None) } else { Was::Unknown }
+                }
+            };
+            match was {
+                Was::Known(Some((json, v))) => row.push((
+                    "value",
+                    Js::Obj(vec![("json", Js::Bool(json)), ("value", Js::Text(v))]),
+                )),
+                Was::Known(None) => row.push(("value", Js::Null)),
+                Was::Unknown => unknown = true,
+            }
+        }
+        if let Some((list, item)) = place_of
+            && !places_after.is_empty()
+        {
+            let was = match places_before {
+                _ if hidden_before(PLACES, places_before)? => Was::Unknown,
+                Some((_, Some(_))) => Was::Unknown,
+                Some((c, None)) => Was::Known(opt_uint(&change(view, None, c)?.1, 3)),
+                None => {
+                    let (oldest, _) = places_after[places_after.len() - 1];
+                    let placed = opt_uint(&change(view, None, oldest)?.1, 3).is_some();
+                    if placed { Was::Known(None) } else { Was::Unknown }
+                }
+            };
+            row.push(("list", Js::Num(list as f64)));
+            row.push(("item", Js::Num(item as f64)));
+            match was {
+                Was::Known(p) => row.push(("place", p.map_or(Js::Null, |p| Js::Num(p as f64)))),
+                Was::Unknown => unknown = true,
+            }
+        }
+        row.push(("unknown", Js::Bool(unknown)));
+        out.push(Js::Obj(row));
+    }
+    Ok(Js::Arr(out))
+}
+
 static VALUE_CHANGE: ValueChange = ValueChange;
 
 pub fn deriver(kind: &str) -> Option<&'static dyn Deriver> {

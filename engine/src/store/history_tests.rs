@@ -1425,3 +1425,85 @@ fn a_live_entry_is_erased_in_one_record_with_its_history() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+fn since(s: &Store, c: u64, session: Option<u64>) -> Vec<Js> {
+    let Js::Arr(rows) = s
+        .chat_read(|v| history::changes_since(v, ENTRY_ID, c, session))
+        .unwrap()
+    else {
+        panic!()
+    };
+    rows
+}
+
+fn text_of(js: &Js) -> String {
+    let Js::Text(t) = js else { panic!("{js:?}") };
+    String::from_utf8(t.clone()).unwrap()
+}
+
+#[test]
+fn an_entrys_version_is_its_newest_change_and_changes_since_one_read_what_was_there() {
+    let dir = temp_dir("since");
+    let s = open(&dir);
+    let f = content();
+    let title = FieldRef::Code(UID);
+    let key = super::library::item_field(KEYS, 1);
+    assert_eq!(s.chat_read(|v| history::last_change(v, ENTRY_ID)).unwrap(), 0);
+    s.commit_wait(vec![set(100, &f, "the old text", false, by(TAB))])
+        .unwrap();
+    s.commit_wait(vec![set(101, &title, "1", true, by(TAB))])
+        .unwrap();
+    assert_eq!(s.chat_read(|v| history::last_change(v, ENTRY_ID)).unwrap(), 101);
+    assert!(since(&s, 101, None).is_empty(), "nothing changed since the newest");
+
+    s.commit_wait(vec![edit(102, &f, 4, 3, "new", by(OTHER_TAB))])
+        .unwrap();
+    s.commit_wait(vec![
+        place(103, KEYS, 1, Some(5), by(OTHER_TAB)),
+        set(104, &key, "dragon", false, by(OTHER_TAB)),
+    ])
+    .unwrap();
+    assert_eq!(s.chat_read(|v| history::last_change(v, ENTRY_ID)).unwrap(), 104);
+
+    let rows = since(&s, 101, Some(TAB));
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let text = rows.iter().find(|r| matches!(get(r, "field"), Js::Num(n) if *n == CONTENT as f64)).unwrap();
+    assert_eq!(text_of(get(get(text, "value"), "value")), "the old text");
+    assert_eq!(get(text, "unknown"), &Js::Bool(false));
+    let item = rows.iter().find(|r| get(r, "field") != get(text, "field")).unwrap();
+    assert_eq!(get(item, "value"), &Js::Null, "the key's text came after");
+    assert_eq!(get(item, "place"), &Js::Null, "the key wasn't in the list");
+
+    assert!(
+        since(&s, 101, Some(OTHER_TAB)).is_empty(),
+        "a session's own changes since aren't what its edit missed"
+    );
+    s.commit_wait(vec![edit(105, &f, 0, 3, "an", by(TAB))])
+        .unwrap();
+    let mixed = since(&s, 101, Some(TAB));
+    assert_eq!(mixed.len(), 2, "a slot others changed counts whoever changed it after");
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_value_the_history_no_longer_starts_reads_as_unknown() {
+    let dir = temp_dir("since-unknown");
+    let s = open(&dir);
+    let f = content();
+    s.commit_wait(vec![set(100, &f, "one", false, NOBODY)])
+        .unwrap();
+    s.commit_wait(vec![set(101, &f, "two", false, NOBODY)])
+        .unwrap();
+    s.commit_wait(vec![set(102, &f, "three", false, NOBODY)])
+        .unwrap();
+    s.commit_wait(vec![forget(Some(&f), Some(101), Some(200))])
+        .unwrap();
+    let rows = since(&s, 101, Some(TAB));
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(get(&rows[0], "unknown"), &Js::Bool(true));
+    let rows = since(&s, 100, Some(TAB));
+    assert_eq!(text_of(get(get(&rows[0], "value"), "value")), "one");
+    drop(s);
+    fs::remove_dir_all(&dir).unwrap();
+}

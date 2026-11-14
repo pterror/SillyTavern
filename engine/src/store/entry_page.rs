@@ -38,6 +38,7 @@ pub fn read_entry(view: &View, book: u64, entity: u64) -> Result<Js, StoreError>
     Ok(Js::Obj(vec![
         ("deleted", Js::Bool(false)),
         ("entryKey", Js::Text(own_key.text())),
+        ("version", Js::Big(super::history::last_change(view, entity)?)),
         ("label", label.js()),
         ("picture", entry_label::picture(view, entity)?),
         ("title", title.map_or(Js::Null, Js::Text)),

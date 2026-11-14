@@ -3543,6 +3543,27 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "entryChangesSince" => {
+            let (entity, since) = (req_integer(a, "entity")?, req_integer(a, "since")?);
+            let session = opt_integer(a, "session")?;
+            Box::new(move |s| {
+                s.chat_read(|v| h::changes_since(v, entity, since, session))
+                    .map(JsTree)
+            })
+        }
+        "lastChanges" => {
+            let entities = integers(a, "entities")?;
+            Box::new(move |s| {
+                s.chat_read(|v| {
+                    let mut out = Vec::with_capacity(entities.len());
+                    for &e in &entities {
+                        out.push(crate::store::chat_read::Js::Big(h::last_change(v, e)?));
+                    }
+                    Ok(crate::store::chat_read::Js::Arr(out))
+                })
+                .map(JsTree)
+            })
+        }
         "historyFields" => {
             let (entity, limit) = (req_integer(a, "entity")?, req_integer(a, "limit")? as usize);
             let after = match a.get::<Unknown>("after")? {
