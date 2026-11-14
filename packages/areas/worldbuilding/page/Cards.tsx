@@ -23,7 +23,7 @@ export type CardActions = {
     // The world the cards are in.
     book(): string | null;
     // Pointing at a card shows its hover card.
-    hover?: { enter(entry: string, element: HTMLElement): void; leave(event: MouseEvent): void };
+    hover?: { enter(entry: string, element: HTMLElement): void; leave(event: MouseEvent): void; hide(): void };
 };
 
 // A card's menu, its drag and Alt+arrows, which move it among the cards of its region.
@@ -80,7 +80,7 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
         if (!wb.drag.clickIsDrop()) props.actions.open(props.entry);
     };
     const enter = (event: MouseEvent) => {
-        if (!window.matchMedia(PHONE).matches)
+        if (!menu() && !window.matchMedia(PHONE).matches)
             props.actions.hover?.enter(props.entry, event.currentTarget as HTMLElement);
     };
     const leave = (event: MouseEvent) => props.actions.hover?.leave(event);
@@ -94,7 +94,10 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
                     grouping={props.actions.grouping()}
                     region={props.region}
                     open={menu()}
-                    onOpen={setMenu}
+                    onOpen={(open) => {
+                        if (open) props.actions.hover?.hide();
+                        setMenu(open);
+                    }}
                 />
             )}
         </Show>

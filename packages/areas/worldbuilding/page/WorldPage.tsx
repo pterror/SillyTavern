@@ -50,7 +50,11 @@ export function WorldPage(props: {
     const hover = hoverCards();
     const actions: CardActions = {
         ...props.actions,
-        hover: { enter: (entry, element) => hover.enter(book(), entry, element), leave: hover.leave },
+        hover: {
+            enter: (entry, element) => hover.enter(book(), entry, element),
+            leave: hover.leave,
+            hide: hover.hide,
+        },
     };
     return (
         <div class="wb-front wb-hover-host">

@@ -222,6 +222,7 @@ export function EntryPage(props: {
                             hover: {
                                 enter: (entry, element) => hover.enter(props.entry.book, entry, element),
                                 leave: hover.leave,
+                                hide: hover.hide,
                             },
                         }}
                     />

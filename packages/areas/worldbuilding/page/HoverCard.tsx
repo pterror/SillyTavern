@@ -141,5 +141,5 @@ export function hoverCards() {
             )}
         </Show>
     );
-    return { enter, leave, Drawn };
+    return { enter, leave, hide: () => setPointed(null), Drawn };
 }
