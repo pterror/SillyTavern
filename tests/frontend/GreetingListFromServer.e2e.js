@@ -499,10 +499,10 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         const row = greetingRow(page, g[1]);
         await row.locator('.alternative-edit').click();
         const typed = `${g[1]} and more`;
-        await row.locator('textarea').fill(typed);
+        await row.locator('.alternative-editor .cm-content').fill(typed);
         await otherSessionOp(page, 'delete', { avatar_url: avatar, position: 0, expected_hash: hashGreetingText(g[0]) });
         await expect(greetingsList(page).locator('li.alternative')).toHaveCount(2, { timeout: 10000 });
-        await expect(greetingRow(page, 0).locator('textarea')).toHaveValue(typed);
+        await expect(greetingRow(page, 0).locator('.alternative-editor .cm-content')).toHaveText(typed);
         const answer = page.waitForResponse(r => r.request().postDataJSON()?.type === 'alternatives.greeting');
         await greetingRow(page, 0).getByRole('button', { name: 'Save' }).click();
         expect((await answerOf(await answer)).ok).toBe(true);

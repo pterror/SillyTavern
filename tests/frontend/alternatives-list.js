@@ -60,7 +60,7 @@ async function operate(page, act, { refused = false } = {}) {
 export async function listEdit(page, index, text, options) {
     const row = greetingRow(page, index);
     await row.locator('.alternative-edit').click();
-    await row.locator('textarea').fill(text);
+    await row.locator('.alternative-editor .cm-content').fill(text);
     await operate(page, () => row.getByRole('button', { name: 'Save' }).click(), options);
 }
 

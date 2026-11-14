@@ -4,7 +4,7 @@ import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { power_user } from './power-user.js';
 import { getTokenizerState } from './tokenizers.js';
 import { copyText, timestampToMoment } from './utils.js';
-import { alternativeReader } from './message-text.js';
+import { alternativeEditor, alternativeReader } from './message-text.js';
 import { isStoredNodeId } from './node-identity.js';
 import { selected_group } from './group-chats.js';
 import { newUi } from './new-ui-page.js';
@@ -66,6 +66,9 @@ async function go(messageId, index) {
 export const alternativesOldPage = {
     reader(item) {
         return alternativeReader({ name: item.name, isUser: item.role === 'user', macros: () => item.macros });
+    },
+    editor(item, _messageId, text, changed) {
+        return alternativeEditor({ name: item.name, isUser: item.role === 'user', macros: () => item.macros, text, changed });
     },
     date: value => timestampToMoment(value).format('lll'),
     tokenizer: () => getTokenizerState(),

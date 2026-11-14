@@ -1,5 +1,6 @@
 import { DOMPurify } from '../lib.js';
 import { chat } from './chat-state.js';
+import { loadChatEditor } from './chat-text/editors.js';
 import { macroValuePieces } from './chat-text/macros.js';
 import { chatHtmlPolicy } from './chat-text/policy.js';
 import { drawnText, showText, stopText, textReader } from './chat-text/surface.js';
@@ -173,6 +174,64 @@ export function redrawMessageText(element, message) {
 export function showReasoningText(element, message, reasoning, { fade = false } = {}) {
     openEditors.get(element)?.redraw();
     showText(element, reasoning, chatSetup(speakerOf(message), 'reasoning', valuesIn(element)), { fade });
+}
+
+/**
+ * An alternative's text in an editor, as the list reads it
+ * @param {object} options
+ * @param {string} options.name the speaker
+ * @param {boolean} options.isUser
+ * @param {() => Record<string, string | null> | null | undefined} options.macros the values of its macros, as the list has them
+ * @param {string} options.text
+ * @param {() => void} options.changed hears each edit
+ * @returns {{ element: HTMLElement, text: () => string, focus: (at?: number) => void, stop: () => void }}
+ */
+export function alternativeEditor({ name, isUser, macros, text, changed }) {
+    const element = document.createElement('div');
+    let current = text;
+    let stopped = false;
+    /** @type {import('./chat-text/editor.js').ChatEditor | null} */
+    let editor = null;
+    /** @type {number | undefined} */
+    let at;
+    let wanted = false;
+    const placed = () => {
+        if (!editor || !wanted) return;
+        const place = Math.min(at ?? current.length, current.length);
+        editor.view.dispatch({ selection: { anchor: place }, scrollIntoView: true });
+        editor.view.focus();
+    };
+    void loadChatEditor().then(({ chatEditor }) => {
+        if (stopped) return;
+        editor = chatEditor({
+            parent: element,
+            setup: chatSetup(isUser ? null : name, 'alternative', () => macros() ?? undefined),
+            macroValue: source => macros()?.[source],
+            speaker: isUser ? '' : name,
+            initial: text,
+            edited: (now) => {
+                current = now;
+                changed();
+            },
+            save: async () => {},
+            className: 'alternative-editor-text mes_text',
+            label: page.t`Alternative`,
+        });
+        placed();
+    });
+    return {
+        element,
+        text: () => current,
+        focus(position) {
+            at = position;
+            wanted = true;
+            placed();
+        },
+        stop() {
+            stopped = true;
+            editor?.stop();
+        },
+    };
 }
 
 /**

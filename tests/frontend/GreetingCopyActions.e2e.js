@@ -185,18 +185,18 @@ test.describe('a card has each greeting text once, and the pager and the chat co
         await expect(row).toContainText(g[2], { timeout: 10000 });
 
         await row.locator('.alternative-edit').click();
-        await row.locator('textarea').fill(g[0]);
+        await row.locator('.alternative-editor .cm-content').fill(g[0]);
         await row.getByRole('button', { name: 'Save' }).click();
         const note = row.locator('.alternatives-same');
         await expect(note).toHaveText('Same as greeting 1');
-        await expect(row.locator('textarea')).toHaveValue(g[0]);
-        await row.locator('textarea').fill(`${g[0]}!`);
+        await expect(row.locator('.alternative-editor .cm-content')).toHaveText(g[0]);
+        await row.locator('.alternative-editor .cm-content').fill(`${g[0]}!`);
         await expect(note).toHaveCount(0);
-        await row.locator('textarea').fill(g[1]);
+        await row.locator('.alternative-editor .cm-content').fill(g[1]);
         await row.getByRole('button', { name: 'Save' }).click();
         await expect(note).toHaveText('Same as greeting 2');
         await note.locator('a').click();
-        await expect(row.locator('textarea')).toHaveCount(0);
+        await expect(row.locator('.alternative-editor')).toHaveCount(0);
         await expect(row.locator('.alternative-text')).toHaveText(g[2]);
         await expect(greetingRow(page, 1)).toHaveClass(/selected/);
 

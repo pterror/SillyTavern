@@ -104,6 +104,15 @@ const longGreeting = i => [
     '**What do you do?**',
 ].join('\n\n');
 
+/** @param {import('@playwright/test').Page} page the cursor of the editor open on an alternative */
+async function headOf(page) {
+    return page.evaluate(async () => {
+        const lib = await import('/live-editor-lib.js');
+        const view = lib.view.EditorView.findFromDOM(/** @type {HTMLElement} */ (document.querySelector('.alternative-editor .cm-editor')));
+        return view?.state.selection.main.head ?? -1;
+    });
+}
+
 test.describe('the alternatives of a message', () => {
     test.beforeEach(testSetup.awaitST);
 
@@ -269,7 +278,7 @@ test.describe('the alternatives of a message', () => {
         await expect(rows(page)).toHaveCount(2);
         await expect(rows(page).nth(0).locator('.alternative-text')).toContainText(`Hi ${s}`);
         await rows(page).nth(0).locator('.alternative-text').dblclick();
-        await expect(list(page).locator('textarea')).toHaveCount(0);
+        await expect(list(page).locator('.alternative-editor')).toHaveCount(0);
     });
 
     test('a greeting\'s text edits on a double-click, and on a click when click to edit is on, at the word clicked; a link opens instead', async ({ page }) => {
@@ -287,7 +296,7 @@ test.describe('the alternatives of a message', () => {
         await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
         await expect(rows(page)).toHaveCount(2);
         const text = rows(page).nth(0).locator('.alternative-text');
-        const editor = rows(page).nth(0).locator('textarea');
+        const editor = rows(page).nth(0).locator('.alternative-editor .cm-content');
         const charlie = await text.evaluate(el => {
             const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
             for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -307,7 +316,7 @@ test.describe('the alternatives of a message', () => {
         await expect(editor).toHaveCount(0);
         await page.mouse.dblclick(charlie.x, charlie.y);
         await expect(editor).toBeFocused();
-        let caret = await editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart);
+        let caret = await headOf(page);
         expect(caret).toBeGreaterThanOrEqual(start);
         expect(caret).toBeLessThanOrEqual(start + 'charlie'.length);
         await rows(page).nth(0).getByRole('button', { name: 'Cancel' }).click();
@@ -318,13 +327,13 @@ test.describe('the alternatives of a message', () => {
         });
         await page.mouse.click(charlie.x, charlie.y);
         await expect(editor).toBeFocused();
-        caret = await editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart);
+        caret = await headOf(page);
         expect(caret).toBeGreaterThanOrEqual(start);
         expect(caret).toBeLessThanOrEqual(start + 'charlie'.length);
         await rows(page).nth(0).getByRole('button', { name: 'Cancel' }).click();
 
         await rows(page).nth(1).locator('.alternative-text a[href]').click();
-        await expect(rows(page).nth(1).locator('textarea')).toHaveCount(0);
+        await expect(rows(page).nth(1).locator('.alternative-editor')).toHaveCount(0);
     });
 
     test('greetings: edit, reorder, set the default, remove one emptied; the card and the old page take each', async ({ page }) => {
@@ -339,7 +348,7 @@ test.describe('the alternatives of a message', () => {
         await expect(list(page).locator('.alternatives-title')).toHaveText('Greetings');
 
         await rows(page).nth(1).locator('.alternative-edit').click();
-        await rows(page).nth(1).locator('textarea').fill(`One *edited* ${s}`);
+        await rows(page).nth(1).locator('.alternative-editor .cm-content').fill(`One *edited* ${s}`);
         await rows(page).nth(1).getByRole('button', { name: 'Save' }).click();
         await expect(rows(page).nth(1).locator('.alternative-text em')).toHaveText('edited');
         expect((await storedModel(page, avatar)).greetings).toEqual([g[0], `One *edited* ${s}`, g[2], g[3]]);
@@ -363,7 +372,7 @@ test.describe('the alternatives of a message', () => {
         await expect(rows(page).nth(3)).toHaveClass(/current/);
 
         await rows(page).nth(2).locator('.alternative-edit').click();
-        await rows(page).nth(2).locator('textarea').fill('');
+        await rows(page).nth(2).locator('.alternative-editor .cm-content').fill('');
         await rows(page).nth(2).getByRole('button', { name: 'Save' }).click();
         await page.locator('dialog.popup:not(.alternatives) .popup-button-ok').click();
         await expect(rows(page)).toHaveCount(3);
@@ -443,10 +452,10 @@ test.describe('the alternatives of a message', () => {
             return route.continue({ postData: JSON.stringify({ ...body, payload: { ...body.payload, hash: 1 } }) });
         });
         await rows(page).nth(1).locator('.alternative-edit').click();
-        await rows(page).nth(1).locator('textarea').fill(`One typed ${s}`);
+        await rows(page).nth(1).locator('.alternative-editor .cm-content').fill(`One typed ${s}`);
         await rows(page).nth(1).getByRole('button', { name: 'Save' }).click();
         await expect(list(page).locator('.alternatives-notice')).not.toBeEmpty();
-        await expect(rows(page).nth(1).locator('textarea')).toHaveValue(`One typed ${s}`);
+        await expect(rows(page).nth(1).locator('.alternative-editor .cm-content')).toHaveText(`One typed ${s}`);
         expect((await storedModel(page, avatar)).greetings).toEqual([`Zero ${s}`, `One ${s}`]);
     });
 
@@ -493,7 +502,7 @@ test.describe('the alternatives of a message', () => {
             .some(face => face.family.includes('Font Awesome 6 Free') && face.weight === '400' && face.status === 'loaded'))).toBe(true);
 
         await rows(page).nth(1).locator('.alternative-edit').click();
-        await rows(page).nth(1).locator('textarea').fill(`One edited ${s}`);
+        await rows(page).nth(1).locator('.alternative-editor .cm-content').fill(`One edited ${s}`);
         await rows(page).nth(1).getByRole('button', { name: 'Save' }).click();
         await expect.poll(async () => (await storedModel(page, avatar)).greetings).toEqual([g[0], `One edited ${s}`, g[2]]);
         await expect(list(page).locator('li.alternative .alternative-text')).toContainText([g[0], `One edited ${s}`, g[2]]);

@@ -187,7 +187,7 @@ test.describe('the opening a chat was switched to is kept', () => {
         await expect(row).toContainText(g[2], { timeout: 10000 });
         const edited = `Two edited ${s}`;
         await row.locator('.alternative-edit').click();
-        await row.locator('textarea').fill(edited);
+        await row.locator('.alternative-editor .cm-content').fill(edited);
         await row.getByRole('button', { name: 'Save' }).click();
         await expect(row.locator('.alternative-text')).toContainText(edited);
         await expect.poll(() => shownText(page), { timeout: 10000 }).toBe(edited);

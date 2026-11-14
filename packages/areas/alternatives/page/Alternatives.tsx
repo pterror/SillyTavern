@@ -15,8 +15,22 @@ export type ShownText = {
     stop(): void;
 };
 
+/** An alternative's text in the editor every text uses, started on the text and heard on each edit */
+export type EditorOf = {
+    element: HTMLElement;
+    text(): string;
+    focus(at?: number): void;
+    stop(): void;
+};
+
 export type OldPage = {
     reader(item: { name: string; role: Item['role']; macros: Item['macros'] }, mesId: number | null): ShownText;
+    editor(
+        item: { name: string; role: Item['role']; macros: Item['macros'] },
+        mesId: number | null,
+        text: string,
+        changed: () => void,
+    ): EditorOf;
     date(value: string | number): string;
     tokenizer(): Record<string, unknown> | null;
     cantGo(mesId: number): string | null;
@@ -769,7 +783,7 @@ function Dialog(props: {
                                     <Show when={editing()?.id === item.id ? editing() : null}>
                                         {(edit) => (
                                             <Editor
-                                                text={item.text}
+                                                make={(changed) => props.old.editor(item, mesId, item.text, changed)}
                                                 at={edit().at}
                                                 same={sameAt(item.id)}
                                                 onSave={(text) => void save(item, text)}
@@ -895,7 +909,7 @@ function AddBox(props: {
 }
 
 function Editor(props: {
-    text: string;
+    make: (changed: () => void) => EditorOf;
     at?: number | undefined;
     same: number | null;
     onSave: (text: string) => void;
@@ -904,29 +918,17 @@ function Editor(props: {
     onShowSame: () => void;
 }) {
     const { t } = useUi();
-    const [text, setText] = createSignal(props.text);
-    let area: HTMLTextAreaElement | undefined;
-    onMount(() => {
-        area?.focus();
-        if (props.at !== undefined) area?.setSelectionRange(props.at, props.at);
-    });
+    const editor = props.make(() => props.onInput());
+    onMount(() => editor.focus(props.at));
+    onCleanup(() => editor.stop());
     return (
         <div class="alternative-editor">
-            <textarea
-                ref={(el: HTMLTextAreaElement) => (area = el)}
-                class="text_pole textarea_compact"
-                rows="8"
-                value={text()}
-                onInput={(event) => {
-                    setText(event.currentTarget.value);
-                    props.onInput();
-                }}
-            />
+            {editor.element}
             <Show when={props.same !== null}>
                 <SameNote position={props.same!} onShow={props.onShowSame} />
             </Show>
             <div class="alternative-editor-buttons">
-                <button type="button" class="menu_button" onClick={() => props.onSave(text())}>
+                <button type="button" class="menu_button" onClick={() => props.onSave(editor.text())}>
                     {t('Save')}
                 </button>
                 <button type="button" class="menu_button" onClick={() => props.onCancel()}>
