@@ -102,6 +102,8 @@ async function main() {
     console.log(line('Total characters:', totalOf(characters)));
     console.log(line('Total groups:', both.approxTotal || characters.approxTotal ? `~${both.total - characters.total}` : both.total - characters.total));
     console.log(line('Total favorites:', `${totalOf(favCharacters)} characters, ${favBoth.total - favCharacters.total} groups`));
+    const stats = await post(session, '/api/ui/read', { type: 'usageStats.read', payload: { of: 'all' } });
+    console.log(line('Messages counted:', `${stats.value.counts.userMessages} user, ${stats.value.counts.characterMessages} character`));
 
     heading(`Top ${TOP_N} tags by usage`);
     const tags = await post(session, '/api/tags/query', { filter: { used: true }, sort: { field: 'by_entries' }, pageSize: TOP_N, counts: true });

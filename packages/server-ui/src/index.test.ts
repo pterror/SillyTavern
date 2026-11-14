@@ -69,6 +69,13 @@ const area = defineArea({
             throw new Error('failed after writing');
         },
     },
+    readSchemas: { 'count.read': v.object({ plus: v.number() }) },
+    reads: {
+        'count.read': async ({ user }, { plus }) => {
+            if (plus < 0) throw new Error('no');
+            return { count: (counts.get(user.handle) ?? 0) + plus };
+        },
+    },
     followChat: ['count'],
 });
 const ui = createUi([area], {
@@ -80,6 +87,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use('/api/ui/action', ui.router);
+app.use('/api/ui/read', ui.readRouter);
 const server = app.listen(0);
 afterAll(() => void server.close());
 const origin = () => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -390,4 +398,35 @@ test("a session taken over by another user is a new tab: the old one's areas are
     expect(gone).toEqual([sessions.a1]);
     stop();
     expect(gone).toEqual([sessions.a1, sessions.a1]);
+});
+
+test("a read answers from the user's data alone, with no tab: it opens no view and pushes nothing", async () => {
+    const read = async (body: unknown, user = 'alice') => {
+        const response = await fetch(`${origin()}/api/ui/read`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-User': user },
+            body: JSON.stringify(body),
+        });
+        return { status: response.status, answer: (await response.json()) as unknown };
+    };
+    const before = { a1: pushes.a1.length, a2: pushes.a2.length, b1: pushes.b1.length };
+    counts.set('bob', 5);
+    expect(await read({ type: 'count.read', payload: { plus: 1 } }, 'bob')).toEqual({
+        status: 200,
+        answer: { ok: true, value: { count: 6 } },
+    });
+    expect(await read({ type: 'count.read', payload: { plus: 'x' } })).toMatchObject({
+        status: 400,
+        answer: { ok: false },
+    });
+    expect(await read({ type: 'count.add', payload: { by: 1 } })).toEqual({
+        status: 400,
+        answer: { ok: false, error: 'no read count.add' },
+    });
+    expect(await read({ type: 'count.read', payload: { plus: -1 } })).toEqual({
+        status: 500,
+        answer: { ok: false, error: 'internal' },
+    });
+    await settled();
+    expect({ a1: pushes.a1.length, a2: pushes.a2.length, b1: pushes.b1.length }).toEqual(before);
 });

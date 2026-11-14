@@ -99,3 +99,22 @@ test('a show names what it shows', () => {
     expect(v.safeParse(show, { of: 'character' }).success).toBe(false);
     expect(v.safeParse(show, {}).success).toBe(false);
 });
+
+test('a read answers the stats a show of the same would show, for a caller with no tab, holding nothing for it', async () => {
+    const { area, showing } = stand();
+    const user: User = { handle: 'u', directories: { root: '/u' } };
+    const read = area.reads['usageStats.read']!;
+    expect(v.safeParse(read.schema, { of: 'all' }).success).toBe(true);
+    expect(v.safeParse(read.schema, { of: 'character' }).success).toBe(false);
+    expect(await read.run({ user }, { of: 'all' })).toMatchObject({
+        of: 'all',
+        counts: { userMessages: 3, characterMessages: 3 },
+        oldStatsFile: 'stats.pre-derived.json',
+    });
+    expect(await read.run({ user }, { of: 'character', avatar: 'rex.png' })).toMatchObject({
+        of: 'character',
+        avatar: 'rex.png',
+        counts: { userMessages: 1 },
+    });
+    expect(showing('/u')).toBe(false);
+});

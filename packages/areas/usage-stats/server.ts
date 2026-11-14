@@ -1,5 +1,5 @@
-import { actions, VIEW } from './protocol.ts';
-import type { Counts, Shown, ShownView } from './protocol.ts';
+import { actions, reads, VIEW } from './protocol.ts';
+import type { Counts, Shown, ShownView, Stats } from './protocol.ts';
 import { defineArea } from '@st/server-ui';
 import type { User, ViewContext } from '@st/server-ui';
 
@@ -38,23 +38,26 @@ export function usageStatsArea(ports: Ports) {
     // By session, until its tab is gone; `root`: the user's, to know whose writes change it.
     const shown = new Map<string, { root: string; of: Shown }>();
 
-    const read = async ({ user, session }: ViewContext): Promise<ShownView> => {
-        const held = shown.get(session);
-        if (!held) return { of: null };
-        if (held.of.of === 'character') {
-            return {
-                of: 'character',
-                avatar: held.of.avatar,
-                counts: countsOf(await ports.character(user, held.of.avatar)),
-            };
+    const statsOf = async (user: User, of: Shown): Promise<Stats> => {
+        if (of.of === 'character') {
+            return { of: 'character', avatar: of.avatar, counts: countsOf(await ports.character(user, of.avatar)) };
         }
         const [totals, oldStatsFile] = await Promise.all([ports.totals(user), ports.oldStatsFile(user)]);
         return { of: 'all', counts: countsOf(totals), oldStatsFile };
     };
 
+    const read = async ({ user, session }: ViewContext): Promise<ShownView> => {
+        const held = shown.get(session);
+        return held ? statsOf(user, held.of) : { of: null };
+    };
+
     const area = defineArea({
         schemas: actions,
         views: { [VIEW]: read },
+        readSchemas: reads,
+        reads: {
+            'usageStats.read': async ({ user }, of) => statsOf(user, of),
+        },
         gone: (session) => {
             shown.delete(session);
         },

@@ -10,6 +10,9 @@ export type ActionAnswer =
 
 export type ViewPush = { type: 'views'; views: ViewFrame[] };
 
+// The answer to a read: what an area answers for a caller that isn't a tab (a script), from the user's data alone.
+export type ReadAnswer = { ok: true; value: unknown } | { ok: false; error: string };
+
 export type ActionSchemas = Record<string, v.GenericSchema>;
 
 const chatOwner = v.union([

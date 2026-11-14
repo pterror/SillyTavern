@@ -95,6 +95,7 @@ export function setupPrivateEndpoints(app) {
         next();
     });
     app.use('/api/ui/action', ui.router);
+    app.use('/api/ui/read', ui.readRouter);
     app.use('/api/content', contentManagerRouter);
     app.use('/api/settings', settingsRouter);
     app.use('/api/tags', tagsRouter);

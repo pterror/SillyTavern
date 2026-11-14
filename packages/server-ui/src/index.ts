@@ -3,7 +3,7 @@ import express from 'express';
 import type { Request, Response, Router } from 'express';
 import * as v from 'valibot';
 import { viewActions } from '@st/protocol';
-import type { ActionAnswer, ActionSchemas, ChatOwner, ViewFrame, ViewPush } from '@st/protocol';
+import type { ActionAnswer, ActionSchemas, ChatOwner, ReadAnswer, ViewFrame, ViewPush } from '@st/protocol';
 
 export type User = { handle: string; directories: { root: string } & Record<string, string> };
 
@@ -27,28 +27,48 @@ type Handlers<S extends ActionSchemas> = {
 
 export type ViewReader = (context: ViewContext) => Promise<unknown> | AsyncIterable<unknown>;
 
+// What a read knows of its caller: only the user, as a caller that isn't a tab has no session and shows nothing.
+export type ReadContext = { user: User };
+
+type Readers<S extends ActionSchemas> = {
+    [T in keyof S]: (context: ReadContext, payload: v.InferOutput<S[T]>) => Promise<unknown>;
+};
+
 export type Area = {
     schemas: ActionSchemas;
     views: Record<string, ViewReader>;
     actions: Record<string, (context: ActionContext, payload: unknown) => Promise<ActionResult>>;
+    reads: Record<
+        string,
+        { schema: v.GenericSchema; run: (context: ReadContext, payload: unknown) => Promise<unknown> }
+    >;
     followChat: string[];
     // Open in every tab from its start, with no view.open.
     openFromStart: string[];
     gone: (session: string) => void;
 };
 
-export function defineArea<S extends ActionSchemas>(area: {
+export function defineArea<S extends ActionSchemas, R extends ActionSchemas = Record<never, never>>(area: {
     schemas: S;
     views: Area['views'];
     actions: Handlers<S>;
+    readSchemas?: R;
+    reads?: Readers<R>;
     followChat?: string[];
     openFromStart?: string[];
     gone?: (session: string) => void;
 }): Area {
+    const reads: Area['reads'] = {};
+    for (const [type, schema] of Object.entries(area.readSchemas ?? {})) {
+        const run = area.reads?.[type];
+        if (!run) throw new Error(`The read ${type} has no handler`);
+        reads[type] = { schema, run: run as Area['reads'][string]['run'] };
+    }
     return {
         schemas: area.schemas,
         views: area.views,
         actions: area.actions as Area['actions'],
+        reads,
         followChat: area.followChat ?? [],
         openFromStart: area.openFromStart ?? [],
         gone: area.gone ?? (() => {}),
@@ -90,6 +110,8 @@ export type UiOptions = {
 
 export type Ui = {
     router: Router;
+    // `POST` a `{ type, payload }` to read what an area answers for a caller that isn't a tab.
+    readRouter: Router;
     attach(user: User, session: string, push: (push: ViewPush) => void): () => void;
     showChat(user: User, session: string, chat: ChatRef | null): Promise<ViewFrame[]>;
     chatMoved(user: User, session: string): Promise<void>;
@@ -114,6 +136,13 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
             actions.set(type, { schema, run, views: Object.keys(area.views) });
         }
         for (const key of area.followChat) followChat.add(key);
+    }
+    const reads = new Map<string, Area['reads'][string]>();
+    for (const area of areas) {
+        for (const [type, read] of Object.entries(area.reads)) {
+            if (reads.has(type)) throw new Error(`Two areas define the read ${type}`);
+            reads.set(type, read);
+        }
     }
 
     const tabs = new Map<string, Tab>();
@@ -358,8 +387,35 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
         });
     });
 
+    const readOf = async (request: Request): Promise<{ status: number; result: ReadAnswer }> => {
+        const body = request.body as { type?: unknown; payload?: unknown } | undefined;
+        const type = typeof body?.type === 'string' ? body.type : '';
+        const user = userOf(request);
+        if (!user) return { status: 400, result: { ok: false, error: 'no user' } };
+        const read = reads.get(type);
+        if (!read) return { status: 400, result: { ok: false, error: `no read ${type}` } };
+        const parsed = v.safeParse(read.schema, body?.payload);
+        if (!parsed.success) {
+            const issue = parsed.issues.map((i) => `${v.getDotPath(i) ?? type}: ${i.message}`).join('; ');
+            return { status: 400, result: { ok: false, error: issue } };
+        }
+        try {
+            return { status: 200, result: { ok: true, value: await read.run({ user }, parsed.output) } };
+        } catch (error) {
+            console.error(`[ui] the read ${type} failed:`, error);
+            return { status: 500, result: { ok: false, error: 'internal' } };
+        }
+    };
+    const readRouter = express.Router();
+    readRouter.post('/', (request: Request, response: Response) => {
+        void readOf(request).then(({ status, result }) => {
+            response.status(status).send(result);
+        });
+    });
+
     return {
         router,
+        readRouter,
         attach(user, session, push) {
             const tab = tabOf(user, session);
             tab.streams.add(push);

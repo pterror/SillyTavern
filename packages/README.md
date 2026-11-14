@@ -14,6 +14,8 @@ how new code is shaped.
   after the first is sent; the user's other tabs are pushed after that, a view at a time.
 - **Showing something is an action too** (`view.open`): its answer is the view. A view changed by something else
   (another tab, another action of this tab, a write made through old code) is pushed to the tabs showing it.
+- **A caller that isn't a tab reads** (a script; `POST /api/ui/read`, `{ type, payload }`): an area's read answers
+  from the user's data alone. It has no session, so it opens no view and the server holds nothing for it.
 - **Every view has a version.** The page keeps a view only when it's newer than the one it has, so an answer and a
   push can arrive in any order and the page still ends at the latest. A long view can be read in parts (its reader
   an async iterable: what's needed first, then the rest): the answer streams them (NDJSON, a line each), each part
