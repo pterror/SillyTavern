@@ -1280,7 +1280,10 @@ async function firstLoadInit() {
         saveCharacterNoteField,
         saveExampleMessagesField,
         confirmDiscard: async (title, text) => Boolean(await Popup.show.confirm(title, text)),
-        uploadImage: uploadEditorImage,
+        onEdited: (id) => {
+            countCharTokensWhenShown();
+            if (id === 'greeting_field') clearSameGreeting();
+        },
         onEditStart: id => { if (id === 'greeting_field') beginGreetingPagerEdit(); },
         onEditEnd: id => { if (id === 'greeting_field') endGreetingPagerEdit(); },
         editorKey: () => (menu_type === 'create' ? '' : getEditorCharacterAvatar()),

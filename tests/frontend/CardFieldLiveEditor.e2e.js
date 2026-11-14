@@ -40,7 +40,7 @@ async function stored(page, avatar) {
     }, avatar);
 }
 
-test.describe('card fields edit in the live editor', () => {
+test.describe('card fields edit in the editor', () => {
     test.beforeEach(testSetup.awaitST);
 
     test('the pencil opens the editor on the field; typing and ✓ save, and the preview shows the result', async ({ page }) => {
@@ -49,7 +49,8 @@ test.describe('card fields edit in the live editor', () => {
         await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
         const editor = page.locator('#charInfoTab_description .cm-editor');
         await expect(editor).toBeVisible();
-        await expect(page.locator('#description_textarea')).toHaveClass(/live-editor-textarea/);
+        await expect(page.locator('#description_textarea')).toBeHidden();
+        await expect(page.locator('.field_preview[data-for="description_textarea"]')).toBeHidden();
         await page.keyboard.press('Control+End');
         await page.keyboard.type(' New **bold**.');
         await page.locator('.field_edit_done[data-for="description_textarea"]').click();

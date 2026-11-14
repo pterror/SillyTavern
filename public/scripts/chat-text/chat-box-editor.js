@@ -14,6 +14,8 @@ import { commandKeys, drawnWith, editorPage, formatTools, shownTools, toolbarFor
 import { macroPills } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
 import { drawnText, redrawEditor, TEXT_CLASS } from './surface.js';
+import { escapePastPendingSuggestions } from './escape.js';
+import { editorTooltips } from './tooltips.js';
 
 const { EditorView, drawSelection, placeholder: placeholderText, keymap } = cmView;
 const { history, historyKeymap, defaultKeymap } = cmCommands;
@@ -82,6 +84,8 @@ export function chatBoxEditor({ parent, text, setup, macroValue, label, keys, sl
             markdownPaste({ shows: markdown => drawnText(markdown, setup).textContent ?? '' }),
             suggestions([slashSuggestions(slashParser, slashWanted), macroSuggestions(macroValue, page.t), mentionSuggestions(name => page.person(name, ''))]),
             boxSize(maxHeight),
+            editorTooltips(),
+            escapePastPendingSuggestions(),
             placeholders.of([]),
         ],
     });

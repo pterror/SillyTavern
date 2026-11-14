@@ -1,12 +1,11 @@
-import { EMOJIS } from './emojis.js';
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
 import { MacroValues } from './macro-values.js';
 import { cardTextSetup } from './message-text.js';
-import { drawnText, showText, stopText } from './chat-text/surface.js';
-import { EDITOR_ESCAPE_TAKERS, isEditorEvent, isUserEvent, mountLiveEditor } from './live-editor/registry.js';
-import { editPosition } from './chat-text/surface.js';
+import { loadChatEditor } from './chat-text/editors.js';
+import { editPosition, showText, stopText } from './chat-text/surface.js';
 import { drawerStackChanged } from './drawer-stack.js';
+import { withFilledAbout } from './safe-macros.js';
 
 /**
  * @typedef {object} CharacterFieldEditorDeps
@@ -26,8 +25,8 @@ import { drawerStackChanged } from './drawer-stack.js';
  * @property {(value: string) => Promise<boolean>} saveScenarioField
  * @property {(value: string) => Promise<boolean>} saveCharacterNoteField
  * @property {(value: string) => Promise<boolean>} saveExampleMessagesField
- * @property {(file: File) => Promise<string>} [uploadImage]
  * @property {(title: string, text: string) => Promise<boolean>} confirmDiscard
+ * @property {(id: string) => void} [onEdited] hears each edit of a field's text
  * @property {(id: string) => void} [onEditStart]
  * @property {(id: string) => void} [onEditEnd]
  * @property {() => string} [editorKey]
@@ -204,21 +203,6 @@ export function blockFieldEditStart() {
     return false;
 }
 
-const TEXT_METRICS = ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'word-spacing', 'word-break', 'overflow-wrap'];
-
-/**
- * @param {string} id
- */
-function matchPreviewText(id) {
-    const preview = getPreview(id)[0];
-    const textarea = getTextarea(id)[0];
-    if (!preview || !textarea) return;
-    const style = getComputedStyle(preview);
-    for (const prop of TEXT_METRICS) {
-        textarea.style.setProperty(prop, style.getPropertyValue(prop));
-    }
-}
-
 /**
  * @param {string} id
  * @param {number} [at]
@@ -230,72 +214,96 @@ export function beginEdit(id, at = 0) {
     if (blockFieldEditStart()) {
         return;
     }
-    const textarea = getTextarea(id);
-    matchPreviewText(id);
-    const text = String(textarea.val() ?? '');
+    const text = String(getTextarea(id).val() ?? '');
     activeEdit = { id, original: text, userText: text, saving: false };
     getPanel(id).addClass('field_editing');
     drawerStackChanged();
     deps.onEditStart?.(id);
-    const element = textarea[0];
-    element.setSelectionRange(at, at);
-    element.focus({ preventScroll: true });
-    void mountFieldEditor(id);
+    void mountFieldEditor(id, text, at);
 }
 
-/** @type {{ id: string, editor: import('./live-editor/mount.js').LiveEditor | null, ended: boolean, values: MacroValues } | null} */
-let liveEditor = null;
-
-const PREVIEW_TEXT_CLASSES = new Set(['mes_text', 'creator_notes_preview_content']);
+/** @type {{ id: string, editor: import('./chat-text/editor.js').ChatEditor | null, ended: boolean, values: MacroValues } | null} */
+let fieldEditor = null;
 
 /**
- * @param {string} id
+ * @param {HTMLElement} preview
+ * @returns {string} the classes the preview's text and its box are drawn with
  */
-async function mountFieldEditor(id) {
+const previewTextClasses = preview => [...preview.classList].filter(name => !name.startsWith('field_preview')).join(' ');
+
+/**
+ * Opens the editor on a field in place of its preview, drawn with the preview's classes
+ * @param {string} id
+ * @param {string} text the field's text
+ * @param {number} at where the cursor goes
+ */
+async function mountFieldEditor(id, text, at) {
     const values = new MacroValues(() => macroScopeOf(id));
     const holder = { id, editor: null, ended: false, values };
-    liveEditor = holder;
+    fieldEditor = holder;
     const textarea = getTextarea(id)[0];
     const preview = getPreview(id)[0];
-    const isGreeting = id === GREETING_FIELD_ID;
     try {
-        await values.want(textarea.value);
+        const [{ chatEditor }] = await Promise.all([loadChatEditor(), values.want(text)]);
         if (holder.ended) return;
-        const editor = await mountLiveEditor(textarea, {
-            draw: text => drawnText(text, fieldSetup(id, values)),
-            grammar: { emojis: EMOJIS, dialogueQuotes: isGreeting },
-            contentClass: [...(preview?.classList ?? [])].filter(c => PREVIEW_TEXT_CLASSES.has(c)).join(' '),
-            macros: {
-                values,
-                person: macroName => deps.macroPerson(macroName),
+        const editor = chatEditor({
+            parent: preview.parentElement,
+            setup: fieldSetup(id, values),
+            macroValue: values.valueOf,
+            speaker: '',
+            person: name => withFilledAbout(deps.macroPerson(name), name, values.valueOf),
+            initial: text,
+            edited: edited => fieldEdited(id, edited),
+            save: async (saved) => {
+                if (!await FIELDS[id].save()(saved)) throw new Error('The field was not saved');
             },
-            formatting: { uploadImage: deps.uploadImage },
-            search: { context: () => ({ characterName: typedName() }) },
+            className: `field_editor ${previewTextClasses(preview)}`,
+            placeholder: textarea.placeholder,
+            presetContext: () => ({ characterName: typedName() }),
         });
-        if (holder.ended) {
-            editor.destroy();
-            return;
-        }
         holder.editor = editor;
-        if (document.activeElement === textarea) {
-            editor.takeFocus();
-            editor.view.dispatch({ selection: editor.view.state.selection, scrollIntoView: true });
-        }
+        const shown = /** @type {HTMLElement} */ (editor.view.dom.closest('.chat-editor'));
+        preview.after(shown);
+        shown.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
+            if (!handleFieldEditKey('escape')) return;
+            event.preventDefault();
+            event.stopPropagation();
+        });
+        const place = Math.min(at, text.length);
+        editor.view.dispatch({ selection: { anchor: place }, scrollIntoView: true });
+        editor.view.focus();
     } catch (error) {
-        console.error('The editor could not be loaded; the field stays a plain text box', error);
+        console.error('The editor could not be loaded', error);
+        toastr.error(deps.t`The editor could not be loaded.`);
+        if (activeEdit?.id === id) endEdit();
     }
 }
 
 function unmountFieldEditor() {
-    if (!liveEditor) return;
-    liveEditor.ended = true;
-    liveEditor.editor?.destroy();
-    liveEditor = null;
+    if (!fieldEditor) return;
+    fieldEditor.ended = true;
+    fieldEditor.editor?.stop();
+    fieldEditor = null;
+}
+
+/**
+ * Takes an edit of a field's text into its form value and draft, autosaving it when that is on
+ * @param {string} id
+ * @param {string} text
+ */
+function fieldEdited(id, text) {
+    if (!isFieldInEdit(id)) return;
+    getTextarea(id).val(text);
+    activeEdit.userText = text;
+    writeDraft(id, text, activeEdit.original);
+    if (deps.power_user.auto_save_msg_edits) scheduleAutoSave(id);
+    deps.onEdited?.(id);
 }
 
 function endEdit() {
     const { id } = activeEdit;
-    const values = liveEditor?.id === id ? liveEditor.values : undefined;
+    const values = fieldEditor?.id === id ? fieldEditor.values : undefined;
     unmountFieldEditor();
     activeEdit = null;
     getPanel(id).removeClass('field_editing');
@@ -312,14 +320,17 @@ function cancelAutoSave() {
 }
 
 /**
+ * Saves the text of the field's editor after a pause in its edits
  * @param {string} id
- * @param {string} value
  */
-function scheduleAutoSave(id, value) {
+function scheduleAutoSave(id) {
     cancelAutoSave();
     autoSaveTimer = setTimeout(() => {
         autoSaveTimer = null;
-        const save = FIELDS[id].save()(value).catch((error) => {
+        const editor = fieldEditor?.id === id ? fieldEditor.editor : null;
+        if (!editor) return;
+        const value = editor.text();
+        const save = editor.save().then(() => true, (error) => {
             console.error('Field autosave failed', { id, error });
             return false;
         });
@@ -571,7 +582,7 @@ async function escapeEdit() {
  * @returns {boolean}
  */
 export function handleFieldEditKey(key) {
-    if (!activeEdit || !getTextarea(activeEdit.id).is(':visible')) {
+    if (!activeEdit || !getPanel(activeEdit.id).is(':visible')) {
         return false;
     }
     if (key === 'confirm') {
@@ -693,11 +704,8 @@ function initTabSwitchGuard() {
  */
 function focusEditing(id) {
     if (!isFieldInEdit(id)) return;
-    const view = liveEditor?.id === id ? liveEditor.editor?.view : null;
-    if (!view) {
-        getTextarea(id)[0]?.focus({ preventScroll: true });
-        return;
-    }
+    const view = fieldEditor?.id === id ? fieldEditor.editor?.view : null;
+    if (!view) return;
     view.requestMeasure();
     view.focus();
     view.dispatch({ selection: view.state.selection, scrollIntoView: true });
@@ -733,9 +741,7 @@ export function initCharacterFieldEditor(dependencies) {
 
     document.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
-        if (isEditorEvent(event)) return;
-        const editor = /** @type {Element} */ (event.target).closest?.('.cm-editor');
-        if (editor?.querySelector(EDITOR_ESCAPE_TAKERS)) return;
+        if (event.target instanceof Element && event.target.closest('.cm-editor')) return;
         if (handleFieldEditKey('escape')) {
             event.preventDefault();
         }
@@ -762,22 +768,11 @@ export function initCharacterFieldEditor(dependencies) {
     });
 
     for (const id of Object.keys(FIELDS)) {
-        getTextarea(id).on('input', function (event) {
-            const value = String($(this).val() ?? '');
-            if (isUserEvent(event.originalEvent)) {
-                if (isFieldInEdit(id)) {
-                    activeEdit.userText = value;
-                    writeDraft(id, value, activeEdit.original);
-                    if (deps.power_user.auto_save_msg_edits) {
-                        scheduleAutoSave(id, value);
-                    }
-                }
-                return;
-            }
-            if (id !== GREETING_FIELD_ID) {
-                onCodeWrite(id, value);
-            }
-        });
+        if (id !== GREETING_FIELD_ID) {
+            getTextarea(id).on('input', function () {
+                onCodeWrite(id, String($(this).val() ?? ''));
+            });
+        }
         refreshFieldPreview(id);
     }
 }

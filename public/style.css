@@ -1857,7 +1857,7 @@ input[type="range"].macro-colors-hue {
     font-family: var(--mainFontFamily);
 }
 
-.char_info_tab_panel:not(.field_editing) .field_edit_textarea,
+.char_info_tab_panel .field_edit_textarea,
 .char_info_tab_panel:not(.field_editing) .field_edit_done,
 .char_info_tab_panel:not(.field_editing) .field_edit_cancel,
 .char_info_tab_panel.field_editing .field_preview,

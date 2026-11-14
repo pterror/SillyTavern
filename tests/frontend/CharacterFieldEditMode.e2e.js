@@ -203,6 +203,7 @@ function fieldLocators(page, id) {
         cancel: page.locator(`.field_edit_cancel[data-for="${id}"]`),
         maximize: page.locator(`.field_maximize[data-for="${id}"]`),
         editor: panel.locator('.cm-editor'),
+        content: panel.locator('.cm-content'),
     };
 }
 
@@ -228,6 +229,7 @@ async function expectPreviewMode(page, field) {
     await expect(f.panel).not.toHaveClass(/\bfield_editing\b/);
     await expect(f.preview).toBeVisible();
     await expect(f.textarea).toBeHidden();
+    await expect(f.editor).toHaveCount(0);
     await expect(f.pencil).toBeVisible();
     await expect(f.done).toBeHidden();
     await expect(f.cancel).toBeHidden();
@@ -240,7 +242,8 @@ async function expectPreviewMode(page, field) {
 async function expectEditMode(page, field) {
     const f = fieldLocators(page, field.id);
     await expect(f.panel).toHaveClass(/\bfield_editing\b/);
-    await expect(f.textarea).toBeVisible();
+    await expect(f.editor).toBeVisible();
+    await expect(f.textarea).toBeHidden();
     await expect(f.preview).toBeHidden();
     await expect(f.pencil).toBeHidden();
     await expect(f.done).toBeVisible();
@@ -255,6 +258,7 @@ async function enterEdit(page, field) {
     await openInfoTab(page, field.tab);
     await fieldLocators(page, field.id).pencil.click();
     await expectEditMode(page, field);
+    await expect(fieldLocators(page, field.id).content).toBeFocused();
 }
 
 /**
@@ -397,7 +401,7 @@ test.describe('character field edit mode', () => {
                     await enterEdit(page, field);
                     const f = fieldLocators(page, field.id);
                     await fillField(page, f, 'confirmed by key');
-                    await f.textarea.press('Control+Enter');
+                    await f.content.press('Control+Enter');
                     await expectPreviewMode(page, field);
                     await expect(f.preview).toContainText('confirmed by key');
                     await expect.poll(async () => storedValue(await fetchStoredCharacter(page, avatar), field)).toBe('confirmed by key');
@@ -423,7 +427,7 @@ test.describe('character field edit mode', () => {
                 await withCharacter(page, field, 'original', async () => {
                     await enterEdit(page, field);
                     const f = fieldLocators(page, field.id);
-                    await f.textarea.press('Escape');
+                    await f.content.press('Escape');
                     await expectPreviewMode(page, field);
                     await expect(page.locator('dialog[open]')).toHaveCount(0);
                     await page.waitForTimeout(1000);
@@ -437,7 +441,7 @@ test.describe('character field edit mode', () => {
                     const saves = recordSaveRequests(page);
                     const f = fieldLocators(page, field.id);
                     await fillField(page, f, 'discarded by key');
-                    await f.textarea.press('Escape');
+                    await f.content.press('Escape');
                     const dialog = page.locator('dialog[open]');
                     await expect(dialog).toContainText('Discard your changes?');
                     await dialog.locator('.popup-button-cancel').click();
@@ -447,7 +451,7 @@ test.describe('character field edit mode', () => {
                     await page.waitForTimeout(1000);
                     await expect(page.locator('#char-info-panel')).toHaveClass(/\bopenDrawer\b/);
 
-                    await f.textarea.press('Escape');
+                    await f.content.press('Escape');
                     await page.locator('dialog[open] .popup-button-ok').click();
                     await expectPreviewMode(page, field);
                     await page.waitForTimeout(1000);
@@ -483,7 +487,7 @@ test.describe('character field edit mode', () => {
                             await enterEdit(page, field);
                             const f = fieldLocators(page, field.id);
                             await fillField(page, f, 'confirmed by escape');
-                            await f.textarea.press('Escape');
+                            await f.content.press('Escape');
                             await expectPreviewMode(page, field);
                             await expect(page.locator('dialog[open]')).toHaveCount(0);
                             await page.waitForTimeout(1000);
@@ -1039,7 +1043,7 @@ test.describe('character field edit mode', () => {
         const TEXT_METRICS = ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'word-break', 'overflow-wrap'];
 
         for (const field of FIELDS) {
-            test(`${field.id}: the textarea in edit mode has the preview's text metrics`, async ({ page }) => {
+            test(`${field.id}: the editor has the preview's text metrics`, async ({ page }) => {
                 await withCharacter(page, field, 'some text', async () => {
                     await openInfoTab(page, field.tab);
                     const f = fieldLocators(page, field.id);
@@ -1049,7 +1053,7 @@ test.describe('character field edit mode', () => {
                     }, TEXT_METRICS);
                     const preview = await read(f.preview);
                     await enterEdit(page, field);
-                    expect(await read(f.textarea)).toEqual(preview);
+                    expect(await read(f.content)).toEqual(preview);
                     await f.cancel.click();
                 });
             });
@@ -1156,7 +1160,7 @@ test.describe('expanded editor layer', () => {
 
             await enterEdit(page, description);
             await f.maximize.click();
-            await f.textarea.focus();
+            await f.content.focus();
             await page.keyboard.press('Escape');
             await expect(f.panel).not.toHaveClass(/\bfield_editing\b/);
             await expect(layer(page)).toBeVisible();
@@ -1171,9 +1175,10 @@ test.describe('expanded editor layer', () => {
             const f = fieldLocators(page, description.id);
             await enterEdit(page, description);
             await fillField(page, f, 'typed text');
-            await f.textarea.evaluate(el => (/** @type {HTMLTextAreaElement} */ (el)).setSelectionRange(5, 5));
+            await page.keyboard.press('Control+Home');
+            for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowRight');
             await f.maximize.click();
-            await expect(layer(page).locator(`#${description.id}`)).toBeVisible();
+            await expect(layer(page).locator('.cm-editor')).toBeVisible();
             await page.keyboard.type('X');
             await expect(f.textarea).toHaveValue('typedX text');
             await f.maximize.click();

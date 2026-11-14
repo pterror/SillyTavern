@@ -25,6 +25,8 @@ import { macroPills } from './macros.js';
 import { savedText } from './saved-text.js';
 import { macroSuggestions, mentionSuggestions } from './suggest.js';
 import { drawnText, grammarOf, lookOf, redrawEditor, TEXT_CLASS } from './surface.js';
+import { escapePastPendingSuggestions } from './escape.js';
+import { editorTooltips } from './tooltips.js';
 
 const { EditorView, drawSelection, placeholder: placeholderText, keymap } = cmView;
 const { history, historyKeymap, defaultKeymap, deleteCharForward } = cmCommands;
@@ -231,6 +233,8 @@ export const editorPage = () => page;
  * @property {TextSetup} setup how the text is drawn
  * @property {(source: string) => string | null | undefined} macroValue a macro's value, as the text came with it
  * @property {string} speaker whose text it is, for mentions
+ * @property {(macroName: string) => import('../macro-pill.js').MacroPerson | null} [person] who a mention names; by
+ *   default the page's person for the speaker
  * @property {string} initial the text
  * @property {(text: string) => void} edited hears the text after each edit
  * @property {(text: string) => Promise<unknown>} save stores the text, answering when it is stored
@@ -256,14 +260,14 @@ export const editorPage = () => page;
  * @param {ChatEditorOptions} options
  * @returns {ChatEditor}
  */
-export function chatEditor({ parent, setup, macroValue, speaker, initial, edited, save, className, label, placeholder, presetContext }) {
+export function chatEditor({ parent, setup, macroValue, speaker, person = name => page.person(name, speaker), initial, edited, save, className, label, placeholder, presetContext }) {
     let current = initial;
     /** @type {string | undefined} */
     let latest;
     let sent = 0;
     let asWritten = false;
     const stored = savedText(initial);
-    const pill = macroPills({ get: macroValue }, name => page.person(name, speaker), page.t, () => asWritten);
+    const pill = macroPills({ get: macroValue }, person, page.t, () => asWritten);
     const drawing = new Compartment();
     const holder = document.createElement('div');
     holder.className = className ? `chat-editor ${className}` : 'chat-editor';
@@ -303,12 +307,14 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
             keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
             EditorView.lineWrapping,
             boxSize('75dvh'),
+            editorTooltips(),
+            escapePastPendingSuggestions(),
             drawSelection(),
             caretInTextColor(),
             liveSearch({ context: presetContext ?? (() => ({ characterName: speaker })) }),
             overtype(),
             markdownPaste({ shows: markdown => drawnText(markdown, setup).textContent ?? '' }),
-            suggestions([macroSuggestions(macroValue, page.t), mentionSuggestions(name => page.person(name, speaker))]),
+            suggestions([macroSuggestions(macroValue, page.t), mentionSuggestions(person)]),
             EditorView.contentAttributes.of({ 'aria-multiline': 'true', ...(label ? { 'aria-label': label } : {}) }),
             ...(placeholder ? [placeholderText(placeholder)] : []),
         ],
