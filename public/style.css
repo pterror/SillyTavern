@@ -7475,6 +7475,56 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     display: none;
 }
 
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-tooltip:has(.paste-picker) {
+    background: transparent;
+    border: none;
+}
+
+.paste-picker {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    font-size: calc(var(--mainFontSize) * 0.8);
+}
+
+.paste-picker button {
+    font: inherit;
+    color: var(--SmartThemeBodyColor);
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.paste-picker-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 5px;
+    opacity: 0.85;
+}
+
+.paste-picker-toggle:hover,
+.paste-picker-toggle[aria-expanded="true"] {
+    opacity: 1;
+}
+
+.paste-picker-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.paste-picker-item {
+    padding: 2px 8px;
+    text-align: start;
+}
+
+.paste-picker-item[aria-checked="true"] {
+    border-color: var(--SmartThemeQuoteColor);
+}
+
 .framed_image {
     position: relative;
     overflow: hidden;

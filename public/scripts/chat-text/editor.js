@@ -6,7 +6,6 @@ import {
     lookChanged,
     lookDecorations,
     markdownFormat,
-    markdownPaste,
     modifierHeld,
     overtype,
     search as cmSearch,
@@ -18,9 +17,11 @@ import {
     formatKey,
     formatSteps,
 } from '../../live-editor-lib.js';
+import { DOMPurify } from '../../lib.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
 import { macroPills } from './macros.js';
+import { pastePicker } from './paste.js';
 import { savedText } from './saved-text.js';
 import { liveSearch, showPresets } from './search.js';
 import { macroSuggestions, mentionSuggestions } from './suggest.js';
@@ -227,6 +228,19 @@ export function drawnWith(setup, pill) {
     return [grammarLanguage(grammarOf(setup.grammar)), lookDecorations(lookOf(setup, pill))];
 }
 
+/**
+ * How an editor takes a paste: HTML as markdown, with the picker for the other ways
+ * @param {TextSetup} setup
+ * @returns {import('@codemirror/state').Extension}
+ */
+export function pasteFor(setup) {
+    return pastePicker({
+        shows: markdown => drawnText(markdown, setup).textContent ?? '',
+        clean: html => DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false }),
+        t: page.t,
+    });
+}
+
 /** @returns {EditorPage} what editors read from the page */
 export const editorPage = () => page;
 
@@ -316,7 +330,7 @@ export function chatEditor({ parent, setup, macroValue, speaker, person = name =
             caretInTextColor(),
             liveSearch({ context: presetContext ?? (() => ({ characterName: speaker })) }),
             overtype(),
-            markdownPaste({ shows: markdown => drawnText(markdown, setup).textContent ?? '' }),
+            pasteFor(setup),
             suggestions([macroSuggestions(macroValue, page.t), mentionSuggestions(person)]),
             EditorView.contentAttributes.of({ 'aria-multiline': 'true', ...(label ? { 'aria-label': label } : {}) }),
             ...(placeholder ? [placeholderText(placeholder)] : []),

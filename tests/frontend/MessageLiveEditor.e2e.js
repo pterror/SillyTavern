@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup } from './frontent-test-utils.js';
+import { testSetup, pasteInto } from './frontent-test-utils.js';
 
 /**
  * @param {import('@playwright/test').Page} page
@@ -258,5 +258,23 @@ test.describe('an edit sends only what changed', () => {
         const stored = await serverCopy(page, nodeId);
         expect(stored.mes).toBe('Before. After.');
         expect(stored.extra?.note).toBe('set elsewhere');
+    });
+
+    test('Ctrl+Alt+V switches how a paste went in', async ({ page }) => {
+        await setAutoSave(page, false);
+        const id = await chatWithUserMessage(page, 'Before');
+        const mes = page.locator(`#chat .mes[mesid="${id}"]`);
+        await mes.locator('.mes_edit').click();
+        await expect(mes.locator('.cm-editor')).toBeVisible();
+        await page.keyboard.press('Control+End');
+        await page.keyboard.type(' ');
+        await pasteInto(mes.locator('.cm-content'), { 'text/html': '<p>Hello <b>bold</b>.</p>', 'text/plain': 'Hello bold.' });
+        await expect(mes.locator('.paste-picker-toggle')).toContainText('Keep formatting');
+        await page.keyboard.press('Control+Alt+v');
+        await expect(mes.locator('.paste-picker-toggle')).toContainText('Keep as HTML');
+        await page.keyboard.press('Control+Alt+v');
+        await expect(mes.locator('.paste-picker-toggle')).toContainText('Text only');
+        await mes.locator('.mes_edit_done').click();
+        expect((await storedMessage(page, id)).mes).toBe('Before Hello bold.');
     });
 });

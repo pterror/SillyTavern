@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openInfoTab, pasteInto } from './frontent-test-utils.js';
 
 /**
  * @param {import('@playwright/test').Page} page
@@ -167,5 +167,104 @@ test.describe('card fields edit in the editor', () => {
         } finally {
             await setKeys(was);
         }
+    });
+
+    test.describe('a paste', () => {
+        const HTML = '<p>Hello <b>bold</b> and <i>it</i>.</p>';
+        const PLAIN = 'Hello bold and it.';
+        const MARKDOWN = 'Hello **bold** and *it*.';
+
+        /** @param {import('@playwright/test').Page} page */
+        async function editPersonality(page) {
+            await createAndOpen(page, { personality: 'Before' });
+            await openInfoTab(page, 'personality');
+            await page.locator('.field_edit_toggle[data-for="personality_textarea"]').click();
+            await expect(page.locator('#charInfoTab_personality .cm-content')).toBeFocused();
+            await page.keyboard.press('Control+End');
+            await page.keyboard.type(' ');
+            return page.locator('#charInfoTab_personality .cm-content');
+        }
+        const value = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#personality_textarea').inputValue();
+
+        test('shows how it went in, beside the cursor; each way replaces exactly the paste', async ({ page }) => {
+            const content = await editPersonality(page);
+            await pasteInto(content, { 'text/html': HTML, 'text/plain': PLAIN });
+            expect(await value(page)).toBe(`Before ${MARKDOWN}`);
+            const picker = page.locator('#charInfoTab_personality .paste-picker');
+            await expect(picker.locator('.paste-picker-toggle')).toContainText('Keep formatting');
+            const end = await page.evaluate(async () => {
+                const lib = await import('/live-editor-lib.js');
+                const view = lib.view.EditorView.findFromDOM(/** @type {HTMLElement} */ (document.querySelector('#charInfoTab_personality .cm-editor')));
+                return view?.coordsAtPos(view.state.doc.length)?.top;
+            });
+            expect(Math.abs(((await picker.boundingBox())?.y ?? 0) - (end ?? 0))).toBeLessThan(80);
+
+            await picker.locator('.paste-picker-toggle').click();
+            await expect(picker.locator('.paste-picker-item')).toHaveText(['Text only', 'Keep formatting', 'Keep as HTML']);
+            await picker.locator('.paste-picker-item[data-mode="html"]').click();
+            expect(await value(page)).toBe(`Before ${HTML}`);
+            await expect(content).toBeFocused();
+            await page.locator('.field_edit_cancel[data-for="personality_textarea"]').click();
+        });
+
+        test('Ctrl+Alt+V cycles the ways, one undo goes back one way, Escape dismisses the picker', async ({ page }) => {
+            const content = await editPersonality(page);
+            await pasteInto(content, { 'text/html': HTML, 'text/plain': PLAIN });
+            const toggle = page.locator('#charInfoTab_personality .paste-picker-toggle');
+            await page.keyboard.press('Control+Alt+v');
+            expect(await value(page)).toBe(`Before ${HTML}`);
+            await page.keyboard.press('Control+Alt+v');
+            expect(await value(page)).toBe(`Before ${PLAIN}`);
+            await expect(toggle).toContainText('Text only');
+            await page.keyboard.press('Control+z');
+            expect(await value(page)).toBe(`Before ${HTML}`);
+            await expect(toggle).toContainText('Keep as HTML');
+            await page.keyboard.press('Escape');
+            await expect(toggle).toHaveCount(0);
+            await expect(content).toBeFocused();
+            await page.locator('.field_edit_cancel[data-for="personality_textarea"]').click();
+        });
+
+        test('typing after it takes the picker away', async ({ page }) => {
+            const content = await editPersonality(page);
+            await pasteInto(content, { 'text/html': HTML, 'text/plain': PLAIN });
+            await expect(page.locator('#charInfoTab_personality .paste-picker')).toBeVisible();
+            await page.keyboard.type('!');
+            await expect(page.locator('#charInfoTab_personality .paste-picker')).toHaveCount(0);
+            await page.locator('.field_edit_cancel[data-for="personality_textarea"]').click();
+        });
+
+        test('an address pasted over selected text makes it a link, which the picker can put back as the address', async ({ page }) => {
+            const content = await editPersonality(page);
+            await page.keyboard.type('the docs');
+            await page.keyboard.press('Control+Shift+ArrowLeft');
+            await page.keyboard.press('Control+Shift+ArrowLeft');
+            await pasteInto(content, { 'text/plain': 'https://example.com/a_(b)' });
+            expect(await value(page)).toBe('Before [the docs](https://example.com/a_%28b%29)');
+            await page.keyboard.press('Control+Alt+v');
+            expect(await value(page)).toBe('Before https://example.com/a_(b)');
+            await page.locator('.field_edit_cancel[data-for="personality_textarea"]').click();
+        });
+
+        test('an address pasted with nothing selected goes in as it is', async ({ page }) => {
+            const content = await editPersonality(page);
+            await pasteInto(content, { 'text/plain': 'https://example.com/' });
+            expect(await value(page)).toBe('Before https://example.com/');
+            await expect(page.locator('#charInfoTab_personality .paste-picker')).toHaveCount(0);
+            await page.locator('.field_edit_cancel[data-for="personality_textarea"]').click();
+        });
+    });
+
+    test('its toolbar holds every formatting command and find and replace when none are chosen', async ({ page }) => {
+        await createAndOpen(page, { personality: 'kind' });
+        await openInfoTab(page, 'personality');
+        await page.locator('.field_edit_toggle[data-for="personality_textarea"]').click();
+        const tools = page.locator('#charInfoTab_personality .chat-editor-toolbar button');
+        await expect(tools).toHaveCount(12);
+        await expect(tools.last()).toHaveAttribute('data-tool', 'find');
+        await expect(page.locator('#charInfoTab_personality .chat-editor-toolbar button[data-tool="presets"]')).toHaveCount(0);
+        await page.locator('#charInfoTab_personality .chat-editor-toolbar button[data-tool="find"]').click();
+        await expect(page.locator('#charInfoTab_personality .cm-search')).toBeVisible();
+        await page.locator('.field_edit_cancel[data-for="personality_textarea"]').click();
     });
 });

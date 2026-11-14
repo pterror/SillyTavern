@@ -1,7 +1,6 @@
 import {
     commands as cmCommands,
     lookChanged,
-    markdownPaste,
     overtype,
     state as cmState,
     suggestions,
@@ -10,10 +9,10 @@ import {
 } from '../../live-editor-lib.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
-import { commandKeys, drawnWith, editorPage, formatTools, shownTools, toolbarFor } from './editor.js';
+import { commandKeys, drawnWith, editorPage, formatTools, pasteFor, shownTools, toolbarFor } from './editor.js';
 import { macroPills } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
-import { drawnText, redrawEditor, TEXT_CLASS } from './surface.js';
+import { redrawEditor, TEXT_CLASS } from './surface.js';
 import { escapePastPendingSuggestions } from './escape.js';
 import { editorTooltips } from './tooltips.js';
 
@@ -81,7 +80,7 @@ export function chatBoxEditor({ parent, text, setup, macroValue, label, keys, sl
             drawSelection(),
             caretInTextColor(),
             overtype(),
-            markdownPaste({ shows: markdown => drawnText(markdown, setup).textContent ?? '' }),
+            pasteFor(setup),
             suggestions([slashSuggestions(slashParser, slashWanted), macroSuggestions(macroValue, page.t), mentionSuggestions(name => page.person(name, ''))]),
             boxSize(maxHeight),
             editorTooltips(),

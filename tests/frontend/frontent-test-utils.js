@@ -333,3 +333,16 @@ export async function fillCardField(page, id, text) {
     if (text) await page.keyboard.insertText(text);
     else await page.keyboard.press('Delete');
 }
+
+/**
+ * Pastes clipboard data into the editor under a locator
+ * @param {import('@playwright/test').Locator} content the editor's `.cm-content`
+ * @param {Record<string, string>} data the clipboard's formats
+ */
+export async function pasteInto(content, data) {
+    await content.evaluate((element, data) => {
+        const transfer = new DataTransfer();
+        for (const [type, value] of Object.entries(data)) transfer.setData(type, value);
+        element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
+    }, data);
+}

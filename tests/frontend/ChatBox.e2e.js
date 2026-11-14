@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { chatBox, testSetup } from './frontent-test-utils.js';
+import { chatBox, pasteInto, testSetup } from './frontent-test-utils.js';
 
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
@@ -98,6 +98,21 @@ test.describe('the chat box', () => {
         await page.locator('#chat_box .chat-editor-toolbar button[data-tool="bold"]').click();
         await page.keyboard.type('loud');
         expect(await boxText(page)).toBe('**loud**');
+        await emptyBox(page);
+    });
+
+    test('a paste can be switched with the picker', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        await chatBox(page).click();
+        await pasteInto(chatBox(page), { 'text/html': '<p>Hello <b>bold</b>.</p>', 'text/plain': 'Hello bold.' });
+        expect(await boxText(page)).toBe('Hello **bold**.');
+        const picker = page.locator('#chat_box .paste-picker');
+        await expect(picker.locator('.paste-picker-toggle')).toContainText('Keep formatting');
+        await page.keyboard.press('Control+Alt+v');
+        expect(await boxText(page)).toContain('<b>bold</b>');
+        await page.keyboard.press('Control+Alt+v');
+        expect(await boxText(page)).toBe('Hello bold.');
         await emptyBox(page);
     });
 
