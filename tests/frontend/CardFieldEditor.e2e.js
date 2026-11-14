@@ -267,4 +267,29 @@ test.describe('card fields edit in the editor', () => {
         await expect(page.locator('#charInfoTab_personality .cm-search')).toBeVisible();
         await page.locator('.field_edit_cancel[data-for="personality_textarea"]').click();
     });
+
+    test('a tooltip beside the cursor says what the macro it is in is and its value, without moving the text', async ({ page }) => {
+        await createAndOpen(page, { scenario: 'Meet {{char}} now' });
+        await openInfoTab(page, 'scenario');
+        await page.locator('.field_edit_toggle[data-for="scenario_pole"]').click();
+        const editor = page.locator('#charInfoTab_scenario .chat-editor');
+        const name = await page.locator('#character_name_pole').inputValue();
+        await expect(editor.locator('.macro-pill')).toHaveText(name);
+        const tooltip = page.locator('#charInfoTab_scenario .macro-cursor-tooltip');
+        await page.keyboard.press('Control+Home');
+        await expect(tooltip).toHaveCount(0);
+        const before = await editor.boundingBox();
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowRight');
+        await expect(tooltip).toBeVisible();
+        await expect(tooltip).toContainText('{{char}}');
+        await expect(tooltip).toContainText(name);
+        expect(await editor.boundingBox()).toEqual(before);
+        await page.keyboard.press('End');
+        await expect(tooltip).toHaveCount(0);
+        await page.locator('.field_edit_cancel[data-for="scenario_pole"]').click();
+    });
 });

@@ -20,7 +20,7 @@ import {
 import { DOMPurify } from '../../lib.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
-import { macroPills } from './macros.js';
+import { macroCursorTooltip, macroPills } from './macros.js';
 import { pastePicker } from './paste.js';
 import { savedText } from './saved-text.js';
 import { liveSearch, showPresets } from './search.js';
@@ -325,6 +325,7 @@ export function chatEditor({ parent, setup, macroValue, speaker, person = name =
             EditorView.lineWrapping,
             boxSize('75dvh'),
             editorTooltips(),
+            macroCursorTooltip({ get: macroValue }, person, page.t),
             escapePastPendingSuggestions(),
             drawSelection(),
             caretInTextColor(),

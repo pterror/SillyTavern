@@ -10,7 +10,7 @@ import {
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
 import { commandKeys, drawnWith, editorPage, formatTools, pasteFor, shownTools, toolbarFor } from './editor.js';
-import { macroPills } from './macros.js';
+import { macroCursorTooltip, macroPills } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
 import { redrawEditor, TEXT_CLASS } from './surface.js';
 import { escapePastPendingSuggestions } from './escape.js';
@@ -84,6 +84,7 @@ export function chatBoxEditor({ parent, text, setup, macroValue, label, keys, sl
             suggestions([slashSuggestions(slashParser, slashWanted), macroSuggestions(macroValue, page.t), mentionSuggestions(name => page.person(name, ''))]),
             boxSize(maxHeight),
             editorTooltips(),
+            macroCursorTooltip({ get: macroValue }, name => page.person(name, ''), page.t),
             escapePastPendingSuggestions(),
             placeholders.of([]),
         ],

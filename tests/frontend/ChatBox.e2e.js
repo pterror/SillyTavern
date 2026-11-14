@@ -116,6 +116,21 @@ test.describe('the chat box', () => {
         await emptyBox(page);
     });
 
+    test('a macro the cursor is in is described beside it, over the text', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        await chatBox(page).click();
+        await page.keyboard.type('Hi {{user}}');
+        const tooltip = page.locator('#chat_box .macro-cursor-tooltip');
+        await expect(tooltip).toBeVisible();
+        await expect(tooltip).toContainText('{{user}}');
+        const area = await page.locator('#chat_box').boundingBox();
+        await page.keyboard.press('Home');
+        await expect(tooltip).toHaveCount(0);
+        expect(await page.locator('#chat_box').boundingBox()).toEqual(area);
+        await emptyBox(page);
+    });
+
     test('is drawn again at once when a setting its text is drawn by changes', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openSeraphina(page);

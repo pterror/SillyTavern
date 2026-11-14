@@ -1,4 +1,9 @@
-import { macroPill, macroPillContent, macroTooltipAttributes } from '../macro-pill.js';
+import { state as cmState, syntaxTree, view as cmView } from '../../live-editor-lib.js';
+import { macroPersonCard, macroPill, macroPillContent, macroTooltipAttributes } from '../macro-pill.js';
+import { withFilledAbout } from '../safe-macros.js';
+
+const { StateEffect, StateField } = cmState;
+const { EditorView, showTooltip } = cmView;
 
 /**
  * @typedef {import('@pterror/interact-editor/look').Piece} Piece
@@ -92,4 +97,99 @@ export function macroPills(values, person, t, asWritten) {
             draw: () => macroPill(macro, { t, compact: true, person: shownPerson }),
         };
     };
+}
+
+/**
+ * Fills the tooltip beside the cursor with what a macro is and its value: a person their card, any other macro its
+ * source with what the pill's tooltip notes and, for a value, the value
+ * @param {HTMLElement} dom
+ * @param {string} source
+ * @param {MacroValueSource} values
+ * @param {(macroName: string) => MacroPerson | null} person
+ * @param {import('../macro-pill.js').Translate} t
+ */
+function fillMacroDetails(dom, source, values, person, t) {
+    const name = macroNameOf(source);
+    const macro = { source, name, value: values.get(source) };
+    const { kind, label, note } = macroPillContent(macro, t, true);
+    const colors = macroTooltipAttributes(macro, { t, compact: true });
+    for (const attribute of ['data-macro-name', 'data-macro-category']) {
+        if (attribute in colors) dom.setAttribute(attribute, colors[attribute]);
+        else dom.removeAttribute(attribute);
+    }
+    const shownPerson = kind === 'mention' && name ? withFilledAbout(person(name), name, other => values.get(other)) : null;
+    if (shownPerson) {
+        dom.replaceChildren(macroPersonCard(shownPerson, source));
+        return;
+    }
+    const code = document.createElement('code');
+    code.textContent = source;
+    dom.replaceChildren(code);
+    const line = kind === 'value' ? note || label : note;
+    if (line) {
+        const text = document.createElement('div');
+        text.textContent = line;
+        dom.append(text);
+    }
+}
+
+/** Whether the editor has focus, for the tooltip, which only the focused editor shows */
+const focused = StateEffect.define();
+
+/**
+ * The macro the cursor is in or beside: the range of its `Macro` node
+ * @param {import('@codemirror/state').EditorState} state
+ * @returns {{ from: number, to: number } | null}
+ */
+function macroAtCursor(state) {
+    const { empty, head } = state.selection.main;
+    if (!empty) return null;
+    const tree = syntaxTree(state);
+    for (const side of /** @type {const} */ ([-1, 1])) {
+        for (let node = tree.resolveInner(head, side); node.parent; node = node.parent) {
+            if (node.name === 'Macro') return { from: node.from, to: node.to };
+        }
+    }
+    return null;
+}
+
+/**
+ * A tooltip beside the cursor while it is in or beside a macro, saying what the macro is and its value. It is drawn
+ * above the cursor, where suggestions are not, and floats over the text without moving it.
+ * @param {MacroValueSource} values
+ * @param {(macroName: string) => MacroPerson | null} person
+ * @param {import('../macro-pill.js').Translate} t
+ * @returns {import('@codemirror/state').Extension}
+ */
+export function macroCursorTooltip(values, person, t) {
+    const hasFocus = StateField.define({
+        create: () => false,
+        update: (value, tr) => tr.effects.reduce((now, effect) => (effect.is(focused) ? effect.value : now), value),
+    });
+    /** @param {import('@codemirror/view').EditorView} view */
+    const create = (view) => {
+        const dom = document.createElement('div');
+        dom.className = 'macro-tooltip macro-cursor-tooltip';
+        let drawn = '';
+        /** @param {import('@codemirror/state').EditorState} state */
+        const draw = (state) => {
+            const macro = macroAtCursor(state);
+            if (!macro) return;
+            const source = state.sliceDoc(macro.from, macro.to);
+            const key = JSON.stringify([source, values.get(source)]);
+            if (key === drawn) return;
+            drawn = key;
+            fillMacroDetails(dom, source, values, person, t);
+        };
+        draw(view.state);
+        return { dom, update: update => draw(update.state) };
+    };
+    return [
+        hasFocus,
+        EditorView.focusChangeEffect.of((_state, focusing) => focused.of(focusing)),
+        showTooltip.compute([hasFocus, 'selection', 'doc'], (state) => {
+            const macro = state.field(hasFocus) ? macroAtCursor(state) : null;
+            return macro && { pos: state.selection.main.head, above: true, strictSide: false, arrow: false, create };
+        }),
+    ];
 }

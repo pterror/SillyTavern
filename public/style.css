@@ -1705,6 +1705,16 @@ textarea.autoSetHeight {
     pointer-events: none;
 }
 
+.cm-tooltip:has(> .macro-cursor-tooltip) {
+    background: transparent;
+    border: none;
+}
+
+.macro-cursor-tooltip {
+    position: static;
+    width: max-content;
+}
+
 .macro-person-card {
     display: flex;
     gap: 0.6em;
