@@ -242,9 +242,9 @@ test('a greeting is shown in character info by its id while its text is the one 
     expect((await post('create', { ch_name: 'Shower', first_mes: 'First', file_name: 'Shower' }, session)).status).toBe(200);
     const second = await post('greetings/add', { avatar_url: 'Shower.png', append: true, text: 'Second' }, session);
     const { greetings } = await user.store.lib.greetingModel('Shower.png');
-    const shown = await post('greetings/show', { avatar_url: 'Shower.png', greeting_id: greetings[1].id, expected_hash: second.body.hashes[1] }, session);
+    const shown = await post('greetings/show', { avatar_url: 'Shower.png', greeting_id: greetings[1].id, expected_hash: second.body.hashes[1], order: 1 }, session);
     expect(shown.body).toEqual({ ok: true, greeting_shown: { position: 1, hash: second.body.hashes[1] } });
-    const stale = await post('greetings/show', { avatar_url: 'Shower.png', greeting_id: greetings[1].id, expected_hash: second.body.hashes[0] }, session);
+    const stale = await post('greetings/show', { avatar_url: 'Shower.png', greeting_id: greetings[1].id, expected_hash: second.body.hashes[0], order: 2 }, session);
     expect(stale.status).toBe(409);
 });
 

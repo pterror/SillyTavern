@@ -246,7 +246,8 @@ test('a character opens with the greeting its character info shows in this tab, 
     const { hashGreetingText } = await import('../greeting-ops.js');
     assert.equal((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, null);
     const { greetings } = await user.store.lib.greetingModel('Shown.png');
-    await showGreeting(user.store.lib, tab, 'Shown.png', greetings[2].id);
+    assert.equal(await showGreeting(user.store.lib, tab, 'Shown.png', greetings[2].id, 2), true);
+    assert.equal(await showGreeting(user.store.lib, tab, 'Shown.png', greetings[0].id, 1), false, 'a move made earlier that arrives later is not kept');
     assert.deepEqual((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, { position: 2, hash: hashGreetingText('Third') });
     assert.equal((await open({ avatar_url: 'Shown.png' }, newSessionKey())).body.greeting_shown, null, 'another tab has its own');
 

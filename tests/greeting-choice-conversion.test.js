@@ -162,7 +162,7 @@ test('a card stored with the same greeting twice keeps the first copy, and what 
     const [tree] = await user.store.people.trees([{ avatar: 'twice.png' }]);
     const session = '0190a1b2-0000-7000-8000-0000000000b7';
     await chats.chooseCardGreeting({ tree, greetingId: 7, actor: { user: 'u', session } });
-    await showGreeting(lib, session, 'twice.png', 7);
+    await showGreeting(lib, session, 'twice.png', 7, 1);
     const { ChatEngine } = await import('../src/chat-engine.js');
     const unlinked = await ChatEngine.open(lib.store, { ...user.store.people, greetings: undefined }, await lib.nextIds());
     await unlinked.appendMessages({ tree, treeSpeaker: null, after: null, contents: [{ name: 'Twice', is_user: false, mes: 'Same', extra: { greeting_id: 7 } }], actor: { user: 'u' } });

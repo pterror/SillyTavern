@@ -1323,7 +1323,8 @@ router.post('/greetings/show', validateAvatarUrlMiddleware, async function (requ
         const byId = Number.isInteger(request.body.greeting_id);
         const position = Number(request.body.position);
         const expectedHash = Number(request.body.expected_hash);
-        if (!avatar || !(byId || Number.isInteger(position)) || !Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'avatar_url, position or greeting_id, and expected_hash are required' });
+        const order = request.body.order;
+        if (!avatar || !(byId || Number.isInteger(position)) || !Number.isFinite(expectedHash) || !Number.isSafeInteger(order)) return response.status(400).send({ ok: false, reason: 'avatar_url, position or greeting_id, expected_hash and order are required' });
         const tab = sessionHeaderOf(request);
         if (tab === undefined || tab === 'none') return response.status(400).send({ ok: false, reason: 'the tab has no session' });
         const store = await requestStore(request);
@@ -1332,7 +1333,7 @@ router.post('/greetings/show', validateAvatarUrlMiddleware, async function (requ
             ? greetings.findIndex(g => g.id === request.body.greeting_id && hashGreetingText(g.text) === expectedHash)
             : greetings[position] && hashGreetingText(greetings[position].text) === expectedHash ? position : greetings.findIndex(g => hashGreetingText(g.text) === expectedHash);
         if (at < 0) return response.status(409).send({ ok: false, reason: byId ? 'the greeting changed or is gone' : 'greeting at position changed since it was loaded' });
-        await showGreeting(store.lib, tab, avatar, greetings[at].id);
+        await showGreeting(store.lib, tab, avatar, greetings[at].id, order);
         return response.send({ ok: true, greeting_shown: { position: at, hash: expectedHash } });
     } catch (error) {
         console.error('Error keeping the greeting shown:', error);

@@ -8209,7 +8209,7 @@ async function showOpeningInCharacterInfo(mesId) {
         const response = await fetch('/api/characters/greetings/show', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: link.avatar, greeting_id: link.id, expected_hash: link.hash }),
+            body: JSON.stringify({ avatar_url: link.avatar, greeting_id: link.id, expected_hash: link.hash, order: nextGreetingShownOrder() }),
         });
         answer = response.ok ? await response.json() : null;
     } catch (error) {
@@ -8257,7 +8257,8 @@ function navigateGreetingPager(newIndex) {
     void fetch('/api/characters/greetings/show', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ avatar_url: owner, position: shown, expected_hash: hash }),
+        keepalive: true,
+        body: JSON.stringify({ avatar_url: owner, position: shown, expected_hash: hash, order: nextGreetingShownOrder() }),
     }).then(response => {
         if (!response.ok) console.warn('[greetings] The shown greeting was not kept:', response.status);
     }, error => console.warn('[greetings] The shown greeting was not kept:', error));
@@ -8265,6 +8266,17 @@ function navigateGreetingPager(newIndex) {
 
 /** @type {Map<string, { index: number, hash: number }>} */
 const shownGreetings = new Map();
+
+let lastGreetingShownOrder = 0;
+
+/**
+ * @returns {number} the place of a move of the greeting shown among this tab's, which the server keeps the last of
+ *   whatever order the moves reach it in: increasing, also across reloads of the tab
+ */
+function nextGreetingShownOrder() {
+    lastGreetingShownOrder = Math.max(lastGreetingShownOrder + 1, Date.now());
+    return lastGreetingShownOrder;
+}
 
 /**
  * Says, under the greeting field, that what it holds is another greeting's text; the field stays open and unsaved.

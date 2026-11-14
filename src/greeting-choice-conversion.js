@@ -161,8 +161,9 @@ export async function convertDuplicateGreetings(lib, chats, handle, directories)
         for (const view of await lib.entities(entities.map((/** @type {{ id: bigint }} */ e) => e.id))) {
             for (const v of view?.values ?? []) {
                 if (typeof v.field !== 'string' || !v.field.startsWith(GREETING_SHOWN) || v.json === undefined) continue;
-                const id = byAvatar.get(v.field.slice(GREETING_SHOWN.length))?.get(JSON.parse(v.json));
-                if (id !== undefined) records.push({ kind: 'jsonValue', entity: /** @type {any} */ (view).id, field: v.field, json: JSON.stringify(id) });
+                const shown = JSON.parse(v.json);
+                const id = byAvatar.get(v.field.slice(GREETING_SHOWN.length))?.get(shown?.id);
+                if (id !== undefined) records.push({ kind: 'jsonValue', entity: /** @type {any} */ (view).id, field: v.field, json: JSON.stringify({ ...shown, id }) });
             }
         }
         if (records.length) await lib.store.commit(records);
