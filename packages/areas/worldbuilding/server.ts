@@ -155,7 +155,8 @@ export type EntryRead =
 export type EntryEdit =
     | { change: 'text'; text: string }
     | { change: 'title'; title: string }
-    | { change: 'addKey'; key: string; as: 'name' | 'trigger' }
+    | { change: 'addKeys'; keys: string[]; as: 'name' | 'trigger' }
+    | { change: 'renameKey'; key: string; to: string }
     | { change: 'setKeyAs'; key: string; as: 'name' | 'trigger' }
     | { change: 'removeKey'; key: string }
     | { change: 'placement'; fields: Partial<Omit<Placement, 'characterFilter'>> }
@@ -1499,8 +1500,10 @@ export function worldbuildingArea(ports: Ports) {
                 entryEdited(context, book, entry, { change: 'text', text }),
             'worldbuilding.setEntryTitle': (context, { book, entry, title }) =>
                 entryEdited(context, book, entry, { change: 'title', title }),
-            'worldbuilding.addKey': (context, { book, entry, key, as }) =>
-                entryEdited(context, book, entry, { change: 'addKey', key, as }),
+            'worldbuilding.addKeys': (context, { book, entry, keys, as }) =>
+                entryEdited(context, book, entry, { change: 'addKeys', keys, as }),
+            'worldbuilding.renameKey': (context, { book, entry, key, to }) =>
+                entryEdited(context, book, entry, { change: 'renameKey', key, to }),
             'worldbuilding.setKeyAs': (context, { book, entry, key, as }) =>
                 entryEdited(context, book, entry, { change: 'setKeyAs', key, as }),
             'worldbuilding.removeKey': (context, { book, entry, key }) =>

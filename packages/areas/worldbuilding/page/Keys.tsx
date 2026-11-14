@@ -88,7 +88,7 @@ export function Keys(props: { entry: OpenEntryView }) {
                         onDone={(key) => {
                             const kind = as();
                             setAdding(null);
-                            if (key !== null) void wb.act('worldbuilding.addKey', { ...at(), key, as: kind });
+                            if (key !== null) void wb.act('worldbuilding.addKeys', { ...at(), keys: [key], as: kind });
                         }}
                     />
                 )}

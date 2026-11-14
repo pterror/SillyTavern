@@ -2,6 +2,7 @@ import { FILTER_ITEMS_SHOWN, MENTIONS_PER_PAGE } from '@st/worldbuilding/protoco
 import { FIELD, TYPE } from '../library-codes.js';
 import { thumbnailsOf } from '../thumbnail-urls.js';
 import { entryAsWorld, keysOfEntry } from '../world-info-engine.js';
+import { parseRegexFromString } from './key-matching.js';
 import { lookImageUrl } from '@st/looks/look';
 import { newWorldInfoEntryDefinition, newWorldInfoEntryTemplate } from '../../public/scripts/world-info-entry-defaults.js';
 
@@ -125,6 +126,32 @@ function withKeyAs(entry, keys, key, as) {
 }
 
 const NO_SUCH_KEY = 'That entry has no such key.';
+const NOT_A_NAME = 'A pattern can only be a trigger, not a name.';
+const KEY_TAKEN = 'That entry already has that key.';
+
+/** @param {string} key */
+const isPattern = key => parseRegexFromString(key) !== null;
+
+/**
+ * The key stays where it is in the list and stays a name if it was one; other entries' keys are not touched.
+ * @param {Record<string, unknown>} entry
+ * @param {string[]} keys
+ * @param {string} key
+ * @param {string} to
+ * @returns {Record<string, unknown> | { refused: string }}
+ */
+function renamedKey(entry, keys, key, to) {
+    if (!keys.includes(key)) return { refused: NO_SUCH_KEY };
+    if (to === key) return entry;
+    if (keys.includes(to)) return { refused: KEY_TAKEN };
+    const stored = namesOf(entry);
+    const isName = Array.isArray(stored) && stored.includes(key);
+    if (isName && isPattern(to)) return { refused: NOT_A_NAME };
+    const renamed = { ...entry, key: keys.map(k => (k === key ? to : k)) };
+    if (!isName) return renamed;
+    const extensions = /** @type {Record<string, unknown>} */ (entry.extensions);
+    return { ...renamed, extensions: { ...extensions, names: /** @type {string[]} */ (stored).map(name => (name === key ? to : name)) } };
+}
 export const CARD_ENTRY_STAYS = 'An entry doesn\'t move into or out of a character\'s own lorebook.';
 
 /**
@@ -139,9 +166,16 @@ export function editedEntry(current, edit) {
             return { ...current, content: edit.text };
         case 'title':
             return { ...current, comment: edit.title };
-        case 'addKey':
-            return withKeyAs(current, keys.includes(edit.key) ? keys : [...keys, edit.key], edit.key, edit.as);
+        case 'addKeys': {
+            if (edit.as === 'name' && edit.keys.some(isPattern)) return { refused: NOT_A_NAME };
+            const added = [...new Set(edit.keys)];
+            const all = [...keys, ...added.filter(key => !keys.includes(key))];
+            return added.reduce((entry, key) => withKeyAs(entry, all, key, edit.as), current);
+        }
+        case 'renameKey':
+            return renamedKey(current, keys, edit.key, edit.to);
         case 'setKeyAs':
+            if (edit.as === 'name' && isPattern(edit.key)) return { refused: NOT_A_NAME };
             return keys.includes(edit.key) ? withKeyAs(current, keys, edit.key, edit.as) : { refused: NO_SUCH_KEY };
         case 'removeKey':
             return keys.includes(edit.key) ? { ...current, key: keys.filter(k => k !== edit.key) } : { refused: NO_SUCH_KEY };

@@ -1631,13 +1631,18 @@ test('an edit names its world and entry, passes the session, answers the entry a
     expect(await w.act('worldbuilding.setEntryText', { book: '1', entry: '7', text: 'Ilse left.' })).toEqual(both);
     expect(entryOpen(await w.view<EntryView>(ENTRY_VIEW)).text).toBe('Ilse left.');
     expect(await w.act('worldbuilding.setEntryTitle', { book: '1', entry: '7', title: '' })).toEqual(both);
-    expect(await w.act('worldbuilding.addKey', { book: '1', entry: '8', key: ' lamp ', as: 'trigger' })).toEqual(both);
+    expect(
+        await w.act('worldbuilding.addKeys', { book: '1', entry: '8', keys: [' lamp ', 'a'], as: 'trigger' }),
+    ).toEqual(both);
     expect(await w.act('worldbuilding.setKeyAs', { book: '1', entry: '7', key: 'name 7', as: 'trigger' })).toEqual(
         both,
     );
     expect(await w.act('worldbuilding.setKeyAs', { book: '1', entry: '7', key: 'x', as: 'name' })).toEqual({
         refused: 'That entry has no such key.',
     });
+    expect(await w.act('worldbuilding.renameKey', { book: '1', entry: '7', key: 'name 7', to: ' name 8 ' })).toEqual(
+        both,
+    );
     expect(await w.act('worldbuilding.removeKey', { book: '1', entry: '7', key: 'name 7' })).toEqual(both);
     expect(await w.act('worldbuilding.setPlacement', { book: '1', entry: '7', fields: { depth: 2, role: 1 } })).toEqual(
         both,
@@ -1653,9 +1658,10 @@ test('an edit names its world and entry, passes the session, answers the entry a
     expect(w.asked.edits.map(({ edit }) => edit)).toEqual([
         { change: 'text', text: 'Ilse left.' },
         { change: 'title', title: '' },
-        { change: 'addKey', key: 'lamp', as: 'trigger' },
+        { change: 'addKeys', keys: ['lamp', 'a'], as: 'trigger' },
         { change: 'setKeyAs', key: 'name 7', as: 'trigger' },
         { change: 'setKeyAs', key: 'x', as: 'name' },
+        { change: 'renameKey', key: 'name 7', to: 'name 8' },
         { change: 'removeKey', key: 'name 7' },
         { change: 'placement', fields: { depth: 2, role: 1 } },
         { change: 'text', text: '' },
@@ -1935,9 +1941,11 @@ test('the entry schemas take worlds and entries by id, keys trimmed and not empt
     expect(ok('worldbuilding.openEntry', { entry: '7', pointingAt })).toBe(true);
     expect(ok('worldbuilding.openEntry', { entry: '7' })).toBe(false);
     expect(ok('worldbuilding.openEntry', { entry: 'seven', pointingAt })).toBe(false);
-    expect(ok('worldbuilding.addKey', { ...at, key: '  ', as: 'name' })).toBe(false);
-    expect(ok('worldbuilding.addKey', { ...at, key: 'Ilse', as: 'title' })).toBe(false);
+    expect(ok('worldbuilding.addKeys', { ...at, keys: ['  '], as: 'name' })).toBe(false);
+    expect(ok('worldbuilding.addKeys', { ...at, keys: ['Ilse'], as: 'title' })).toBe(false);
     expect(ok('worldbuilding.setKeyAs', { ...at, key: 'Ilse', as: 'trigger' })).toBe(true);
+    expect(ok('worldbuilding.renameKey', { ...at, key: 'Ilse', to: 'Ilsa' })).toBe(true);
+    expect(ok('worldbuilding.renameKey', { ...at, key: 'Ilse', to: '  ' })).toBe(false);
     expect(ok('worldbuilding.setEntryTitle', { ...at, title: '' })).toBe(true);
     const placing = (fields: unknown) => ok('worldbuilding.setPlacement', { ...at, fields });
     const { characterFilter: _filter, ...settable } = PLACEMENT;

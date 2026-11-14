@@ -183,7 +183,7 @@ test('every write of the character\'s own book carries the card\'s identity hash
     try {
         assert.equal(await ports.editEntry(who, id, harbour, { change: 'text', text: 'The old harbour.' }), 'ok');
         assert.equal(await ports.editEntry(who, id, harbour, { change: 'title', title: 'Harbour' }), 'ok');
-        assert.equal(await ports.editEntry(who, id, harbour, { change: 'addKey', key: 'quay', as: 'trigger' }), 'ok');
+        assert.equal(await ports.editEntry(who, id, harbour, { change: 'addKeys', keys: ['quay'], as: 'trigger' }), 'ok');
         assert.equal(await ports.editEntry(who, id, ferry, { change: 'placement', fields: { order: 3 } }), 'ok');
         const made = await ports.createEntry(who, id, { after: ferry, name: 'Pier', relation: null }, 100);
         assert.ok(typeof made === 'object' && 'entry' in made);

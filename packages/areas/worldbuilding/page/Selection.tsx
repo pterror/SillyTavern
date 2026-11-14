@@ -98,10 +98,10 @@ export function SelectionMenu(props: {
                         leaveOut={[]}
                         onPick={(target) =>
                             run(() =>
-                                wb.act('worldbuilding.addKey', {
+                                wb.act('worldbuilding.addKeys', {
                                     book: props.book,
                                     entry: target,
-                                    key: props.selected.words,
+                                    keys: [props.selected.words],
                                     as,
                                 }),
                             )

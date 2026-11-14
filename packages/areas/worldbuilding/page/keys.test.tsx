@@ -98,6 +98,6 @@ test('+ name takes the words typed and adds them as a name on Enter', () => {
     field.value = 'the innkeeper';
     field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
     expect(sent).toEqual([
-        { type: 'worldbuilding.addKey', payload: { book: '1', entry: '7', key: 'the innkeeper', as: 'name' } },
+        { type: 'worldbuilding.addKeys', payload: { book: '1', entry: '7', keys: ['the innkeeper'], as: 'name' } },
     ]);
 });

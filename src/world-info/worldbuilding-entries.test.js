@@ -46,13 +46,30 @@ test('placement is every upstream field but the keys, title and text, as stored,
 
 test('a key is added, switched and removed on the entry as stored; a name is a key it marks', () => {
     const entry = { key: ['Ilse', 'lamp'], extensions: { names: ['Ilse'], relations: [] } };
-    assert.deepEqual(editedEntry(entry, { change: 'addKey', key: 'Varro', as: 'name' }), { key: ['Ilse', 'lamp', 'Varro'], extensions: { names: ['Ilse', 'Varro'], relations: [] } });
-    assert.deepEqual(editedEntry(entry, { change: 'addKey', key: 'Ilse', as: 'trigger' }), { key: ['Ilse', 'lamp'], extensions: { names: [], relations: [] } });
+    assert.deepEqual(editedEntry(entry, { change: 'addKeys', keys: ['Varro'], as: 'name' }), { key: ['Ilse', 'lamp', 'Varro'], extensions: { names: ['Ilse', 'Varro'], relations: [] } });
+    assert.deepEqual(editedEntry(entry, { change: 'addKeys', keys: ['Ilse'], as: 'trigger' }), { key: ['Ilse', 'lamp'], extensions: { names: [], relations: [] } });
     assert.deepEqual(editedEntry(entry, { change: 'setKeyAs', key: 'lamp', as: 'name' }).extensions, { names: ['Ilse', 'lamp'], relations: [] });
     assert.deepEqual(editedEntry(entry, { change: 'setKeyAs', key: 'nope', as: 'name' }), { refused: 'That entry has no such key.' });
     assert.deepEqual(editedEntry(entry, { change: 'removeKey', key: 'Ilse' }).key, ['lamp']);
     const odd = { key: ['x'], extensions: { names: 'by another tool' } };
-    assert.deepEqual(editedEntry(odd, { change: 'addKey', key: 'y', as: 'trigger' }), { key: ['x', 'y'], extensions: { names: 'by another tool' } });
+    assert.deepEqual(editedEntry(odd, { change: 'addKeys', keys: ['y'], as: 'trigger' }), { key: ['x', 'y'], extensions: { names: 'by another tool' } });
+});
+
+test('several keys are added at once and a key is renamed in place, keeping its flag; patterns are triggers only', () => {
+    const entry = { key: ['Ilse', 'lamp'], extensions: { names: ['Ilse'], relations: [] } };
+    assert.deepEqual(editedEntry(entry, { change: 'addKeys', keys: ['a', 'lamp', 'b', 'a'], as: 'trigger' }).key, ['Ilse', 'lamp', 'a', 'b']);
+    assert.deepEqual(editedEntry(entry, { change: 'addKeys', keys: ['a', 'b'], as: 'name' }).extensions, { names: ['Ilse', 'a', 'b'], relations: [] });
+    assert.deepEqual(editedEntry(entry, { change: 'renameKey', key: 'Ilse', to: 'Ilsa' }), { key: ['Ilsa', 'lamp'], extensions: { names: ['Ilsa'], relations: [] } });
+    assert.deepEqual(editedEntry(entry, { change: 'renameKey', key: 'lamp', to: 'torch' }), { key: ['Ilse', 'torch'], extensions: { names: ['Ilse'], relations: [] } });
+    assert.deepEqual(editedEntry(entry, { change: 'renameKey', key: 'lamp', to: 'lamp' }), entry);
+    assert.deepEqual(editedEntry(entry, { change: 'renameKey', key: 'lamp', to: 'Ilse' }), { refused: 'That entry already has that key.' });
+    assert.deepEqual(editedEntry(entry, { change: 'renameKey', key: 'nope', to: 'x' }), { refused: 'That entry has no such key.' });
+    const refused = { refused: 'A pattern can only be a trigger, not a name.' };
+    assert.deepEqual(editedEntry(entry, { change: 'addKeys', keys: ['a', '/b+/i'], as: 'name' }), refused);
+    assert.deepEqual(editedEntry(entry, { change: 'addKeys', keys: ['/b+/i'], as: 'trigger' }).key, ['Ilse', 'lamp', '/b+/i']);
+    assert.deepEqual(editedEntry({ key: ['/b+/'], extensions: {} }, { change: 'setKeyAs', key: '/b+/', as: 'name' }), refused);
+    assert.deepEqual(editedEntry(entry, { change: 'renameKey', key: 'Ilse', to: '/I.se/' }), refused);
+    assert.deepEqual(editedEntry(entry, { change: 'renameKey', key: 'lamp', to: '/l.mp/' }).key, ['Ilse', '/l.mp/']);
 });
 
 const IN = 1;
@@ -105,14 +122,14 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
     let linked = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(linked && !linked.deleted);
     assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 13, picture: '/look-images/p1' }, { entry: first, from: 14, to: 19, picture: '/look-images/p1' }], 'every name links where it is written, with the picture of what it names');
-    assert.equal(await ports.editEntry(who, B, first, { change: 'addKey', key: 'Ilse Varro', as: 'name' }), 'ok');
+    assert.equal(await ports.editEntry(who, B, first, { change: 'addKeys', keys: ['Ilse Varro'], as: 'name' }), 'ok');
     linked = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(linked && !linked.deleted);
     assert.deepEqual(linked.links, [{ entry: first, from: 9, to: 19, picture: '/look-images/p1' }], 'of names written over each other, the longest that starts first links');
     assert.equal(await ports.editEntry(who, B, first, { change: 'removeKey', key: 'Ilse Varro' }), 'ok');
     assert.equal(await ports.editEntry(who, B, first, { change: 'setKeyAs', key: 'Ilse', as: 'trigger' }), 'ok');
 
-    assert.equal(await ports.editEntry(who, B, second, { change: 'addKey', key: 'The Lantern House', as: 'name' }), 'ok');
+    assert.equal(await ports.editEntry(who, B, second, { change: 'addKeys', keys: ['The Lantern House'], as: 'name' }), 'ok');
     read = await ports.readEntry(uiUser, B, second, FIRST);
     assert.ok(read && !read.deleted);
     assert.deepEqual(read.label, { thing: second, text: 'The Lantern House', shownAs: 'name' });
@@ -150,7 +167,7 @@ test('the entry view, its edits, a new entry after another, delete, restore and 
     assert.ok(back && !back.deleted);
     assert.deepEqual(back.keys.map(k => [k.text, k.alsoBringsUp]), [['house', 0], ['The Lantern House', 0]]);
     assert.equal(await ports.restoreEntry(who, B, second), 'no entry');
-    await ports.editEntry(who, B, first, { change: 'addKey', key: 'house', as: 'trigger' });
+    await ports.editEntry(who, B, first, { change: 'addKeys', keys: ['house'], as: 'trigger' });
     assert.deepEqual(/** @type {any} */ (await ports.readEntry(uiUser, B, second, FIRST)).keys[0], { text: 'house', isName: false, alsoBringsUp: 1 }, 'a restored entry\'s keys count again');
 
     const moved = await ports.moveEntryToWorld(who, B, first, String(other));
