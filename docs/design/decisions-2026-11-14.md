@@ -113,6 +113,20 @@ choice made is marked as such.
   that a chat-level theme in a shared chat changes every participant's screen, is now a choice each person makes with
   `on/`, not a rule. The schema-level restriction of levels is removed from the state model; a schema's order is only a
   default order.
+- **What modules see of the store: entities, components and relations, with optional schemas** (2026-11-15, agreed by
+  the owner). Not raw key strings, and not a SQL engine; the ordered key-value storage underneath stays. Owner: "i
+  would ideally still like relational for compatible data (optionally), for some definition of compatible. perhaps
+  something like an ecs architecture in relational db" (09-30); "an open bag of properties (…), then be able to search
+  based on that" (09-12). Reasons: a key and its value are a special case (an entity with one free-form component);
+  conditions are queries over components, so lore activation, view filters, the character list, tags and extension
+  scope are one kind of condition on the same indexes (owner: "if they are different things at all it's worrying");
+  at 10 billion cards with no cost per row and no write amplification, indexes are declared on component fields by
+  schemas and kept by the store, so a write costs what the indexes declared on what it changes cost; the library
+  already stores entities with a type, fields, tags and relations (`src/library-codes.js`) and the engine keeps
+  counted, ordered indexes over them (`engine/src/store/`). In `state-model.md`: the store's API, scope and versioning
+  per component and field; the query language is cond.lua's data form; indexes under branching are the library node's
+  index in place plus each chat's rows filtered by ancestry (its option C, with the costs of the others); schemas are
+  content, stored data is never rewritten for one, and old shapes are read by the schema. latest stays keys.
 
 ## Worldbuilding
 

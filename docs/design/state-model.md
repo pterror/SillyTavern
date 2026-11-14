@@ -4,11 +4,11 @@ One model: a core of two primitives, modules the host provides, and everything e
 
 ## The model
 
-The core has two primitives: sandboxed execution, whose runtimes are pluggable, and capability references, the only authority there is. The host (the server, a page) provides modules the root is handed: a version store whose history is a graph and whose changes are operations defined by content; network; the page; a clock; blobs. Everything else is a module: chats and messages, the turn, the prompt, lorebooks, conditions, backend adapters, and every extension, upstream-style or not. A chat is a node, a message is a child node, a swipe is a sibling, the turn is a list of steps a card composes, and a condition is a function. Neither the core nor the host modules know any of those words.
+The core has two primitives: sandboxed execution, whose runtimes are pluggable, and capability references, the only authority there is. The host (the server, a page) provides modules the root is handed: a version store of entities and their components, whose history is a graph, whose changes are operations defined by content, and whose queries are conditions; network; the page; a clock; blobs. Everything else is a module: chats and messages, the turn, the prompt, lorebooks, conditions, backend adapters, and every extension, upstream-style or not. A chat is a node, a message is a child node, a swipe is a sibling, the turn is a list of steps a card composes, and a condition is a function. Neither the core nor the host modules know any of those words.
 
 **Easy:** Nothing is a special category: an extension and a built-in feature are the same kind of module with the same powers. Any card can recompose its turn, replace any part, or not be a chat at all. Each module holds only the capabilities it was handed, so installing one shows what it can touch. Branches, swipes and undo come from the store, for every module alike.
 
-**Hard:** Everything is code someone wrote, so people who don’t program depend on libraries (question 2). The page can only explain why something is in the prompt if the libraries report it. Content keeps its own indexes. Undoing an early change re-runs the later operations on that path. What stays restrictive is listed under each primitive: a module runs only where its runtime exists; I/O exists only where the host provides a module for it; operations can’t do I/O; history under a node that’s kept stays.
+**Hard:** Everything is code someone wrote, so people who don’t program depend on libraries (question 2). The page can only explain why something is in the prompt if the libraries report it. A write costs the indexes declared on what it changes. Undoing an early change re-runs the later operations on that path. What stays restrictive is listed under each primitive: a module runs only where its runtime exists; I/O exists only where the host provides a module for it; operations can’t do I/O; history under a node that’s kept stays.
 
 ## Core primitive: sandboxed execution
 
@@ -120,36 +120,64 @@ Core primitive 2 of 2. That is the whole core.
 ## Host module: the version store
 
 ```
-store:node(parents)          -> node     a list: two or more to merge; none only if unscoped
-store:parents(node)          -> list     only the parents inside this reference's scope
-store:get(node, key)         -> value, or { conflict = { value, value, ... } }
-store:range(node, prefix)    -> { { key, value }, ... }: every key under prefix at node, in key order
-store:apply(node, changes)   -> ids      changes = { { key, op, arg }, ... }, all or none
-store:revert(node, id)       -> id       a change cancelling change id, from node down
-store:drop(node)             removes node and what is reachable only through it
+store:node(parents)              -> node   a list: two or more to merge; none only if unscoped.
+                                           A node is an entity too: what is about that point
+                                           (the message at it) is its components
+store:entity(node)               -> e      a new entity id; it has no component until a change
+                                           gives it one, so above node it has none
+store:parents(node)              -> list   only the parents inside this reference's scope
+store:get(node, e, c, field)     -> value, or { conflict = { value, value, ... } }: component c
+                                           of entity e at node, or one field of it (a name, or a
+                                           list of names for a path)
+store:components(node, e)        -> { [c] = value }: every component of e at node
+store:query(node, q, how)        -> { rows = { { e, values }, ... }, count?, after? }: the
+                                           entities whose components at node match q, a
+                                           condition (Queries, below); how = { order = { c, field,
+                                           "desc"? }, read = { c, ... }, limit, after, count }
+store:apply(node, changes)       -> ids    changes = { { e, c, op, arg, field = f? }, ... },
+                                           all or none
+store:revert(node, id)           -> id     a change cancelling change id, from node down
+store:drop(node)                 removes node and what is reachable only through it
 store:children(node, after, limit)  -> child nodes, oldest first, a page at a time
-store:watch(node, prefix, since, sink)  -> handle; pushes what changes under prefix at
-                             node, from any cause, to sink (gap 4); handle:stop()
-store:narrow{ nodes = { ... }, prefix = "chat/", mode = "rw" }  -> a store reference
-                             whose scope is the old one cut down to those nodes and
-                             their descendants, keys under prefix, and those rights
+store:watch(node, what, since, sink)  -> handle; what = { e, c } or a query; pushes what
+                                 changes for it at node, from any cause, to sink (gap 4)
+store:match(q, list)             -> { true | false, ... }: q's store operators over components the
+                                 caller holds ({ [c] = value } each), with no read
+store:declare(node, schema)      the indexes schema declares are kept for node and what is
+                                 under it from now on (Indexes, below); unscoped only
+store:narrow{ nodes = { ... }, components = { "chat.", "card" }, entities = q, mode = "rw" }
+                                 -> a store reference whose scope is the old one cut down to
+                                 those nodes and their descendants, those components (a name,
+                                 or a prefix ending in "."), the entities matching q, and those
+                                 rights
 
-A store reference has a scope: a set of nodes and everything descending from them
-(the host's own reference, which the root holds, is unscoped), a key prefix, and
-rights: r (get, range, watch, children, parents), w (apply, revert, node), d (drop).
-A node id or a change id is only a name. Every call resolves it within the scope and
-raises "not in scope" otherwise, so a guessed or stored id reaches nothing more:
-  node, children, drop  the node (and every parent given to node) is in scope
-  get, range, watch     the node is in scope; keys outside the prefix aren't there
-  apply                 the node is in scope, every key under the prefix
-  revert                the change was made at a node in scope, to a key under the prefix
-  an op's read          sees only keys under the prefix of the reference that applied it
-  watch's batches       children are in scope by construction; a change made above the
-                        scope shows as by = { above = true }, without its id or module
-A key's value at a node is what its changes on the paths to that node give, including
+A store reference has a scope: a set of nodes and everything descending from them (the
+host's own reference, which the root holds, is unscoped), a set of component names, an
+optional condition on entities, and rights: r (get, components, query, watch, children,
+parents), w (apply, revert, node, entity), d (drop). A node id, an entity id or a change id
+is only a name. Every call resolves it within the scope and raises "not in scope" otherwise,
+so a guessed or stored id reaches nothing more:
+  node, children, drop   the node (and every parent given to node) is in scope
+  get, components, query, watch
+                         the node is in scope; components outside the names, and entities
+                         the condition doesn't match at that node, aren't there
+  apply                  the node is in scope; every change's component is in the names, and
+                         its entity matches the condition before the apply and after it, so
+                         no write moves an entity out of the scope or into it
+  revert                 the change was made at a node in scope, to a component in the names,
+                         on an entity in scope there
+  an op's read           sees only the components and entities of the reference that applied it
+  watch's batches        children are in scope by construction; a change made above the
+                         scope shows as by = { above = true }, without its id or module
+A component's value at a node is what its changes on the paths to that node give, including
 changes made above the scope: reading a node's value is allowed, reaching those nodes isn't.
-op is a pure function (old, arg, read) -> new that a module exports. An op that raises
-fails the whole apply.
+A change with a field changes only that field (a path of names reaches into nested tables):
+it is replayed, reverted and merged on its own, so two branches that change different
+fields of one component merge without a conflict, and a revert of one field leaves the
+others. A change without one replaces the whole component; a later field change applies on
+top of it.
+op is a pure function (old, arg, read) -> new that a module exports; old is the field's
+value, or the component's. An op that raises fails the whole apply.
 A value names a blob as { "$blob": hash } and a hold as { "$hold": id }; each kept
 change result that names one keeps it alive (gap 6).
 
@@ -175,33 +203,60 @@ Assumes: a change stores only the new value.
 Assumes: a node is frozen once it has children.
   Rules out: writing to a message after a reply to it exists.
   So: any node takes changes; content wanting a frozen version makes a new node.
-Assumes: other orders than key order are native.
-  Rules out: nothing, but bakes in which indexes exist.
-  So: one order; a module keeps index keys for others, by wrapping the store
-  reference it hands out.
+Assumes: what a module stores is a value at a key it names.
+  Rules out: asking for what is stored by what it is (every card tagged npc, the entries
+  that need a word in this text) without a module keeping index keys for it, which sees
+  only the writes made through its own wrapper and can't answer at a node below a branch.
+  So: entities, with named components, each a table; a key and its value are one entity
+  with one free-form component (Entities, components and relations, below).
+Assumes: every component has a fixed shape.
+  Rules out: state nobody declared ("ideally state is schemaless").
+  So: a schema is optional; a component without one is any table.
+Assumes: queries are a language of their own (SQL, or an index API).
+  Rules out: lore activation, view filters, tags, extension scopes and settings rules being
+  one kind of condition.
+  So: a query is a condition in cond.lua's data form, with the store's operators.
+Assumes: the store keeps no index, or a fixed set.
+  Rules out: no index: any query at 10 billion rows without reading them; a fixed set: the
+  indexes a module's own components need.
+  So: a schema declares indexes on its component's fields; the store keeps them, and a
+  write costs what the indexes declared on what it changes cost (Indexes, below).
+Assumes: an index can be content, a wrapper keeping index keys.
+  Rules out: an index that sees writes through every reference, reverts, replays and
+  merges, and answers at any node without a copy per branch.
+  So: the store keeps them, because only the store sees every write and resolves values
+  at a node.
+Assumes: a change replaces the whole value.
+  Rules out: two branches changing different fields of one component merging cleanly; a
+  revert of one statement in a table of settings.
+  So: a change can name a field.
 Assumes: the module that cares about a write is the one that made it.
   Rules out: seeing other modules' and devices' writes, reverts, and the replays
   after them.
-  So: watch reports every change of a value at a node, whatever caused it.
+  So: watch reports every change at a node, whatever caused it.
 Assumes: a node knows only its parents.
   Rules out: listing swipes and branches unless a module keeps a list.
   So: children, a page at a time.
 Assumes: a store reference reaches every node it can name.
   Rules out: authority being only what was handed; handing a module one chat.
   So: a reference has a scope of nodes, and ids are names resolved within it.
-Assumes: an id stored in a value is authority over that node.
-  Rules out: storing ids at all (condensed spans, a viewed node, page actions).
+Assumes: an id stored in a value is authority over that node or entity.
+  Rules out: storing ids at all (condensed spans, a viewed node, page actions, a relation).
   So: ids stay names; only the reference resolving them is authority.
 Assumes: a scope is one subtree.
   Rules out: handing a module two chats, or a chat and the library it reads.
   So: a set of nodes.
-Assumes: narrowing by node can be a wrapper (content).
-  Rules out: nothing, but a wrapper would walk every path to check a node and filter
-  every watch and children page itself, repeating the store's ancestry.
-  So: store:narrow, checked by the store's ancestry index.
+Assumes: a scope is a set of nodes alone.
+  Rules out: handing a module its own components and no others', or one book's entries.
+  So: a scope also names components, and can carry a condition on entities.
+Assumes: narrowing can be a wrapper (content).
+  Rules out: nothing, but a wrapper would walk every path to check a node, evaluate the
+  entity condition against values it can't read, and filter every query, watch and
+  children page itself, repeating the store's ancestry and resolution.
+  So: store:narrow, checked by the store.
 Assumes: an op reads the whole node.
-  Rules out: a module's op being kept from other modules' keys.
-  So: read sees the prefix of the reference that applied it.
+  Rules out: a module's op being kept from other modules' components.
+  So: read sees the scope of the reference that applied it.
 
 Still restrictive:
   operations can't do I/O, or replaying them wouldn't give the same result;
@@ -209,14 +264,18 @@ Still restrictive:
   values are JSON or a blob by hash, so exact large numbers go as strings;
   history under a node that's kept stays; discarding it means dropping nodes;
   a scope can only be cut down, never widened, and never reaches a node above it,
-  even to read its keys (it reads their effect on the values at its own nodes);
-  only an unscoped reference makes a root node; a module that needs its own roots is
-  handed a node to make them under;
+  even to read its components (it reads their effect on the values at its own nodes);
+  only an unscoped reference makes a root node or declares an index; a module that needs
+  its own roots is handed a node to make them under;
+  a query's part that the store answers uses only the store's operators; an operator a
+  module defines is checked by the module over what that part found (Queries, below);
+  a query with no declared index under it reads at most a budget of rows per page;
+  one schema per component name is in force at a time, on every branch (Free-form and typed);
   resolving an id costs an ancestry check (jump pointers, about log depth steps);
   a merge with a parent outside the scope makes that check search both paths.
 ```
 
-A host-provided module, not a core primitive, but the one every example rests on. Both tests rerun with scope: necessary as before (persistence is I/O), and scope is part of the store, not a wrapper, because only the store knows which nodes descend from which. Holding a store reference is now the only authority over nodes: an id is a name, so a module can store or receive one without gaining anything.
+A host-provided module, not a core primitive, but the one every example rests on. Both tests rerun with scope: necessary as before (persistence is I/O), and scope is part of the store, not a wrapper, because only the store knows which nodes descend from which. Holding a store reference is now the only authority over nodes and entities: an id is a name, so a module can store or receive one without gaining anything. Entities, components, queries and indexes are host: the two tests for each are in the list above (a key is a special case of a component, so nothing that keys allowed is lost; an index kept by content can't see every writer or answer below a branch). The engine's library already stores things this way (`src/library-codes.js`: an entity with a type, fields by code, tags and relations), and its store keeps counted, ordered indexes over them (`engine/src/store/`: the counted radix trees of `world_order_tree.rs`, the sorts of `sorts.rs`, the tag blocks of `kinds.rs`, the counts of `book_stats.rs`); this section makes that the contract every module sees.
 
 ## Other host modules, and what was dropped
 
@@ -247,9 +306,8 @@ Dropped, because they're built from the above:
                     a timer. Being told about writes is store:watch or latest:watch.
   call a model      a backend adapter: a module holding net for one host
   conditions        functions; cond.lua below is one library of them
-  indexes           keys a wrapper keeps, read with store:range
   narrowing         latest's: a wrapper forwarding only keys under a prefix (narrow.lua);
-                    the store's covers nodes too, so it is store:narrow
+                    the store's covers nodes, components and entities, so it is store:narrow
   merge policy      content settles conflicts
   timeouts, races,  async.lua and stream.lua over tasks (gap 1)
   streams
@@ -262,21 +320,362 @@ Host-provided modules other than the store, and what was dropped from the candid
 ## What the store holds
 
 ```json
+{ "node": 790, "parents": [1] }
 { "node": 811, "parents": [790] }
 { "node": 812, "parents": [811] }
 
-{ "id": 9031, "node": 811, "key": "chat/msg", "op": "kv.set", "module": "chat",
-  "arg":    { "role": "user", "name": "Ren", "text": "Where do dragons nest?" },
-  "result": { "role": "user", "name": "Ren", "text": "Where do dragons nest?" },
+{ "id": 9031, "node": 811, "entity": 811, "component": "chat.message", "op": "kv.set", "module": "chat",
+  "arg":    { "role": "user", "speaker": 3, "text": "Where do dragons nest?" },
+  "result": { "role": "user", "speaker": 3, "text": "Where do dragons nest?" },
   "time": 1763100000 }
 
-{ "id": 9040, "node": 812, "key": "tracker/time", "op": "kv.add", "module": "tracker",
-  "arg": 90, "result": 1290, "time": 1763100004 }
+{ "id": 9040, "node": 812, "entity": 790, "component": "tracker", "field": "minutes", "op": "kv.add",
+  "module": "tracker", "arg": 90, "result": 1290, "time": 1763100004 }
+{ "id": 9041, "node": 812, "entity": 7, "component": "tracker", "field": "affection", "op": "kv.add_within",
+  "module": "tracker", "arg": [ 2, 0, 100 ], "result": 52, "time": 1763100004 }
 
 { "id": 9055, "node": 812, "revert": 9040, "module": "ren-undo", "time": 1763100090 }
 ```
 
-Nodes and changes are all the store has. "chat/msg", "kv.set" and "tracker/time" are names chosen by modules; the core stores them without knowing what they mean.
+Nodes and changes are all the store has, and what it derives from them: each change's result and the declared indexes (below). 811 is a message node, so the message is a component of entity 811; 790 is the chat's root, whose "tracker" component holds the chat's time; 7 is Ilse, a card at the library node 1, and her affection is a field of a component on her own entity changed at node 812, so it holds at 812 and under it, and nowhere else: not on the swipe at 813, not in another chat with her, not in the library. "chat.message", "tracker", "kv.set" and the fields are names chosen by modules; the store keeps them without knowing what they mean.
+
+## Entities, components and relations
+
+```
+An entity is an id. Its components are named tables, each typed by a schema content defines,
+  or free-form. A relation is a component, or a field of one, holding entity ids in order:
+  "tags": [ 41, 57 ]; "relations": { "in": [ 812 ], "belongs to": [ 930 ] }. A schema says
+  which fields hold ids, so the store can keep who points at an entity.
+A node is an entity: the message at a node is that node's "chat.message", and a chat's own
+  state is on its root node. Every other entity is made with store:entity.
+An entity's components exist where their changes are: a component made at the library node
+  holds everywhere under it; one made or changed at a message node holds at that node and
+  under it, whichever entity it is on.
+A component's name says whose it is: a name the app's piece owns ("card", "chat.message",
+  "lore.entry", "settings", "tags", "relations", "pkg") or an install's own name and names
+  under it ("tracker", "tracker.recount"). A store reference names the components it reaches,
+  so narrowing by component replaces narrowing by key prefix.
+A key and its value, as a module kept them before, is an entity with one free-form component.
+```
+
+| What | Entity | Components | Where its changes hang |
+|---|---|---|---|
+| A card (a character) | one per card | "card" (upstream's fields), "tags" (a relation to tag entities), "settings" (its statements: the character level), "pkg" if it brings modules | the library node |
+| A tag | one per tag | "tag" { name } | the library node |
+| A lorebook, its entries | one per book, one per entry | "lore.book" { name, when }; "lore.entry" { book (an id), name, order, when, text } | the library node; an entry made in a chat, at that chat's node |
+| A world, its entries | one each | "world", "world.entry", "relations" (one field per kind the world's author named, each a list in the relation's order), "settings" | the library node |
+| A chat | its root node | "chat" { card }, "tracker" { minutes } | the root, and the messages that change it |
+| A message | its node | "chat.message" { role, speaker (an id), text, stopped? } | its own node |
+| A bookmark | one per bookmark | "bookmark" { at (a message node), mode, name }, "settings" | the chat's root |
+| Settings statements | the subject of the level: the tab's, device's, chat's, bookmark's, character's, world's, entry's, theme's or person's entity | "settings": one field per setting name, "order/…" and "on/…" among them | where the level says ("Settings: one cascade along a path") |
+| Tracker state | the chat's, and each character's | "tracker" { minutes } on the chat, "tracker" { affection } on a character | the message that changed it |
+| A package | one per package | "pkg" { name, hash, source, runtime, piece, extension, schemas } | the library node; the person's entity holds "pkg.installed" { [name] = id } |
+| A person, a persona, a device, a tab | one each; a tab and a device are their own nodes | "persona" { name, … }, "settings" | the library node; a tab's and a device's at their nodes |
+
+```lua
+-- in root.lua: what three modules are handed
+local chats    = store:narrow{ nodes = { home }, components = { "chat", "chat.message" }, mode = "r" }  -- [host]
+local tracker  = store:narrow{ nodes = { home }, components = { "tracker" }, mode = "rw" }           -- [host]
+local bestiary = store:narrow{ nodes = { home }, components = { "lore.book", "lore.entry" },         -- [host]
+                               entities = { "any", { "is", 4001 }, { "=", "lore.entry", "book", 4001 } },
+                               mode = "r" }
+```
+
+The tracker can write "tracker" on any entity at any node under home, and nothing else; its affection field on Ilse's entity is its own component there, and Ilse's "card" is not in its scope. The third reference reaches one book and its entries; an entry the module can see can't be moved to another book through it, since an apply must leave every changed entity in the scope. Narrowing stays capability-shaped: a reference is cut down by nodes, component names and a condition on entities, and an id outside them isn't there.
+
+The owner asked for this: "i would ideally still like relational for compatible data (optionally), for some definition of compatible. perhaps something like an ecs architecture in relational db" (09-30), and "an open bag of properties (…), then be able to search based on that" (09-12). Compatible data is the shared formats, which have schemas; the bag of properties is a free-form component; searching is a query over either. Assumes: one entity has one value per component name. Rules out: two installs keeping different things under one name. So: names are an install's own, as keys under an install's prefix were.
+
+## Queries
+
+```
+A query is a condition in cond.lua's data form. The store's operators test one entity's
+components at the node read at:
+  ["has", c]                       it has component c
+  ["is", e]                        it is entity e
+  ["=", c, f, v]                   field f of c is v; "<", "<=", ">", ">=" compare numbers or strings
+  ["in", c, f, { v, ... }]         field f is one of the values or, if it is a list, holds one
+  ["to", c, x], ["to", c, f, x]    the relation c, or its field f, holds the id x
+  ["words", c, f, text]            field f's text index matches text (the app's search syntax)
+  ["all", ...], ["any", ...], ["not", q]
+store:match(q, list) -> { true | false, ... }   the same operators over components a caller
+  holds ({ [c] = value } each), with no read: one meaning for every operator, the store's
+At a node v, the store answers q as follows:
+  a part an index covers is an index read: "=", "in" and comparisons on an indexed field,
+    "to" on a relation, "words" on a text index, "has" (every component is listed by name);
+    in "all", the part with the smallest count leads (each index keeps its counts, one read
+    each) and the rest are checked on what it finds: through a composite index that covers
+    both, else on the entity's values, one read per field named; "any" is the union of its
+    parts, each entity once. "in" with a list is a merge of the list, in order, with the
+    index: about the shorter of the two in seeks.
+  with how.order, an index in that order leads if one covers the query's first part; else
+    the matches are sorted, up to a bound past which the query is refused
+  a part no index covers is checked on what the covered parts found; a query no index
+    covers at all reads the components it names, at most a budget of rows per page, and
+    returns a cursor that goes on (the world filter's walk: WALK_STEPS_PER_READ)
+  each entity once; count = true adds how many match: the index's count when one index read
+    is the whole query, else a count of what was read
+An operator a module defines (keys, cameUp, speakerTag, since…) is not the store's: the
+  module sends the store its part and checks the rest with cond.holds on what comes back.
+  One condition can be partly index and partly code, in one form.
+```
+
+```lua
+-- query.lua: a condition, answered by the store where its operators are the store's
+return function(c)
+  local store, cond = c.store, c.cond
+  local STORE = { has = true, is = true, ["="] = true, ["<"] = true, ["<="] = true, [">"] = true,
+                  [">="] = true, ["in"] = true, to = true, words = true }
+  local Q = {}
+
+  local function stored(q)
+    if q[1] == "all" or q[1] == "any" or q[1] == "not" then
+      for i = 2, #q do if not stored(q[i]) then return false end end
+      return true
+    end
+    return STORE[q[1]] == true
+  end
+
+  function Q.split(q)                       -- the store's part (or nil), and the rest (or nil)
+    if stored(q) then return q, nil end
+    if q[1] ~= "all" then return nil, q end
+    local s, r = { "all" }, { "all" }
+    for i = 2, #q do
+      local a, b = Q.split(q[i])
+      if a then s[#s + 1] = a end
+      if b then r[#r + 1] = b end
+    end
+    return s[2] and s or nil, r[2] and r or nil
+  end
+
+  function Q.each(at, q, how, ctx, fn)      -- fn(row) for each match at at; the rest is checked with ctx.row = row
+    local s, rest = Q.split(q)
+    if not s then error("no part of this condition is the store's", 0) end
+    local after
+    repeat
+      local page = store:query(at, s, { order = how.order, read = how.read, limit = 500, after = after })   -- [host]
+      for _, row in ipairs(page.rows) do
+        if rest == nil or cond.holds(rest, setmetatable({ row = row }, { __index = ctx })) then fn(row) end
+      end
+      after = page.after
+    until after == nil
+  end
+
+  function Q.holds(at, e, q)                -- q, all the store's, of the one entity e: a read per field it names
+    return store:query(at, { "all", { "is", e }, q }, { limit = 1 }).rows[1] ~= nil   -- [host]
+  end
+
+  return Q
+end
+```
+
+Three conditions from elsewhere in this document, as queries:
+
+```lua
+-- the dragon entry (case 1): its "when" is the entry's own data; what the store answers is
+-- which entries of the open books can come up for this text at all
+{ "all", { "=", "lore.entry", "book", 4001 },
+         { "in", "lore.entry", "need", { "", "d", "dr", "dra", "r", "ra", "rag", … } } }
+-- read through the index lore.entry (book, need): the book's entries whose need is one of
+-- the text's grams; then each one's when, ["all", ["keys", "dragon"], ["speakerTag", 41]],
+-- with cond.holds; speakerTag is chars.lua's Q.holds(at, speaker, { "to", "tags", 41 })
+
+-- the character list filtered by a tag (41 is the tag "npc")
+store:query(home, { "all", { "has", "card" }, { "to", "tags", 41 } },                     -- [host]
+            { order = { "card", "name" }, limit = 50, count = true, read = { "card" } })
+-- -> { rows = { { e = 7, values = { card = { name = "Ilse", … } } } }, count = 1 }
+-- through the composite index on (tags, card.name): the tag's cards in name order, and the
+-- tag's count, one read
+
+-- an extension's scope (option D): a person's rule { when = ["all", ["transform", "tracker"],
+-- ["card-tag", 41]], on = true }; card-tag is context_cond.lua's
+cond.define("card-tag", function(x, tag) return x.card ~= nil and q.holds(x.at, x.card, { "to", "tags", tag }) end)
+-- and which cards that reaches, for the review, is the same condition without the card:
+store:query(home, { "all", { "has", "card" }, { "to", "tags", 41 } }, { count = true, limit = 0 })   -- [host]
+```
+
+Run under LuaJIT on a store that folds every path (no index, the reference meaning): Ilse, tagged 41, brings up Dragons, The Capital and then The Palace for "Where do dragons nest? Near the capital?"; Maren, not tagged, brings up only the two places; the character list tagged 41 is Ilse, count 1; after a change at node 812 that empties Ilse's tags in chat 790, the same list read at 812 has count 0 and at the swipe 813 count 1, and the tracker's scope tested at 812 and 813 gives false and true. A condition is one kind of thing now: lore activation, the character list, tags, saved views, an extension's scope, the settings cascade's rules and grant's preset rules are all cond.lua data, and every part of them that tests what is stored runs on the same indexes. Context conditions (the note's since and until, compose_order's transform) are operators of the module that reads them; the ones about stored things go through Q.holds or store:match, so their meaning is the store's.
+
+## Indexes under branching
+
+```
+A schema declares indexes on its component's fields:
+  { "on": [ "name" ] }                    ordered: equality, ranges, rank, counts
+  { "on": [ "book", "need" ] }            composite: the first field, then the next within it
+  { "on": [ "tags" ], "relation": true }  a relation's other side: who holds x, with counts
+  { "on": [ [ "tags" ], [ "card", "name" ] ], "relation": true }
+                                          a composite may take a field of another component
+                                          of the same entity: each tag's cards in name order,
+                                          kept by writes of either
+  { "on": [ "text" ], "text": true }      the app's text search over the field (searched.rs)
+  "computed": { "need": "lore/need" }     a field computed by a pure function of the component,
+                                          named like an op; indexed as a stored field is
+A query can't ask for an index: it uses the declared ones, or reads a budget at a time.
+  An index costs every writer of its component, so it comes with the schema, from the
+  install that owns the component, reviewed with it, and the root declares it
+  (store:declare); a module can't make every card write dearer by asking.
+```
+
+The difficulty: a component's value at a node is what its changes on the paths to it give, including changes made later at nodes above it (an edit in the library holds in every chat under it). An index has to answer "at this node" for any node, without a copy per branch, and a write above has to reach every node below it without being written there.
+
+```
+n        rows of the index at the library node (10 billion cards)
+t        a counted radix tree's depth over n rows: about log256(n) + 1, 5 at 10 billion
+D        the depth of the node read at, below the library node
+b        branches (leaves) of the chat the node is in
+m        the index's rows below the library node in that chat, every branch included
+s        changes of one (component, entity) on the chat's other branches, at depths
+         between the nearest change on the read's path and the read
+r        rows a read returns; k the index entries one change writes (1 for a field, one per
+         member or term that changed for a list or a text)
+
+A. A delta per node: each node keeps the rows its own changes add or remove, and points at
+   the nearest node above with a delta (the bookmark index's FILTER_UP shape); a read
+   merges the deltas on its path.
+     write   at the library node t + 1 edge per entry; below it k rows, a pointer when a node
+             first has one; nothing per branch
+     read    t + r, plus a seek per node on the path with a delta: up to D. A component that
+             changes at most messages (the tracker's minutes) makes every read D seeks, and
+             a count at a node costs the same
+B. Persistent trees sharing structure: a root per node, each change copying the path to
+   its leaf.
+     read    t + r from the node's root
+     write   t tree nodes copied per entry, each with its edges (up to 256 keys a node in the
+             engine's layout): amplification by t times the fan-out. A change above existing
+             branches has to reach every root below it, (roots below) × t per entry, so a
+             library write costs per chat. Ruled out: write amplification and cost per row.
+A'. A with the message tree's own skew-binary jump spans: each node keeps the merged deltas
+    of its span, so a path is about log D spans.
+     read    t + r + about log D seeks
+     write   each entry copied into every span covering it, about log D times, and a change
+             at an earlier message rewrites the spans of everything under it: b × log D.
+             Ruled out: write amplification.
+C. The library node's index in place, the rows below it where their changes are, by chat,
+   read through the ancestry check. Picked.
+     rows    at the library node: the counted tree, written in place, as the engine's indexes
+             are today. Below it: per change of an indexed field, one row (index, chat, key, e,
+             depth, node), where chat is the child of the library node on the node's path; a
+             count per (component, e, chat) saying e changed there; and for every component the
+             changes by (component, e, chat, depth, node), which point reads use
+     point read of (e, c) at v
+             one get: no change of e in v's chat, so the library node's value, one get more.
+             Else the chat's changes of (c, e) at depth D or above, deepest first, each tested
+             for being on v's path (log D): the first that is decides. (1 + s) log D
+     query at v
+             the library node's range, t + its rows, each with a change in the chat (one get)
+             settled by its point read; plus the chat's rows in the range, each tested for
+             being on v's path (log D) and for being its entity's nearest change. t + r +
+             m_range (1 + s) log D, m_range ≤ m
+     count at v
+             the library node's count (t), corrected by the chat's rows in the range
+     write   at the library node t counts + 1 edge per entry (a split adds 3), as sorts.rs and
+             world_order_tree.rs write today; below it k rows and 1 count, with no read of other
+             rows and nothing per branch. A change above existing branches writes only its own
+             rows: a chat that changed the same component keeps its rows, which still decide
+             there. A revert, or a write above a later op that depends on it (kv.add), replays
+             those later changes and rewrites their rows: the replay's own cost
+     disk    one row per change per entry; nothing copied
+```
+
+C, because it is the only one with neither a cost per branch nor write amplification, and its read cost is bounded by what happened in the read's own chat: never by n, never by other chats. At the library node, where the cards are, it is the engine's indexes as they stand. What it costs is a chat whose indexed components change on many branches: a read pays for the other branches' rows in its range (m_range counts every branch, and s the other branches' changes of one entity). In the usual shape, a long main line with swipes as leaves, s is the swipes at one depth. A chat started from inside another chat is part of that chat; a chat's tab and device nodes are chats of their own here.
+
+```lua
+-- the store's read of an ordered index at node v (native in the store; Lua here, run under LuaJIT
+-- against folding every path: 400 random reads on each of five random histories of 1,205 nodes in
+-- four chats with branches, 3,000 changes below the library node, no difference)
+local function read(index, v, lo, hi)
+  local chat, hit = chat_of(v), {}
+  for _, row in ipairs(library_range(index, lo, hi)) do          -- t + its rows
+    if not changed_in(chat, index.component, row.e) or not nearest(chat, index.component, row.e, v) then
+      hit[row.e] = true                                          -- no change of it on v's path
+    end
+  end
+  for _, row in ipairs(chat_range(index, chat, lo, hi)) do       -- the chat's rows, every branch
+    if on_path(row.node, v) and nearest(chat, index.component, row.e, v) == row.change then
+      hit[row.e] = true
+    end
+  end
+  return hit
+end
+-- nearest: the chat's changes of (component, e) at depth(v) or above, deepest first; the first
+-- whose node is on v's path (on_path: the jump pointers, about log D steps)
+```
+
+```
+chat 790, Ilse's tags emptied at 812 (the example under Queries):
+  library node: the relation index on tags holds (41 → 7); its count for 41 is 1
+  chat 790: the change of (tags, 7) at 812, depth 2; the count (tags, 7, 790) = 1; no row for
+            41, since the new value holds nothing
+  at 812: the library's (41 → 7) is found; 7 has a change in 790; its nearest on 812's path
+          is the change at 812, which holds no 41: not a match. count 1 - 1 = 0
+  at 813: the same row; the change at 812 is not on 813's path, nor is any other: the library's
+          value holds. count 1
+```
+
+Merges: a node with two parents is one deeper than the deeper of them and in its first parent's chat; on_path climbs both parents, so each merge on a path doubles that check's cost, and a point read finds a nearest change on each side; two that aren't one above the other are a conflict, which get returns as it did. The bookmark index ("Settings") is a declared index of this store whose filter is a query over "bookmark"; its structure is the one described there, kept per declared filter.
+
+```
+Write cost per declared index, per change that changes what it reads:
+  ordered field     library node: t counts + 1 edge (6 at 10 billion); below it: 1 row
+                    (+ 1 count the first time e changes in that chat)
+  composite         the same, one tree over both fields
+  relation          per id added or removed: 1 block-map add + 1 count + 1 row at the
+                    library node (kinds.rs's member blocks), 1 row below it
+  text              per term whose count changed (searched.rs)
+  computed          its function, run once per change of the component, then as its kind
+  A change that leaves an index's fields as they were writes nothing to it.
+A new index on existing rows: built in steps by the store's own job over the component's
+  rows (n at the library node, then each chat's), before the schema version that declares
+  it is in force; until then the version before it is, and writes during the build keep the
+  part the build has passed. Nothing reads a half-built index, and nothing is left to
+  build once the version is in force. Cost: one pass, once; after it, only the writes.
+
+Host: indexes, queries and store:declare are the store's. Necessary: only the store sees
+  every write (any reference, a revert, the replay after it, a merge) and resolves a value
+  at a node; an index kept by content sees only the writes through its wrapper and could
+  only answer below a branch by copying itself per branch.
+Assumes: an index is kept per node.
+  Rules out: a node costing nothing until something changes at it; a library write not
+  reaching every chat.
+  So: kept where its changes are, read through the ancestry.
+Still restrictive:
+  a read below the library node pays for the rows of its chat's other branches in its range;
+  each merge on a read's path doubles its ancestry checks;
+  an index is the library node's or a chat's: a node below the library that takes many
+  in-place writes (a long-lived node in a chat) is read as any chat node is;
+  a schema version with a new index on existing rows comes into force when the build ends.
+```
+
+## Free-form and typed
+
+```json
+{ "name": "lore.entry", "version": 3,
+  "fields": { "book":  { "type": "id" },     "name": { "type": "string" },
+              "order": { "type": "number" }, "when": { "type": "condition" },
+              "text":  { "type": "string" } },
+  "computed": { "need": "lore/need" },
+  "indexes": [ { "on": [ "book", "need" ] }, { "on": [ "book", "order" ] } ],
+  "reads": "lore/read" }
+```
+
+```
+Shared formats have schemas: card, chat.message, lore.book, lore.entry, world.entry,
+  relations, tags, bookmark, pkg; settings has one whose fields are open (each a setting name).
+  An install's own component may have none; then it is any table, with no index but "has".
+A schema is content: a package ships it, and a new package version with a changed schema is
+  a content change like any other. The root declares the schemas of what is installed;
+  one version per component name is in force, on every branch.
+Stored data is never rewritten for a schema: a value keeps the shape it was written in, with
+  the version it was written under, and "reads" (a pure function, (value, version) -> the
+  value in this version's shape) gives readers and indexes the current shape. The only
+  migration is upstream's: the import reads upstream's cards, books and chats into the
+  first version of these schemas. A version that drops a field reads it away; one that adds
+  a field gives it a value in reads; an index on it is built as above.
+Free-form: a component with no schema is a table; a change can still name a field, so its
+  fields still merge and revert apart. Searching an open bag of properties is a query over
+  it, reading a budget of rows a page, or over a schema the install declares later.
+```
+
+A schema change never touches stored data, and old shapes are read, not converted: "reads" is the place a change of format lives, so nothing stored is ever partial or waiting. Assumes: the store checks every write against the schema. Rules out: reading a component written under an older version without converting it. So: the schema's reads gives the current shape; a write is in the version in force, and the store checks only the fields its indexes read and the fields that hold ids. Still restrictive: one schema version in force for all branches, so a branch can't try a new format on its own.
 
 ## A chat and its messages
 
