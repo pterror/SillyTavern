@@ -36,9 +36,10 @@ test('a card says the first paragraph of the text, and nothing when its name alr
 });
 
 test('the prompt sentence reads when an entry comes in and how often from upstream fields', () => {
-    expect(comesOf({ constant: false, disable: false })).toBe('brought up');
-    expect(comesOf({ constant: true, disable: false })).toBe('always');
-    expect(comesOf({ constant: true, disable: true })).toBe('never');
+    expect(comesOf({ constant: false, vectorized: false, disable: false })).toBe('brought up');
+    expect(comesOf({ constant: true, vectorized: false, disable: false })).toBe('always');
+    expect(comesOf({ constant: true, vectorized: false, disable: true })).toBe('never');
+    expect(comesOf({ constant: false, vectorized: true, disable: false })).toBe('found');
     expect(chanceOf({ probability: 50, useProbability: true })).toBe(50);
     expect(chanceOf({ probability: 50, useProbability: false })).toBe(100);
 });
