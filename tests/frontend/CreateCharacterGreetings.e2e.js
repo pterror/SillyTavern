@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab, fillCardField } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -33,9 +33,7 @@ async function deleteCharacter(page, avatar) {
 async function typeGreeting(page, text) {
     const toggle = page.locator('.field_edit_toggle[data-for="greeting_field"]');
     if (await toggle.isVisible()) await toggle.click();
-    const field = page.locator('#greeting_field');
-    await expect(field).toBeEditable();
-    await field.fill(text);
+    await fillCardField(page, 'greeting_field', text);
     const done = page.locator('.field_edit_done[data-for="greeting_field"]');
     if (await done.isVisible()) await done.click();
 }

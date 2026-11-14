@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { greetingRow, greetingsList, listAdd, listDelete, listEdit, listMoveToEnd, listToggleDefault, openGreetingsList } from './alternatives-list.js';
-import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab, fillCardField } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -228,7 +228,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         await expect(page.locator('#greeting_field')).toHaveValue(g1);
         const response = greetingOpResponse(page, 'edit');
         await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
-        await page.locator('#greeting_field').fill(edited);
+        await fillCardField(page, 'greeting_field', edited);
         await page.locator('.field_edit_done[data-for="greeting_field"]').click();
         expect((await response).ok()).toBe(true);
 

@@ -244,7 +244,8 @@ async function mountFieldEditor(id, text, at) {
     const textarea = getTextarea(id)[0];
     const preview = getPreview(id)[0];
     try {
-        const [{ chatEditor }] = await Promise.all([loadChatEditor(), values.want(text)]);
+        const asked = values.want(text);
+        const { chatEditor } = await loadChatEditor();
         if (holder.ended) return;
         const editor = chatEditor({
             parent: preview.parentElement,
@@ -273,6 +274,7 @@ async function mountFieldEditor(id, text, at) {
         const place = Math.min(at, text.length);
         editor.view.dispatch({ selection: { anchor: place }, scrollIntoView: true });
         editor.view.focus();
+        if (await asked && !holder.ended) editor.redraw();
     } catch (error) {
         console.error('The editor could not be loaded', error);
         toastr.error(deps.t`The editor could not be loaded.`);
@@ -297,6 +299,7 @@ function fieldEdited(id, text) {
     getTextarea(id).val(text);
     activeEdit.userText = text;
     writeDraft(id, text, activeEdit.original);
+    refreshCharInfoTabDimming();
     if (deps.power_user.auto_save_msg_edits) scheduleAutoSave(id);
     deps.onEdited?.(id);
 }

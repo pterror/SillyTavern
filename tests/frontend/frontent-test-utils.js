@@ -309,3 +309,27 @@ export function stackMismatches(page, {
         return out;
     }, { layers, overlays, step });
 }
+
+/**
+ * The text of the editor open on a card field
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id the field's textarea id
+ */
+export function cardFieldEditor(page, id) {
+    return page.locator('.char_info_tab_panel', { has: page.locator(`#${id}`) }).locator('.chat-editor .cm-content');
+}
+
+/**
+ * Replaces the text of a card field being edited, as typed into its editor
+ * @param {import('@playwright/test').Page} page
+ * @param {string} id the field's textarea id
+ * @param {string} text
+ */
+export async function fillCardField(page, id, text) {
+    const editor = cardFieldEditor(page, id);
+    await expect(editor).toBeVisible();
+    await editor.focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    if (text) await page.keyboard.insertText(text);
+    else await page.keyboard.press('Delete');
+}

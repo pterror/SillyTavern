@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab, fillCardField } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -82,7 +82,7 @@ test.describe('field-scoped character saves', () => {
             await setUnsavedInput(page, '#personality_textarea', 'UNSAVED PERSONALITY');
             await openInfoTab(page, 'description');
             await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
-            await page.locator('#description_textarea').fill('saved description');
+            await fillCardField(page, 'description_textarea', 'saved description');
             await page.locator('.field_edit_done[data-for="description_textarea"]').click();
 
             await expect.poll(() => mergeBodies.length, { timeout: 10000 }).toBe(1);
@@ -110,11 +110,11 @@ test.describe('field-scoped character saves', () => {
 
             await openInfoTab(page, 'description');
             await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
-            await page.locator('#description_textarea').fill('first field');
+            await fillCardField(page, 'description_textarea', 'first field');
             await page.locator('.field_edit_done[data-for="description_textarea"]').click();
             await openInfoTab(page, 'personality');
             await page.locator('.field_edit_toggle[data-for="personality_textarea"]').click();
-            await page.locator('#personality_textarea').fill('second field');
+            await fillCardField(page, 'personality_textarea', 'second field');
             await page.locator('.field_edit_done[data-for="personality_textarea"]').click();
 
             await expect.poll(() => mergeBodies.length, { timeout: 10000 }).toBe(2);
@@ -164,7 +164,7 @@ test.describe('field-scoped character saves', () => {
         await page.locator('#character_name_pole').fill(name);
         await openInfoTab(page, 'description');
         await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
-        await page.locator('#description_textarea').fill('typed description');
+        await fillCardField(page, 'description_textarea', 'typed description');
         await page.locator('.field_edit_done[data-for="description_textarea"]').click();
         await setUnsavedInput(page, '#personality_textarea', 'UNSAVED PERSONALITY');
 

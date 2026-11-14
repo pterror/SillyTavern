@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab, fillCardField } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -81,7 +81,7 @@ test.describe('a card has each greeting text once, and the pager and the chat co
         await pageTo(page, 2);
 
         await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
-        await page.locator('#greeting_field').fill(g[0]);
+        await fillCardField(page, 'greeting_field', g[0]);
         const refused = page.waitForResponse(r => new URL(r.url()).pathname === '/api/characters/greetings/edit');
         await page.locator('.field_edit_done[data-for="greeting_field"]').click();
         expect((await refused).status()).toBe(409);
@@ -105,14 +105,14 @@ test.describe('a card has each greeting text once, and the pager and the chat co
         await expect(page.locator('#form_create')).toHaveAttribute('actiontype', 'createcharacter');
         await openInfoTab(page, 'greeting');
         await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
-        await page.locator('#greeting_field').fill(`First ${s}`);
+        await fillCardField(page, 'greeting_field', `First ${s}`);
         await page.locator('.field_edit_done[data-for="greeting_field"]').click();
         await page.locator('.greeting-pager-add').click();
-        await page.locator('#greeting_field').fill(`First ${s}`);
+        await fillCardField(page, 'greeting_field', `First ${s}`);
         await page.locator('.field_edit_done[data-for="greeting_field"]').click();
         await expect(page.locator('#greeting_same_note')).toHaveText('Same as greeting 1');
         await expect(page.locator('#charInfoTab_greeting')).toHaveClass(/field_editing/);
-        await page.locator('#greeting_field').fill(`Second ${s}`);
+        await fillCardField(page, 'greeting_field', `Second ${s}`);
         await expect(page.locator('#greeting_same_note')).toBeHidden();
         await page.locator('.field_edit_done[data-for="greeting_field"]').click();
         await expect(page.locator('#charInfoTab_greeting')).not.toHaveClass(/field_editing/);
@@ -161,7 +161,7 @@ test.describe('a card has each greeting text once, and the pager and the chat co
 
         await openInfoTab(page, 'greeting');
         await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
-        await page.locator('#greeting_field').fill(`Zero edited ${s}`);
+        await fillCardField(page, 'greeting_field', `Zero edited ${s}`);
         await page.locator('.field_edit_done[data-for="greeting_field"]').click();
         await expect(page.locator('#charInfoTab_greeting')).not.toHaveClass(/field_editing/);
         await expect(button).toHaveClass(/disabled/, { timeout: 10000 });

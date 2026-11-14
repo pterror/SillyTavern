@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { openInfoTab, testSetup } from './frontent-test-utils.js';
+import { openInfoTab, testSetup, fillCardField } from './frontent-test-utils.js';
 
 /**
  * @param {import('@playwright/test').Page} page
@@ -33,7 +33,7 @@ test.describe('character editor counts', () => {
 
         await openInfoTab(page, 'description');
         await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
-        await page.locator('#description_textarea').fill(`A test character who keeps a lantern lit. ${marker}`);
+        await fillCardField(page, 'description_textarea', `A test character who keeps a lantern lit. ${marker}`);
         const saved = page.waitForResponse(response => response.url().endsWith('/api/characters/merge-attributes') && response.ok());
         await page.locator('.field_edit_done[data-for="description_textarea"]').click();
         const answer = await (await saved).json();

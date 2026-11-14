@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { listEdit, openGreetingsList } from './alternatives-list.js';
-import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab, cardFieldEditor, fillCardField } from './frontent-test-utils.js';
 import { cardToGreetingsModel } from '../../src/greeting-list.js';
 import { hashGreetingText } from '../../src/greeting-ops.js';
 
@@ -165,8 +165,7 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
     await expect(page.locator('.greeting-pager-input')).toHaveValue(String(index + 1));
     await expect(textarea).toHaveValue(greetings[index]);
     await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
-    await expect(textarea).toBeVisible();
-    await textarea.fill(text);
+    await fillCardField(page, 'greeting_field', text);
     await expect(textarea).toHaveValue(text);
 
     return await withOtherSession(browser, async (other) => {
@@ -183,7 +182,7 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
         expect((await refetched).ok()).toBe(true);
         await expect(page.locator('.greeting-pager-total')).toHaveText(`/${greetings.length}`);
         await expect(page.locator('.greeting-pager-input')).toHaveValue(String(index + 1));
-        await expect(textarea).toBeVisible();
+        await expect(cardFieldEditor(page, 'greeting_field')).toBeVisible();
         await expect(textarea).toHaveValue(text);
         expect(editRequests).toEqual([]);
 
@@ -193,7 +192,7 @@ async function editAcrossRemoteDeletes(page, browser, { name, greetings, index, 
         expect(editRequests).toEqual([text]);
         const stored = await storedGreetings(other, avatar);
         if (response.ok()) {
-            await expect(textarea).toBeHidden();
+            await expect(cardFieldEditor(page, 'greeting_field')).toHaveCount(0);
             await expect(page.locator('.greeting-pager-total')).toHaveText(`/${stored.length}`);
             await expect(page.locator('.greeting-pager-input')).toHaveValue(String(stored.indexOf(text) + 1));
             await expect(textarea).toHaveValue(text);
@@ -302,19 +301,19 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
             await expect(page.locator('.greeting-pager-input')).toHaveValue('2');
             await expect(textarea).toHaveValue(g1);
             await page.locator('.field_edit_toggle[data-for="greeting_field"]').click();
-            await expect(textarea).toBeVisible();
+            await expect(cardFieldEditor(page, 'greeting_field')).toBeVisible();
 
             const typed = `One edited ${s}`;
             const more = ' and more';
             const finalText = typed + more;
 
             const firstResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/characters/greetings/edit', { timeout: 15000 });
-            await textarea.fill(typed);
+            await fillCardField(page, 'greeting_field', typed);
             await firstHeld;
             expect(editTexts).toEqual([typed]);
 
-            await textarea.press('End');
-            await textarea.pressSequentially(more);
+            await page.keyboard.press('End');
+            await page.keyboard.type(more);
             await expect(textarea).toHaveValue(finalText);
             await page.locator('.field_edit_done[data-for="greeting_field"]').click();
 

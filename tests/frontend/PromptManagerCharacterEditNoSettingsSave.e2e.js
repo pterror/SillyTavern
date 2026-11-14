@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab, fillCardField } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -55,7 +55,7 @@ test.describe('prompt manager character-edit settings save', () => {
             });
 
             await page.locator('.field_edit_toggle[data-for="description_textarea"]').click();
-            await page.locator('#description_textarea').fill('A test character used to check for a stray settings save.');
+            await fillCardField(page, 'description_textarea', 'A test character used to check for a stray settings save.');
             await page.locator('.field_edit_done[data-for="description_textarea"]').click();
             await page.locator('#creator_textarea').click();
 

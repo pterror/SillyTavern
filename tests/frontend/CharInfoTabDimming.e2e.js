@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer, openInfoTab } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, openInfoTab, fillCardField } from './frontent-test-utils.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -115,9 +115,9 @@ test.describe('character info tab dimming', () => {
             await openInfoTab(page, 'personality');
             await expect(heading(page, 'personality')).toHaveClass(/\btab-empty\b/);
             await page.locator('.field_edit_toggle[data-for="personality_textarea"]').click();
-            await page.locator('#personality_textarea').fill(' ');
+            await fillCardField(page, 'personality_textarea', ' ');
             await expect(heading(page, 'personality')).not.toHaveClass(/\btab-empty\b/);
-            await page.locator('#personality_textarea').fill('');
+            await fillCardField(page, 'personality_textarea', '');
             await expect(heading(page, 'personality')).toHaveClass(/\btab-empty\b/);
         });
     });

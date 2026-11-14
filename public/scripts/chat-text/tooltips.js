@@ -6,14 +6,21 @@ const { tooltips, showTooltip, ViewPlugin } = cmView;
 
 /** Says to the drawer stack that the overlays in the page changed, once the editor has drawn its tooltips */
 const announced = ViewPlugin.fromClass(class {
+    /** @param {import('@codemirror/view').EditorView} view */
+    constructor(view) {
+        this.shown = view.state.facet(showTooltip).some(Boolean);
+    }
+
     /** @param {import('@codemirror/view').ViewUpdate} update */
     update(update) {
-        if (update.state.facet(showTooltip) === update.startState.facet(showTooltip)) return;
+        const tooltips = update.state.facet(showTooltip);
+        if (tooltips === update.startState.facet(showTooltip)) return;
+        this.shown = tooltips.some(Boolean);
         update.view.requestMeasure({ key: this, read: () => null, write: () => document.dispatchEvent(new Event(OVERLAYS_CHANGED_EVENT)) });
     }
 
     destroy() {
-        document.dispatchEvent(new Event(OVERLAYS_CHANGED_EVENT));
+        if (this.shown) document.dispatchEvent(new Event(OVERLAYS_CHANGED_EVENT));
     }
 });
 
