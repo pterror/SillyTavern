@@ -118,8 +118,31 @@ function readerViewsOf(text) {
 }
 
 /**
+ * The world's views as the book stores them, each target its entry's key.
+ * @param {any} entity
+ * @returns {unknown[]}
+ */
+function storedWorldViews(entity) {
+    const stored = entity.values.find((/** @type {any} */ v) => v.field === WORLD_VIEWS_FIELD);
+    try {
+        const list = stored?.json !== undefined ? JSON.parse(stored.json) : stored?.text !== undefined ? JSON.parse(stored.text) : null;
+        return Array.isArray(list) ? list : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * @param {bigint} id
+ * @param {import('@st/worldbuilding/server').ReaderViews} reader
+ */
+const readerRecord = (id, reader) => (Object.keys(reader.changed).length === 0 && reader.own.length === 0
+    ? { kind: 'valueDelete', entity: id, field: READER_VIEWS_FIELD }
+    : { kind: 'textValue', entity: id, field: READER_VIEWS_FIELD, text: JSON.stringify(reader) });
+
+/**
  * @param {{ libOf: (user: import('@st/server-ui').User) => Promise<any> }} options
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readViews' | 'writeReaderViews'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readViews' | 'writeReaderViews' | 'changeWorldView'>}
  */
 export function worldbuildingViewPorts({ libOf }) {
     return {
@@ -128,14 +151,7 @@ export function worldbuildingViewPorts({ libOf }) {
             const [entity] = await lib.entities([BigInt(book)]);
             if (!entity) return null;
             const valueOf = (/** @type {string} */ field) => entity.values.find((/** @type {any} */ v) => v.field === field);
-            const stored = valueOf(WORLD_VIEWS_FIELD);
-            let list = null;
-            try {
-                list = stored?.json !== undefined ? JSON.parse(stored.json) : stored?.text !== undefined ? JSON.parse(stored.text) : null;
-            } catch {
-                list = null;
-            }
-            const world = viewsOf(list);
+            const world = viewsOf(storedWorldViews(entity));
             const uids = [...new Set(world.flatMap(view => [
                 ...view.chips.map(chip => chip.target),
                 ...[...view.columns, ...view.rows].flatMap(item => (typeof item.is === 'string' ? [] : [item.is.target])),
@@ -150,10 +166,26 @@ export function worldbuildingViewPorts({ libOf }) {
         async writeReaderViews({ user }, book, reader) {
             const lib = await libOf(user);
             const id = BigInt(book);
-            const empty = Object.keys(reader.changed).length === 0 && reader.own.length === 0;
-            const done = await lib.books.inWorld(id, (form, commit) => commit([empty
-                ? { kind: 'valueDelete', entity: id, field: READER_VIEWS_FIELD }
-                : { kind: 'textValue', entity: id, field: READER_VIEWS_FIELD, text: JSON.stringify(reader) }]));
+            const done = await lib.books.inWorld(id, (form, commit) => commit([readerRecord(id, reader)]));
+            return done === 'missing' ? 'missing' : 'ok';
+        },
+        async changeWorldView({ user }, book, viewId, change, reader) {
+            const lib = await libOf(user);
+            const id = BigInt(book);
+            const [entity] = await lib.entities([id]);
+            if (!entity) return 'missing';
+            const list = storedWorldViews(entity);
+            const at = list.findIndex(item => isRecord(item) && item.id === viewId);
+            if (at < 0) return 'no view';
+            const next = 'deleted' in change
+                ? list.filter(item => !(isRecord(item) && item.id === viewId))
+                : list.map((item, index) => (index === at ? { ...item, name: change.name } : item));
+            const done = await lib.books.inWorld(id, (form, commit) => commit([
+                next.length === 0
+                    ? { kind: 'valueDelete', entity: id, field: WORLD_VIEWS_FIELD }
+                    : { kind: 'jsonValue', entity: id, field: WORLD_VIEWS_FIELD, json: JSON.stringify(next) },
+                readerRecord(id, reader),
+            ]));
             return done === 'missing' ? 'missing' : 'ok';
         },
     };

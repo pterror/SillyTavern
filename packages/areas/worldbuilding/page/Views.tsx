@@ -1,11 +1,14 @@
 import { For, Show, createSignal } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
+import { ask } from '@st/page/dialog';
 import { ROW_FIELDS } from '../protocol.ts';
 import type { AxesView, RelationKind, RowField, SavedView, ViewShape, ViewsView } from '../protocol.ts';
 import { AxisControl } from './Axes.tsx';
 import type { Wb } from './context.ts';
 import { dismissOn } from './dismiss.ts';
+import { Icon } from './icons.tsx';
+import { fill } from './words.ts';
 
 type Shown = Extract<ViewsView, { book: string }>;
 
@@ -34,7 +37,13 @@ function ShapeIcon(props: { shape: ViewShape }) {
     );
 }
 
-export function ViewTabs(props: { views: Shown; onShow: (view: string) => void; onAdd: () => void }) {
+export function ViewTabs(props: {
+    views: Shown;
+    onShow: (view: string) => void;
+    onAdd: () => void;
+    onRename: (view: string, name: string) => void;
+    onDelete: (view: string) => void;
+}) {
     const { t } = useUi();
     return (
         <div class="wb-vtabs tab-container" aria-label={t('Views')}>
@@ -56,6 +65,13 @@ export function ViewTabs(props: { views: Shown; onShow: (view: string) => void; 
                             <Show when={tab.id === props.views.current && props.views.unsaved}>
                                 <span class="wb-vdot" title={t('Changed')} />
                             </Show>
+                            <Show when={tab.id === props.views.current}>
+                                <ViewMenuButton
+                                    name={tab.name}
+                                    onRename={(name) => props.onRename(tab.id, name)}
+                                    onDelete={() => props.onDelete(tab.id)}
+                                />
+                            </Show>
                         </span>
                     </label>
                 )}
@@ -64,6 +80,79 @@ export function ViewTabs(props: { views: Shown; onShow: (view: string) => void; 
                 {t('+ View')}
             </button>
         </div>
+    );
+}
+
+function ViewMenuButton(props: { name: string; onRename: (name: string) => void; onDelete: () => void }) {
+    const { t } = useUi();
+    const [open, setOpen] = createSignal(false);
+    let button: HTMLButtonElement | undefined;
+    let menu: HTMLDivElement | undefined;
+    return (
+        <span class="wb-vt-more-box">
+            <button
+                ref={(element) => (button = element)}
+                type="button"
+                class="right_menu_button interactable wb-vt-more"
+                aria-label={fill(t('More for ${0}'), props.name)}
+                aria-expanded={open()}
+                onClick={(event) => {
+                    event.preventDefault();
+                    setOpen(!open());
+                }}
+            >
+                <Icon name="more" size={15} />
+            </button>
+            <Show when={open()}>
+                {(() => {
+                    dismissOn(
+                        () => menu,
+                        () => setOpen(false),
+                        () => button,
+                    );
+                    const run = (action: () => Promise<void>) => {
+                        setOpen(false);
+                        void action();
+                    };
+                    return (
+                        <div class="wb-menu list-group wb-vt-menu" role="menu" ref={(element) => (menu = element)}>
+                            <button
+                                type="button"
+                                role="menuitem"
+                                class="list-group-item"
+                                onClick={() =>
+                                    run(async () => {
+                                        const name = await ask(
+                                            { kind: 'input', message: t('A name for the view'), value: props.name },
+                                            t,
+                                        );
+                                        if (name !== null && name.trim() !== '') props.onRename(name);
+                                    })
+                                }
+                            >
+                                {t('Rename…')}
+                            </button>
+                            <button
+                                type="button"
+                                role="menuitem"
+                                class="list-group-item wb-danger"
+                                onClick={() =>
+                                    run(async () => {
+                                        const sure = await ask(
+                                            { kind: 'confirm', message: fill(t('Delete the view ${0}?'), props.name) },
+                                            t,
+                                        );
+                                        if (sure) props.onDelete();
+                                    })
+                                }
+                            >
+                                {t('Delete')}
+                            </button>
+                        </div>
+                    );
+                })()}
+            </Show>
+        </span>
     );
 }
 
@@ -286,6 +375,12 @@ export function viewActions(wb: Wb, book: () => string | null) {
         },
         reset: () => {
             send('worldbuilding.resetView', { overview: overview() });
+        },
+        rename: (view: string, name: string) => {
+            send('worldbuilding.renameView', { view, name });
+        },
+        delete: (view: string) => {
+            send('worldbuilding.deleteView', { view, overview: overview() });
         },
     };
 }

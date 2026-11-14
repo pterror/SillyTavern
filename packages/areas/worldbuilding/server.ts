@@ -25,6 +25,7 @@ import {
     SELECTION_VIEW,
     SELECTION_WALK_STEPS,
     stepFitsTheBudget,
+    topLevelPerRead,
     TEXT_LINK_READS_PER_READ,
     WALK_STEPS_PER_READ,
     WORLD_VIEW,
@@ -70,7 +71,9 @@ import type {
     Named,
     OpenEntryView,
     Placement,
+    OverviewCell,
     OverviewLayout,
+    OverviewPage,
     OverviewView,
     PointingAtSection,
     PointingAtShown,
@@ -88,7 +91,7 @@ import type {
     SavedView,
     ViewsView,
 } from './protocol.ts';
-import { defineArea } from '@st/server-ui';
+import { defineArea, patch, patchOf } from '@st/server-ui';
 import type { ActionContext, ActionResult, Upload, User, ViewContext } from '@st/server-ui';
 import type { Looks } from '@st/protocol/looks';
 
@@ -103,15 +106,18 @@ export type PagesRun = { from: string | null; pages: number };
 // names its text writes, looked for in at most `textLinkReads` reads.
 export type EntryReadAsked = { mentions: PagesRun; mentionChecks: number; textLinkReads: number };
 
-export type ShownOverview = Grouping & {
-    firstRank: number;
-    endRank: number;
-    layout: OverviewLayout;
-    stepLandedOn: string | null;
-};
+// The top-level entries the tab has read, from the first to `endRank`, streamed a read's worth (topLevelPerRead) a part.
+export type ShownOverview = Grouping & { endRank: number; layout: OverviewLayout };
 
-// `groupBy` undefined: the world's default grouping, its first relation kind (none when it has none).
-export type ShownWorld = Omit<ShownOverview, 'book' | 'stepLandedOn' | 'groupBy'> & {
+export type OverviewRead = Grouping & { firstRank: number; endRank: number; layout: OverviewLayout };
+
+export type OverviewRangeRead = { topLevelCount: number; firstRank: number; entries: OverviewCell[] };
+
+// `groupBy` undefined: the world's default grouping, its first relation kind (none when it has none). `around`: an
+// occurrence whose top-level entry the read reaches.
+export type ShownWorld = {
+    layout: OverviewLayout;
+    ahead: number;
     groupBy?: string | null | undefined;
     around: string | null;
 };
@@ -215,6 +221,14 @@ export type StoredViews = { world: SavedView[]; reader: ReaderViews };
 export type Ports = {
     readViews(user: User, book: string): Promise<StoredViews | null>;
     writeReaderViews(who: Who, book: string, reader: ReaderViews): Promise<'ok' | 'missing'>;
+    // Renames or deletes the world's view `id`, and writes the reader's layer, in one write.
+    changeWorldView(
+        who: Who,
+        book: string,
+        id: string,
+        change: { name: string } | { deleted: true },
+        reader: ReaderViews,
+    ): Promise<'ok' | 'missing' | 'no view'>;
     // What rows show of each entry, in the order asked; null for one that isn't a live entry of the world.
     // `tokens`: also count each entry's tokens.
     readFacts(user: User, book: string, entries: string[], tokens: boolean): Promise<(EntryFacts | null)[]>;
@@ -222,7 +236,8 @@ export type Ports = {
     readCells(user: User, query: CellsQuery): Promise<CellRead[]>;
     // The looks of the things a view draws, as the view is read: the session's views' things are what a look's edit
     // answers looks for.
-    looksOf(context: ViewContext, view: string, things: string[]): Promise<Looks>;
+    // `adding`: the things are drawn besides those the view's earlier parts drew.
+    looksOf(context: ViewContext, view: string, things: string[], options?: { adding?: boolean }): Promise<Looks>;
     readWorlds(user: User): Promise<World[]>;
     readWorld(user: User, book: string): Promise<Omit<OpenWorldView, 'usedInThisChat'> | null>;
     // Whether a reply in the tab's chat reads the world; false with no chat.
@@ -266,7 +281,7 @@ export type Ports = {
     markTitleKeysAsNames(who: Who, book: string): Promise<NamesOfferChange>;
     declineNamesOffer(who: Who, book: string): Promise<NamesOfferChange>;
     undoMarkTitleKeysAsNames(who: Who, book: string): Promise<NamesOfferChange>;
-    readOverview(user: User, query: ShownOverview): Promise<Omit<OverviewView, 'book' | 'groupBy'> | null>;
+    readOverview(user: User, query: OverviewRead): Promise<OverviewRangeRead | null>;
     stepOverview(user: User, query: Grouping & { layout: OverviewLayout } & OverviewStep): Promise<StepLanding | null>;
     readPointingAt(user: User, query: PointingAtQuery): Promise<PointingAtSection[] | null>;
     stepPointingAt(
@@ -344,14 +359,7 @@ export type Ports = {
 
 const SESSIONS_REMEMBERED = 32;
 
-const NO_OVERVIEW: OverviewView = {
-    book: null,
-    groupBy: null,
-    topLevelCount: 0,
-    firstRank: 0,
-    entries: [],
-    stepLanding: null,
-};
+const NO_OVERVIEW: OverviewView = { book: null, groupBy: null, topLevelCount: 0, pageSize: 0, pageCount: 0, pages: {} };
 
 // `loops`: the loops the change left, in the world it changed.
 type LastChange = Omit<LastChangeView, keyof ShownLoops> & {
@@ -418,6 +426,13 @@ const NOT_SHOWN = "That world isn't shown.";
 const NOTHING_SELECTED_REFUSAL = 'Nothing is selected.';
 const TOO_MANY_PICKED = `At most ${PICKED_AT_MOST} entries are picked one at a time; select all matching instead.`;
 
+// Grouped by nothing, a top-level entry draws no region, so a page holds a read's worth of plain cards.
+const drawnLayout = ({ groupBy, layout }: Grouping & { layout: OverviewLayout }): OverviewLayout =>
+    groupBy === null ? { ...layout, regionsByNestingLevel: [] } : layout;
+
+export const pageSizeOf = (overview: Grouping & { layout: OverviewLayout }): number =>
+    topLevelPerRead(drawnLayout(overview));
+
 export function rangeAround(rank: number, firstRank: number, endRank: number): { firstRank: number; endRank: number } {
     if (rank >= firstRank && rank < endRank) return { firstRank, endRank };
     const start = Math.max(0, rank - Math.floor((endRank - firstRank) / 2));
@@ -460,6 +475,9 @@ type CellPages = { book: string; view: string | null; pages: Record<string, numb
 
 type SessionState = {
     view: ShownViewState | null;
+    // The overview the tab's last read of it sent, and how many pages: a later read of the same one patches those and
+    // nulls the pages it no longer has.
+    overviewSent: { key: string; count: number } | null;
     cellPages: CellPages | null;
     world: ShownWorldState | null;
     card: CardAsked | null;
@@ -473,6 +491,7 @@ type SessionState = {
 
 const NO_SESSION_STATE: SessionState = {
     view: null,
+    overviewSent: null,
     cellPages: null,
     world: null,
     card: null,
@@ -704,7 +723,7 @@ export function worldbuildingArea(ports: Ports) {
         id: string | null,
         draft: SavedView | null,
         view: SavedView | null,
-        overview: Omit<ShownWorld, 'groupBy' | 'around'>,
+        overview: { layout: OverviewLayout; ahead: number },
     ): Promise<ActionResult> => {
         remember(context.session, { view: { book, id, draft }, cellPages: null });
         const shown = await showWorld(context, book, {
@@ -991,6 +1010,55 @@ export function worldbuildingArea(ports: Ports) {
         return { book, columns: headers.slice(0, columns.length), rows: headers.slice(columns.length), cells: drawn };
     };
 
+    // Each page a part. A read of what the tab already holds (the same world, grouping and page size) patches it, so
+    // what is drawn stays while the parts come; the first read of another sets it.
+    const readOverviewView = async function* (context: ViewContext): AsyncIterable<unknown> {
+        const overview = overviewOf(context.session);
+        if (!overview) {
+            remember(context.session, { overviewSent: null });
+            yield NO_OVERVIEW;
+            return;
+        }
+        const { book, groupBy, endRank } = overview;
+        const pageSize = pageSizeOf(overview);
+        const page = async (at: number): Promise<OverviewRangeRead | null> => {
+            const read = await ports.readOverview(context.user, {
+                book,
+                groupBy,
+                firstRank: at * pageSize,
+                endRank: Math.min(endRank, (at + 1) * pageSize),
+                layout: drawnLayout(overview),
+            });
+            if (read) await withFacts(context, book, entryCellsOf(read.entries));
+            return read;
+        };
+        const first = await page(0);
+        if (!first) {
+            remember(context.session, { overviewSent: null });
+            yield NO_OVERVIEW;
+            return;
+        }
+        const pageCount = Math.max(1, Math.ceil(Math.min(endRank, first.topLevelCount) / pageSize));
+        const key = `${book}/${groupBy}/${pageSize}`;
+        const sent = stateOf(context.session).overviewSent;
+        const held = sent?.key === key ? sent.count : null;
+        remember(context.session, { overviewSent: { key, count: pageCount } });
+        const pages: Record<string, OverviewPage | null> = {
+            0: { firstRank: first.firstRank, entries: first.entries },
+        };
+        if (held !== null) for (let gone = pageCount; gone < held; gone++) pages[gone] = null;
+        const head = { book, groupBy, topLevelCount: first.topLevelCount, pageSize, pageCount, pages };
+        yield held !== null ? patch(head) : head;
+        for (let at = 1; at < pageCount; at++) {
+            const read = await page(at);
+            if (!read) return;
+            yield patch({
+                topLevelCount: read.topLevelCount,
+                pages: { [at]: { firstRank: read.firstRank, entries: read.entries } },
+            });
+        }
+    };
+
     const readSelectionView = async (context: ViewContext): Promise<SelectionView> => {
         const selection = shownSelection(context.session);
         if (!selection) return NOTHING_SELECTED;
@@ -1042,7 +1110,7 @@ export function worldbuildingArea(ports: Ports) {
     const showWorld = async (
         context: ActionContext,
         book: string | null,
-        { groupBy, firstRank, endRank, layout, around }: ShownWorld,
+        { groupBy, layout, ahead, around }: ShownWorld,
         keepsEntry = true,
     ): Promise<{ changed: string[]; opensViews: string[]; own: string[] }> => {
         const opened = await ports.openWorld(who(context), book);
@@ -1091,14 +1159,7 @@ export function worldbuildingArea(ports: Ports) {
             id: viewId,
             draft: view && groupBy !== undefined && groupBy !== view.groupBy ? { ...view, groupBy } : draft,
         };
-        let overview: ShownOverview = {
-            book: opened,
-            groupBy: grouping,
-            firstRank,
-            endRank,
-            layout,
-            stepLandedOn: null,
-        };
+        const overview: ShownOverview = { book: opened, groupBy: grouping, endRank: ahead, layout };
         if (around !== null && stepFitsTheBudget(1, layout)) {
             const landed = await ports.stepOverview(context.user, {
                 book: opened,
@@ -1107,13 +1168,7 @@ export function worldbuildingArea(ports: Ports) {
                 from: around,
                 by: 0,
             });
-            if (landed) {
-                overview = {
-                    ...overview,
-                    ...rangeAround(landed.topLevelRank, firstRank, endRank),
-                    stepLandedOn: landed.occurrence,
-                };
-            }
+            if (landed) overview.endRank = Math.max(ahead, landed.topLevelRank + 1);
         }
         const { filter, selection, world } = stateOf(context.session);
         const filterStays = filter?.book === opened;
@@ -1139,7 +1194,7 @@ export function worldbuildingArea(ports: Ports) {
         context: ActionContext,
         book: string,
         entry: string | null,
-        overview: Omit<ShownWorld, 'groupBy' | 'around'>,
+        overview: { layout: OverviewLayout; ahead: number },
         pointingAt: PointingAtShown,
     ): Promise<ActionResult> => {
         const held = overviewOf(context.session);
@@ -1158,7 +1213,7 @@ export function worldbuildingArea(ports: Ports) {
     const newWorldShown = async (
         context: ActionContext,
         made: NewWorld | 'missing',
-        overview: Omit<ShownWorld, 'groupBy' | 'around'>,
+        overview: { layout: OverviewLayout; ahead: number },
     ): Promise<ActionResult> => {
         if (made === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
         if ('refused' in made) return { refused: made.refused };
@@ -1195,13 +1250,31 @@ export function worldbuildingArea(ports: Ports) {
             : { changed: [...VIEWS_OF_CARDS, CARD_VIEW], own: [ENTRY_VIEW] };
     };
 
-    const drawn = (views: Record<string, (context: ViewContext) => Promise<object>>) =>
+    const drawn = (
+        views: Record<string, (context: ViewContext) => Promise<object> | AsyncIterable<unknown>>,
+    ): Record<string, (context: ViewContext) => Promise<object> | AsyncIterable<unknown>> =>
         Object.fromEntries(
             Object.entries(views).map(([key, read]) => [
                 key,
-                async (context: ViewContext) => {
-                    const value = await read(context);
-                    return { ...value, looks: await ports.looksOf(context, key, thingsDrawn(key, value)) };
+                (context: ViewContext) => {
+                    const value = read(context);
+                    if (!(Symbol.asyncIterator in value))
+                        return value.then(async (whole) => ({
+                            ...whole,
+                            looks: await ports.looksOf(context, key, thingsDrawn(key, whole)),
+                        }));
+                    return (async function* () {
+                        let first = true;
+                        for await (const part of value) {
+                            const patched = patchOf(part);
+                            const carried = (patched ? patched.value : part) as object;
+                            const looks = await ports.looksOf(context, key, thingsDrawn(key, carried), {
+                                adding: !first,
+                            });
+                            first = false;
+                            yield patched ? patch({ ...carried, looks }) : { ...carried, looks };
+                        }
+                    })();
                 },
             ]),
         );
@@ -1237,14 +1310,7 @@ export function worldbuildingArea(ports: Ports) {
                 });
                 return { asked, cards };
             },
-            [OVERVIEW_VIEW]: async (context: ViewContext): Promise<OverviewView> => {
-                const overview = overviewOf(context.session);
-                if (!overview) return NO_OVERVIEW;
-                const read = await ports.readOverview(context.user, overview);
-                if (!read) return NO_OVERVIEW;
-                await withFacts(context, overview.book, entryCellsOf(read.entries));
-                return { book: overview.book, groupBy: overview.groupBy, ...read };
-            },
+            [OVERVIEW_VIEW]: readOverviewView,
             [VIEWS_VIEW]: async (context: ViewContext): Promise<ViewsView> => {
                 const state = stateOf(context.session).view;
                 if (!state) return NO_VIEWS;
@@ -1309,22 +1375,9 @@ export function worldbuildingArea(ports: Ports) {
         },
         actions: {
             'worldbuilding.openOverview': (context, { book, ...shown }) => showWorld(context, book, shown),
-            'worldbuilding.showRange': withOverview(async (context, overview, { firstRank, endRank }) => {
-                if (!readFitsTheBudget(endRank - firstRank, overview.layout)) return { refused: READ_REFUSAL };
-                rememberOverview(context.session, { ...overview, firstRank, endRank });
-                return { changed: [OVERVIEW_VIEW] };
-            }),
-            'worldbuilding.stepOverview': withOverview(async (context, overview, step) => {
-                const crossed = 'by' in step ? Math.abs(step.by) + 1 : 1;
-                if (!stepFitsTheBudget(crossed, overview.layout)) return { refused: READ_REFUSAL };
-                const { book, groupBy, layout, firstRank, endRank } = overview;
-                const landed = await ports.stepOverview(context.user, { book, groupBy, layout, ...step });
-                if (!landed) return { refused: 'That is no longer shown.', changed: [OVERVIEW_VIEW] };
-                rememberOverview(context.session, {
-                    ...overview,
-                    ...rangeAround(landed.topLevelRank, firstRank, endRank),
-                    stepLandedOn: landed.occurrence,
-                });
+            'worldbuilding.showMore': withOverview(async (context, overview, { to }) => {
+                if (to <= overview.endRank) return { changed: [] };
+                rememberOverview(context.session, { ...overview, endRank: to });
                 return { changed: [OVERVIEW_VIEW] };
             }),
             'worldbuilding.showRelationKinds': async (context, { book }) => {
@@ -1498,9 +1551,8 @@ export function worldbuildingArea(ports: Ports) {
                     return { changed, own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW] };
                 }
                 const shown = await showWorld(context, toBook, {
-                    firstRank: 0,
-                    endRank: overview.endRank - overview.firstRank,
                     layout: overview.layout,
+                    ahead: overview.endRank,
                     around: moved.entry,
                 });
                 rememberEntry(context.session, openedNow(moved.entry, open.shown.pointingAt), { lastChange });
@@ -1564,11 +1616,9 @@ export function worldbuildingArea(ports: Ports) {
                 if ('refused' in done) return { refused: done.refused };
                 forgetWorld(book);
                 if (shown?.book === book) {
-                    const { layout, firstRank, endRank } = shown;
                     const opened = await showWorld(context, done.next, {
-                        firstRank: 0,
-                        endRank: endRank - firstRank,
-                        layout,
+                        layout: shown.layout,
+                        ahead: shown.endRank,
                         around: null,
                     });
                     const changed = [RESULTS_VIEW, FOUND_VIEW, ENTRY_VIEW, POINTING_AT_VIEW, WORLDS_VIEW];
@@ -1753,6 +1803,58 @@ export function worldbuildingArea(ports: Ports) {
                 });
                 if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
                 return showViewOf(context, book, made.id, null, made, overview);
+            },
+            'worldbuilding.renameView': async (context, { book, view, name }) => {
+                const stored = await ports.readViews(context.user, book);
+                if (!stored) return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                const { reader } = stored;
+                const renamed = <T extends { name: string }>(held: T): T => ({ ...held, name });
+                const done = reader.own.some((own) => own.id === view)
+                    ? await ports.writeReaderViews(who(context), book, {
+                          ...reader,
+                          own: reader.own.map((own) => (own.id === view ? renamed(own) : own)),
+                      })
+                    : await ports.changeWorldView(
+                          who(context),
+                          book,
+                          view,
+                          { name },
+                          {
+                              ...reader,
+                              changed: Object.fromEntries(
+                                  Object.entries(reader.changed).map(([id, held]) => [
+                                      id,
+                                      id === view ? renamed(held) : held,
+                                  ]),
+                              ),
+                          },
+                      );
+                if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                if (done === 'no view') return { refused: NO_SUCH_VIEW, changed: [VIEWS_VIEW] };
+                const state = stateOf(context.session).view;
+                if (state?.book === book && state.id === view && state.draft)
+                    remember(context.session, { view: { ...state, draft: renamed(state.draft) } });
+                return { changed: [VIEWS_VIEW] };
+            },
+            'worldbuilding.deleteView': async (context, { book, view, overview }) => {
+                const stored = await ports.readViews(context.user, book);
+                if (!stored) return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                const { reader } = stored;
+                const own = reader.own.some((held) => held.id === view);
+                const { [view]: _dropped, ...changed } = reader.changed;
+                const done = own
+                    ? await ports.writeReaderViews(who(context), book, {
+                          ...reader,
+                          own: reader.own.filter((held) => held.id !== view),
+                      })
+                    : await ports.changeWorldView(who(context), book, view, { deleted: true }, { ...reader, changed });
+                if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                if (done === 'no view') return { refused: NO_SUCH_VIEW, changed: [VIEWS_VIEW] };
+                const state = stateOf(context.session).view;
+                if (state?.book !== book || state.id !== view) return { changed: [VIEWS_VIEW] };
+                const left = await ports.readViews(context.user, book);
+                const next = left ? (tabsOf(left)[0] ?? null) : null;
+                return showViewOf(context, book, next?.id ?? null, null, next, overview);
             },
             'worldbuilding.showMoreInCell': async (context, { book, column, row }) => {
                 const shown = await viewShown(context.user, context.session);

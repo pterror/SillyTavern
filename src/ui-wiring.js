@@ -672,14 +672,14 @@ const worldbuildingPorts = {
     async readLoopsLeftByJobs(user, book) {
         return (await libOf(user)).books.jobs.loopsLeft(BigInt(book));
     },
-    async readOverview(user, { book, groupBy, firstRank, endRank, layout, stepLandedOn }) {
+    async readOverview(user, { book, groupBy, firstRank, endRank, layout }) {
         const lib = await libOf(user);
         return withPictureUrls(await lib.store.worldRead('worldbuildingOverview', {
             book: BigInt(book),
             groupBy: groupBy === null ? null : Number(groupBy),
             firstRank,
             endRank,
-            stepLandedOn,
+            stepLandedOn: null,
             cardTextCharacters: layout.cardTextCharacters,
             ...regionLayout(layout),
         }));

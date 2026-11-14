@@ -108,7 +108,7 @@ test.describe('a world of hundreds of entries, on its page', () => {
     test('a row switches its entry on and off in one action', async ({ page }) => {
         await pane(page).getByRole('button', { name: '+ View' }).click();
         await pane(page).locator('.wb-vseg label').nth(1).click();
-        const row = pane(page).locator('.wb-tr[data-entry]', { hasText: /^Entry 11/ });
+        const row = pane(page).locator('.wb-tr[data-entry]', { hasText: /^Entry 11(?!\d)/ });
         await expect(row.locator('.wb-onoff')).toHaveAttribute('aria-checked', 'false');
         const sent = await actionsDuring(page, 'worldbuilding.setPlacement', async () => {
             await row.locator('.wb-onoff').click();

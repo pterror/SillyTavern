@@ -46,7 +46,7 @@ function stand(entry: OpenEntryView) {
             return { ok: true };
         },
         layout: () => ({ regionsByNestingLevel: [], cardTextCharacters: 0 }),
-        firstRead: () => ({ firstRank: 0, endRank: 1, layout: { regionsByNestingLevel: [], cardTextCharacters: 0 } }),
+        firstRead: () => ({ layout: { regionsByNestingLevel: [], cardTextCharacters: 0 }, ahead: 1 }),
         pointingAt: () => ({ endRank: 1, layout: { regionsByNestingLevel: [], cardTextCharacters: 0 } }),
         open: () => {},
         say: () => {},

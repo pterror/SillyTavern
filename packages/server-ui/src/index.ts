@@ -171,6 +171,7 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
         const parts = value[Symbol.asyncIterator]();
         const first = await parts.next();
         if (first.done === true) throw new Error(`The view ${key} read nothing`);
+        const head = first.value as unknown;
         const later = (async function* () {
             for (let part = 1; ; part++) {
                 const next = await parts.next();
@@ -182,7 +183,9 @@ export function createUi(areas: Area[], { userOf, chatOf }: UiOptions): Ui {
                     : { key, version: version + part, value };
             }
         })();
-        return { frames: [{ key, version, value: first.value as unknown }], later: [later] };
+        const opening: ViewFrame =
+            head instanceof Patch ? { key, version, patch: head.value } : { key, version, value: head };
+        return { frames: [opening], later: [later] };
     };
 
     const framesOf = async (tab: Tab, keys: Iterable<string>): Promise<Read> => {

@@ -9,7 +9,7 @@ export type Wb = {
     act(type: string, payload: unknown, file?: File): Promise<ActionResult>;
     layout: Accessor<OverviewLayout>;
     // The top-level entries a newly shown world reads first.
-    firstRead: Accessor<{ firstRank: number; endRank: number; layout: OverviewLayout }>;
+    firstRead: Accessor<{ layout: OverviewLayout; ahead: number }>;
     pointingAt: Accessor<PointingAtShown>;
     open(entry: string): void;
     say(words: string): void;

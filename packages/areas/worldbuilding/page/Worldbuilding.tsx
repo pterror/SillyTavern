@@ -34,9 +34,8 @@ import type { Wb } from './context.ts';
 import { DragLayer, dragControl } from './Drag.tsx';
 import { EntryPage } from './Entry.tsx';
 import { Icon } from './icons.tsx';
-import { PLAIN_ROWS_PER_SCREEN, pageLayout, sameLayout, topLevelShown } from './layout.ts';
+import { PLAIN_ROWS_PER_SCREEN, aheadIn, pageLayout, sameLayout } from './layout.ts';
 import type { PageLayout } from './layout.ts';
-import type { Range } from './Overview.tsx';
 import { NOTHING_TYPED, SearchBox, filterOf } from './Search.tsx';
 import type { Typed } from './Search.tsx';
 import { Switcher } from './Switcher.tsx';
@@ -75,10 +74,10 @@ function Page(props: Props) {
 
     const [pane, setPane] = createSignal<HTMLElement>();
     const [width, setWidth] = createSignal(0);
+    const [height, setHeight] = createSignal(0);
     const layout = createMemo<PageLayout>(() => pageLayout(width() > 0 ? width() : 1280), pageLayout(1280), {
         equals: (a, b) => sameLayout(a.overview, b.overview) && a.columns === b.columns,
     });
-    const shownTop = () => topLevelShown(layout());
     const resultsPageSize = () => Math.min(MAX_CARDS_PER_READ, 2 * PLAIN_ROWS_PER_SCREEN * layout().columns);
     const pointingAtShown = (): PointingAtShown => ({ endRank: POINTING_AT_SHOWN, layout: layout().overview });
 
@@ -115,7 +114,10 @@ function Page(props: Props) {
         if (!done.ok) say(done.error);
         return done;
     };
-    const firstRead = () => ({ firstRank: 0, endRank: shownTop(), layout: layout().overview });
+    const firstRead = () => ({
+        layout: layout().overview,
+        ahead: aheadIn(height() > 0 ? height() : 820, layout().columns),
+    });
     const openWorld = (book: string | null, groupBy?: string | null) =>
         act('worldbuilding.openOverview', {
             book,
@@ -203,7 +205,11 @@ function Page(props: Props) {
         const element = pane();
         if (!element) return;
         setWidth(element.clientWidth);
-        const watch = new ResizeObserver(() => setWidth(element.clientWidth));
+        setHeight(element.clientHeight);
+        const watch = new ResizeObserver(() => {
+            setWidth(element.clientWidth);
+            setHeight(element.clientHeight);
+        });
         watch.observe(element);
         onCleanup(() => watch.disconnect());
         if (props.target) return;
@@ -298,7 +304,13 @@ function Page(props: Props) {
                 <Show when={!shownEntry() && shownViews()}>
                     {(shown) => (
                         <>
-                            <ViewTabs views={shown()} onShow={viewActions.show} onAdd={viewActions.add} />
+                            <ViewTabs
+                                views={shown()}
+                                onShow={viewActions.show}
+                                onAdd={viewActions.add}
+                                onRename={viewActions.rename}
+                                onDelete={viewActions.delete}
+                            />
                             <ViewBar
                                 views={shown()}
                                 kinds={shownKinds()}
@@ -324,8 +336,6 @@ function Page(props: Props) {
                                         kinds={shownKinds()}
                                         lastChange={lastChange() ?? null}
                                         pane={pane() as HTMLElement}
-                                        shown={shownTop()}
-                                        columns={layout().columns}
                                         resultsPageSize={resultsPageSize()}
                                         actions={actions}
                                         onGroupBy={(groupBy) => void openWorld(shown().id, groupBy)}
@@ -333,7 +343,7 @@ function Page(props: Props) {
                                         rows={rows()}
                                         axes={shownAxes()}
                                         onAxes={viewActions.change}
-                                        onRange={(range: Range) => void act('worldbuilding.showRange', range)}
+                                        onMore={(to) => void act('worldbuilding.showMore', { to })}
                                         onMoreResults={(pages) =>
                                             void act('worldbuilding.showResults', {
                                                 from: shownResults()?.pages[0]?.cursor ?? null,

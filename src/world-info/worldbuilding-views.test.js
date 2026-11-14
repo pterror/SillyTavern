@@ -69,3 +69,25 @@ test('a world file\'s views are the world\'s, their targets the entries its keys
     assert.deepEqual((await views.readViews(uiUser, made.book))?.reader, { changed: {}, own: [] });
     assert.equal(await views.readViews(uiUser, '999999'), null);
 });
+
+test('a world\'s view is renamed or deleted in the world, with the reader\'s layer, in one write; the file follows', async () => {
+    const made = /** @type {{ book: string }} */ (await worlds.importWorld(who, upload('Shore.json', WORLD)));
+    const read = await views.readViews(uiUser, made.book);
+    const copy = { ...read?.world[0], drawing: /** @type {const} */ ('rows') };
+    const reader = { changed: { places: /** @type {any} */ ({ ...copy, name: 'Towns' }) }, own: [] };
+    assert.equal(await views.changeWorldView(who, made.book, 'places', { name: 'Towns' }, reader), 'ok');
+    const renamed = await views.readViews(uiUser, made.book);
+    assert.deepEqual(renamed?.world.map(view => view.name), ['Towns', 'Who']);
+    assert.equal(renamed?.reader.changed.places?.name, 'Towns');
+    assert.equal(renamed?.world[0].chips[0]?.target, read?.world[0].chips[0]?.target, 'its targets stay as they were');
+
+    assert.equal(await views.changeWorldView(who, made.book, 'places', { deleted: true }, { changed: {}, own: [] }), 'ok');
+    const left = await views.readViews(uiUser, made.book);
+    assert.deepEqual(left?.world.map(view => view.id), ['board']);
+    assert.deepEqual(left?.reader, { changed: {}, own: [] });
+    const exported = JSON.parse(/** @type {any} */ (await worlds.exportWorld(uiUser, made.book)).json);
+    assert.ok(!exported.views.some((/** @type {any} */ view) => view.id === 'places'), 'the deleted view leaves the file');
+
+    assert.equal(await views.changeWorldView(who, made.book, 'gone', { deleted: true }, { changed: {}, own: [] }), 'no view');
+    assert.equal(await views.changeWorldView(who, '999999', 'board', { deleted: true }, { changed: {}, own: [] }), 'missing');
+});

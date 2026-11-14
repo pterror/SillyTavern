@@ -10,10 +10,9 @@ import type { CardActions } from './Cards.tsx';
 import { useWb } from './context.ts';
 import { Editable } from './Editable.tsx';
 import { Icon } from './icons.tsx';
-import { TopLevel } from './Overview.tsx';
-import type { Range } from './Overview.tsx';
+import { TopLevel, drawnEntries } from './Overview.tsx';
 import { Results } from './Search.tsx';
-import { EntryRows, ROW_HEIGHT, RowsHead } from './Rows.tsx';
+import { EntryRows, RowsHead } from './Rows.tsx';
 import type { RowsContext } from './Rows.tsx';
 import { count, fill } from './words.ts';
 
@@ -26,12 +25,10 @@ export function WorldPage(props: {
     kinds: RelationKind[];
     lastChange: LastChangeView | null;
     pane: HTMLElement;
-    shown: number;
-    columns: number;
     resultsPageSize: number;
     actions: CardActions;
     onGroupBy: (kind: string | null) => void;
-    onRange: (range: Range) => void;
+    onMore: (from: number) => void;
     onMoreResults: (pages: number) => void;
     // Set when the world has saved views: the bar under the tabs, not the header, chooses the grouping.
     viewed: boolean;
@@ -231,10 +228,8 @@ export function WorldPage(props: {
                                         <TopLevel
                                             view={overview()}
                                             pane={props.pane}
-                                            shown={props.shown}
-                                            columns={props.columns}
                                             actions={actions}
-                                            onRange={props.onRange}
+                                            onMore={props.onMore}
                                             {...(props.rows
                                                 ? {
                                                       rows: (cell) => (
@@ -244,7 +239,6 @@ export function WorldPage(props: {
                                                               context={props.rows as RowsContext}
                                                           />
                                                       ),
-                                                      rowHeight: ROW_HEIGHT,
                                                   }
                                                 : {})}
                                         />
@@ -272,7 +266,7 @@ export function WorldPage(props: {
                     props.rows &&
                     !props.results &&
                     props.overview &&
-                    props.overview.firstRank + props.overview.entries.length < props.overview.topLevelCount
+                    drawnEntries(props.overview).length < props.overview.topLevelCount
                 }
             >
                 <div class="wb-tr wb-loadrow">

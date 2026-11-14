@@ -1,7 +1,7 @@
 import { expect, test } from 'vite-plus/test';
-import { MAX_CARDS_PER_READ, readFitsTheBudget } from '../protocol.ts';
+import { readFitsTheBudget } from '../protocol.ts';
 import { gistOf } from './Cards.tsx';
-import { pageLayout, topLevelShown } from './layout.ts';
+import { pageLayout } from './layout.ts';
 import { chanceOf, comesOf } from './Placement.tsx';
 import { NOTHING_TYPED, filterOf } from './Search.tsx';
 import { paragraphsOf } from './Text.tsx';
@@ -44,7 +44,7 @@ test('the prompt sentence reads when an entry comes in and how often from upstre
     expect(chanceOf({ probability: 50, useProbability: false })).toBe(100);
 });
 
-test('the layout fits the page width, and a read never asks for more cards than the budget', () => {
+test('the layout fits the page width, and one top-level entry with its regions full fits a read', () => {
     const wide = pageLayout(1280);
     expect(wide.columns).toBe(3);
     expect(wide.overview.regionsByNestingLevel).toEqual([
@@ -57,11 +57,7 @@ test('the layout fits the page width, and a read never asks for more cards than 
         { columns: 1, rows: 4 },
     ]);
     for (const width of [390, 800, 1280, 4000]) {
-        const layout = pageLayout(width);
-        const shown = topLevelShown(layout);
-        expect(shown).toBeGreaterThan(0);
-        expect(readFitsTheBudget(shown, layout.overview)).toBe(true);
-        expect(shown).toBeLessThanOrEqual(MAX_CARDS_PER_READ);
+        expect(readFitsTheBudget(1, pageLayout(width).overview)).toBe(true);
     }
 });
 

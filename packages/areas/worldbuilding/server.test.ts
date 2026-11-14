@@ -8,6 +8,7 @@ import {
     AXES_VIEW,
     CELL_HEADS_ABOVE,
     cardsPerTopLevelEntry,
+    topLevelPerRead,
     ENTRY_VIEW,
     FOUND_PER_QUERY,
     CHARACTERS_FOUND_VIEW,
@@ -86,6 +87,7 @@ import type {
     EntryRead,
     Grouping,
     HeldSelection,
+    OverviewRead,
     OverviewStep,
     PagesRun,
     PointingAtQuery,
@@ -96,8 +98,9 @@ import type {
     ReaderViews,
     StoredViews,
 } from './server.ts';
+import { patchOf } from '@st/server-ui';
 import type { ActionContext, ActionResult, Upload, User } from '@st/server-ui';
-import type { AxesView, CardView, CellCard, SavedView, ViewsView } from './protocol.ts';
+import type { AxesView, CardView, CellCard, OverviewCell, SavedView, ViewsView } from './protocol.ts';
 
 const LOOK: ResolvedLook = {
     layers: { rest: [{ property: 'color', value: 'teal' }] },
@@ -172,6 +175,7 @@ const PLACEMENT = v.parse(v.object(placementFields), {
 const NO_FILTER = { exclude: false, characters: [], tags: [], more: 0 };
 
 const LAYOUT: OverviewLayout = { regionsByNestingLevel: [{ columns: 3, rows: 2 }], cardTextCharacters: 300 };
+const PAGE = topLevelPerRead(LAYOUT);
 
 const card = (occurrence: string, topLevelRank: number): EntryCell & { topLevelRank: number } => ({
     cell: 'entry',
@@ -303,7 +307,7 @@ function world(
     { worlds: listed = ['1', '2'], results = 5 }: { worlds?: string[]; results?: number } = {},
 ) {
     const asked: {
-        overview: unknown[];
+        overview: OverviewRead[];
         step: (Grouping & OverviewStep)[];
         changes: { book: string; change: RelationChange; loopCheckLimit: number; session: string }[];
         writes: number[];
@@ -454,6 +458,20 @@ function world(
             storedViews.set(book, { world: storedViews.get(book)?.world ?? [], reader });
             return 'ok';
         },
+        changeWorldView: async ({ session }, book, id, change, reader) => {
+            if (!worlds.has(book)) return 'missing';
+            const world = storedViews.get(book)?.world ?? [];
+            if (!world.some((view) => view.id === id)) return 'no view';
+            readerWrites.push({ book, reader, session });
+            storedViews.set(book, {
+                world:
+                    'deleted' in change
+                        ? world.filter((view) => view.id !== id)
+                        : world.map((view) => (view.id === id ? { ...view, name: change.name } : view)),
+                reader,
+            });
+            return 'ok';
+        },
         readCells: async (_u, query) => {
             asked.cells.push(query);
             return query.cells.map((cell) => ({
@@ -595,14 +613,7 @@ function world(
             if (q.book !== '1') return null;
             const entries = [];
             for (let r = q.firstRank; r < Math.min(q.endRank, count); r++) entries.push(card(String(r + 100), r));
-            const rank = q.stepLandedOn === null ? -1 : Number(q.stepLandedOn.split('/')[0]) - 100;
-            return {
-                topLevelCount: count,
-                firstRank: q.firstRank,
-                entries,
-                stepLanding:
-                    rank >= 0 && rank < count ? { occurrence: q.stepLandedOn ?? '', topLevelRank: rank } : null,
-            };
+            return { topLevelCount: count, firstRank: q.firstRank, entries };
         },
         stepOverview: async (_u, { layout, ...q }) => {
             void layout;
@@ -815,22 +826,36 @@ function world(
     const reads = { asked: 0 };
     const area = worldbuildingArea(countingReads(ports, reads));
     const context: ActionContext = { user, session: 's', chat: null, upload: null };
-    const withoutLooks = async <T>(read: Promise<unknown>): Promise<T> => {
-        const { looks: _, ...value } = (await read) as { looks: unknown };
+    const withoutLooks = async <T>(read: unknown): Promise<T> => {
+        const { looks: _, ...value } = (await settled(read)) as { looks: unknown };
         return value as T;
     };
-    const view = <T>(key: string) => withoutLooks<T>(area.views[key]!(context) as Promise<unknown>);
+    const view = <T>(key: string) => withoutLooks<T>(area.views[key]!(context));
     const parsed = (type: string, payload: unknown) =>
         v.parse(actions[type as keyof typeof actions] as v.GenericSchema, payload);
     const act = (type: string, payload: unknown, upload: Upload | null = null): Promise<ActionResult> =>
         area.actions[type]!({ ...context, upload }, parsed(type, payload));
     const other = (type: string, payload: unknown): Promise<ActionResult> =>
         area.actions[type]!({ ...context, session: 't' }, parsed(type, payload));
-    const otherView = <T>(key: string) =>
-        withoutLooks<T>(area.views[key]!({ ...context, session: 't' }) as Promise<unknown>);
-    const chatView = <T>(key: string) =>
-        withoutLooks<T>(area.views[key]!({ ...context, chat: { tree: '9' } }) as Promise<unknown>);
-    const drawnView = (key: string) => area.views[key]!(context) as Promise<{ looks: Looks }>;
+    const otherView = <T>(key: string) => withoutLooks<T>(area.views[key]!({ ...context, session: 't' }));
+    const chatView = <T>(key: string) => withoutLooks<T>(area.views[key]!({ ...context, chat: { tree: '9' } }));
+    const drawnView = (key: string) => settled(area.views[key]!(context)) as Promise<{ looks: Looks }>;
+    // Each part of a view's read, the reads asked for each.
+    const readsPerPart = async (key: string): Promise<number[]> => {
+        const read = area.views[key]!(context);
+        if (!isParts(read)) {
+            reads.asked = 0;
+            await read;
+            return [reads.asked];
+        }
+        const counted: number[] = [];
+        reads.asked = 0;
+        for await (const _part of read) {
+            counted.push(reads.asked);
+            reads.asked = 0;
+        }
+        return counted;
+    };
     return {
         view,
         drawnView,
@@ -841,10 +866,57 @@ function world(
         asked,
         reads,
         views: Object.keys(area.views),
+        readsPerPart,
+        // Each part of a read, without its looks, and whether it patches what the page holds.
+        parts: async (key: string): Promise<{ patch: boolean; value: unknown }[]> => {
+            const read = area.views[key]!(context);
+            const all: { patch: boolean; value: unknown }[] = [];
+            if (!isParts(read)) return [{ patch: false, value: await read }];
+            for await (const part of read) {
+                const patched = patchOf(part);
+                const { looks: _, ...value } = (patched ? patched.value : part) as { looks: unknown };
+                all.push({ patch: patched !== null, value });
+            }
+            return all;
+        },
+        setCount: (now: number) => {
+            count = now;
+        },
         storedViews,
         readerWrites,
     };
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isParts = (value: unknown): value is AsyncIterable<unknown> =>
+    typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
+
+// What the page holds once every part of a read is in, as its client merges a patch into what it holds.
+const mergedInto = (held: unknown, change: unknown): unknown => {
+    if (!isRecord(held) || !isRecord(change)) return change;
+    const merged = { ...held };
+    for (const [key, value] of Object.entries(change)) merged[key] = mergedInto(merged[key], value);
+    return merged;
+};
+
+async function settled(read: unknown): Promise<unknown> {
+    if (!isParts(read)) return read;
+    let held: unknown;
+    for await (const part of read) {
+        const patched = patchOf(part);
+        held = patched ? mergedInto(held, patched.value) : part;
+    }
+    return held;
+}
+
+// The overview's top-level entries, page after page, as the page draws them.
+const entriesOf = (view: OverviewView): OverviewCell[] => {
+    const all: OverviewCell[] = [];
+    for (let at = 0; at < view.pageCount; at++) all.push(...(view.pages[at]?.entries ?? []));
+    return all;
+};
 
 const WORLD_VIEWS = [
     OVERVIEW_VIEW,
@@ -859,13 +931,13 @@ const WORLD_VIEWS = [
     BULK_JOBS_VIEW,
 ];
 
-const open = { book: '1', groupBy: '1', firstRank: 0, endRank: 20, layout: LAYOUT, around: null };
+const open = { book: '1', groupBy: '1', layout: LAYOUT, ahead: PAGE, around: null };
 
 const pointingAt = { endRank: 12, layout: LAYOUT };
 
 test('every view carries the looks of exactly the names it draws, and the looks know which session drew them', async () => {
-    const w = world(1000);
-    await w.act('worldbuilding.openOverview', { ...open, endRank: 3 });
+    const w = world(3);
+    await w.act('worldbuilding.openOverview', open);
     await w.act('worldbuilding.openEntry', { entry: '7', pointingAt });
     const overview = await w.drawnView(OVERVIEW_VIEW);
     expect(Object.keys(overview.looks.things)).toEqual(['100', '101', '102']);
@@ -885,9 +957,9 @@ test('opening a world opens its overview, its kinds and the last change in the s
         book: null,
         groupBy: null,
         topLevelCount: 0,
-        firstRank: 0,
-        entries: [],
-        stepLanding: null,
+        pageSize: 0,
+        pageCount: 0,
+        pages: {},
     });
     expect(await w.act('worldbuilding.openOverview', open)).toEqual({
         changed: [],
@@ -916,8 +988,8 @@ test('opening a world opens its overview, its kinds and the last change in the s
         moreUnreachedLoops: 0,
     });
     const shown = await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect(shown).toMatchObject({ book: '1', groupBy: '1', topLevelCount: 1000, firstRank: 0, stepLanding: null });
-    expect(shown.entries.map((i) => i.topLevelRank)).toEqual([...Array(20).keys()]);
+    expect(shown).toMatchObject({ book: '1', groupBy: '1', topLevelCount: 1000, pageSize: PAGE, pageCount: 1 });
+    expect(entriesOf(shown).map((i) => i.topLevelRank)).toEqual([...Array(PAGE).keys()]);
     expect(w.asked.overview[0]).toMatchObject({ layout: LAYOUT });
     expect(await w.view<RelationKindsView>(RELATION_KINDS_VIEW)).toEqual({
         book: '1',
@@ -937,56 +1009,74 @@ test('a world opened without a grouping is grouped by its first relation kind; g
     expect((await w.view<OverviewView>(OVERVIEW_VIEW)).groupBy).toBe('1');
 });
 
-test('opening around an occurrence puts the range around its top-level entry and marks where it landed', async () => {
+test('opening around an occurrence reads every top-level entry up to its own, in a part a page', async () => {
     const w = world(1000);
-    await w.act('worldbuilding.openOverview', { ...open, around: '600/7/+' });
+    await w.act('worldbuilding.openOverview', { ...open, ahead: 20, around: '600/7/+' });
     expect(w.asked.step).toEqual([{ book: '1', groupBy: '1', from: '600/7/+', by: 0 }]);
     const shown = await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect(shown.firstRank).toBe(490);
-    expect(shown.entries).toHaveLength(20);
-    expect(shown.stepLanding).toEqual({ occurrence: '600', topLevelRank: 500 });
+    expect(shown.pageCount).toBe(Math.ceil(501 / PAGE));
+    expect(entriesOf(shown).map((i) => i.topLevelRank)).toEqual([...Array(501).keys()]);
 });
 
-test('showing a range reads it; nothing is shown before a world is opened', async () => {
+test('the opening reads as many top-level entries as the page asks, however many parts that takes', async () => {
+    const w = world(3000);
+    await w.act('worldbuilding.openOverview', { ...open, ahead: 2500 });
+    const parts = await w.parts(OVERVIEW_VIEW);
+    expect(parts).toHaveLength(Math.ceil(2500 / PAGE));
+    expect(entriesOf((await w.view<OverviewView>(OVERVIEW_VIEW)) as OverviewView)).toHaveLength(2500);
+});
+
+test('showing more reads the next page and keeps every page read; asking again from the same place reads it once', async () => {
     const w = world(1000);
-    expect(await w.act('worldbuilding.showRange', { firstRank: 40, endRank: 60 })).toEqual({
-        refused: 'No world is shown.',
-    });
-    await w.act('worldbuilding.openOverview', { ...open, groupBy: null });
-    expect(await w.act('worldbuilding.showRange', { firstRank: 40, endRank: 60 })).toEqual({
-        changed: [OVERVIEW_VIEW],
-    });
+    expect(await w.act('worldbuilding.showMore', { to: 2 * PAGE })).toEqual({ refused: 'No world is shown.' });
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.act('worldbuilding.showMore', { to: 2 * PAGE })).toEqual({ changed: [OVERVIEW_VIEW] });
+    expect(await w.act('worldbuilding.showMore', { to: 2 * PAGE })).toEqual({ changed: [] });
     const shown = await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect([shown.firstRank, shown.entries[0]?.topLevelRank, shown.groupBy]).toEqual([40, 40, null]);
+    expect([shown.pageCount, entriesOf(shown).length, shown.groupBy]).toEqual([2, 2 * PAGE, '1']);
+    expect(w.asked.overview.slice(-2).map((q) => [q.firstRank, q.endRank])).toEqual([
+        [0, PAGE],
+        [PAGE, 2 * PAGE],
+    ]);
+    await w.act('worldbuilding.showMore', { to: 3 * PAGE });
+    await w.act('worldbuilding.showMore', { to: 4 * PAGE });
+    await w.act('worldbuilding.showMore', { to: 5 * PAGE });
+    const all = await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect([all.pageCount, entriesOf(all).length]).toEqual([5, 1000]);
 });
 
-test('a step lands where the store says, keeps the range when that is in it and follows it when it is not', async () => {
+test('a read of the overview the tab holds patches it, page by page, and nulls the pages it no longer has', async () => {
     const w = world(1000);
     await w.act('worldbuilding.openOverview', open);
-    await w.act('worldbuilding.stepOverview', { from: '105', by: 1 });
-    let shown = await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect([shown.firstRank, shown.stepLanding]).toEqual([0, { occurrence: '106', topLevelRank: 6 }]);
-    await w.act('worldbuilding.stepOverview', { from: '106', by: 30 });
-    shown = await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect([shown.firstRank, shown.stepLanding]).toEqual([26, { occurrence: '136', topLevelRank: 36 }]);
-    await w.act('worldbuilding.stepOverview', { from: '136/3', to: 'parent' });
-    expect(w.asked.step.at(-1)).toEqual({ book: '1', groupBy: '1', from: '136/3', to: 'parent' });
-    expect((await w.view<OverviewView>(OVERVIEW_VIEW)).stepLanding).toEqual({ occurrence: '136', topLevelRank: 36 });
-    expect(await w.act('worldbuilding.stepOverview', { from: '5000', by: 1 })).toEqual({
-        refused: 'That is no longer shown.',
-        changed: [OVERVIEW_VIEW],
-    });
+    await w.act('worldbuilding.showMore', { to: 2 * PAGE });
+    const firstParts = await w.parts(OVERVIEW_VIEW);
+    expect(firstParts.map((part) => part.patch)).toEqual([false, true]);
+    const again = await w.parts(OVERVIEW_VIEW);
+    expect(again.map((part) => part.patch)).toEqual([true, true]);
+    w.setCount(PAGE - 1);
+    const shrunk = await w.parts(OVERVIEW_VIEW);
+    expect(shrunk).toHaveLength(1);
+    expect(shrunk[0]).toMatchObject({ patch: true, value: { pageCount: 1, pages: { 1: null } } });
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: null });
+    expect((await w.parts(OVERVIEW_VIEW))[0]?.patch).toBe(false);
+});
+
+test("grouped by nothing, a page holds a read's worth of plain cards", async () => {
+    const w = world(3000);
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: null, ahead: 3000 });
+    const shown = await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect([shown.pageSize, shown.pageCount, entriesOf(shown).length]).toEqual([MAX_CARDS_PER_READ, 2, 3000]);
 });
 
 test("a world the store can't read shows nothing", async () => {
     const w = world(3);
     await w.act('worldbuilding.openOverview', { ...open, book: '2' });
-    expect(await w.view<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null, entries: [] });
+    expect(await w.view<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null, pages: {} });
     expect(await w.view<RelationKindsView>(RELATION_KINDS_VIEW)).toEqual({ book: null, kinds: [] });
 });
 
-const unopened = { book: null, groupBy: null, firstRank: 0, endRank: 20, layout: LAYOUT, around: null };
-const drawn = { firstRank: 0, endRank: 20, layout: LAYOUT };
+const unopened = { book: null, groupBy: null, layout: LAYOUT, ahead: 20, around: null };
+const drawn = { layout: LAYOUT, ahead: 20 };
 const listedNames = async (w: ReturnType<typeof world>) =>
     (await w.view<WorldsView>(WORLDS_VIEW)).worlds.map((listed) => listed.name);
 
@@ -1077,7 +1167,12 @@ test('making a world names it, opens it at the range asked for and answers the w
         cameWith: null,
     });
     expect(await w.view<OverviewView>(OVERVIEW_VIEW)).toMatchObject({ book: null });
-    expect(w.asked.overview.at(-1)).toMatchObject({ book: '10', groupBy: null, firstRank: 0, endRank: 20 });
+    expect(w.asked.overview.at(-1)).toMatchObject({
+        book: '10',
+        groupBy: null,
+        firstRank: 0,
+        endRank: 20,
+    });
     expect(await w.act('worldbuilding.createWorld', { name: 'Saltmarrow', overview: drawn })).toEqual({
         refused: 'A world named "Saltmarrow" already exists.',
     });
@@ -1140,7 +1235,12 @@ test('deleting the shown world opens the one the list orders after it, else befo
     expect(w.asked.opened.at(-1)).toBe('3');
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '3' });
     await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect(w.asked.overview.at(-1)).toMatchObject({ book: '3', groupBy: null, firstRank: 0, endRank: 10 });
+    expect(w.asked.overview.at(-1)).toMatchObject({
+        book: '3',
+        groupBy: null,
+        firstRank: 0,
+        endRank: PAGE,
+    });
     expect(await w.view<EntryView>(ENTRY_VIEW)).toEqual({ book: null });
     expect(await w.otherView<WorldView>(WORLD_VIEW)).toEqual({ id: null });
 
@@ -1230,9 +1330,8 @@ test('the world schemas take names trimmed and not empty, worlds by id, and the 
     expect(ok('worldbuilding.openOverview', { ...unopened, around: '12' })).toBe(false);
     expect(ok('worldbuilding.createWorld', { name: '  ', overview: drawn })).toBe(false);
     expect(ok('worldbuilding.createWorld', { name: 'x' })).toBe(false);
-    expect(ok('worldbuilding.createWorld', { name: 'x', overview: { ...drawn, endRank: MAX_CARDS_PER_READ } })).toBe(
-        false,
-    );
+    const tooWide = { regionsByNestingLevel: [{ columns: 40, rows: 40 }], cardTextCharacters: 100 };
+    expect(ok('worldbuilding.createWorld', { name: 'x', overview: { layout: tooWide, ahead: 1 } })).toBe(false);
     expect(ok('worldbuilding.renameWorld', { book: 'Lore', name: 'x' })).toBe(false);
     expect(ok('worldbuilding.duplicateWorld', { book: '1', overview: drawn })).toBe(true);
     expect(ok('worldbuilding.importWorld', { overview: drawn })).toBe(true);
@@ -1391,56 +1490,37 @@ test('a relation change names its world, passes the session and the loop check l
     ).toEqual({ refused: "The target isn't an entry of this world." });
 });
 
-test('showing a range or stepping that would draw more than one read may is refused', async () => {
+test('a page holds as many top-level entries as one read draws with their regions full', async () => {
     const w = world(100_000);
     const wide = { regionsByNestingLevel: [{ columns: 10, rows: 10 }], cardTextCharacters: 100 };
-    await w.act('worldbuilding.openOverview', { ...open, layout: wide, endRank: 1 });
     const fits = Math.floor(MAX_CARDS_PER_READ / 101);
-    expect(await w.act('worldbuilding.showRange', { firstRank: 0, endRank: fits + 1 })).toEqual({
-        refused: READ_REFUSAL,
-    });
-    expect(await w.act('worldbuilding.showRange', { firstRank: 0, endRank: fits })).toEqual({
-        changed: [OVERVIEW_VIEW],
-    });
-    expect(await w.act('worldbuilding.stepOverview', { from: '100', by: fits })).toEqual({ refused: READ_REFUSAL });
+    await w.act('worldbuilding.openOverview', { ...open, layout: wide, ahead: fits + 5 });
+    expect(topLevelPerRead(wide)).toBe(fits);
+    expect(w.asked.overview.length).toBe(0);
+    await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect(w.asked.overview.map((q) => [q.firstRank, q.endRank])).toEqual([
+        [0, fits],
+        [fits, fits + 5],
+    ]);
+    expect(topLevelPerRead({ regionsByNestingLevel: [], cardTextCharacters: 0 })).toBe(MAX_CARDS_PER_READ);
 });
 
 test('the schemas bound a read by the cards it draws, and take worlds and kinds by id', () => {
     const ok = (type: keyof typeof actions, payload: unknown) => v.safeParse(actions[type], payload).success;
     expect(ok('worldbuilding.openOverview', open)).toBe(true);
-    expect(ok('worldbuilding.openOverview', { ...open, endRank: Math.floor(MAX_CARDS_PER_READ / 7) })).toBe(true);
-    expect(ok('worldbuilding.openOverview', { ...open, endRank: Math.floor(MAX_CARDS_PER_READ / 7) + 1 })).toBe(false);
     expect(ok('worldbuilding.openOverview', { ...open, groupBy: 'in' })).toBe(false);
     expect(ok('worldbuilding.openOverview', { ...open, around: '12/34/+' })).toBe(true);
     expect(ok('worldbuilding.openOverview', { ...open, around: '12/+/3' })).toBe(false);
-    const deep = {
-        regionsByNestingLevel: [
-            { columns: 4, rows: 2 },
-            { columns: 4, rows: 2 },
-        ],
-        cardTextCharacters: 100_000,
-    };
-    expect(cardsPerTopLevelEntry(deep.regionsByNestingLevel)).toBe(1 + 8 + 64);
-    expect(
-        ok('worldbuilding.openOverview', { ...open, layout: deep, endRank: Math.floor(MAX_CARDS_PER_READ / 73) }),
-    ).toBe(true);
-    expect(
-        ok('worldbuilding.openOverview', { ...open, layout: deep, endRank: Math.floor(MAX_CARDS_PER_READ / 73) + 1 }),
-    ).toBe(false);
     const huge = { regionsByNestingLevel: Array(30).fill({ columns: 1000, rows: 1000 }), cardTextCharacters: 0 };
-    expect(ok('worldbuilding.openOverview', { ...open, layout: huge, endRank: 0 })).toBe(true);
-    expect(ok('worldbuilding.openOverview', { ...open, layout: huge, endRank: 1 })).toBe(false);
+    expect(ok('worldbuilding.openOverview', { ...open, layout: huge })).toBe(false);
     expect(
         ok('worldbuilding.openOverview', {
             ...open,
             layout: { ...LAYOUT, regionsByNestingLevel: [{ columns: 0, rows: 1 }] },
         }),
     ).toBe(false);
-    expect(ok('worldbuilding.showRange', { firstRank: 30, endRank: 10 })).toBe(false);
-    expect(ok('worldbuilding.stepOverview', { from: null, by: -1 })).toBe(true);
-    expect(ok('worldbuilding.stepOverview', { from: null, to: 'parent' })).toBe(false);
-    expect(ok('worldbuilding.stepOverview', { from: '1', to: 'sibling' })).toBe(false);
-    expect(ok('worldbuilding.stepOverview', { from: '1', by: 0.5 })).toBe(false);
+    expect(ok('worldbuilding.showMore', { to: 30 })).toBe(true);
+    expect(ok('worldbuilding.showMore', { to: 0 })).toBe(false);
     expect(ok('worldbuilding.createRelationKind', { book: '1', name: '  ' })).toBe(false);
     expect(ok('worldbuilding.createRelationKind', { name: 'in' })).toBe(false);
     const add = {
@@ -1715,7 +1795,12 @@ test('moving the open entry to another world opens that world with the entry ope
     });
     expect(await w.view<WorldView>(WORLD_VIEW)).toMatchObject({ id: '2' });
     await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect(w.asked.overview.at(-1)).toMatchObject({ book: '2', groupBy: null, firstRank: 0, endRank: 10 });
+    expect(w.asked.overview.at(-1)).toMatchObject({
+        book: '2',
+        groupBy: null,
+        firstRank: 0,
+        endRank: PAGE,
+    });
     expect(w.asked.step.at(-1)).toEqual({ book: '2', groupBy: null, from: '90', by: 0 });
     expect(await w.view<LastChangeView>(LAST_CHANGE_VIEW)).toEqual({
         ...NOTHING_CHANGED,
@@ -2386,7 +2471,8 @@ async function atTheMost() {
     const shownAtTheMost = { endRank: widest, layout: LAYOUT };
     const picked = Array.from({ length: PICKED_AT_MOST }, (_, at) => String(1000 + at));
     for (const [type, payload] of [
-        ['worldbuilding.openOverview', { ...open, ...shownAtTheMost, around: '7' }],
+        ['worldbuilding.openOverview', { ...open, around: '7' }],
+        ['worldbuilding.showMore', { to: 2 * PAGE }],
         ['worldbuilding.setFilter', { ...filter, pageSize: MAX_CARDS_PER_READ }],
         ['worldbuilding.selectAllMatching', { book: '1' }],
         ['worldbuilding.select', { book: '1', entries: picked, selected: false }],
@@ -2405,8 +2491,10 @@ async function readsOfTheFirstPart(w: Awaited<ReturnType<typeof atTheMost>>['w']
     w.reads.asked = 0;
     const result = await action();
     const own = result.own ?? [...(result.changed ?? []), ...('opensViews' in result ? (result.opensViews ?? []) : [])];
-    for (const key of own) await w.view(key);
-    return w.reads.asked;
+    const ofTheAction = w.reads.asked;
+    let ofTheViews = 0;
+    for (const key of own) ofTheViews += (await w.readsPerPart(key))[0] ?? 0;
+    return ofTheAction + ofTheViews;
 }
 
 test("every action's first part, with every view at the most, reads within one part's budget", async () => {
@@ -2420,9 +2508,8 @@ test("every action's first part, with every view at the most, reads within one p
         ['worldbuilding.showMentions', () => ({ from: null, pages: MENTION_PAGES_AT_MOST })],
         ['worldbuilding.showPointingAtRange', ({ widest }) => ({ kind: '1', firstRank: 0, endRank: widest })],
         ['worldbuilding.stepPointingAt', () => ({ kind: '1', from: null, by: farthest - 1 })],
-        ['worldbuilding.openOverview', ({ shownAtTheMost }) => ({ ...open, ...shownAtTheMost, around: '7' })],
-        ['worldbuilding.showRange', ({ widest }) => ({ firstRank: 0, endRank: widest })],
-        ['worldbuilding.stepOverview', () => ({ from: null, by: farthest - 1 })],
+        ['worldbuilding.openOverview', () => ({ ...open, around: '7' })],
+        ['worldbuilding.showMore', () => ({ to: 3 * PAGE })],
         ['worldbuilding.addRelation', () => ({ ...relation, after: null, before: null, weak: false })],
         ['worldbuilding.moveRelation', () => ({ ...relation, newTarget: '7', after: null, before: null })],
         ['worldbuilding.removeRelation', () => relation],
@@ -2471,10 +2558,7 @@ test("every action's first part, with every view at the most, reads within one p
         ['worldbuilding.selectAllMatching', () => ({ book: '1' })],
         ['worldbuilding.bulk', () => ({ book: '1', action: { delete: true }, loopCheckLimit: most })],
         ['worldbuilding.markTitleKeysAsNames', () => ({ book: '1' })],
-        [
-            'worldbuilding.createWorld',
-            ({ shownAtTheMost }) => ({ name: 'World 3', overview: { firstRank: 0, ...shownAtTheMost } }),
-        ],
+        ['worldbuilding.createWorld', () => ({ name: 'World 3', overview: { layout: LAYOUT, ahead: PAGE } })],
         ['worldbuilding.deleteWorld', () => ({ book: '1' })],
         ['worldbuilding.deleteWorld', () => ({ book: '2' })],
     ];
@@ -2498,9 +2582,11 @@ test("every action's first part, with every view at the most, reads within one p
 test("every later part, and every part of a push, reads one view at the most within one part's budget", async () => {
     const { w } = await atTheMost();
     for (const key of w.views) {
-        w.reads.asked = 0;
-        await w.view(key);
-        expect({ key, withinTheBudget: w.reads.asked <= READS_PER_REQUEST }).toEqual({ key, withinTheBudget: true });
+        const parts = await w.readsPerPart(key);
+        expect({ key, withinTheBudget: parts.every((reads) => reads <= READS_PER_REQUEST) }).toEqual({
+            key,
+            withinTheBudget: true,
+        });
     }
 });
 
@@ -2529,7 +2615,7 @@ test("a part holds one action's work and one view's bounded reads, besides the c
 });
 
 const upload = (name: string): Upload => ({ path: `/tmp/${name}`, name, type: 'image/png', size: 10 });
-const shownWorld = { firstRank: 0, endRank: 20, layout: LAYOUT };
+const shownWorld = { layout: LAYOUT, ahead: 20 };
 
 test('a world named by its name opens, with its entry by uid opened too; an unknown name or uid is refused', async () => {
     const w = world(1000);
@@ -2707,7 +2793,7 @@ const savedView = (id: string, name: string, change: Partial<SavedView> = {}): S
     ...change,
 });
 
-const shownRange = { firstRank: 0, endRank: 20, layout: LAYOUT };
+const shownRange = { layout: LAYOUT, ahead: 20 };
 
 test("a world's views are its tabs, the world's first, the reader's changed copies in their place, then the reader's own", async () => {
     const w = world(1000);
@@ -2722,7 +2808,7 @@ test("a world's views are its tabs, the world's first, the reader's changed copi
     const answer = await w.act('worldbuilding.openOverview', withoutGrouping);
     expect(answer).toMatchObject({ own: expect.arrayContaining([VIEWS_VIEW]) });
     const cards = await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect(cards.entries[0]).toMatchObject({ facts: { comesIn: 'broughtUp', tokens: null } });
+    expect(entriesOf(cards)[0]).toMatchObject({ facts: { comesIn: 'broughtUp', tokens: null } });
     const views = await w.view<ViewsView>(VIEWS_VIEW);
     expect(views).toMatchObject({
         book: '1',
@@ -2737,7 +2823,7 @@ test("a world's views are its tabs, the world's first, the reader's changed copi
     await w.act('worldbuilding.showView', { book: '1', view: 'debts', overview: shownRange });
     expect((await w.view<OverviewView>(OVERVIEW_VIEW)).groupBy).toBe('2');
     const rows = await w.view<OverviewView>(OVERVIEW_VIEW);
-    expect(rows.entries[0]).toMatchObject({ facts: { comesIn: 'broughtUp', tokens: 10 } });
+    expect(entriesOf(rows)[0]).toMatchObject({ facts: { comesIn: 'broughtUp', tokens: 10 } });
     expect(await w.act('worldbuilding.showView', { book: '1', view: 'gone', overview: shownRange })).toMatchObject({
         refused: 'This world has no such view.',
     });
@@ -2943,4 +3029,39 @@ test("an entry's character filter changes by one item or its sense per action, a
         }),
     ).toBe(false);
     expect(accepts('worldbuilding.changeCharacterFilter', { ...at, change: { add: { character: '' } } })).toBe(false);
+});
+
+test("renaming and deleting views: the reader's own outright, the world's in the world with the reader's copy of it", async () => {
+    const w = world(3);
+    w.storedViews.set('1', {
+        world: [savedView('places', 'Places'), savedView('debts', 'Debts', { groupBy: '2' })],
+        reader: {
+            changed: { debts: savedView('debts', 'Debts', { groupBy: '2', drawing: 'rows' }) },
+            own: [savedView('own-1', 'Mine')],
+        },
+    });
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.act('worldbuilding.renameView', { book: '1', view: 'own-1', name: ' Ours ' })).toEqual({
+        changed: [VIEWS_VIEW],
+    });
+    expect(w.storedViews.get('1')?.reader.own.map((view) => view.name)).toEqual(['Ours']);
+    await w.act('worldbuilding.renameView', { book: '1', view: 'debts', name: 'Owed' });
+    expect(w.storedViews.get('1')?.world.map((view) => view.name)).toEqual(['Places', 'Owed']);
+    expect(w.storedViews.get('1')?.reader.changed['debts']?.name).toBe('Owed');
+    await w.act('worldbuilding.showView', { book: '1', view: 'debts', overview: shownRange });
+    expect(
+        await w.act('worldbuilding.deleteView', { book: '1', view: 'debts', overview: shownRange }),
+    ).not.toHaveProperty('refused');
+    expect(w.storedViews.get('1')?.world.map((view) => view.id)).toEqual(['places']);
+    expect(w.storedViews.get('1')?.reader.changed).toEqual({});
+    expect(await w.view<ViewsView>(VIEWS_VIEW)).toMatchObject({ current: 'places' });
+    await w.act('worldbuilding.deleteView', { book: '1', view: 'own-1', overview: shownRange });
+    expect(w.storedViews.get('1')?.reader.own).toEqual([]);
+    expect(await w.act('worldbuilding.deleteView', { book: '1', view: 'gone', overview: shownRange })).toEqual({
+        refused: 'This world has no such view.',
+        changed: [VIEWS_VIEW],
+    });
+    expect(v.safeParse(actions['worldbuilding.renameView'], { book: '1', view: 'places', name: '  ' }).success).toBe(
+        false,
+    );
 });

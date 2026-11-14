@@ -452,7 +452,7 @@ views at 131 reads, 786, `looks.md`). Then (`packages/areas/worldbuilding/protoc
   visit for each source and one for an ancestor of each (`LOOP_CHECK_VISITS_PER_WRITE`, 2,000 visits at 2 reads; the
   cap on `loopCheckLimit` and the limit of writes that carry none). An action that steps instead of writing gets as
   much: a step crosses at most `STEP_CARDS_AT_MOST` (400) cards, its top-level entries crossed times the cards each
-  draws (`stepFitsTheBudget`, the handlers of `stepOverview` and `stepPointingAt`; the entry an opening is around is one
+  draws (`stepFitsTheBudget`, the handler of `stepPointingAt`; the entry an opening is around is one
   crossed, and an opening whose layout draws more than that per top-level entry opens without it). The walk of a chip's
   region takes as many keys (`WALK_STEPS_PER_READ`, 4,000): the results' run of pages shares it, and so does a bulk
   chunk's walk.
@@ -460,7 +460,7 @@ views at 131 reads, 786, `looks.md`). Then (`packages/areas/worldbuilding/protoc
 
 | View | Bound |
 |---|---|
-| the overview, what points at the open entry | `MAX_CARDS_PER_READ` (1,571 cards at 12 reads): the range's top-level entries times the cards each draws (the schema on `openOverview`, the handler on `showRange`; the sections' ranges, cut in the order last asked for) |
+| the overview, what points at the open entry | `MAX_CARDS_PER_READ` (1,571 cards at 12 reads): a page's top-level entries (`topLevelPerRead` of the layout) times the cards each draws, each page a part of its own; the sections' ranges, cut in the order last asked for |
 | the results | `MAX_CARDS_PER_READ` for a run's pages times its page size (`setFilter`, `showResults`), and its walk of a chip's region in the action's share, so only an action that does no other bounded work answers the results first |
 | the entry | in halves: the names its text writes (`TEXT_LINK_READS_PER_READ`, 6,286 reads, The names a text writes, and the looks of the entries it names, at most one for every two of its reads: `READS_OF_TEXT_LINKS`, 9,429) and what mentions it (`MENTION_CHECKS_PER_READ`, 1,047 entries at 9 reads: an entry checked costs 4, its place (a slot of the world's order, or a doc of the index's list for the names), whether it is in the world, its text's head and record, and one that mentions it its label, 5 more) |
 | the selection's count | `PICKED_AT_MOST` (1,571) exceptions checked, then `SELECTION_WALK_STEPS` (17,288 keys) of the count's walk (Selections and bulk actions) |
@@ -570,11 +570,12 @@ One area, `@st/worldbuilding`. Views:
 
 Actions:
 
-- `worldbuilding.openOverview` (book, grouping kind, range, layout, and optionally an occurrence to open around; opens
-  the overview, the world's kinds and the last change in the same request);
-- `worldbuilding.showRange` and `worldbuilding.stepOverview` (from an occurrence, `n` on in reading order, or to its
-  parent or first child; the range follows where it lands when that is outside it) act on the overview the session
-  shows, since that is what they move;
+- `worldbuilding.openOverview` (book, grouping kind, layout, and optionally an occurrence to open around; opens the
+  overview, the world's kinds and the last change in the same request). The overview holds every top-level entry the tab
+  has read, from the first: its first page, or every page up to the occurrence's top-level entry;
+- `worldbuilding.showMore` (the rank the page has drawn to) reads the next page and keeps every page read. Each page is a
+  part of the overview's read; a read of the overview the tab already holds patches it, so nothing drawn goes away
+  while the parts come;
 - `worldbuilding.showRelationKinds` (book) opens the kinds view for a world, where no overview is open;
 - `worldbuilding.createRelationKind`, `renameRelationKind`, `deleteRelationKind` (book, kind), `mergeRelationKind`
   (book, kind, into);
@@ -658,10 +659,10 @@ An occurrence's key is the path of entity ids from its top-level entry (`12/45/7
 path from the source (`3@4711/12/45`, `3@4711/12/+`); the open entry itself is never a key's part, and its parent is
 no step. So:
 
-- **KeysAt** is the range; **Locate** of a top-level key is its rank in the held range, else a step by 0;
+- **KeysAt** is the pages read; **Locate** of a top-level key is its rank in them, else a step by 0;
 - **the tree per region** is each entry's `region`;
-- **Step** within what's held is the held entries in pre-order; past it, `stepOverview`;
-- **parent** is the key without its last part; **first child** is the first of the held region's cells, else `stepOverview`;
+- **Step** within what's held is the held entries in pre-order;
+- **parent** is the key without its last part; **first child** is the first of the held region's cells;
 - **inside region** `k` is "starts with `k/`".
 
 ## What mentions an entry

@@ -47,6 +47,10 @@ const area = defineArea({
             if (read === 1) await lateHeld;
             return { read };
         },
+        patched: async function* () {
+            yield patch({ kept: 1 });
+            yield patch({ more: 2 });
+        },
         slow: async function* () {
             yield { slow: 1 };
             await slowHeld;
@@ -343,6 +347,12 @@ test('a view read in parts: its first part is answered at once, the rest follow 
         { value: { part: 2 } },
         { patch: { more: 3 } },
     ]);
+});
+
+test('a read whose first part is a patch answers a patch, so the page keeps what it holds', async () => {
+    const { answer } = await send(sessions.a1, 'view.open', { key: 'patched' });
+    expect(answer.views[0]).toMatchObject({ key: 'patched', patch: { kept: 1 } });
+    expect(answer.views[0]).not.toHaveProperty('value');
 });
 
 test("one view's later parts don't wait for another's", async () => {

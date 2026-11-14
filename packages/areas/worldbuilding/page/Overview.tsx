@@ -1,130 +1,106 @@
-import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
+import { Index, Show, createEffect, createMemo, on, onCleanup, onMount } from 'solid-js';
 import type { JSX } from 'solid-js';
-import type { OverviewView } from '../protocol.ts';
+import type { OverviewCell, OverviewView } from '../protocol.ts';
 import { Cell } from './Cards.tsx';
 import type { CardActions } from './Cards.tsx';
-import { CARD_HEIGHT } from './layout.ts';
 
-export type Range = { firstRank: number; endRank: number };
+import { SCREENS_AHEAD } from './layout.ts';
 
-// The world's top-level entries, read a range at a time as the pane scrolls. What is above the range read stands as
-// the height it had when it was drawn, so moving the range never moves what is on screen.
+// The top-level entries of every page read so far, from the first; a page not in yet ends them.
+export function drawnEntries(view: OverviewView): OverviewCell[] {
+    const all: OverviewCell[] = [];
+    for (let at = 0; at < view.pageCount; at++) {
+        const page = view.pages[at];
+        if (!page) break;
+        all.push(...page.entries);
+    }
+    return all;
+}
+
+// Every top-level entry read is drawn and stays. While less than SCREENS_AHEAD screens of them are below what is on
+// screen, the page asks for as many more as fill that many screens, as far as it has drawn tells it; past that it waits
+// until the person scrolls on.
 export function TopLevel(props: {
     view: OverviewView;
     pane: HTMLElement;
-    shown: number;
-    columns: number;
     actions: CardActions;
-    onRange: (range: Range) => void;
+    onMore: (to: number) => void;
     // Draws each top-level entry, its region with it, in place of its card; one column of them.
-    rows?: (cell: OverviewView['entries'][number]) => JSX.Element;
-    rowHeight?: number;
+    rows?: (cell: OverviewCell) => JSX.Element;
 }) {
-    const columns = () => (props.rows ? 1 : props.columns);
-    const itemHeight = () => props.rowHeight ?? CARD_HEIGHT;
+    const entries = createMemo(() => drawnEntries(props.view));
+    const allIn = () => {
+        for (let at = 0; at < props.view.pageCount; at++) if (!props.view.pages[at]) return false;
+        return true;
+    };
+    const hasMore = () => allIn() && entries().length < props.view.topLevelCount;
     let list: HTMLDivElement | undefined;
-    const tops = new Map<number, number>();
-    const rowStarts = new Set<number>();
-    const [asked, setAsked] = createSignal<Range | null>(null);
-    const averageRow = () => {
-        const known = [...tops.values()];
-        if (known.length < 2) return itemHeight();
-        return Math.max(itemHeight() / 2, (Math.max(...known) - Math.min(...known)) / Math.max(1, known.length - 1));
-    };
-    const estimatedTop = (rank: number): number => {
-        const known = tops.get(rank);
-        if (known !== undefined) return known;
-        return (rank / Math.max(1, columns())) * averageRow();
-    };
-    const lastRank = () => props.view.firstRank + props.view.entries.length;
-    const above = () => (props.view.firstRank === 0 ? 0 : estimatedTop(props.view.firstRank));
-    const below = () => Math.max(0, ((props.view.topLevelCount - lastRank()) / Math.max(1, columns())) * averageRow());
-
-    const measure = () => {
-        if (!list) return;
-        let left = Infinity;
-        const items = [...list.querySelectorAll<HTMLElement>(':scope > [data-rank]')];
-        for (const item of items) left = Math.min(left, item.offsetLeft);
-        for (const item of items) {
-            const rank = Number(item.dataset['rank']);
-            tops.set(rank, item.offsetTop);
-            if (item.offsetLeft === left) rowStarts.add(rank);
-            else rowStarts.delete(rank);
-        }
-    };
-
-    const rankAt = (y: number): number => {
-        let best = 0;
-        for (const [rank, top] of tops) if (top <= y && rank > best) best = rank;
-        if (tops.size === 0 || y > Math.max(...tops.values()) + 2 * averageRow())
-            return Math.min(props.view.topLevelCount, Math.floor((y / averageRow()) * Math.max(1, columns())));
-        return best;
-    };
-
-    const rowStartAtOrBefore = (rank: number): number => {
-        for (let at = rank; at > 0; at--) if (rowStarts.has(at) || !tops.has(at)) return at;
-        return 0;
-    };
-
-    const follow = () => {
-        if (!list) return;
-        measure();
+    // What the last ask asked for, and how many were drawn then: fewer drawn now, or another overview, asks afresh.
+    let asked = { to: 0, drawn: 0 };
+    const askIfNear = () => {
+        if (!list || !hasMore()) return;
         const screen = props.pane.clientHeight;
-        const top = props.pane.scrollTop - list.offsetTop;
-        const first = props.view.firstRank;
-        const end = lastRank();
-        const count = props.view.topLevelCount;
-        const loadedBottom = end >= count ? Infinity : estimatedTop(end);
-        const loadedTop = first === 0 ? -Infinity : estimatedTop(first);
-        if (top + 2 * screen < loadedBottom && top - screen > loadedTop) return;
-        const centre = rankAt(top + screen / 2);
-        const half = Math.floor(props.shown / 2);
-        const firstRank = rowStartAtOrBefore(Math.max(0, Math.min(centre - half, count - props.shown)));
-        const range = { firstRank, endRank: Math.min(count, firstRank + props.shown) };
-        const held = asked();
-        if (range.firstRank === first && range.endRank === end) return;
-        if (held && held.firstRank === range.firstRank && held.endRank === range.endRank) return;
-        setAsked(range);
-        props.onRange(range);
+        const drawn = entries().length;
+        if (drawn < asked.drawn) asked = { to: 0, drawn: 0 };
+        const tall = list.getBoundingClientRect();
+        const below = tall.bottom - props.pane.getBoundingClientRect().bottom;
+        if (below > SCREENS_AHEAD * screen || tall.height === 0) return;
+        const perScreen = Math.max(1, Math.ceil((drawn * screen) / tall.height));
+        const to = drawn + SCREENS_AHEAD * perScreen;
+        if (to <= asked.to) return;
+        asked = { to, drawn };
+        props.onMore(to);
     };
-
     onMount(() => {
-        const scrolled = () => requestAnimationFrame(follow);
-        props.pane.addEventListener('scroll', scrolled, { passive: true });
-        onCleanup(() => props.pane.removeEventListener('scroll', scrolled));
+        props.pane.addEventListener('scroll', askIfNear, { passive: true });
+        onCleanup(() => {
+            props.pane.removeEventListener('scroll', askIfNear);
+        });
     });
     createEffect(
         on(
-            () => [props.view.firstRank, props.view.entries.length, props.view.topLevelCount],
-            () => requestAnimationFrame(follow),
+            () => [props.view.book, props.view.groupBy, props.view.pageSize],
+            () => {
+                asked = { to: 0, drawn: 0 };
+            },
+        ),
+    );
+    createEffect(
+        on(
+            () => [entries().length, props.view.topLevelCount],
+            () => requestAnimationFrame(askIfNear),
         ),
     );
 
     return (
-        <div
-            class={props.rows ? 'wb-trs' : 'wb-grid wb-top'}
-            ref={(element) => (list = element)}
-            style={{ 'padding-top': `${above()}px`, 'padding-bottom': `${below()}px` }}
-        >
-            <For each={props.view.entries}>
-                {(cell) => (
-                    <Show
-                        when={props.rows}
-                        fallback={
-                            <div
-                                class="wb-top-cell"
-                                data-rank={cell.topLevelRank}
-                                data-entry={cell.cell === 'entry' ? cell.entry : undefined}
-                                classList={{ 'wb-wide': cell.region.length > 0 }}
-                            >
-                                <Cell cell={cell} region={null} actions={props.actions} />
-                            </div>
-                        }
-                    >
-                        {(draw) => <div data-rank={cell.topLevelRank}>{draw()(cell)}</div>}
-                    </Show>
-                )}
-            </For>
-        </div>
+        <>
+            <div class={props.rows ? 'wb-trs' : 'wb-grid wb-top'} ref={(element) => (list = element)}>
+                <Index each={entries()}>
+                    {(cell) => (
+                        <Show
+                            when={props.rows}
+                            fallback={
+                                <div
+                                    class="wb-top-cell"
+                                    data-rank={cell().topLevelRank}
+                                    data-entry={
+                                        cell().cell === 'entry' ? (cell() as { entry: string }).entry : undefined
+                                    }
+                                    classList={{ 'wb-wide': cell().region.length > 0 }}
+                                >
+                                    <Cell cell={cell()} region={null} actions={props.actions} />
+                                </div>
+                            }
+                        >
+                            {(draw) => (
+                                <div class="wb-top-row" data-rank={cell().topLevelRank}>
+                                    {draw()(cell())}
+                                </div>
+                            )}
+                        </Show>
+                    )}
+                </Index>
+            </div>
+        </>
     );
 }

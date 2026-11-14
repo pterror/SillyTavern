@@ -502,7 +502,8 @@
 
 .wb-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    /* auto-fit: a grid with fewer cards than columns fit spreads them across the width, not into its first columns. */
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: 14px;
     align-items: start;
 }
@@ -513,6 +514,17 @@
 
 .wb-wide {
     grid-column: 1 / -1;
+}
+
+/* Every top-level entry read stays drawn; what is off screen is laid out at its last drawn size and not painted. */
+.wb-top > .wb-top-cell {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 92px;
+}
+
+.wb-trs > .wb-top-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 40px;
 }
 
 .wb-card {
@@ -1439,6 +1451,23 @@
     gap: 7px;
 }
 
+.wb-vt-more-box {
+    position: relative;
+    display: inline-flex;
+}
+
+.wb .wb-vt-more {
+    margin: -4px -6px -4px 2px;
+    padding: 2px;
+}
+
+.wb-vt-menu {
+    color: var(--wb-ink);
+    left: 0;
+    top: calc(100% + 6px);
+    width: 180px;
+}
+
 .wb-vdot {
     width: 7px;
     height: 7px;
@@ -1504,7 +1533,8 @@
 /* Rows (the Table board): a column per field the view picked. */
 
 .wb-front:has(> .wb-th) {
-    padding: 0 0 60px;
+    min-height: 100%;
+    padding: 0;
 }
 
 .wb-front:has(> .wb-th) > :not(.wb-th, .wb-trs, .wb-loadrow) {

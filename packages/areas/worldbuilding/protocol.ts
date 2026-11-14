@@ -184,13 +184,20 @@ export type RegionLayout = { columns: number; rows: number };
 
 export type OverviewLayout = { regionsByNestingLevel: RegionLayout[]; cardTextCharacters: number };
 
+export type OverviewCell = (EntryCell | PlaceOfDeletedEntryCell) & { topLevelRank: number };
+
+// One read's worth of top-level entries: page `k` holds the ranks from `k * pageSize`.
+export type OverviewPage = { firstRank: number; entries: OverviewCell[] };
+
+// The top-level entries the tab has read, from the first: `pageCount` pages of `pageSize`, read in parts, each page a
+// part of its own. A page past `pageCount` is null or missing.
 export type OverviewView = {
     book: string | null;
     groupBy: string | null;
     topLevelCount: number;
-    firstRank: number;
-    entries: ((EntryCell | PlaceOfDeletedEntryCell) & { topLevelRank: number })[];
-    stepLanding: StepLanding | null;
+    pageSize: number;
+    pageCount: number;
+    pages: Record<string, OverviewPage | null>;
 };
 
 export type RelationKind = { id: string; name: string; mergingInto: string | null };
@@ -537,6 +544,11 @@ export function readFitsTheBudget(topLevelEntries: number, layout: OverviewLayou
     return topLevelEntries * cardsPerTopLevelEntry(layout.regionsByNestingLevel) <= MAX_CARDS_PER_READ;
 }
 
+// How many top-level entries one read draws under `layout`, each with its regions as full as the layout lets them be.
+export function topLevelPerRead(layout: OverviewLayout): number {
+    return Math.max(1, Math.floor(MAX_CARDS_PER_READ / cardsPerTopLevelEntry(layout.regionsByNestingLevel)));
+}
+
 export function stepFitsTheBudget(topLevelEntriesCrossed: number, layout: OverviewLayout): boolean {
     return topLevelEntriesCrossed * cardsPerTopLevelEntry(layout.regionsByNestingLevel) <= STEP_CARDS_AT_MOST;
 }
@@ -566,15 +578,9 @@ const relationNamed = { book: entityId, entry: entityId, kind: kindId, target: e
 
 const entryNamed = { book: entityId, entry: entityId };
 const worldName = v.pipe(v.string(), v.trim(), v.minLength(1, 'A world needs a name.'));
-const shownOverview = v.pipe(
-    v.object({ ...rangeFields, layout }),
-    v.check(rangeRunsForward, RANGE_REFUSAL),
-    v.check(
-        <T extends Range & { layout: OverviewLayout }>(read: T) =>
-            readFitsTheBudget(read.endRank - read.firstRank, read.layout),
-        READ_REFUSAL,
-    ),
-);
+const fitsOneEntry = <T extends { layout: OverviewLayout }>(read: T) => readFitsTheBudget(1, read.layout);
+// `ahead`: how many top-level entries the page wants read to begin with, as many as fill some screens of it.
+const shownOverview = v.pipe(v.object({ layout, ahead: positiveWholeNumber }), v.check(fitsOneEntry, READ_REFUSAL));
 const opensWorld = { overview: shownOverview };
 const pointingAtShown = v.pipe(
     v.object({ endRank: topLevelRank, layout }),
@@ -602,6 +608,7 @@ const cellAt = v.object({
     row: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(0))),
 });
 const viewId = v.pipe(v.string(), v.regex(/^[a-z0-9-]{1,40}$/));
+const viewName = v.pipe(v.string(), v.trim(), v.minLength(1, 'A view needs a name.'), v.maxLength(80));
 const viewChangeFields = v.partial(
     v.strictObject({
         groupBy: v.nullable(kindId),
@@ -636,27 +643,19 @@ export const actions = {
             book: v.nullable(entityId),
             // Left out: the world's default grouping.
             groupBy: v.optional(v.nullable(kindId)),
-            ...rangeFields,
             layout,
+            ahead: positiveWholeNumber,
             around: v.nullable(occurrenceKey),
         }),
-        v.check(rangeRunsForward, RANGE_REFUSAL),
-        v.check(
-            <T extends Range & { layout: OverviewLayout }>(read: T) =>
-                readFitsTheBudget(read.endRank - read.firstRank, read.layout),
-            READ_REFUSAL,
-        ),
+        v.check(fitsOneEntry, READ_REFUSAL),
         v.check(
             <T extends { book: string | null; groupBy?: string | null | undefined; around: string | null }>(open: T) =>
                 open.book !== null || ((open.groupBy ?? null) === null && open.around === null),
             "A world's kinds and occurrences are named only with the world.",
         ),
     ),
-    'worldbuilding.showRange': v.pipe(v.object(rangeFields), v.check(rangeRunsForward, RANGE_REFUSAL)),
-    'worldbuilding.stepOverview': v.union([
-        v.object({ from: v.nullable(occurrenceKey), by: v.pipe(v.number(), v.integer()) }),
-        v.object({ from: occurrenceKey, to: v.picklist(['parent', 'firstChild']) }),
-    ]),
+    // Reads the top-level entries up to `to` as well, keeping every one read; asking twice reads them once.
+    'worldbuilding.showMore': v.object({ to: positiveWholeNumber }),
     'worldbuilding.showRelationKinds': v.object({ book: entityId }),
     'worldbuilding.createRelationKind': v.object({ book: entityId, name: kindName }),
     'worldbuilding.renameRelationKind': v.object({ book: entityId, kind: kindId, name: kindName }),
@@ -782,6 +781,10 @@ export const actions = {
     'worldbuilding.resetView': v.object({ book: entityId, overview: shownOverview }),
     // A view of the reader's own, starting as the shown view is drawn.
     'worldbuilding.addView': v.object({ book: entityId, overview: shownOverview }),
+    // A reader's own view is renamed or deleted outright; a world's view is renamed or deleted in the world, and the
+    // reader's changed copy of it goes with it.
+    'worldbuilding.renameView': v.object({ book: entityId, view: viewId, name: viewName }),
+    'worldbuilding.deleteView': v.object({ book: entityId, view: viewId, overview: shownOverview }),
     'worldbuilding.showMoreInCell': v.object({ book: entityId, ...cellAt.entries }),
     // A card dropped from one cell of a board or grid into another: the relations of the axes it crossed change.
     'worldbuilding.moveBetweenCells': v.object({
