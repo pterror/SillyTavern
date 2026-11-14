@@ -11,6 +11,7 @@ import { getChatCompletionModel } from './chat-completion-model.js';
 import { tokenizerStateFor } from './connection-counts.js';
 import { resolveWorldInfoCandidates } from './world-info/candidate-resolution.js';
 import { activateWorldInfoEntries } from './world-info/activation.js';
+import { entryFilterContextOf } from './world-info/entry-filter-context.js';
 import { buildActivationRecord } from './world-info/activation-record.js';
 import { userStore } from './user-stores.js';
 import { bucketActivatedEntries } from './world-info/result-bucketing.js';
@@ -275,7 +276,6 @@ export async function resolveChatCompletionGenerationInput(directories, {
     });
 
     const WORLD_INFO_METADATA_KEY = 'world_info';
-    const charFilename = avatar != null ? avatar.replace(/\.[^/.]+$/, '') : null;
     let worldInfoCandidates = skipWorldInfoAndNote ? [] : worldInfoCandidatesOverride;
     if (worldInfoCandidates === undefined) {
         const characterExtraBooks = avatar != null ? await readExtraBooks(directories, avatar) : [];
@@ -367,7 +367,7 @@ export async function resolveChatCompletionGenerationInput(directories, {
         globals: worldInfoGlobals,
         globalScanData, macroContext, countTokens: countTokensForWorldInfo,
         chatMetadata, isDryRun: Boolean(dryRun),
-        entryFilterContext: { trigger: generationTrigger, characterFilename: charFilename ?? undefined },
+        entryFilterContext: await entryFilterContextOf(directories, avatar, generationTrigger),
         additionalScanInjects: scanInjects.map(([, text]) => text),
     });
     const activations = dryRun === true ? null : await buildActivationRecord(trace, {

@@ -441,6 +441,27 @@ async function run() {
         assert.deepEqual(unlinked.worldInfoCandidates.map(c => c.world).sort(), ['ExtraLore', 'TestLore'], 'an extra book with no main world');
     }
 
+    {
+        const filtered = await writeCharacter('Filtered.png', { name: 'Filtered', data: { name: 'Filtered', tags: ['npc'] } });
+        const { tagIds: [npc] } = await user.store.lib.tags.seedCardTags(filtered);
+        const entry = (/** @type {string} */ uid, /** @type {object} */ characterFilter) => ({ uid, world: 'W', key: ['x'], keysecondary: [], comment: '', content: `entry ${uid}`, constant: true, selective: false, order: 10, position: 0, disable: false, characterFilter });
+        const candidates = [
+            entry('only-me', { names: ['Filtered'], tags: [], isExclude: false }),
+            entry('only-other', { names: ['Other'], tags: [], isExclude: false }),
+            entry('not-me', { names: ['Filtered'], tags: [], isExclude: true }),
+            entry('my-tag', { names: [], tags: [npc], isExclude: false }),
+            entry('not-my-tag', { names: [], tags: [npc], isExclude: true }),
+        ];
+        const { countTokens, encodeTokens } = makeFakeTokenizers();
+        const filteredInput = await resolveTextCompletionGenerationInput(directories, {
+            avatar: filtered, chatContext: await chatContextOf(user.store, { avatar: filtered }, newSessionKey()), countTokens, encodeTokens, worldInfoCandidates: candidates,
+        });
+        const prompt = (await buildTextCompletionPrompt(filteredInput)).combinedPrompt;
+        assert.ok(prompt.includes('entry only-me'), 'an entry limited to the speaking character comes in');
+        assert.ok(prompt.includes('entry my-tag'), 'an entry limited to a tag the character has comes in');
+        for (const uid of ['only-other', 'not-me', 'not-my-tag']) assert.ok(!prompt.includes(`entry ${uid}`), `${uid} is kept out by its character filter`);
+    }
+
     console.log('text-completion-generation-input.test.js: all assertions passed');
 }
 

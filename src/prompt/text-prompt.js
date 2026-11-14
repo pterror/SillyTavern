@@ -7,6 +7,7 @@ import { createReasoningFoldState, foldReasoningIntoMessage, isReasoningLimitRea
 import { getGuidanceScale, adjustMaxContextForCfg } from '../cfg-prompt-resolve.js';
 import { parseDecorators } from '../world-info/decorators.js';
 import { activateWorldInfoEntries } from '../world-info/activation.js';
+import { entryFilterContextOf } from '../world-info/entry-filter-context.js';
 import { buildActivationRecord } from '../world-info/activation-record.js';
 import { userStore } from '../user-stores.js';
 import { bucketActivatedEntries } from '../world-info/result-bucketing.js';
@@ -87,7 +88,6 @@ const DEPTH_ROLE_ORDER = { [extension_prompt_roles.ASSISTANT]: 0, [extension_pro
  * @property {import('../cfg-prompt-resolve.js').ChatMetadataCfgPrompts} [chatMetadataPrompts]
  * @property {import('../world-info/activation.js').WIEntry[]} [worldInfoCandidates]
  * @property {import('../../public/scripts/world-info-globals.js').WorldInfoGlobals} worldInfoGlobals
- * @property {object} [entryFilterContext]
  * @property {() => number} [worldInfoRandom]
  * @property {import('../authors-note.js').AuthorsNoteSettings} [noteSettings]
  * @property {boolean} [hasCharacterOrGroup]
@@ -205,7 +205,7 @@ export async function buildTextCompletionPrompt(input) {
         tokenPadding = 0, countTokens, countPromptTokens = countTokens, encodeTokens, encodeTokensByType, novelTokenizerType, amountGen = 0, requestTokenProbabilities = false,
         chatGuidanceScale, groupchatIndividualChars = false, charaCfg, globalCfg, promptCombine = [], promptSeparator, promptInsertionDepth = 1, chatMetadataPrompts = {},
         worldInfoCandidates = [], worldInfoGlobals,
-        entryFilterContext = {}, worldInfoRandom = Math.random,
+        worldInfoRandom = Math.random,
         noteSettings = {}, hasCharacterOrGroup = false,
         storyStringTemplate: template = '', storyStringPosition = 0, storyStringDepth = 1, storyStringRole = 0,
         sysPromptEnabled = false, sysPromptContent = '', personaDescriptionPosition = 0, stripExamples = false,
@@ -300,7 +300,7 @@ export async function buildTextCompletionPrompt(input) {
     const { activatedEntries, trace } = await activateWorldInfoEntries(decoratedCandidates, chatForWI, {
         maxContext: thisMaxContext, globals: worldInfoGlobals,
         globalScanData, macroContext, countTokens, random: worldInfoRandom, chatMetadata, isDryRun,
-        entryFilterContext, additionalScanInjects: scanInjects.map(([, text]) => text),
+        entryFilterContext: await entryFilterContextOf(directories, avatar, generationTrigger), additionalScanInjects: scanInjects.map(([, text]) => text),
     });
     const activations = isDryRun || !directories ? null : await buildActivationRecord(trace, {
         messages: scannedMessages,
