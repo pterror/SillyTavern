@@ -208,7 +208,7 @@ test('every reply marks the words that brought its entries in, each from its own
     try {
         await testSetup.awaitST({ page });
         const avatar = await createCharacterAndBook(page, `Twice-${stamp}`, book, {
-            0: LANTERN,
+            0: { uid: 0, key: ['beacon'], keysecondary: [], comment: 'The beacon', content: 'The beacon is lit.', position: 0, order: 10, disable: false },
             1: { uid: 1, key: ['harbour'], keysecondary: [], comment: 'The harbour', content: 'The harbour is frozen.', position: 0, order: 10, disable: false },
         });
         await openCharacter(page, avatar);
@@ -216,17 +216,17 @@ test('every reply marks the words that brought its entries in, each from its own
         await connectLlamaCpp(page, mock.url);
         await page.waitForTimeout(2500);
 
-        await chatBox(page).fill('Where is the lantern?');
+        await chatBox(page).fill('Where is the beacon?');
         await page.locator('#send_but').click();
         await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('It hangs by the door.', { timeout: 30000 });
         await chatBox(page).fill('And what of the harbour?');
         await page.locator('#send_but').click();
         await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('It hangs by the door.', { timeout: 30000 });
 
+        const first = page.locator('#chat .mes[mesid="1"] .mes_text .trigger-mark');
+        const second = page.locator('#chat .mes[mesid="3"] .mes_text .trigger-mark');
         const marked = async () => {
-            const first = page.locator('#chat .mes[mesid="1"] .mes_text .trigger-mark');
-            const second = page.locator('#chat .mes[mesid="3"] .mes_text .trigger-mark');
-            await expect(first).toHaveText(['lantern'], { timeout: 15000 });
+            await expect(first).toHaveText(['beacon'], { timeout: 15000 });
             await expect(second).toHaveText(['harbour'], { timeout: 15000 });
             await expect(first).toHaveClass(/trigger-mark-earlier/);
             await expect(second).not.toHaveClass(/trigger-mark-earlier/);
@@ -239,15 +239,15 @@ test('every reply marks the words that brought its entries in, each from its own
             await expect(second).toHaveAttribute('data-lore-reply', replies[1]);
             await expect(first).toHaveCSS('text-decoration-style', 'dotted');
             await expect(second).toHaveCSS('text-decoration-style', 'dotted');
-            await first.hover();
-            const card = page.locator('.wb-chat-card');
-            await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “lantern” in that reply', { timeout: 5000 });
-            await second.hover();
-            await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “harbour” in the last reply', { timeout: 5000 });
-            await page.mouse.move(0, 0);
-            await expect(card).toBeHidden();
         };
         await marked();
+        await first.hover();
+        const card = page.locator('.wb-chat-card');
+        await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “beacon” in that reply', { timeout: 5000 });
+        await second.hover();
+        await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “harbour” in the last reply', { timeout: 5000 });
+        await page.mouse.move(0, 0);
+        await expect(card).toBeHidden();
 
         await page.reload();
         await testSetup.awaitST({ page });
