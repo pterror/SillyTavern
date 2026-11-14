@@ -1,4 +1,5 @@
 import { Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
+import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import {
     AXES_VIEW,
@@ -48,13 +49,26 @@ import type { RowsContext } from './Rows.tsx';
 const POINTING_AT_SHOWN = 12;
 
 // `notify`: the app's toast, for what the server refused.
-type Props = { shown: boolean; target: Target | null; onTargetTaken: () => void; notify: (words: string) => void };
+// `activationSettings`: how lorebook entries are brought into replies, for every world; another area draws it.
+type Props = {
+    shown: boolean;
+    target: Target | null;
+    onTargetTaken: () => void;
+    notify: (words: string) => void;
+    activationSettings: () => JSX.Element;
+};
 
 // The page reads nothing until its pane is first shown.
 export function Worldbuilding(props: Props & { everShown: boolean }) {
     return (
         <Show when={props.everShown}>
-            <Page shown={props.shown} target={props.target} onTargetTaken={props.onTargetTaken} notify={props.notify} />
+            <Page
+                shown={props.shown}
+                target={props.target}
+                onTargetTaken={props.onTargetTaken}
+                notify={props.notify}
+                activationSettings={props.activationSettings}
+            />
         </Show>
     );
 }
@@ -276,6 +290,7 @@ function Page(props: Props) {
                                 : null
                         }
                         onOpen={(book) => void openWorld(book)}
+                        activationSettings={props.activationSettings}
                     />
                     <SearchBox typed={typed()} onType={type} />
                     <span class="wb-fill" />

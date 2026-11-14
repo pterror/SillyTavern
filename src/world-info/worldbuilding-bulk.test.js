@@ -184,3 +184,15 @@ test('a duplicate goes right after its entry, with its keys and relations', asyn
     const order = Object.values(stored).sort((a, b) => a.displayIndex - b.displayIndex).map(e => e.content);
     assert.deepEqual(order, ['the hub', 'first', 'first', 'second']);
 });
+
+test('filling titles from keys gives each selected entry with no title its keys, and leaves titled ones', async () => {
+    const titled = { ...entry(1, 'one'), comment: 'Kept' };
+    const untitled = { ...entry(2, 'two'), key: ['alpha', 'beta'] };
+    const keyless = { ...entry(3, 'three'), key: [] };
+    const w = await write('Titles', [titled, untitled, keyless]);
+    assert.deepEqual(await lib.books.startBulk(w.book, { selected: { world: true }, except: [] }, { fillTitles: true }, LOOPS), { unreachedLoops: [] });
+    const stored = await entriesOf('Titles');
+    assert.equal(stored[1].comment, 'Kept');
+    assert.equal(stored[2].comment, 'alpha, beta');
+    assert.equal(stored[3].comment, '');
+});

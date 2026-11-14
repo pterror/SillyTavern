@@ -385,7 +385,12 @@ export function worldbuildingWorldPorts({ libOf, booksChanged }) {
         },
         async exportWorld(user, book) {
             const lib = await libOf(user);
-            if ((await lib.books.bookForm(BigInt(book)))?.form === 'card') return { refused: CARD_BOOK_REFUSAL };
+            const [entity] = await lib.entities([BigInt(book)]);
+            const card = entity ? await cardBookOf(lib, entity) : null;
+            if (card !== null) {
+                const name = card.bookName || card.characterName;
+                return { fileName: `${name}.json`, json: JSON.stringify(withoutPictures({ name, ...(await lib.books.cardBookAsWorld(BigInt(book))) })) };
+            }
             const key = await worldKey(lib, BigInt(book));
             const read = key === null ? null : await lib.books.read(key);
             if (key === null || read === null) return null;

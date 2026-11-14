@@ -65,7 +65,6 @@ export type StartOptions = {
         tgTop: HTMLElement;
         tgSamplers: HTMLElement;
         tgCfg: HTMLElement;
-        worldInfoSettings: HTMLElement;
         worldbuilding: HTMLElement;
         usageStats: UsageStatsButtons;
     };
@@ -106,7 +105,6 @@ export function start(options: StartOptions) {
     mount(tgTop, () => <TgTop />);
     mount(tgSamplers, () => <TgSamplers />);
     mount(tgCfg, () => <TgCfg />);
-    mount(options.containers.worldInfoSettings, () => <WorldInfoSettings />);
 
     const [look, setLook] = createSignal<Look | null>(null);
     const alternativesHost = document.createElement('div');
@@ -135,6 +133,7 @@ export function start(options: StartOptions) {
             target={worldbuilding.target()}
             onTargetTaken={worldbuilding.targetTaken}
             notify={(words) => options.worldbuilding.notify(words)}
+            activationSettings={() => <WorldInfoSettings />}
         />
     ));
 

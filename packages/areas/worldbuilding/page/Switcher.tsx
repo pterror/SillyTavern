@@ -1,4 +1,5 @@
 import { For, Show, createSignal } from 'solid-js';
+import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { WORLDS_VIEW } from '../protocol.ts';
@@ -51,9 +52,14 @@ function download({ fileName, json }: ExportedWorld) {
     URL.revokeObjectURL(link.href);
 }
 
-export function Switcher(props: { world: ShownWorld | null; onOpen: (book: string) => void }) {
+export function Switcher(props: {
+    world: ShownWorld | null;
+    onOpen: (book: string) => void;
+    activationSettings: () => JSX.Element;
+}) {
     const { t } = useUi();
     const [open, setOpen] = createSignal(false);
+    const [settings, setSettings] = createSignal(false);
     let button: HTMLButtonElement | undefined;
     return (
         <div class="wb-switch-at">
@@ -76,12 +82,38 @@ export function Switcher(props: { world: ShownWorld | null; onOpen: (book: strin
                     world={props.world}
                     opener={() => button}
                     onClose={() => setOpen(false)}
+                    onSettings={() => {
+                        setOpen(false);
+                        setSettings(true);
+                    }}
                     onOpen={(book) => {
                         setOpen(false);
                         props.onOpen(book);
                     }}
                 />
             </Show>
+            <Show when={settings()}>
+                <SettingsPanel opener={() => button} onClose={() => setSettings(false)}>
+                    {props.activationSettings()}
+                </SettingsPanel>
+            </Show>
+        </div>
+    );
+}
+
+function SettingsPanel(props: { opener: () => HTMLElement | undefined; onClose: () => void; children: JSX.Element }) {
+    const { t } = useUi();
+    let panel: HTMLDivElement | undefined;
+    dismissOn(() => panel, props.onClose, props.opener);
+    return (
+        <div
+            class="wb-menu wb-activation-settings"
+            role="dialog"
+            aria-label={t('Activation settings')}
+            ref={(element) => (panel = element)}
+        >
+            <div class="wb-menu-head">{t('Activation settings')}</div>
+            {props.children}
         </div>
     );
 }
@@ -90,6 +122,7 @@ function WorldsMenu(props: {
     world: ShownWorld | null;
     opener: () => HTMLElement | undefined;
     onClose: () => void;
+    onSettings: () => void;
     onOpen: (book: string) => void;
 }) {
     const { client, t } = useUi();
@@ -108,17 +141,30 @@ function WorldsMenu(props: {
         <div class="wb-menu list-group wb-worlds" role="menu" ref={(element) => (menu = element)}>
             <For each={worlds()?.worlds ?? []}>
                 {(world) => (
-                    <button
-                        type="button"
-                        role="menuitem"
-                        class="list-group-item wb-world-row"
-                        classList={{ 'wb-on': world.id === props.world?.id }}
-                        onClick={() => props.onOpen(world.id)}
-                    >
-                        <Picture url={world.picture} class="wb-switch-pic" />
-                        <span class="wb-world-row-name">{world.name}</span>
-                        <span class="wb-world-row-count">{count(world.entries)}</span>
-                    </button>
+                    <div class="list-group-item wb-world-row" classList={{ 'wb-on': world.id === props.world?.id }}>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            class="wb-world-row-open"
+                            onClick={() => props.onOpen(world.id)}
+                        >
+                            <Picture url={world.picture} class="wb-switch-pic" />
+                            <span class="wb-world-row-name">{world.name}</span>
+                            <span class="wb-world-row-count">{count(world.entries)}</span>
+                        </button>
+                        <input
+                            type="checkbox"
+                            class="wb-world-row-used"
+                            checked={world.usedInEveryChat}
+                            aria-label={fill(t('${0}: used in every chat'), world.name)}
+                            title={t('Used in every chat')}
+                            onChange={() =>
+                                void wb.act('worldbuilding.setUsedInEveryChat', {
+                                    changes: [{ book: world.id, used: !world.usedInEveryChat }],
+                                })
+                            }
+                        />
+                    </div>
                 )}
             </For>
             <hr />
@@ -148,26 +194,13 @@ function WorldsMenu(props: {
             >
                 {t('Import a world…')}
             </button>
+            <button class="list-group-item" type="button" role="menuitem" onClick={() => props.onSettings()}>
+                {t('Activation settings…')}
+            </button>
             <Show when={props.world} keyed>
                 {(world) => (
                     <>
                         <hr />
-                        <Show when={world.ownBookOf === null}>
-                            <label class="list-group-item checkbox_label" role="none">
-                                <input
-                                    type="checkbox"
-                                    checked={world.usedInEveryChat}
-                                    onChange={() =>
-                                        run(() =>
-                                            wb.act('worldbuilding.setUsedInEveryChat', {
-                                                changes: [{ book: world.id, used: !world.usedInEveryChat }],
-                                            }),
-                                        )
-                                    }
-                                />
-                                {t('Used in every chat')}
-                            </label>
-                        </Show>
                         <button
                             class="list-group-item"
                             type="button"
@@ -210,21 +243,20 @@ function WorldsMenu(props: {
                             >
                                 {t('Duplicate')}
                             </button>
-                            <button
-                                class="list-group-item"
-                                type="button"
-                                role="menuitem"
-                                onClick={() =>
-                                    run(async () => {
-                                        const done = await wb.act('worldbuilding.exportWorld', { book: world.id });
-                                        if (done.ok && done.answer !== undefined)
-                                            download(done.answer as ExportedWorld);
-                                    })
-                                }
-                            >
-                                {t('Export')}
-                            </button>
                         </Show>
+                        <button
+                            class="list-group-item"
+                            type="button"
+                            role="menuitem"
+                            onClick={() =>
+                                run(async () => {
+                                    const done = await wb.act('worldbuilding.exportWorld', { book: world.id });
+                                    if (done.ok && done.answer !== undefined) download(done.answer as ExportedWorld);
+                                })
+                            }
+                        >
+                            {t('Export')}
+                        </button>
                         <button
                             type="button"
                             role="menuitem"

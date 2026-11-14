@@ -524,7 +524,8 @@ export type BulkAction =
     | { moveTo: RelationTo }
     | { alsoPutIn: RelationTo }
     | { moveToWorld: string }
-    | { copyToWorld: string };
+    | { copyToWorld: string }
+    | { fillTitles: true };
 
 export type BulkJob = { job: string; action: BulkAction; target: Named | null; done: number };
 
@@ -639,6 +640,7 @@ const bulkAction = v.union([
     v.strictObject({ alsoPutIn: relationTo }),
     v.strictObject({ moveToWorld: entityId }),
     v.strictObject({ copyToWorld: entityId }),
+    v.strictObject({ fillTitles: v.literal(true) }),
 ]);
 
 export const actions = {

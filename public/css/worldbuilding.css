@@ -337,10 +337,36 @@
     overflow-y: auto;
 }
 
+.wb-activation-settings {
+    width: min(420px, calc(100dvw - 32px));
+    max-height: calc(100dvh - 160px);
+    overflow-y: auto;
+    padding: 8px 12px 12px;
+}
+
 .wb .wb-world-row {
     display: flex;
     align-items: center;
     gap: 10px;
+}
+
+.wb .wb-world-row-open {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    align-items: center;
+    gap: 10px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+}
+
+.wb .wb-world-row-used {
+    margin: 0;
 }
 
 .wb-world-row-name {

@@ -310,7 +310,7 @@ test('how worlds are used in replies: every World Info field once, with its word
     );
     const depth = host.querySelector<HTMLInputElement>('#wi_scan_depth');
     expect(depth?.value).toBe('2');
-    expect(depth?.closest('label')?.textContent).toContain('How far back to look for keys (messages)');
+    expect(depth?.closest('label')?.textContent).toContain('Scan depth');
     expect(host.querySelector<HTMLSelectElement>('#wi_character_strategy')?.value).toBe('1');
     expect(host.querySelector<HTMLInputElement>('#wi_recursive')?.checked).toBe(true);
 

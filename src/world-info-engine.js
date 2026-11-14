@@ -75,7 +75,7 @@ export const namesOfferShown = read => read.state === null && read.namedEntries 
  */
 
 /**
- * @typedef {{ delete: true } | { set: Record<string, unknown> } | { moveTo: { kind: string, target: string } } | { alsoPutIn: { kind: string, target: string } } | { moveToWorld: string } | { copyToWorld: string }} BulkAction
+ * @typedef {{ delete: true } | { set: Record<string, unknown> } | { moveTo: { kind: string, target: string } } | { alsoPutIn: { kind: string, target: string } } | { moveToWorld: string } | { copyToWorld: string } | { fillTitles: true }} BulkAction
  * @typedef {{ entries: string[] } | { world: true } | { query: string, chips: { kind: string, target: string, depth: 'directly' | 'anyDepth' }[] }} BulkSelected
  * @typedef {{ action: BulkAction, selected: BulkSelected, except: string[], actor: Actor | null }} BulkJob
  */
@@ -198,6 +198,19 @@ const TRANSFER_TARGET_GONE = 'That world no longer exists.';
  * @param {BulkAction} action
  * @returns {bigint | null}
  */
+const TITLE_FROM_KEYS_AT_MOST = 100;
+
+/**
+ * An entry with no title takes its keys, joined, as its title; one with a title, or with no keys, is left as it is.
+ * @param {Record<string, unknown>} entry
+ * @returns {{ comment?: string }}
+ */
+const titleFromKeys = entry => {
+    const keys = Array.isArray(entry.key) ? entry.key.filter(key => typeof key === 'string' && key !== '') : [];
+    if ((typeof entry.comment === 'string' && entry.comment.trim() !== '') || keys.length === 0) return {};
+    return { comment: keys.join(', ').slice(0, TITLE_FROM_KEYS_AT_MOST) };
+};
+
 const transferTargetOf = action => ('moveToWorld' in action ? BigInt(action.moveToWorld) : 'copyToWorld' in action ? BigInt(action.copyToWorld) : null);
 // The world's picture: the id of an image in the user's image store. Not part of a world file.
 export const WORLD_PICTURE_FIELD = `${EXTENSION_MARK}picture`;
@@ -837,6 +850,21 @@ export class WorldInfoEngine {
      */
     assemble(s, world) {
         return assembleBook(s, world);
+    }
+
+    /**
+     * A character's own book as a world file reads it: each entry in a world's fields, its relations naming their
+     * targets by key.
+     * @param {bigint} book
+     * @returns {Promise<{ entries: Record<string, unknown> }>}
+     */
+    async cardBookAsWorld(book) {
+        const stored = await this.storedEntries(book);
+        const keyOf = (/** @type {import('./entity-values.js').StoredEntity} */ e) => e.key.slice(e.key.indexOf(':') + 1);
+        const keyOfEntity = new Map(stored.map(({ entity }) => [String(entity.id), keyOf(entity)]));
+        return {
+            entries: Object.fromEntries(stored.map(({ entity }) => [keyOf(entity), relationsForFile(entryAsWorld(entity, 'card'), keyOfEntity)])),
+        };
     }
 
     /**
@@ -2287,7 +2315,7 @@ export class WorldInfoEngine {
     async bulkChunk(book, job, state, at, stored) {
         const { action } = state;
         const relation = 'moveTo' in action ? action.moveTo : 'alsoPutIn' in action ? action.alsoPutIn : null;
-        const verb = 'delete' in action ? 'delete' : 'set' in action ? 'set' : 'moveTo' in action ? 'moveTo' : 'alsoPutIn';
+        const verb = 'delete' in action ? 'delete' : 'set' in action || 'fillTitles' in action ? 'set' : 'moveTo' in action ? 'moveTo' : 'alsoPutIn';
         /** @type {{ ended: string | null, entities: bigint[], rewrites: { entity: bigint, before: string | null, json: string }[], next: string | null }} */
         const chunk = await this.store.worldRead('worldbuildingBulkChunk', {
             book,
@@ -2321,8 +2349,11 @@ export class WorldInfoEngine {
         /** @type {object[]} */
         const records = [];
         const stamp = await this.stamper(state.actor, records);
-        if ('set' in action) {
-            const nexts = entities.map(e => ({ ...(/** @type {Record<string, unknown>} */ (entryObject(e, false))), ...action.set }));
+        if ('set' in action || 'fillTitles' in action) {
+            const nexts = entities.map(e => {
+                const stored = /** @type {Record<string, unknown>} */ (entryObject(e, false));
+                return 'set' in action ? { ...stored, ...action.set } : { ...stored, ...titleFromKeys(stored) };
+            });
             const targets = await this.relationTargets(book, nexts, entities, new Map(entities.map(e => [e.key.slice(e.key.indexOf(':') + 1), e.id])), new Set());
             entities.forEach((e, i) => {
                 pushAll(records, valueRecords(e.id, e, entryValues(nexts[i], e.key.slice(e.key.indexOf(':') + 1), false, { targets, stored: e }), historyWrites(stamp)));

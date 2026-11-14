@@ -456,7 +456,11 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
                     {t('Set')} ▾
                 </button>
                 <Show when={menu() === 'set'}>
-                    <SetMenu onSet={(set) => run({ set })} onClose={() => setMenu(null)} />
+                    <SetMenu
+                        onSet={(set) => run({ set })}
+                        onFillTitles={() => run({ fillTitles: true })}
+                        onClose={() => setMenu(null)}
+                    />
                 </Show>
             </span>
             <Show when={kind()}>
@@ -559,7 +563,7 @@ export function BulkBar(props: { selection: Selected; kinds: RelationKind[]; gro
     );
 }
 
-function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onClose: () => void }) {
+function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onFillTitles: () => void; onClose: () => void }) {
     const { t } = useUi();
     let menu: HTMLDivElement | undefined;
     dismissOn(() => menu, props.onClose);
@@ -592,6 +596,10 @@ function SetMenu(props: { onSet: (set: Partial<Placement>) => void; onClose: () 
                     </button>
                 )}
             </For>
+            <hr />
+            <button class="list-group-item" type="button" role="menuitem" onClick={() => props.onFillTitles()}>
+                {t('Fill empty titles from keys')}
+            </button>
         </div>
     );
 }

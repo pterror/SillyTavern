@@ -83,9 +83,13 @@ test('the character\'s own book opens as a world, is never listed among them, an
     for (const refused of [
         await ports.renameWorld(who, id, 'Other'),
         await ports.duplicateWorld(who, id),
-        await ports.exportWorld(uiUser, id),
         await ports.setUsedInEveryChat(who, [{ book: id, used: true }]),
     ]) assert.deepEqual(refused, { refused: CARD_BOOK_REFUSAL });
+    const exported = /** @type {{ fileName: string, json: string }} */ (await ports.exportWorld(uiUser, id));
+    assert.equal(exported.fileName, 'Nia\'s notes.json');
+    const file = JSON.parse(exported.json);
+    assert.equal(file.name, 'Nia\'s notes');
+    assert.deepEqual(Object.values(file.entries).map(entry => /** @type {any} */ (entry).content).sort(), ['An inn by the river.', 'The river.'].sort());
     const [inn] = await entryIds(id);
     assert.deepEqual(await ports.moveEntryToWorld(who, id, inn, plain), { refused: CARD_ENTRY_STAYS });
     assert.deepEqual(await ports.moveEntryToWorld(who, plain, (await entryIds(plain))[0], id), { refused: CARD_ENTRY_STAYS });
