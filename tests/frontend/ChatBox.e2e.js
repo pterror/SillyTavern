@@ -269,12 +269,19 @@ test.describe('the chat box\'s drafts', () => {
         await page.keyboard.type('never saved');
         const copies = () => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('ChatBoxCopy:')).length);
         expect(await copies()).toBe(1);
-        let refused = 0;
-        await page.route('**/api/chats/draft', route => (refused++, route.abort()));
+        // The save the page sends as it goes fails, in the page itself: a request made while a page unloads is not
+        // reliably seen by Playwright's routing.
+        await page.evaluate(() => {
+            const send = window.fetch;
+            window.fetch = (resource, init) => {
+                if (!String(resource).includes('/api/chats/draft')) return send(resource, init);
+                sessionStorage.setItem('test:draft-refused', String(Number(sessionStorage.getItem('test:draft-refused') ?? 0) + 1));
+                return Promise.reject(new TypeError('offline'));
+            };
+        });
         await page.reload();
         await testSetup.awaitST({ page });
-        await page.unroute('**/api/chats/draft');
-        expect(refused).toBeGreaterThan(0);
+        expect(Number(await page.evaluate(() => sessionStorage.getItem('test:draft-refused')))).toBeGreaterThan(0);
 
         await openCharacter(page, second);
         await expect.poll(copies).toBe(0);
