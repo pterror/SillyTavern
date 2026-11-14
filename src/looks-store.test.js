@@ -372,12 +372,13 @@ test('a small picture is a crop of the thing\'s own picture or another image, st
 
 test('the trigger mark is the theme\'s, set per state and drawn by the view of what the tab draws, the Look screen and the theme settings', async () => {
     const at = { style: 'dotted', color: 'currentColor', opacity: 1 };
-    assert.deepEqual((await looks.area.views['looks.drawn'](context)).looks.mark, { rest: at, messagePointed: at, wordPointed: at });
+    assert.deepEqual((await looks.area.views['looks.drawn'](context)).looks.mark, { rest: at, earlierReply: at, messagePointed: at, wordPointed: at });
     const changed = await act('looks.setMark', { change: { rest: { style: 'none' }, messagePointed: { style: 'dashed', color: ' #ff0000 ' } } });
     assert.deepEqual(changed.changed, ['looks.look', 'looks.drawn', 'looks.theme']);
     const pointed = { style: 'dashed', color: '#ff0000', opacity: 1 };
     assert.deepEqual((await looks.area.views['looks.drawn'](context)).looks.mark, {
         rest: { ...at, style: 'none' },
+        earlierReply: { ...at, style: 'none' },
         messagePointed: pointed,
         wordPointed: pointed,
     });
