@@ -343,12 +343,16 @@ const DialogueQuotes = {
     }],
 };
 
+/** What opens, continues or closes a Handlebars block: `{{#if x}}`, `{{else}}`, `{{/if}}` */
+const BLOCK_TAG = /^\s*(?:#|\/(?!\/)|else(?![\w-]))/u;
+
 /**
- * `{{…}}`, nested ones included, as one `Macro` with its two `MacroMark`s
+ * `{{…}}`, nested ones included, as one `Macro` with its two `MacroMark`s; a Handlebars block's opening, `else` and
+ * closing tags as `MacroBlockTag`s, which hold no value
  * @type {MarkdownConfig}
  */
 const Macros = {
-    defineNodes: ['Macro', 'MacroMark'],
+    defineNodes: ['Macro', 'MacroBlockTag', 'MacroMark'],
     parseInline: [{
         name: 'Macro',
         parse(cx, next, absPos) {
@@ -365,7 +369,8 @@ const Macros = {
                     pos++;
                     if (depth === 0) {
                         const end = pos + 1;
-                        return cx.addElement(cx.elt('Macro', absPos, end, [
+                        const name = BLOCK_TAG.test(cx.slice(absPos + 2, end - 2)) ? 'MacroBlockTag' : 'Macro';
+                        return cx.addElement(cx.elt(name, absPos, end, [
                             cx.elt('MacroMark', absPos, absPos + 2),
                             cx.elt('MacroMark', end - 2, end),
                         ]));

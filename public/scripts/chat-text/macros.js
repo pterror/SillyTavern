@@ -196,7 +196,7 @@ function macroAt(state, pos) {
     const tree = syntaxTree(state);
     for (const side of /** @type {const} */ ([-1, 1])) {
         for (let node = tree.resolveInner(pos, side); node.parent; node = node.parent) {
-            if (node.name === 'Macro') return { from: node.from, to: node.to };
+            if (node.name === 'Macro' || node.name === 'MacroBlockTag') return { from: node.from, to: node.to };
         }
     }
     return null;

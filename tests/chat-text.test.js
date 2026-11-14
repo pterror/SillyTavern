@@ -217,6 +217,46 @@ describe('chat text, with ranges drawn over it', () => {
     });
 });
 
+describe('Handlebars block tags in chat text', () => {
+    /**
+     * @param {string} text
+     * @returns {string[]} the macro nodes the grammar finds, as `Name:source`
+     */
+    function macroNodes(text) {
+        /** @type {string[]} */
+        const found = [];
+        surface.grammarOf({}).parse(text).iterate({
+            enter: (node) => {
+                if (node.name === 'Macro' || node.name === 'MacroBlockTag') found.push(`${node.name}:${text.slice(node.from, node.to)}`);
+            },
+        });
+        return found;
+    }
+
+    test('are told from macros by the grammar: opening, else and closing', () => {
+        expect(macroNodes('{{#if a}}{{b}}{{else}}{{c}}{{/if}}')).toEqual([
+            'MacroBlockTag:{{#if a}}', 'Macro:{{b}}', 'MacroBlockTag:{{else}}', 'Macro:{{c}}', 'MacroBlockTag:{{/if}}',
+        ]);
+        expect(macroNodes('{{#each xs}}{{else if y}}{{/each}}')).toEqual([
+            'MacroBlockTag:{{#each xs}}', 'MacroBlockTag:{{else if y}}', 'MacroBlockTag:{{/each}}',
+        ]);
+        expect(macroNodes('{{ #if a }}')).toEqual(['MacroBlockTag:{{ #if a }}']);
+        expect(macroNodes('{{// note}}')).toEqual(['Macro:{{// note}}']);
+        expect(macroNodes('{{elsewhere}} {{else_x}}')).toEqual(['Macro:{{elsewhere}}', 'Macro:{{else_x}}']);
+    });
+
+    test('are drawn as written, not as a macro without a value', () => {
+        const html = drawn('{{#if a}}Hi {{user}}{{else}}no{{/if}}', { values: { '{{user}}': 'Ann' } });
+        expect(html).toBe(
+            '<p><span class="macro-value macro-block-tag" data-macro-name="if">{{#if a}}</span>Hi '
+            + '<span class="macro-value macro-value-mention" data-macro-name="user" data-macro-source="{{user}}">Ann</span>'
+            + '<span class="macro-value macro-block-tag" data-macro-name="else">{{else}}</span>no'
+            + '<span class="macro-value macro-block-tag" data-macro-name="if">{{/if}}</span></p>',
+        );
+        expect(html).not.toContain('macro-value-unknown');
+    });
+});
+
 describe('a macro in an editor', () => {
     test('is a pill whatever its value: what it is when the text came without one, marked only when known when sent', () => {
         const pill = macros.macroPills({ get: source => ({ '{{char}}': 'Mac', '{{input}}': null })[source] }, () => null, translate, () => false);

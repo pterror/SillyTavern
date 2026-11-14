@@ -97,6 +97,25 @@ function markdownBlockElement(block, read, html) {
 }
 
 /**
+ * A Handlebars block tag as the reader draws it: as written, in the macros' colour
+ * @param {string} source
+ * @returns {Piece}
+ */
+function blockTagPiece(source) {
+    return {
+        same: other => 'source' in other && other.source === source,
+        source,
+        draw() {
+            const element = document.createElement('span');
+            element.className = 'macro-value macro-block-tag';
+            element.setAttribute('data-macro-name', /^\{\{\s*(?:[#/^]\s*)?([a-zA-Z][\w-]*)/u.exec(source)?.[1] ?? '');
+            element.textContent = source;
+            return element;
+        },
+    };
+}
+
+/**
  * How chat text is drawn: markdown, by the HTML policy, with SillyTavern's own syntax. HTML blocks keep HTML's
  * whitespace (the `html-block` class), since the text is otherwise drawn with its whitespace as written.
  * @param {LookOptions} options
@@ -175,6 +194,13 @@ export function chatLook({ html, emojis, macro, pill, reasoningMarkers = [] }) {
         Macro: {
             source: 'replaced',
             piece: (node, read, surface) => (surface === 'reader' ? macro(read(node.from, node.to)) : pill?.(read(node.from, node.to), node.from)),
+        },
+        MacroBlockTag: {
+            source: 'replaced',
+            piece: (node, read, surface) => {
+                const source = read(node.from, node.to);
+                return surface === 'reader' ? blockTagPiece(source) : pill?.(source, node.from);
+            },
         },
         MacroMark: MARK,
         ReasoningMarkerLine: { block: true, element: 'p' },

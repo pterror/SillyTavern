@@ -1657,7 +1657,7 @@ textarea.autoSetHeight {
     min-height: calc(attr(rows type(<number>), 2) * 1lh + 2 * (var(--field-padding-block) + var(--field-border-width)));
 }
 
-:where(.macro-pill, .macro-source, .macro-tooltip) {
+:where(.macro-pill, .macro-source, .macro-tooltip, .macro-block-tag) {
     --macro-color: oklch(from var(--SmartThemeBodyColor) l var(--macro-chroma, 0.14) var(--macro-hue, 250));
 }
 
@@ -7580,4 +7580,8 @@ div.cm-tooltip.paste-picker {
 
 .expanded_editor .cm-editor {
     min-height: 60dvh;
+}
+
+.chat-text .macro-block-tag {
+    color: var(--macro-color);
 }
