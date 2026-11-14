@@ -93,7 +93,7 @@ import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { drawName, holdLooks, nameNode } from './names.js';
 import { CANDIDATE_LOOKS } from './name-holders.js';
-import { arriveChatBox } from './chat-box.js';
+import { arriveChatBox, chatBoxLeft, openingChatBox } from './chat-box.js';
 
 export {
     selected_group,
@@ -2156,14 +2156,15 @@ export async function deleteGroupChatByName(groupId, chatName) {
         const response = await fetch('/api/chats/new', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ group_id: group.id, replace: chatName }),
+            body: JSON.stringify({ group_id: group.id, replace: chatName, leaving: openingChatBox({ group_id: group.id }) }),
         });
         if (!response.ok) {
             toastr.error(t`The replacement chat was not created. Check the server console for details.`, t`Group chat could not be created`);
             console.error('Group chat could not be created', response);
             return;
         }
-        const { chat_id, chats } = await response.json();
+        const { chat_id, chats, opened } = await response.json();
+        chatBoxLeft(opened?.left);
         _setCurrentTarget(chat_id, null, { group_id: groupId });
         groupsStore.update(group.id, { chats, chat_id });
     } else {

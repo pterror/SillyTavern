@@ -202,6 +202,14 @@ jest.unstable_mockModule('../public/scripts/filters.js', () => ({
     },
 }));
 
+const leftDraft = [{ group_id: 'g-leave', owner: { root: true }, text: 'typed', changes: [], tab: 't' }];
+const chatBoxLeftMock = jest.fn();
+jest.unstable_mockModule('../public/scripts/chat-box.js', () => ({
+    arriveChatBox: jest.fn(),
+    chatBoxLeft: chatBoxLeftMock,
+    openingChatBox: jest.fn(() => leftDraft),
+}));
+
 jest.unstable_mockModule('../public/scripts/chats.js', () => ({
     isExternalMediaAllowed: jest.fn(),
 }));
@@ -303,5 +311,20 @@ describe('a failed group write shows an error toast', () => {
         await groupChats.deleteGroupChatByName('g-delete', 'c1');
 
         expect(global.toastr.error).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('deleting a group\'s last chat', () => {
+    test('carries the chat box\'s text it leaves in the request that replaces the chat, and hears what became of it', async () => {
+        groupChats.groupsStore.create({ id: 'g-leave', members: [], chats: ['c1'], chat_id: 'c1' });
+        const left = [{ ...leftDraft[0], sent: 'typed', left: 'kept', text: 'typed' }];
+        globalThis.fetch = jest.fn(async () => ({ ok: true, status: 200, json: async () => ({ chat_id: 'c2', chats: ['c2'], opened: { left } }) }));
+
+        await groupChats.deleteGroupChatByName('g-leave', 'c1');
+
+        const [url, init] = /** @type {any} */ (globalThis.fetch).mock.calls[0];
+        expect(url).toBe('/api/chats/new');
+        expect(JSON.parse(init.body)).toMatchObject({ group_id: 'g-leave', replace: 'c1', leaving: leftDraft });
+        expect(chatBoxLeftMock).toHaveBeenCalledWith(left);
     });
 });
