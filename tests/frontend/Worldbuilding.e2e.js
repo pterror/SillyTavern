@@ -39,6 +39,37 @@ async function openCoast(page, name) {
 const pane = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#Worldbuilding');
 
 /**
+ * The entry as upstream stores it.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} world
+ * @param {number} uid
+ */
+async function storedEntry(page, world, uid) {
+    return page.evaluate(async ({ world, uid }) => {
+        const { getRequestHeaders } = await import('/scripts/request-headers.js');
+        const read = await fetch('/api/worldinfo/entry/get', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ name: world, uid }) });
+        return (await read.json()).entry;
+    }, { world, uid });
+}
+
+/**
+ * Counts the page's actions of `type` while `run` runs.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} type
+ * @param {() => Promise<void>} run
+ */
+async function actionsDuring(page, type, run) {
+    let sent = 0;
+    const count = (/** @type {import('@playwright/test').Request} */ request) => {
+        if (request.url().endsWith('/api/ui/action') && JSON.parse(request.postData() ?? '{}').type === type) sent++;
+    };
+    page.on('request', count);
+    await run();
+    page.off('request', count);
+    return sent;
+}
+
+/**
  * @param {import('@playwright/test').Page} page
  * @param {string} title
  */
@@ -92,25 +123,160 @@ test.describe('the worlds page', () => {
         await deleteWorld(page, name);
     });
 
-    test('keys: a name and a trigger are added, a key switches between them and is removed', async ({ page }) => {
+    test('names and triggers are separate rows: each is added, moved to the other, edited in place and removed', async ({ page }) => {
         const name = unique('Keys');
         await openCoast(page, name);
         await openEntry(page, 'Ilse Varro');
-        const keys = pane(page).locator('.wb-keys');
-        await keys.locator('.wb-key-add', { hasText: 'Name' }).click();
+        const names = pane(page).locator('.wb-names');
+        const triggers = pane(page).locator('.wb-triggers');
+        await expect(names.locator('.wb-keys-label')).toHaveText('Also called');
+        await expect(triggers.locator('.wb-keys-label')).toHaveText('Triggers');
+        await expect(names.getByLabel('“Ilse Varro”, name', { exact: true })).toBeVisible();
+        await expect(triggers.getByLabel('“ledger”, trigger', { exact: true })).toBeVisible();
+
+        await names.getByRole('button', { name: 'Add name' }).click();
         await page.keyboard.type('Ilse');
         await page.keyboard.press('Enter');
-        await expect(keys.getByLabel('“Ilse”, name')).toBeVisible();
-        await keys.locator('.wb-key-add', { hasText: 'Key' }).click();
+        await expect(names.getByLabel('“Ilse”, name', { exact: true })).toBeVisible();
+        await triggers.getByRole('button', { name: 'Add trigger' }).click();
         await page.keyboard.type('the innkeeper');
         await page.keyboard.press('Enter');
-        await expect(keys.getByLabel('“the innkeeper”, key')).toBeVisible();
+        await expect(triggers.getByLabel('“the innkeeper”, trigger', { exact: true })).toBeVisible();
 
-        await keys.getByLabel('“ledger”, key').click();
-        await pane(page).getByRole('dialog', { name: 'Key “ledger”' }).getByRole('button', { name: 'Name' }).click();
-        await expect(keys.getByLabel('“ledger”, name')).toBeVisible();
-        await pane(page).getByRole('dialog', { name: 'Key “ledger”' }).getByRole('button', { name: 'Remove' }).click();
-        await expect(keys.getByLabel('“ledger”, name')).toHaveCount(0);
+        await triggers.getByLabel('“ledger”, trigger', { exact: true }).click();
+        await pane(page).locator('.wb-pop').getByRole('button', { name: 'Make it a name' }).click();
+        await expect(names.getByLabel('“ledger”, name', { exact: true })).toBeVisible();
+        await names.getByLabel('“ledger”, name', { exact: true }).click();
+        await pane(page).locator('.wb-pop').getByRole('button', { name: 'Make it a trigger' }).click();
+        await expect(triggers.getByLabel('“ledger”, trigger', { exact: true })).toBeVisible();
+        await triggers.getByLabel('“ledger”, trigger', { exact: true }).click();
+        await pane(page).locator('.wb-pop').getByRole('button', { name: 'Remove' }).click();
+        await expect(triggers.getByLabel('“ledger”, trigger', { exact: true })).toHaveCount(0);
+        await deleteWorld(page, name);
+    });
+
+    test('a key\'s words are edited in place: Enter saves, Escape leaves it, and entries sharing the key keep it', async ({ page }) => {
+        const name = unique('Rename');
+        await makeWorld(page, name, { ...COAST, 4: entry(4, 'Ledger Hall', ['ledger'], 'Where ledgers are kept.') }, { relationKinds: [{ id: 1, name: 'in' }] });
+        await openEntry(page, 'Ilse Varro');
+        const names = pane(page).locator('.wb-names');
+        const triggers = pane(page).locator('.wb-triggers');
+        await expect(triggers.getByLabel('“ledger”, trigger', { exact: true })).toContainText('2 entries');
+
+        await triggers.getByLabel('“ledger”, trigger', { exact: true }).click();
+        const field = triggers.getByRole('textbox', { name: 'Edit “ledger”' });
+        await expect(field).toHaveValue('ledger');
+        await field.fill('account book');
+        await page.keyboard.press('Escape');
+        await expect(triggers.getByLabel('“ledger”, trigger', { exact: true })).toBeVisible();
+        expect((await storedEntry(page, name, 2)).key).toEqual(['Ilse Varro', 'ledger']);
+
+        const renamed = await actionsDuring(page, 'worldbuilding.renameKey', async () => {
+            await triggers.getByLabel('“ledger”, trigger', { exact: true }).click();
+            await triggers.getByRole('textbox', { name: 'Edit “ledger”' }).fill('ledgers');
+            await page.keyboard.press('Enter');
+            await expect(triggers.getByLabel('“ledgers”, trigger', { exact: true })).toBeVisible();
+        });
+        expect(renamed).toBe(1);
+        await expect(triggers.getByLabel('“ledgers”, trigger', { exact: true })).not.toContainText('entries');
+        expect((await storedEntry(page, name, 2)).key).toEqual(['Ilse Varro', 'ledgers']);
+        expect((await storedEntry(page, name, 4)).key).toEqual(['ledger']);
+
+        await names.getByLabel('“Ilse Varro”, name', { exact: true }).click();
+        await names.getByRole('textbox', { name: 'Edit “Ilse Varro”' }).fill('Ilse');
+        await page.keyboard.press('Enter');
+        await expect(names.getByLabel('“Ilse”, name', { exact: true })).toBeVisible();
+        const stored = await storedEntry(page, name, 2);
+        expect(stored.key).toEqual(['Ilse', 'ledgers']);
+        expect(stored.extensions.names).toEqual(['Ilse']);
+        await deleteWorld(page, name);
+    });
+
+    test('several keys typed or pasted are added at once in one action; a comma inside a pattern stays', async ({ page }) => {
+        const name = unique('Several');
+        await openCoast(page, name);
+        await openEntry(page, 'The Tidegate');
+        const triggers = pane(page).locator('.wb-triggers');
+        const sent = await actionsDuring(page, 'worldbuilding.addKeys', async () => {
+            await triggers.getByRole('button', { name: 'Add trigger' }).click();
+            await triggers.getByRole('textbox', { name: 'Trigger' }).fill('a, b, c');
+            await page.keyboard.press('Enter');
+            for (const key of ['a', 'b', 'c']) await expect(triggers.getByLabel(`“${key}”, trigger`)).toBeVisible();
+        });
+        expect(sent).toBe(1);
+        expect((await storedEntry(page, name, 3)).key).toEqual(['The Tidegate', 'a', 'b', 'c']);
+
+        await triggers.getByRole('button', { name: 'Add trigger' }).click();
+        await triggers.getByRole('textbox', { name: 'Trigger' }).fill('/gate{1,2}s/i, d');
+        await page.keyboard.press('Enter');
+        await expect(triggers.getByLabel('“d”, trigger', { exact: true })).toBeVisible();
+        expect((await storedEntry(page, name, 3)).key).toEqual(['The Tidegate', 'a', 'b', 'c', '/gate{1,2}s/i', 'd']);
+        await deleteWorld(page, name);
+    });
+
+    test('a regex key is a trigger, shown as written in monospace; it can\'t be a name', async ({ page }) => {
+        const name = unique('Regex');
+        await openCoast(page, name);
+        await openEntry(page, 'The Tidegate');
+        const names = pane(page).locator('.wb-names');
+        const triggers = pane(page).locator('.wb-triggers');
+        await triggers.getByRole('button', { name: 'Add trigger' }).click();
+        await triggers.getByRole('textbox', { name: 'Trigger' }).fill('/tide ?gates?/i');
+        await page.keyboard.press('Enter');
+        const chip = triggers.getByLabel('“/tide ?gates?/i”, trigger', { exact: true });
+        await expect(chip).toBeVisible();
+        await expect(chip).toHaveText('/tide ?gates?/i');
+        expect(await chip.evaluate((element) => getComputedStyle(element).fontFamily)).toMatch(/mono|courier|consolas/i);
+        await chip.click();
+        await expect(pane(page).locator('.wb-pop').getByRole('button', { name: 'Make it a name' })).toHaveCount(0);
+        await page.keyboard.press('Escape');
+
+        await names.getByRole('button', { name: 'Add name' }).click();
+        await names.getByRole('textbox', { name: 'Name' }).fill('/gate/');
+        await page.keyboard.press('Enter');
+        await expect(page.getByText('A pattern can only be a trigger, not a name.').first()).toBeVisible();
+        await expect(names.getByLabel('“/gate/”, name', { exact: true })).toHaveCount(0);
+        expect((await storedEntry(page, name, 3)).key).toEqual(['The Tidegate', '/tide ?gates?/i']);
+        await deleteWorld(page, name);
+    });
+
+    test('secondary keys are chips after the logic: added, edited in place and removed', async ({ page }) => {
+        const name = unique('Secondary');
+        await openCoast(page, name);
+        await openEntry(page, 'Ilse Varro');
+        const triggers = pane(page).locator('.wb-triggers');
+        await triggers.getByRole('button', { name: 'Add secondary trigger' }).click();
+        await triggers.getByRole('textbox', { name: 'Secondary trigger' }).fill('harbour, quay');
+        await page.keyboard.press('Enter');
+        await expect(triggers.getByLabel('“quay”, secondary trigger', { exact: true })).toBeVisible();
+        await expect(triggers.locator('.wb-tok')).toHaveText('Any of');
+        expect((await storedEntry(page, name, 2)).keysecondary).toEqual(['harbour', 'quay']);
+
+        await triggers.getByLabel('“harbour”, secondary trigger', { exact: true }).click();
+        await triggers.getByRole('textbox', { name: 'Edit “harbour”' }).fill('port');
+        await page.keyboard.press('Enter');
+        await expect(triggers.getByLabel('“port”, secondary trigger', { exact: true })).toBeVisible();
+        expect((await storedEntry(page, name, 2)).keysecondary).toEqual(['port', 'quay']);
+
+        await triggers.getByLabel('“quay”, secondary trigger', { exact: true }).click();
+        await pane(page).locator('.wb-pop').getByRole('button', { name: 'Remove' }).click();
+        await expect(triggers.getByLabel('“quay”, secondary trigger', { exact: true })).toHaveCount(0);
+        expect((await storedEntry(page, name, 2)).keysecondary).toEqual(['port']);
+        await deleteWorld(page, name);
+    });
+
+    test('keys already in the world are suggested, with how many entries have each, while one is typed', async ({ page }) => {
+        const name = unique('Suggest');
+        await makeWorld(page, name, { ...COAST, 4: entry(4, 'Ledger Hall', ['ledger'], 'Where ledgers are kept.') }, { relationKinds: [{ id: 1, name: 'in' }] });
+        await openEntry(page, 'The Tidegate');
+        const triggers = pane(page).locator('.wb-triggers');
+        await triggers.getByRole('button', { name: 'Add trigger' }).click();
+        await triggers.getByRole('textbox', { name: 'Trigger' }).fill('led');
+        const option = pane(page).getByRole('option', { name: /ledger/ });
+        await expect(option).toContainText('2 entries');
+        await option.click();
+        await expect(triggers.getByLabel('“ledger”, trigger', { exact: true })).toBeVisible();
+        expect((await storedEntry(page, name, 3)).key).toEqual(['The Tidegate', 'ledger']);
         await deleteWorld(page, name);
     });
 
@@ -144,6 +310,7 @@ test.describe('the worlds page', () => {
 
         await openEntry(page, 'The Lantern House');
         await expect(pane(page).locator('.wb-new-under')).toContainText('in → The Lantern House');
+        await page.mouse.move(2, 400);
         await pane(page).locator('.wb-new-under').click();
         await expect(pane(page).locator('.wb-rels')).toContainText('in:The Lantern House');
         await deleteWorld(page, name);
@@ -199,7 +366,7 @@ test.describe('the worlds page', () => {
         await offer.getByRole('button', { name: 'Mark as name keys' }).click();
         await expect(offer).toContainText('Marked as name keys.');
         await openEntry(page, 'Rhea');
-        await expect(pane(page).locator('.wb-keys').getByLabel('“Rhea”, name')).toBeVisible();
+        await expect(pane(page).locator('.wb-names').getByLabel('“Rhea”, name', { exact: true })).toBeVisible();
         await pane(page).locator('.wb-rels-world').click();
         await pane(page).locator('.wb-offer').getByRole('button', { name: 'Undo' }).click();
         await expect(pane(page).locator('.wb-offer')).toContainText('a key is the title');

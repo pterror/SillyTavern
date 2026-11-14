@@ -10,6 +10,9 @@ export const goesWords = (facts: Pick<EntryFacts, 'position' | 'depth'>, t: (tex
     return where ? t(where.words) : t('Outlet');
 };
 
+// The keys that only bring the entry up: those that are not its names.
+export const triggersOf = (keys: string[], names: string[]): string[] => keys.filter((key) => !names.includes(key));
+
 // The words that bring the entry up, as its card shows them: its keys, then its secondary keys with their logic.
 export const triggerWords = (keys: string[], facts: EntryFacts, t: (text: string) => string): string => {
     if (facts.comesIn === 'always') return t('Constant');

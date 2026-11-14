@@ -22,14 +22,17 @@ import { TargetPicker } from './Picker.tsx';
 import { WHERES } from './Placement.tsx';
 import { FIELD_WORDS } from './Views.tsx';
 import { OnOff } from './OnOff.tsx';
-import { goesWords } from './facts.ts';
+import { goesWords, triggersOf } from './facts.ts';
+import { KeyChips } from './KeyChips.tsx';
+import { TriggerLine } from './Keys.tsx';
 import { count, fill } from './words.ts';
 
 export const ROW_HEIGHT = 40;
 
 const WIDTHS: Record<RowField, string> = {
     relations: '190px',
-    keys: 'minmax(0,1fr)',
+    names: '150px',
+    triggers: 'minmax(0,1fr)',
     comesIn: '130px',
     goes: '230px',
     order: '60px',
@@ -211,10 +214,28 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
         switch (field) {
             case 'relations':
                 return <span title={relations()}>{relations() === '' ? '—' : relations()}</span>;
-            case 'keys':
+            case 'names':
                 return (
-                    <span class="wb-dim" title={props.cell.keys.join(', ')}>
-                        {props.cell.keys.join(', ')}
+                    <span class="wb-row-keys" title={props.cell.names.join(', ')}>
+                        <KeyChips
+                            book={props.context.book}
+                            entry={props.cell.entry}
+                            kind="name"
+                            chips={props.cell.names.map((text) => ({ text }))}
+                            compact
+                        />
+                    </span>
+                );
+            case 'triggers':
+                return (
+                    <span class="wb-row-keys" title={triggersOf(props.cell.keys, props.cell.names).join(', ')}>
+                        <TriggerLine
+                            book={props.context.book}
+                            entry={props.cell.entry}
+                            keys={props.cell.keys}
+                            names={props.cell.names}
+                            facts={shown}
+                        />
                     </span>
                 );
             case 'comesIn':

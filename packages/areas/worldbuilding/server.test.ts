@@ -15,6 +15,8 @@ import {
     FOUND_VIEW,
     KEY_SHARERS_SHOWN,
     KEY_SHARERS_VIEW,
+    KEY_SUGGESTIONS_SHOWN,
+    KEY_SUGGESTIONS_VIEW,
     LAST_CHANGE_VIEW,
     LOOP_CHECK_VISITS_PER_WRITE,
     LOOPS_LEFT_BY_JOBS_VIEW,
@@ -56,6 +58,7 @@ import {
 } from './protocol.ts';
 import type {
     KeySharersView,
+    KeySuggestionsView,
     ViewSort,
     BulkAction,
     BulkJob,
@@ -261,6 +264,7 @@ const READS_ASKED: Costs = {
         asked.mentionChecks * READS_PER_MENTION_CHECK +
         2 * FILTER_ITEMS_SHOWN,
     readKeySharers: (_u, q) => q.limit * READS_PER_LABEL,
+    readKeySuggestions: (_u, q) => q.limit,
     createEntry: (_w, _b, _c, limit) => loopCheck(limit),
     // These run the engine's loop check at its own limit.
     deleteEntry: () => loopCheck(LOOP_CHECK_VISITS_PER_WRITE),
@@ -331,6 +335,7 @@ function world(
         results: ResultsQuery[];
         found: { book: string; query: string; limit: number }[];
         sharers: { book: string; entry: string; key: string; limit: number }[];
+        suggestions: { book: string; typed: string; limit: number }[];
         namesOffer: [string, string][];
         selections: HeldSelection[];
         bulk: { selection: HeldSelection; action: BulkAction; loopCheckLimit: number; session: string }[];
@@ -361,6 +366,7 @@ function world(
         results: [],
         found: [],
         sharers: [],
+        suggestions: [],
         namesOffer: [],
         selections: [],
         bulk: [],
@@ -767,6 +773,11 @@ function world(
             asked.sharers.push({ book, entry, key, limit });
             if (book !== '1') return null;
             return { entries: key === 'Ilse' ? [named('8', 'name 8')] : [], more: false };
+        },
+        readKeySuggestions: async (_u, { book, typed, limit }) => {
+            asked.suggestions.push({ book, typed, limit });
+            if (book !== '1') return null;
+            return typed.startsWith('la') ? [{ text: 'lamp', keys: 2 }] : [];
         },
         editEntry: async ({ session }, book, entry, edit) => {
             asked.edits.push({ book, entry, edit, session });
@@ -1797,6 +1808,23 @@ test("a key's other entries open with the key, for the open entry only, and reop
     expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toMatchObject({ key: 'lamp', entries: [] });
     await w.act('worldbuilding.openEntry', { entry: '8', pointingAt });
     expect(await w.view<KeySharersView>(KEY_SHARERS_VIEW)).toEqual({ book: null });
+});
+
+test('the keys that start with what is typed are read for the world typed in, with the number of keys of each', async () => {
+    const w = world(3);
+    expect(await w.view<KeySuggestionsView>(KEY_SUGGESTIONS_VIEW)).toEqual({ book: null });
+    expect(await w.act('worldbuilding.suggestKeys', { book: '1', typed: 'la' })).toEqual({
+        changed: [],
+        opensViews: [KEY_SUGGESTIONS_VIEW],
+    });
+    expect(await w.view<KeySuggestionsView>(KEY_SUGGESTIONS_VIEW)).toEqual({
+        book: '1',
+        typed: 'la',
+        suggestions: [{ text: 'lamp', keys: 2 }],
+    });
+    expect(w.asked.suggestions).toEqual([{ book: '1', typed: 'la', limit: KEY_SUGGESTIONS_SHOWN }]);
+    await w.act('worldbuilding.suggestKeys', { book: '2', typed: 'la' });
+    expect(await w.view<KeySuggestionsView>(KEY_SUGGESTIONS_VIEW)).toEqual({ book: null });
 });
 
 test('an entry deleted elsewhere shows deleted under the label it was last shown with', async () => {

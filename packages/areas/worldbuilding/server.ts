@@ -11,6 +11,8 @@ import {
     FOUND_VIEW,
     KEY_SHARERS_SHOWN,
     KEY_SHARERS_VIEW,
+    KEY_SUGGESTIONS_SHOWN,
+    KEY_SUGGESTIONS_VIEW,
     LAST_CHANGE_VIEW,
     LOOPS_LEFT_BY_JOBS_VIEW,
     MAX_CARDS_PER_READ,
@@ -62,6 +64,7 @@ import type {
     EntryView,
     ExportedWorld,
     KeySharersView,
+    KeySuggestionsView,
     World,
     WorldsView,
     WorldView,
@@ -336,6 +339,11 @@ export type Ports = {
         user: User,
         query: { book: string; entry: string; key: string; limit: number },
     ): Promise<{ entries: Named[]; more: boolean } | null>;
+    // Null when the world isn't there.
+    readKeySuggestions(
+        user: User,
+        query: { book: string; typed: string; limit: number },
+    ): Promise<{ text: string; keys: number }[] | null>;
     editEntry(who: Who, book: string, entry: string, edit: EntryEdit): Promise<'ok' | EntryWriteRefusal>;
     createEntry(
         who: Who,
@@ -405,6 +413,7 @@ const NO_ENTRY: EntryView = { book: null };
 const NOTHING_POINTED_AT: PointingAtView = { book: null };
 
 const NO_KEY_SHARERS: KeySharersView = { book: null };
+const NO_KEY_SUGGESTIONS: KeySuggestionsView = { book: null };
 
 // The views that show how many entries a world has; an action that adds or takes away an entry answers them all.
 const VIEWS_COUNTING_ENTRIES = [OVERVIEW_VIEW, RESULTS_VIEW, FOUND_VIEW, WORLDS_VIEW, WORLD_VIEW, SELECTION_VIEW];
@@ -510,6 +519,7 @@ type SessionState = {
     filter: ShownFilter | null;
     finding: { book: string; query: string } | null;
     findingCharacters: string | null;
+    suggestingKeys: { book: string; typed: string } | null;
     selection: HeldSelection | null;
 };
 
@@ -524,6 +534,7 @@ const NO_SESSION_STATE: SessionState = {
     filter: null,
     finding: null,
     findingCharacters: null,
+    suggestingKeys: null,
     selection: null,
 };
 
@@ -1380,6 +1391,12 @@ export function worldbuildingArea(ports: Ports) {
                 const read = await ports.readKeySharers(context.user, { book, entry, key, limit: KEY_SHARERS_SHOWN });
                 return read ? { book, entry, key, ...read } : NO_KEY_SHARERS;
             },
+            [KEY_SUGGESTIONS_VIEW]: async (context: ViewContext): Promise<KeySuggestionsView> => {
+                const asked = stateOf(context.session).suggestingKeys;
+                if (!asked) return NO_KEY_SUGGESTIONS;
+                const read = await ports.readKeySuggestions(context.user, { ...asked, limit: KEY_SUGGESTIONS_SHOWN });
+                return read ? { ...asked, suggestions: read } : NO_KEY_SUGGESTIONS;
+            },
             [POINTING_AT_VIEW]: readPointingAtView,
             [RESULTS_VIEW]: readResultsView,
             [AXES_VIEW]: readAxesView,
@@ -1513,6 +1530,10 @@ export function worldbuildingArea(ports: Ports) {
                 rememberEntry(context.session, { ...open.shown, sharersOf: key });
                 return { changed: [], opensViews: [KEY_SHARERS_VIEW] };
             }),
+            'worldbuilding.suggestKeys': async (context, { book, typed }) => {
+                remember(context.session, { suggestingKeys: { book, typed } });
+                return { changed: [], opensViews: [KEY_SUGGESTIONS_VIEW] };
+            },
             'worldbuilding.setPlacement': (context, { book, entry, fields }) =>
                 entryEdited(context, book, entry, { change: 'placement', fields }),
             'worldbuilding.createEntry': async (context, { book, after, name, relation, open, loopCheckLimit }) => {

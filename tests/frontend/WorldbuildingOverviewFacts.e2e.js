@@ -81,8 +81,9 @@ test.describe('a world of hundreds of entries, on its page', () => {
     test('a card shows what brings its entry up and where it goes, and is switched on and off in one action', async ({ page }) => {
         await expect(card(page, 0).locator('.wb-card-triggers')).toHaveText('Constant');
         await expect(card(page, 0).locator('.wb-card-goes')).toHaveText('At depth 4');
-        await expect(card(page, 1).locator('.wb-card-triggers')).toHaveText('thing1, alias1');
-        await expect(card(page, 7).locator('.wb-card-triggers')).toHaveText('thing7, alias7 + none of also7');
+        await expect(card(page, 1).locator('.wb-card-triggers .wb-key')).toHaveText(['thing1', 'alias1']);
+        await expect(card(page, 7).locator('.wb-card-triggers')).toContainText('+ none of');
+        await expect(card(page, 7).locator('.wb-card-triggers .wb-key')).toHaveText(['thing7', 'alias7', 'also7']);
         await expect(card(page, 3).locator('.wb-onoff')).toHaveAttribute('aria-checked', 'false');
 
         const sent = await actionsDuring(page, 'worldbuilding.setPlacement', async () => {
@@ -94,6 +95,52 @@ test.describe('a world of hundreds of entries, on its page', () => {
         await card(page, 4).locator('.wb-onoff').click();
         await expect(card(page, 4)).toHaveClass(/wb-card-off/);
         await expect.poll(async () => (await storedEntry(page, 4)).disable).toBe(true);
+    });
+
+    test('a card\'s keys are edited in place without opening the entry: edit, add several, remove, and a secondary key', async ({ page }) => {
+        const keys = card(page, 1).locator('.wb-card-triggers');
+        const renamed = await actionsDuring(page, 'worldbuilding.renameKey', async () => {
+            await keys.getByLabel('“thing1”, trigger', { exact: true }).click();
+            await expect(keys.getByRole('textbox', { name: 'Edit “thing1”' })).toHaveValue('thing1');
+            await keys.getByRole('textbox', { name: 'Edit “thing1”' }).fill('thing one');
+            await page.keyboard.press('Enter');
+            await expect(keys.getByLabel('“thing one”, trigger', { exact: true })).toBeVisible();
+        });
+        expect(renamed).toBe(1);
+        await expect(pane(page).locator('.wb-entry')).toHaveCount(0);
+        expect((await storedEntry(page, 1)).key).toEqual(['thing one', 'alias1']);
+
+        const added = await actionsDuring(page, 'worldbuilding.addKeys', async () => {
+            await keys.getByRole('button', { name: 'Add trigger' }).click();
+            await keys.getByRole('textbox', { name: 'Trigger' }).fill('x, y');
+            await page.keyboard.press('Enter');
+            await expect(keys.getByLabel('“y”, trigger', { exact: true })).toBeVisible();
+        });
+        expect(added).toBe(1);
+        expect((await storedEntry(page, 1)).key).toEqual(['thing one', 'alias1', 'x', 'y']);
+
+        await keys.getByLabel('“x”, trigger', { exact: true }).click();
+        await pane(page).locator('.wb-pop').getByRole('button', { name: 'Remove' }).click();
+        await expect(keys.getByLabel('“x”, trigger', { exact: true })).toHaveCount(0);
+        expect((await storedEntry(page, 1)).key).toEqual(['thing one', 'alias1', 'y']);
+
+        const secondary = card(page, 7).locator('.wb-card-triggers');
+        await secondary.getByLabel('“also7”, secondary trigger', { exact: true }).click();
+        await secondary.getByRole('textbox', { name: 'Edit “also7”' }).fill('also seven');
+        await page.keyboard.press('Enter');
+        await expect(secondary.getByLabel('“also seven”, secondary trigger', { exact: true })).toBeVisible();
+        expect((await storedEntry(page, 7)).keysecondary).toEqual(['also seven']);
+        await expect(pane(page).locator('.wb-entry')).toHaveCount(0);
+    });
+
+    test('a card shows an entry\'s keys without its names', async ({ page }) => {
+        await card(page, 2).locator('.wb-card-open').click();
+        await pane(page).locator('.wb-names').getByRole('button', { name: 'Add name' }).click();
+        await pane(page).locator('.wb-names').getByRole('textbox', { name: 'Name' }).fill('Second');
+        await page.keyboard.press('Enter');
+        await expect(pane(page).locator('.wb-names').getByLabel('“Second”, name', { exact: true })).toBeVisible();
+        await pane(page).locator('.wb-rels-world').click();
+        await expect(card(page, 2).locator('.wb-card-triggers .wb-key')).toHaveText(['thing2', 'alias2']);
     });
 
     test('pointing at a card shows its hover card', async ({ page }) => {
@@ -118,18 +165,43 @@ test.describe('a world of hundreds of entries, on its page', () => {
         expect((await storedEntry(page, 11)).disable).toBe(false);
     });
 
+    test('a row\'s Names and Triggers columns are edited in place the same way', async ({ page }) => {
+        await pane(page).getByRole('button', { name: '+ View' }).click();
+        await pane(page).locator('.wb-vseg label').nth(1).click();
+        const row = pane(page).locator('.wb-tr[data-entry]', { hasText: /^Entry 12(?!\d)/ });
+        await expect(pane(page).locator('.wb-th')).toContainText('Names');
+        await expect(pane(page).locator('.wb-th')).toContainText('Triggers');
+        const triggers = row.locator('.wb-row-keys').nth(1);
+        await triggers.getByLabel('“alias12”, trigger', { exact: true }).click();
+        await triggers.getByRole('textbox', { name: 'Edit “alias12”' }).fill('twelve');
+        await page.keyboard.press('Enter');
+        await expect(triggers.getByLabel('“twelve”, trigger', { exact: true })).toBeVisible();
+        expect((await storedEntry(page, 12)).key).toEqual(['thing12', 'twelve']);
+
+        const names = row.locator('.wb-row-keys').first();
+        await names.getByRole('button', { name: 'Add name' }).click();
+        await names.getByRole('textbox', { name: 'Name' }).fill('Twelve');
+        await page.keyboard.press('Enter');
+        await expect(names.getByLabel('“Twelve”, name', { exact: true })).toBeVisible();
+        await expect(triggers.getByLabel('“Twelve”, trigger', { exact: true })).toHaveCount(0);
+        const stored = await storedEntry(page, 12);
+        expect(stored.key).toEqual(['thing12', 'twelve', 'Twelve']);
+        expect(stored.extensions.names).toEqual(['Twelve']);
+    });
+
     test('every placement field the old editor had is set from the entry\'s "Entry settings" sentence', async ({ page }) => {
         await card(page, 7).locator('.wb-card-open').click();
+        await pane(page).locator('.wb-triggers .wb-tok').click();
+        await pane(page).getByRole('option', { name: 'All of', exact: true }).click();
+        await expect.poll(async () => (await storedEntry(page, 7)).selectiveLogic).toBe(3);
+        await expect(pane(page).locator('.wb-triggers .wb-tok')).toHaveText('All of');
         await pane(page).getByRole('button', { name: 'Entry settings' }).click();
         const sentence = pane(page).getByRole('dialog', { name: 'Entry settings' });
         const more = async (/** @type {string} */ offer) => {
             await sentence.getByRole('button', { name: '+ More' }).click();
+            await expect(sentence.locator('.wb-choice', { hasText: 'Secondary' })).toHaveCount(0);
             await sentence.locator('.wb-choice', { hasText: offer }).click();
         };
-
-        await sentence.getByRole('button', { name: 'None of' }).click();
-        await sentence.getByRole('option', { name: 'All of', exact: true }).click();
-        await expect.poll(async () => (await storedEntry(page, 7)).selectiveLogic).toBe(3);
 
         await sentence.getByRole('button', { name: 'Before character' }).click();
         await sentence.getByRole('option', { name: 'At depth' }).click();

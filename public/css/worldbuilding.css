@@ -867,6 +867,39 @@
     width: 150px;
 }
 
+.wb-keys.wb-triggers {
+    margin-top: 6px;
+}
+
+.wb .wb-pattern,
+.wb .wb-pattern .wb-key-trigger {
+    font-family: var(--monoFontFamily, monospace);
+}
+
+.wb .wb-suggestion {
+    flex-direction: row;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.wb .wb-key.wb-compact,
+.wb .wb-key-add.wb-compact {
+    flex: none;
+    padding: 0 8px;
+    line-height: 1.5;
+    font-size: inherit;
+}
+
+.wb .wb-compact + .wb-key-field,
+.wb-card-triggers .wb-key-field {
+    width: 110px;
+    flex: none;
+}
+
+.wb-trigger-logic {
+    flex: none;
+}
+
 .wb-always {
     display: inline-flex;
     align-items: center;
@@ -2382,11 +2415,14 @@
     padding: 0;
 }
 
-.wb-card-triggers {
+.wb-card-triggers,
+.wb-row-keys {
     flex: 1;
     min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
 }
 

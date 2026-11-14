@@ -79,7 +79,7 @@ export const chanceOf = (placement: Pick<Placement, 'probability' | 'useProbabil
     placement.useProbability ? placement.probability : 100;
 
 type NumberField = 'sticky' | 'cooldown' | 'delay' | 'scanDepth' | 'groupWeight';
-type TextField = 'keysecondary' | 'group' | 'automationId';
+type TextField = 'group' | 'automationId';
 type FlagField = 'excludeRecursion' | 'preventRecursion' | 'ignoreBudget' | 'groupOverride';
 type ChoiceField = 'caseSensitive' | 'matchWholeWords' | 'useGroupScoring';
 
@@ -124,13 +124,6 @@ const EXTRAS: Extra[] = [
         offer: 'Delay',
         before: 'Delay: ',
         after: ' messages',
-    },
-    {
-        kind: 'text',
-        field: 'keysecondary',
-        offer: 'Secondary keys',
-        before: ' ',
-        after: '',
     },
     {
         kind: 'text',
@@ -242,8 +235,6 @@ const extraValue = (placement: Placement, extra: Extra): string | null => {
             return value === null || (extra.field !== 'scanDepth' && value === 0) ? null : String(value);
         }
         case 'text':
-            if (extra.field === 'keysecondary')
-                return placement.keysecondary.length === 0 ? null : placement.keysecondary.join(', ');
             return placement[extra.field].trim() === '' ? null : placement[extra.field];
         case 'flag':
             return placement[extra.field] ? '' : null;
@@ -268,7 +259,7 @@ const extraCleared = (extra: Extra): Partial<Omit<Placement, 'characterFilter'>>
         case 'number':
             return extra.field === 'groupWeight' ? { groupWeight: 100 } : { [extra.field]: null };
         case 'text':
-            return extra.field === 'keysecondary' ? { keysecondary: [] } : { [extra.field]: '' };
+            return { [extra.field]: '' };
         case 'flag':
             return { [extra.field]: false };
         case 'choice':
@@ -285,17 +276,6 @@ const extraCleared = (extra: Extra): Partial<Omit<Placement, 'characterFilter'>>
 // The change that sets a typed extra from what was typed; an empty answer takes it away.
 const typedChange = (extra: Extract<Extra, { kind: 'number' | 'text' }>, typed: string): Partial<Placement> | null => {
     const text = typed.trim();
-    if (extra.field === 'keysecondary')
-        return {
-            keysecondary:
-                text === ''
-                    ? []
-                    : text
-                          .split(',')
-                          .map((word) => word.trim())
-                          .filter((word) => word !== ''),
-            selective: true,
-        };
     if (extra.kind === 'text') return { [extra.field]: text };
     if (text === '') return extraCleared(extra);
     const n = Number(text);
@@ -464,10 +444,6 @@ function ExtraSentence(props: {
             <Match when={typed()}>
                 {(extra) => (
                     <p>
-                        <Show when={extra().field === 'keysecondary'}>
-                            {t('Secondary keys: ')}
-                            <LogicToken placement={p()} onSet={props.onSet} />
-                        </Show>
                         {t(extra().before)}
                         <Token
                             shown={extraValue(p(), extra()) ?? ''}
@@ -595,7 +571,7 @@ function ExtraSentence(props: {
     );
 }
 
-function LogicToken(props: { placement: Placement; onSet: (change: Change) => void }) {
+export function LogicToken(props: { placement: Placement; onSet: (change: Change) => void }) {
     const { t } = useUi();
     const [open, setOpen] = createSignal(false);
     return (

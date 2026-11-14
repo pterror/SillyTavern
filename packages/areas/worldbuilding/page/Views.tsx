@@ -53,7 +53,8 @@ function sortOf(value: string): ViewSort {
 
 export const FIELD_WORDS: Record<RowField, string> = {
     relations: 'Relations',
-    keys: 'Keys',
+    names: 'Names',
+    triggers: 'Triggers',
     comesIn: 'Status',
     goes: 'Position',
     order: 'Order',

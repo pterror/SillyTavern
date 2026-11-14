@@ -17,6 +17,7 @@ export const CHARACTERS_FOUND_VIEW = 'worldbuilding.charactersFound';
 export const SELECTION_VIEW = 'worldbuilding.selection';
 export const BULK_JOBS_VIEW = 'worldbuilding.bulkJobs';
 export const KEY_SHARERS_VIEW = 'worldbuilding.keySharers';
+export const KEY_SUGGESTIONS_VIEW = 'worldbuilding.keySuggestions';
 export const CARD_VIEW = 'worldbuilding.card';
 export const VIEWS_VIEW = 'worldbuilding.views';
 export const AXES_VIEW = 'worldbuilding.axes';
@@ -29,6 +30,8 @@ export const FILTER_ITEMS_SHOWN = 50;
 export const WORLDS_CHANGED_AT_MOST = 1000;
 export const MENTIONS_PER_PAGE = 20;
 export const KEY_SHARERS_SHOWN = 20;
+// One read of the keys that start with what is typed: a key read each.
+export const KEY_SUGGESTIONS_SHOWN = 8;
 export const SELECTION_COUNTED_UP_TO = 1000;
 // A board's or grid's columns and rows each, and the cards a cell draws first and adds each time more are asked for.
 export const AXIS_ITEMS_AT_MOST = 6;
@@ -359,6 +362,12 @@ export type PointingAtShown = { endRank: number; layout: OverviewLayout };
 
 export type EntryView = OpenEntryView | DeletedEntryView | { book: null };
 
+// The world's keys that start with `typed`, in byte order, the first KEY_SUGGESTIONS_SHOWN of them, each with the number
+// of keys of the world with that text.
+export type KeySuggestionsView =
+    | { book: string; typed: string; suggestions: { text: string; keys: number }[] }
+    | { book: null };
+
 // The other entries of the open entry's world that have `key` among their keys, the first KEY_SHARERS_SHOWN of them.
 export type KeySharersView = (EntryAt & { key: string; entries: Named[]; more: boolean }) | { book: null };
 
@@ -424,7 +433,7 @@ export type EntryFacts = {
     tokens: number | null;
 };
 
-export const ROW_FIELDS = ['relations', 'keys', 'comesIn', 'goes', 'order', 'chance', 'tokens'] as const;
+export const ROW_FIELDS = ['relations', 'names', 'triggers', 'comesIn', 'goes', 'order', 'chance', 'tokens'] as const;
 export type RowField = (typeof ROW_FIELDS)[number];
 
 // One column or row of a board or grid: the entries with a relation of `kind` to a target, with any, or with none.
@@ -706,6 +715,7 @@ export const actions = {
     'worldbuilding.setKeyAs': v.object({ ...entryNamed, key: keyText, as: keyAs }),
     'worldbuilding.removeKey': v.object({ ...entryNamed, key: keyText }),
     'worldbuilding.showKeySharers': v.object({ ...entryNamed, key: keyText }),
+    'worldbuilding.suggestKeys': v.object({ book: entityId, typed: v.string() }),
     'worldbuilding.setPlacement': v.object({ ...entryNamed, fields: placementChange }),
     'worldbuilding.changeCharacterFilter': v.object({
         ...entryNamed,

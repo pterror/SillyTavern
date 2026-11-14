@@ -34,7 +34,7 @@ const KINDS = [{ id: 1, name: 'in' }, { id: 2, name: 'owes' }];
 const VIEWS = [
     { id: 'places', name: 'Places', groupBy: 1, drawing: 'cards' },
     { id: 'debts', name: 'Debts', groupBy: 2, drawing: 'cards' },
-    { id: 'prompt', name: 'Prompt order', groupBy: null, drawing: 'rows', fields: ['relations', 'keys', 'comesIn', 'goes', 'order', 'chance', 'tokens'] },
+    { id: 'prompt', name: 'Prompt order', groupBy: null, drawing: 'rows', fields: ['relations', 'names', 'triggers', 'comesIn', 'goes', 'order', 'chance', 'tokens'] },
 ];
 
 const pane = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#Worldbuilding');

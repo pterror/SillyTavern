@@ -19,7 +19,7 @@ import { dismissOn } from './dismiss.ts';
 import { Editable } from './Editable.tsx';
 import { hoverCards } from './HoverCard.tsx';
 import { Icon } from './icons.tsx';
-import { Keys } from './Keys.tsx';
+import { Names, Triggers } from './Keys.tsx';
 import { PlacementPopover } from './Placement.tsx';
 import { RelationsLine } from './Relations.tsx';
 import { chooseFile } from './Switcher.tsx';
@@ -189,7 +189,8 @@ export function EntryPage(props: {
                             <EntryMenu entry={props.entry} opener={() => menuOpener} onClose={() => setMenu(false)} />
                         </Show>
                     </div>
-                    <Keys entry={props.entry} />
+                    <Names entry={props.entry} />
+                    <Triggers entry={props.entry} />
                 </div>
             </header>
             <EntryText

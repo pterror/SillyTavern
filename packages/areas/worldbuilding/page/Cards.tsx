@@ -11,7 +11,8 @@ import { Label, Picture } from './Label.tsx';
 export { Label, Picture };
 import { Icon } from './icons.tsx';
 import { OnOff } from './OnOff.tsx';
-import { goesWords, triggerWords } from './facts.ts';
+import { goesWords, triggerWords, triggersOf } from './facts.ts';
+import { TriggerLine } from './Keys.tsx';
 import { count, fill } from './words.ts';
 
 export type CardActions = {
@@ -175,8 +176,18 @@ function Facts(props: { cell: EntryCell; actions: CardActions }) {
                             />
                         )}
                     </Show>
-                    <span class="wb-card-triggers" title={triggerWords(props.cell.keys, facts(), t)}>
-                        {triggerWords(props.cell.keys, facts(), t)}
+                    <span
+                        class="wb-card-triggers"
+                        title={triggerWords(triggersOf(props.cell.keys, props.cell.names), facts(), t)}
+                    >
+                        <TriggerLine
+                            book={props.actions.book() ?? ''}
+                            entry={props.cell.entry}
+                            keys={props.cell.keys}
+                            names={props.cell.names}
+                            facts={facts()}
+                            constantInstead
+                        />
                     </span>
                     <span class="wb-card-goes">{goesWords(facts(), t)}</span>
                 </div>

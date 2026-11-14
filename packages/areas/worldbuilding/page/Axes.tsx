@@ -8,7 +8,8 @@ import type { CellAt, CellsDrag } from './Drag.tsx';
 import type { CardActions } from './Cards.tsx';
 import { Label, Picture } from './Label.tsx';
 import { OnOff } from './OnOff.tsx';
-import { goesWords, triggerWords } from './facts.ts';
+import { goesWords, triggerWords, triggersOf } from './facts.ts';
+import { TriggerLine } from './Keys.tsx';
 import { TargetPicker } from './Picker.tsx';
 import { count, fill } from './words.ts';
 
@@ -99,8 +100,18 @@ function SmallCard(props: { card: CellCard; cell: AxisCell; at: CardsAt }) {
                             name={props.card.label.text}
                             facts={facts()}
                         />
-                        <span class="wb-card-triggers" title={triggerWords(props.card.keys, facts(), t)}>
-                            {triggerWords(props.card.keys, facts(), t)}
+                        <span
+                            class="wb-card-triggers"
+                            title={triggerWords(triggersOf(props.card.keys, props.card.names), facts(), t)}
+                        >
+                            <TriggerLine
+                                book={props.at.book}
+                                entry={props.card.entry}
+                                keys={props.card.keys}
+                                names={props.card.names}
+                                facts={facts()}
+                                constantInstead
+                            />
                         </span>
                         <span class="wb-card-goes">{goesWords(facts(), t)}</span>
                     </div>
