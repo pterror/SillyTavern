@@ -1197,6 +1197,400 @@ t=9s     a module on the server reverts change 9040
 
 A page keeps its state only by applying the server's batches, and the cursor makes a batch that arrives twice (from the action's reply and from the watch) harmless. Several tabs stay in step because each has its own watches on the same keys. The node a page is viewing is state like any other: a page action sets it in latest and whoever watches the key follows. Whether tabs follow each other is which key the root writes (one per chat, or one per tab); that is a UX decision, the owner's. Batching: the core sends everything bound for one host in one scheduler turn as one frame, in order; there is no promise pipelining, so opening a view is one call to a server export that returns what the view needs and starts its watches. Listing swipes is store:children of the message above. What draw puts on screen is the display handle's (the owner's).
 
+## Gap 5, joining: what every option shares
+
+Decided: what the person installs applies to every chat, and a card can bring its own (decisions of 11-14). Hooks are not in the core. Three options follow for how the two join a card's turn; this section is what they have in common, and the same example runs through all three: the person installs a tracker that adds a step after each reply, a note in the prompt two messages from the end, a button on messages and a settings section; the card Ilse brings its own lorebook activation library.
+
+```
+The manifest: needs, as in "Capabilities from crescent: needs in a manifest"; a dependency is
+  a need on another install's exports; "after": [ installs ] orders this one after those
+  where both add to the same place (an install that isn't there is skipped; a cycle refuses
+  to load and names it); what it adds to the turn is the part the options differ on.
+UI slots: named contracts. A contribution is data in the manifest; the app's page module
+  reads the manifests of what is installed and the display handle draws it (the owner's):
+    message.actions  { label, export }      pressed: one page action { type = "run",
+                     install, export, at }; the reply carries the state it changed
+    settings         { label, keys, fields }  an editor over the module's own latest keys
+    commands         { name, export, args }   run from a page action, offered to the model
+                     as a tool, or put in a step
+  The root runs only exports a slot names. Which slots exist, and where each is drawn,
+  are the owner's. Declared as data, a slot's contributions are known before any
+  extension code runs, so the page can lay them out with nothing moving afterwards.
+A card brings modules in its package, each with its own needs, reviewed when the card is
+  imported, with decisions kept by package hash (gap 7).
+Values crossing a reference are copied, so a step from another module returns the fields
+  it sets on the turn's context instead of writing into it.
+```
+
+```json
+"slots": {
+  "message.actions": [ { "label": "Recount time and affection", "export": "recount" } ],
+  "settings": { "label": "Tracker", "keys": "tracker/settings/", "fields": {
+      "note":  { "type": "boolean", "default": true, "label": "Tell the model the time and affection" },
+      "depth": { "type": "number",  "default": 2,    "label": "Messages from the end where that goes" } } },
+  "commands": [ { "name": "recount", "export": "recount", "args": [ "message" ] } ] }
+```
+
+```lua
+-- order.lua: install names in an order that keeps every "after"; ties by name
+return function()
+  return function(installs)                 -- installs[name] = its manifest
+    local names, out, state = {}, {}, {}
+    for name in pairs(installs) do names[#names + 1] = name end
+    table.sort(names)
+    local function visit(name, path)
+      if state[name] == "done" then return end
+      if state[name] == "on" then error("these installs each wait for the other: " .. path, 0) end
+      state[name] = "on"
+      for _, before in ipairs(installs[name].after or {}) do
+        if installs[before] then visit(before, path .. " -> " .. before) end
+      end
+      state[name] = "done"
+      out[#out + 1] = name
+    end
+    for _, name in ipairs(names) do visit(name, name) end
+    return out
+  end
+end
+
+-- tracker.lua, as the person installs it: its needs are its manifest's (from crescent, below), plus prompt
+return function(c)
+  local store, chats, settings, model, kv = c.store, c.chats, c.settings, c.model, c.kv
+  local T = {}
+
+  local function judge(text)
+    return model.generate_json({
+      { role = "system", content = [[Reply with JSON: {"minutes_passed": n, "affection_change": n}]] },
+      { role = "user", content = text },
+    })
+  end
+
+  local function changes(who, r, last)      -- last: what this reply added before, on a recount
+    last = last or { 0, 0 }
+    return {
+      { "tracker/time", kv.add, r.minutes_passed - last[1] },
+      { "tracker/affection/" .. who, kv.add_within, { r.affection_change - last[2], 0, 100 } },
+      { "tracker/last", kv.set, { r.minutes_passed, r.affection_change } },
+    }
+  end
+
+  function T.step(ctx)                      -- after the reply is stored at ctx.at
+    store:apply(ctx.at, changes(ctx.speaker, judge(ctx.reply)))                -- [host]
+  end
+
+  function T.recount(at)                    -- the message button: that reply judged again
+    local msg = chats:get(at, "chat/msg")                                     -- [host]
+    store:apply(at, changes(msg.name, judge(msg.text), store:get(at, "tracker/last")))   -- [host]
+  end
+
+  function T.note(ctx)                      -- the prompt's note, or nil
+    if settings:get("tracker/settings/note") == false then return nil end     -- [host]
+    local m = store:get(ctx.at, "tracker/time") or 0                          -- [host]
+    local a = store:get(ctx.at, "tracker/affection/" .. ctx.speaker) or 0      -- [host]
+    return { depth = settings:get("tracker/settings/depth") or 2, role = "system",       -- [host]
+             text = string.format("[It is %02d:%02d. %s's affection is %d of 100.]",
+                                  math.floor(m / 60) % 24, m % 60, ctx.speaker, a) }
+  end
+
+  return T
+end
+
+-- prompt.lua gains: notes put a number of messages from the end
+function M.at_depth(messages, notes)        -- notes = { { depth, role, text }, ... }; 0 is after the last
+  local out = {}
+  for i, m in ipairs(messages) do out[i] = m end
+  for _, n in ipairs(notes) do
+    table.insert(out, math.max(1, #out - n.depth + 1), { role = n.role, content = n.text })
+  end
+  return out
+end
+
+-- ilse-lore.lua, brought by the card: only the person's own words bring entries up
+return function(c)
+  local lorebooks, cond = c.lorebooks, c.cond   -- lorebooks: lore's keys, read only
+  local L = {}
+  function L.activate(ctx, books, depth)    -- the entries that came up, in book order
+    local said = {}
+    for i = #ctx.history, 1, -1 do
+      local m = ctx.history[i].msg
+      if m.role == "user" then said[#said + 1] = m.text end
+      if #said == depth then break end
+    end
+    local scan, came_up = { scanned = table.concat(said, "\n"), active = {}, speaker = ctx.speaker,
+                            at = ctx.at }, {}
+    for _, book in ipairs(books) do
+      for _, e in ipairs(lorebooks:range(ctx.at, "lore/entry/" .. book .. "/")) do   -- [host]
+        if cond.holds(e.value.when, scan) then came_up[#came_up + 1] = e.value end
+      end
+    end
+    return came_up
+  end
+  return L
+end
+```
+
+```
+{ "name": "Ilse", "main": "ilse/main.lua",
+  "needs": { "lore":  { "what": "export", "of": "ilse-lore", "required": true },
+             "chat":  { "what": "export", "of": "chat", "required": true },
+             "model": { "what": "model", "required": true,
+                        "why": "Ilse's replies" } },
+  "brings": {
+    "ilse-lore": { "main": "ilse-lore.lua", "needs": {
+      "lorebooks": { "what": "store", "of": "lore", "mode": "r", "required": true,
+                     "why": "Reads this card's lorebooks" },
+      "cond":      { "what": "export", "of": "cond", "required": true } } } } }
+
+pressing the button, in every option:
+t=0      page: action { type = "run", install = "tracker", export = "recount", at = 822 }
+         root: recount is in tracker's message.actions; installed.tracker.recount(822)
+t=1.2s   store: tracker/time and tracker/affection/Ilse change at 822 and every node below it
+         reply to the action: { cursor = 99210 }; pages watching the chat get the batch
+```
+
+The settings section is data about the module's own keys, which the table at the end already gave as a setting schema; a module that needs drawing of its own gets it through the display handle (decided: an allowlisted display API, a framed area where a DOM library needs one). How a card's lore activation and the person's extensions meet is the second half of each option.
+
+## Gap 5, joining, option A: a hook library of named points
+
+```lua
+-- hooks.lua: named points a card runs; installed modules add to them
+return function()
+  return function()                         -- a set of points, one per chat
+    local H, points = {}, {}
+    function H.add(point, entry)            -- entry = { install, run }, in the order the loader adds
+      points[point] = points[point] or {}
+      table.insert(points[point], entry)
+    end
+    function H.run(point, ctx)              -- each entry in order; returns the fields they set
+      local set = {}
+      for _, e in ipairs(points[point] or {}) do
+        for k, v in pairs(e.run(ctx) or {}) do ctx[k] = v; set[k] = v end
+      end
+      return set
+    end
+    function H.wrap(point, fn)              -- fn inside every entry's wrapper, the last added outermost
+      for _, e in ipairs(points[point] or {}) do fn = e.run(fn) end
+      return fn
+    end
+    function H.list(point, ctx)             -- each entry's result, in order
+      local out = {}
+      for _, e in ipairs(points[point] or {}) do out[#out + 1] = e.run(ctx) end
+      return out
+    end
+    return H
+  end
+end
+
+-- tracker's manifest under A
+"adds": { "after_reply": { "export": "step" }, "prompt.notes": { "export": "note" } },
+"after": [ "summarize" ]
+
+-- ilse/main.lua under A: the card runs the points it chooses, where it chooses
+local reply_steps = {
+  function(ctx) ctx.history, ctx.speaker = history(ctx.at), "Ilse" end,
+  function(ctx) ctx.came_up = ctx.hooks.wrap("lore.activate", lore.activate)(ctx, books, 4) end,
+  function(ctx)
+    ctx.messages = prompt.at_depth(prompt.assemble(parts, ctx), ctx.hooks.list("prompt.notes", ctx))
+  end,
+  function(ctx) ctx.reply = model.generate(ctx.messages) end,
+  function(ctx) ctx.at = chat.append(ctx.at, { role = "assistant", name = "Ilse", text = ctx.reply }) end,
+  function(ctx) for k, v in pairs(ctx.hooks.run("after_reply", ctx)) do ctx[k] = v end end,
+}
+
+-- in root.lua under A: a chat's points, the person's installs first, then the card's
+local function points_for(card)
+  local h = hooks()
+  local function add_all(name)
+    for point, a in pairs(manifests[name].adds or {}) do
+      h.add(point, { install = name, run = installed[name][a.export] })
+    end
+  end
+  for _, name in ipairs(order(person_installs)) do add_all(name) end
+  for _, name in ipairs(order(card.brings)) do add_all(name) end
+  return h
+end
+
+t=0      page: action { type = "open", chat = 790 }; root: points_for(Ilse): summarize, then
+         tracker, on after_reply; tracker on prompt.notes; ilse-lore adds nothing
+         reply: the chat's values and the slots' contributions, in one response
+t=1m     send: ilse's steps run; at lore, the card's own ilse-lore.activate inside whatever
+         wraps lore.activate (nothing here); at the prompt, tracker's note 2 from the end;
+         after the reply is stored, summarize's entry, then tracker.step
+```
+
+Hooks are a content library, so whether they are "built in" is whether the app ships one: it does, cards use it or another, and the core is unchanged. The card decides where each point runs, how often (once per speaker in a group) and whether at all; an extension knows only point names. The card's own library is the base a point wraps, so the person's extensions that wrap lore.activate wrap the card's activation too. Order: entries at one point run in the person's installs' order, then the card's; there is nothing to conflict but order, since a wrap point's base is always the card's. Upstream's shape is closest to this. Costs: the point names are a shared vocabulary someone has to keep, and an extension adding to a point a card never runs does nothing, which can only be reported if the card's manifest lists the points it runs; every turn reads the points; a card author has to place points for extensions they haven't seen. Rules out: an extension acting anywhere a card placed no point, short of wrapping the whole card.
+
+## Gap 5, joining, option B: cards name their steps, extensions edit the list
+
+```lua
+-- compose.lua: a card's named steps with every install's edits applied, and a runner
+return function()
+  local M = {}
+  function M.steps(steps, edits)            -- edits, in order: { install, id, run, after = id | wrap = id }
+    local ids, after, wraps, unplaced = {}, {}, {}, {}
+    for _, s in ipairs(steps) do ids[s.id] = true end
+    for _, e in ipairs(edits) do
+      local at = e.after or e.wrap
+      if not ids[at] then unplaced[#unplaced + 1] = { install = e.install, at = at }
+      else
+        local list = e.wrap and wraps or after
+        list[at] = list[at] or {}
+        table.insert(list[at], e)
+      end
+    end
+    local out = {}
+    for _, s in ipairs(steps) do
+      local run = s.run
+      for _, w in ipairs(wraps[s.id] or {}) do run = w.run(run) end
+      out[#out + 1] = { id = s.id, run = run }
+      for _, e in ipairs(after[s.id] or {}) do out[#out + 1] = { id = e.id, run = e.run } end
+    end
+    return out, unplaced
+  end
+  function M.run(steps, ctx)                -- what a step returns is set on ctx
+    for _, s in ipairs(steps) do
+      for k, v in pairs(s.run(ctx) or {}) do ctx[k] = v end
+    end
+    return ctx
+  end
+  return M
+end
+
+-- tracker's manifest under B
+"edits": [ { "after": "store", "id": "tracker", "export": "step" },
+           { "wrap": "prompt", "export": "with_note" } ],
+"after": [ "summarize" ]
+
+-- tracker.lua gains, under B
+function T.with_note(inner)                 -- the prompt step, then the note at its depth
+  return function(ctx)
+    local r, n = inner(ctx), T.note(ctx)
+    if n then r.messages = c.prompt.at_depth(r.messages, { n }) end
+    return r
+  end
+end
+
+-- ilse/main.lua under B: the turn as named steps the card hands out
+T.steps = {
+  { id = "history", run = function(ctx) return { history = history(ctx.at), speaker = "Ilse" } end },
+  { id = "lore",    run = function(ctx) return { came_up = lore.activate(ctx, books, 4) } end },
+  { id = "prompt",  run = function(ctx) return { messages = prompt.assemble(parts, ctx) } end },
+  { id = "reply",   run = function(ctx) return { reply = model.generate(ctx.messages) } end },
+  { id = "store",   run = function(ctx)
+      return { at = chat.append(ctx.at, { role = "assistant", name = "Ilse", text = ctx.reply }) }
+    end },
+}
+
+-- in root.lua under B: composed once per card version and installed set, kept in memory only
+local composed = {}
+local function turn_for(card)
+  local k = card.hash .. "/" .. installs_hash
+  if not composed[k] then
+    local edits = {}
+    local function add_edits(name)
+      for _, e in ipairs(manifests[name].edits or {}) do
+        edits[#edits + 1] = { install = name, id = e.id, after = e.after, wrap = e.wrap,
+                              run = installed[name][e.export] }
+      end
+    end
+    for _, name in ipairs(order(person_installs)) do add_edits(name) end
+    for _, name in ipairs(order(card.brings)) do add_edits(name) end
+    composed[k] = { compose.steps(installed[card.name].steps, edits) }
+  end
+  return composed[k][1], composed[k][2]     -- the steps, and the edits that found no step
+end
+
+t=0      page: action { type = "open", chat = 790 }; root: turn_for(Ilse): history, lore,
+         prompt (wrapped by with_note), reply, store, summarize, tracker; nothing unplaced
+         reply: the chat's values, the slots' contributions, and the unplaced edits (none)
+t=1m     send: compose.run(steps, ctx); the card's lore step runs ilse-lore; the note goes
+         in as the prompt step returns; tracker runs last
+a card with no step named "prompt": the note's edit is unplaced, and the open's reply says so
+```
+
+Hooks here are turn steps that cards declare: the card names its steps, and an extension says where it goes by those names. The composition is a value, made once per card version and installed set and kept in memory, so nothing is stored per card and a turn reads no registry; it can be shown, explained ("what runs in this turn, and from which install"), and an edit that found no step is known when the chat opens instead of silently doing nothing. A card that runs its steps per speaker runs the edited list per speaker without knowing about edits. The card's own lore library is its "lore" step, and a person's extension wrapping "lore" wraps it. Order: edits at one step go in the person's installs' order, then the card's; several wraps of one step nest in that order, the last outermost. Costs: step names are a shared vocabulary as point names are in A, but a card has to name every step it wants extensible rather than place points; a card whose turn isn't a list (a game loop, a module that isn't a chat) offers whatever list it has or none; edits are limited to after and around a step. Rules out: an extension changing a card's control flow (a loop, a branch inside a step) except by wrapping the whole step.
+
+## Gap 5, joining, option C: extensions wrap what a card is handed
+
+```lua
+-- tracker.lua gains, under C: wrappers made once per chat
+function T.wrappers()
+  local at, speaker = nil, nil              -- this chat's last node and speaker, as seen through chat
+  local W = {}
+  function W.chat(chat)                     -- the step after each assistant message is stored
+    local w = {}
+    for k, f in pairs(chat) do w[k] = f end
+    function w.append(parent, msg)
+      local n = chat.append(parent, msg)
+      at = n
+      if msg.role == "assistant" then
+        speaker = msg.name
+        T.step{ at = n, reply = msg.text, speaker = msg.name }
+      end
+      return n
+    end
+    return w
+  end
+  function W.model(model)                   -- the note in every prompt the card sends
+    local w = {}
+    for k, f in pairs(model) do w[k] = f end
+    local function noted(messages)
+      local n = at and speaker and T.note{ at = at, speaker = speaker }
+      return n and c.prompt.at_depth(messages, { n }) or messages
+    end
+    function w.generate(messages) return model.generate(noted(messages)) end
+    function w.stream(messages, sink) return model.stream(noted(messages), sink) end
+    return w
+  end
+  return W
+end
+
+-- tracker's manifest under C
+"wraps": [ "chat", "model" ], "after": [ "summarize" ]
+
+-- in root.lua under C: a card is loaded per open chat, with what it's handed wrapped
+local function card_for_chat(card)
+  local given = resolve(card)               -- as wire does: { [need] = { name = of or what, ref } }
+  for _, install in ipairs(order(person_installs)) do
+    local w = installed[install].wrappers and installed[install].wrappers()
+    for _, g in pairs(given) do
+      if w and w[g.name] then g.ref = w[g.name](g.ref) end
+    end
+  end
+  local refs = {}
+  for need, g in pairs(given) do refs[need] = g.ref end
+  return caps.sandbox:load(card.source, "lua", refs)                       -- [core]
+end
+
+t=0      page: action { type = "open", chat = 790 }; root: card_for_chat(Ilse): its chat
+         and model pass through summarize's wrappers, then tracker's; its lore is ilse-lore,
+         which no install wraps
+t=1m     send: ilse's own steps, unchanged from "One turn, composed"; chat.append of the
+         person's message tells the tracker the node; model.stream puts the note 2 from the
+         end, naming whoever spoke last; chat.append of the reply runs tracker.step
+```
+
+There are no hooks: an extension wraps references, the one way this model already composes (revoking, narrowing, logging and the switch are wrappers too). Any card is extended without having anticipated anything, including a card that isn't a chat, and the card's code is the same whether extensions exist or not. Order: an install's wrappers sit outside those of installs it comes after; a card's own modules aren't wrapped, since they are the card's. Costs: a wrapper sees only what crosses its reference, so the tracker has to learn the chat's node from chat.append and can only name the last speaker, not the one about to reply; a card handing its prompt somewhere other than model.generate, or reading lore through a library it brought, goes around the person's wrappers; what put a message into the prompt can be explained only if wrappers report it; a sandbox per open chat. Rules out: an extension placed between two of a card's steps; two turns at once in one chat (a group replying in parallel) with wrappers that keep the chat's state, as the tracker's do.
+
+## Gap 5, joining: upstream's hook points under each option
+
+| Upstream | A: hook library | B: named steps | C: wrapping |
+|---|---|---|---|
+| `generate_interceptor` in the manifest, called with the chat, the context size, an abort and the generation type | An entry on a point before the prompt, returning a changed history; abort is raising | A wrap of "history" | A wrapper of chat.history |
+| `setExtensionPrompt(key, value, position, depth, scan, role)` | An entry on prompt.notes returning { depth, role, text }; scan is an entry on lore's point that adds its text to what's scanned | A wrap of "prompt" using prompt.at_depth; scan is a wrap of "lore" | A model wrapper; scan has no reference to wrap unless lore is one the card is handed |
+| Post-reply processing on `MESSAGE_RECEIVED`, `CHARACTER_MESSAGE_RENDERED` | An after_reply entry | An edit after "store" | A wrapper of chat.append, or store:watch on chat/ |
+| Message toolbar buttons (`.extraMesButtons`) | The message.actions slot, in every option | | |
+| Settings panels (`#extensions_settings`) | The settings slot, in every option | | |
+| Slash commands (`SlashCommandParser.addCommandObject`) | The commands slot, in every option | | |
+| Other `eventSource` events | A point per event, where the card runs it | A step to go after | store:watch or latest:watch, or a wrapper of what the event was about |
+| `loading_order`, `dependencies`, `requires`, `optional` | "after"; needs on another install's exports; optional needs | The same | The same |
+
+Upstream extensions aren't supported (project rule), so this is where each purpose lands, not a compatibility layer. In every option a page event that upstream broadcasts becomes the action that caused it, and a change to state is a watch (gap 4), so nothing here needs an event bus.
+
+## Gap 5, joining: what each option costs
+
+A keeps the card in charge of where extensions run and is closest to what extension authors know; it costs a vocabulary of point names, a registry read every turn, and extensions that silently miss a card that doesn't run their point. B makes the turn a value that is composed once, inspected and explained, and reports an extension that found no place; it costs card authors naming their steps and limits extensions to going after or around a step. C needs nothing from cards and adds no concept to the model; it costs extensions seeing only what passes through a reference, so a prompt note that needs the turn's context has to infer it, and it rules out parallel turns in one chat for stateful wrappers. The UI slots, the manifest's needs, ordering by "after", and how a card's brought modules are reviewed are the same in all three. In none does a choice add to the core, and in each, whether the person can turn an installed extension off for one card is a key the root reads (the owner's, as a UX decision). Which option, or which mix (B's named steps with C's wrappers for cards that name none), is the owner's.
+
 ## Gap 6, lifetime outside the store: pins, leases, release
 
 ```
@@ -1338,6 +1732,224 @@ end
 
 Net gains one narrowing, by a test it calls with the address it will connect to; that is a change to a host module, and the only part of this gap that has to be host, because only net knows the resolved address and can pin it. Everything else is content: which addresses count as public is a library (public.lua), a LAN grant is a test for one address and port, and a rate limit is a wrapper whose check and count happen between two waits, so tasks can't race it. Assumes: a destination is an address and a port. Rules out: on a page, any test that needs the address (the browser's own private-network rules apply there instead). Costs: one call into the test per connection; getting the ranges right is a library's job, so its authors have to keep it current.
 
+## Capabilities from crescent: switching a provider mid-session
+
+Crescent (`~/git/rhizone/crescent`, master: `docs/artifacts/2026-07-09-platform-caps-design/notes.md`) holds that a capability is at the right level when it is a swappable unit: "switch LLM providers mid-session, migrate storage backend live", and, from its owner, "capabilities are not just for security… flexibility would be a sick feature". In this model a reference already is that unit, so the switch is a forwarder whose target can change, and it is content.
+
+```lua
+-- switch.lua: a forwarder whose target whoever holds its control can change
+return function()
+  return function(target, names)            -- names: the exports the contract has
+    local function check(t)                 -- a target lacking one is refused, not found out at a call
+      for _, n in ipairs(names) do
+        if t[n] == nil then error("the new target has no " .. n, 0) end
+      end
+    end
+    check(target)
+    local front, control = {}, {}
+    for _, n in ipairs(names) do
+      front[n] = function(...) return target[n](...) end
+    end
+    function control.set(t) check(t); target = t end
+    return front, control
+  end
+end
+
+-- connections.lua: which adapter answers the model calls of what it's handed to
+return function(c)
+  local latest, kv, adapters = c.latest, c.kv, c.adapters   -- adapters[name]: an adapter's exports
+  local front, control = c.switch(adapters[latest:get("connections/active") or c.default],   -- [host]
+                                  { "generate", "generate_json", "stream" })
+  local M = { model = front }
+  function M.use(name)
+    local a = adapters[name]
+    if not a then error("no connection named " .. name, 0) end
+    latest:apply{ { "connections/active", kv.set, name } }                  -- [host] kept first
+    control.set(a)
+  end
+  return M
+end
+
+-- in root.lua
+local kobold      = load("kobold", { net = secrets:net("kobold"), json = json, base = "http://192.168.1.20:5001" })
+local connections = load("connections", { latest = only_latest("connections/", "rw"), kv = kv,
+                                          switch = load("switch", {}), default = "openai",
+                                          adapters = { openai = model, kobold = kobold } })
+local ilse        = load("ilse", { store = only("chars/", "r"), chat = chat, lore = lore, prompt = prompt,
+                                   model = connections.model, tracker = tracker, condense = condense })
+
+t=0      ilse holds connections.model; a reply streams from openai through it
+t=2.1s   page: action { type = "connection", use = "kobold" }
+         root: connections.use("kobold"): latest connections/active = "kobold", then the switch
+         the reply in flight keeps streaming from openai: its call had already gone through
+t=2.1s   reply to the action: { connection = "kobold" }; pages watching connections/ follow
+t=9s     the next turn's model.stream goes to kobold; ilse can't tell
+restart  connections.lua reads connections/active and starts on kobold
+```
+
+A connection is which adapter answers, and each adapter holds its own key through secrets:net (decided: "a connection is which adapter module holds which key"). Necessity: none of this is a primitive; a switch is a reference that forwards, built from the two the core has. It restricts nothing: anything that holds a reference can put a switch in front of it, so a card can switch its own model, the tracker can be handed a different switch from the card (a cheap model for bookkeeping), and a migration can switch a disk or latest it holds once a copy job (gap 3) has caught up, writing to both while it copies. Assumes: the targets share a contract, named by the list. Rules out: a target switched under a call already made (that call finishes where it went, which is what keeps a stream whole). Still restrictive: the module holding the front isn't told; one that must be is handed a watch of connections/ as well. The version store can't be moved this way: its ids are names that only the store resolves, so moving it is the host's own work. Whether connections/active is one key for the app or one per chat or per card is a settings scope (`settings-scopes.md`), the owner's.
+
+## Capabilities from crescent: needs in a manifest, the install review, and presets
+
+```json
+{ "name": "tracker", "version": "2.0.0", "main": "tracker.lua", "tags": [ "tracker" ],
+  "needs": {
+    "store":    { "what": "store", "mode": "rw", "required": true,
+                  "why": "Keeps the time and each character's affection at every message" },
+    "chats":    { "what": "store", "of": "chat", "mode": "r", "required": true,
+                  "why": "Reads a reply again when you ask for a recount" },
+    "settings": { "what": "latest", "mode": "rw", "required": true },
+    "model":    { "what": "model", "required": true,
+                  "why": "Asks the model how much time passed in each reply" },
+    "kv":       { "what": "export", "of": "kv", "required": true },
+    "sheet":    { "what": "net", "hosts": [ "sheets.example.com" ], "secret": "sheets",
+                  "varies": [ "hosts" ], "required": false,
+                  "why": "Copies the meter to your spreadsheet" },
+    "space":    { "what": "space", "bytes": 10485760, "required": true } } }
+```
+
+```
+A need names what it wants, whether the module runs without it, and why, in the module's
+own words. "store" and "latest" are the module's own keys, under its install name
+(tracker/), so two modules can't collide and none can name its way into another's;
+"of" asks for another install's keys, and the review names that install. "export" is
+another install's exports, which is how a dependency is said. A need the root provides by
+contract ("model") is whatever the root hands for it (connections.model above). "secret"
+makes the net one that carries a key the person picks or enters: the key goes to
+secrets.lua, never to the module. "varies" lists what the person is expected to change.
+
+grant:install(install, manifest) -> decisions, or nil if the person refused
+  the host draws one review of every need (decided: a host-drawn modal), each with the host's
+  text for it (below), the module's why kept apart as the module's words, and the values of
+  the preset the rules picked. Nothing is granted unless the person allows it; closing the
+  review grants nothing. A required need refused means not installed.
+  decisions are kept in grant's own storage by install and package hash. An update whose
+  needs are the same asks nothing; a new or widened need is asked on its own; a narrowed
+  one keeps its decision.
+grant:needs(install) -> { [need] = a reference minted again, true for an allowed need the
+                          root provides, nil for an optional need refused }
+grant:match(fn)      the root hands grant a pure fn(manifest, when) -> boolean for rules
+presets and rules    in grant's own storage, written only from the host's own screens, so
+                     no module can change what a preset gives; grant ships with none
+
+{ "key": "grant/presets/trackers", "value": {
+    "store": { "allow": true }, "latest": { "allow": true }, "model": { "allow": true },
+    "space": { "bytes": 52428800 }, "net": { "allow": false } } }
+{ "key": "grant/rules", "value": [
+    { "when": [ "all", [ "tag", "tracker" ], [ "asks", "model" ] ], "preset": "trackers" },
+    { "when": [ "asks", "model" ], "preset": "my-usual" } ] }
+```
+
+```lua
+-- grant_rules.lua: what a preset rule can test, as cond.lua operators over a manifest
+return function(c)
+  local cond = c.cond                       -- a cond of its own, so these names reach nothing else
+  cond.define("asks", function(m, what)
+    for _, decl in pairs(m.needs or {}) do if decl.what == what then return true end end
+    return false
+  end)
+  cond.define("tag", function(m, tag)
+    for _, t in ipairs(m.tags or {}) do if t == tag then return true end end
+    return false
+  end)
+  return function(manifest, when) return cond.holds(when, manifest) end
+end
+
+-- in root.lua: rules, then wiring an installed module from the person's decisions
+caps.grant:match(load("grant_rules", { cond = load("cond", {}) }))          -- [host]
+local provided  = { model = connections.model }   -- what this root hands by contract
+local installed = { kv = kv, cond = cond, prompt = prompt }   -- exports by name: what ships, then each install
+local function wire(name)
+  local pkg = store:get(home, "pkg/" .. name)                               -- [host] { manifest, source }
+  local got, given = caps.grant:needs(name), {}                             -- [host]
+  for need, decl in pairs(pkg.manifest.needs) do
+    local v = got[need]
+    if v == true then v = provided[decl.what] or installed[decl.of] end
+    if v == nil and decl.required then error(name .. " can't run without " .. need, 0) end
+    given[need] = v
+  end
+  installed[name] = caps.sandbox:load(pkg.source, pkg.manifest.runtime or "lua", given)   -- [core]
+  return installed[name]
+end
+
+t=0      page: action { type = "install", pkg = { "$blob": "sha256:77c0…" } }
+         root: unpacks it, grant:install("tracker", manifest)
+         grant: rules in order; the first matches (tagged tracker, asks for a model): trackers;
+         sheet starts refused (net: allow false)
+t=2ms    the review is drawn on the person's pages, every need listed, trackers' values in it
+t=6s     the person allows it as it stands; grant keeps the decisions under tracker@sha256:77c0…
+         root: wire("tracker"); sheet is nil, and tracker.lua runs without the spreadsheet
+t=6s     reply to the action: { installed = "tracker" }
+update   2.1.0 adds "clock": only that need is asked
+```
+
+Crescent's grant presets (`docs/platform-design.md`, "Grant presets and install UX") are taken as they are: named bundles the person writes, picked by the first rule that matches, a starting point the person still confirms, and no preset shipped ("Predefined presets are unacceptable — the system must not decide what's 'normal'", notes.md). Its rule language was left undesigned ("sexpr dsl structured editor style conditions"); here it is cond.lua data, the same shape as lore's conditions, so the structured editor that edits one can edit both. Presets and decisions are grant's because a preset is authority waiting to be handed out: a module that could write one could give itself anything at the next install. The matcher is content because it only suggests; whatever it picks, the person confirms. Optional needs are crescent's too: the module gets nil and handles it, so the author splits needs where the module can do without one. Costs: every installed module's needs are reviewed once per package hash; a card that brings modules is reviewed when it's imported (gap 5), and a decision is kept by package hash, so a library a thousand cards bring is asked about once. What ships with the app is wired by the root without a review, as root.lua does above; whether the person sees those too is the owner's.
+
+## Capabilities from crescent: whose words say what a grant allows
+
+```
+Each host module grant mints from describes a narrowing of itself:
+  net:describe{ hosts = { "sheets.example.com" }, secret = "sheets" }
+    -> { text = "Can send anything this module is given to sheets.example.com, with your
+                 key for it. Once sent, it is out of this app's hands." }
+  files:describe{ path = "/home/ren/notes", mode = "r" }
+    -> { text = "Can read every file in /home/ren/notes." }
+  store:describe{ own = "tracker" }      -> { text = "Keeps its own data. No other module can read it." }
+  store:describe{ of = "chat", mode = "r" }  -> { text = "Can read everything chat keeps: your messages." }
+  accounts:describe{ bytes = 10485760 }  -> { text = "Can use up to 10 MB of space." }
+A need the root provides by contract is described by what provides it:
+  model -> connections, which can reach api.example.com (openai) and 192.168.1.20:5001
+           (kobold): each install's own host grants, described as above
+  plus the provider's own description, shown as that module's words
+grant:provides("model", { "openai", "kobold" })   the root tells grant who stands behind a contract
+```
+
+Crescent writes one risk text per capability type, in the capability's factory, never in the manifest (`lib/platform/cap_dispatch.lua`'s `M.risk`, `docs/daemon-design.md` "Cap risk disclosure"), and shows the app's reason beside it as the app's own words. The model keeps the rule and moves the text to where the power is. A host module's text is authoritative, because only it knows what its narrowing allows, and it fills in the exact hosts or folder. A capability that is content can do at most what its module holds, so its authoritative text is the host text of what that module was granted, followed through every provider; the provider's own description is shown as its words, the way a module's why is. Examples of wording above are placeholders; the words are the owner's. Crescent's code also returns a severity with each text; whether there are tiers, and what each tier does to the review, is the owner's.
+
+## Capabilities from crescent: an admin's ceiling
+
+```lua
+-- in root.lua, for each person who logs in: their grant can only narrow what the admin left them
+local policy = load("policy", { latest = only_latest("admin/policy/", "r") })   -- the admin's limits, content
+local function grant_of(person)
+  local p = policy.of(person)
+  return caps.grant:narrow{                                                 -- [host]
+    net   = caps.net:only(p.net_test),        -- p.net_test reads the admin's current limits    -- [host]
+    files = p.folder and caps.files:only(p.folder, p.folder_mode),          -- [host]
+    store = caps.store:narrow{ nodes = { p.home }, prefix = "", mode = "rw" },   -- [host]
+    space = caps.accounts:new{ bytes = p.bytes },                           -- [host]
+  }
+end
+
+grant:narrow{ net, files, store, space, ... } -> a grant that mints only narrowings of these;
+  a need its references can't meet is shown as not allowed here before the person is asked,
+  and a required one means the install can't go ahead
+
+t=0      the admin limits Ren to public hosts; Ren's grant holds net:only(public)
+t=1m     Ren installs the kobold adapter, which asks for 192.168.1.20:5001
+         grant: the test refuses 192.168.1.20; the need is required, so the review says the
+         install isn't allowed on this server, and nothing is asked
+t=3m     the admin allows Ren's LAN address; p.net_test sees it at the next connection
+```
+
+Crescent's admin policy (`lib/platform/policy/init.lua`) can only restrict: it denies a capability type or narrows its parameters, and checks each declaration against them (`check_cap_decl`). Here the ceiling is what Ren's grant holds, so a grant above it can't be minted at all; nothing checks a declaration, and a new kind of capability is under the ceiling without the policy knowing its name. That is construction instead of detection, and it costs nothing at use: every reference minted from Ren's grant is already a narrowing of the admin's. Tightening reaches what was minted before because the test runs at every connection, and a folder or quota the admin can take back is a revocable forwarder at the ceiling. Still restrictive: the admin limits what's handed, not what a person does with what they hold; which modules a person may install is the root's install export loading only from the admin's list.
+
+## Capabilities from crescent: where the two differ
+
+| | Crescent | This model | Taken, and why |
+|---|---|---|---|
+| What a capability is | A fixed set of types the platform implements (`cap_dispatch.lua`'s table) | No list: any export is a reference | The model's: a fixed list rules out every capability the list lacks |
+| Narrowing | "No partial grants, no narrowing. The app's manifest declaration *is* the scope" | Every reference narrows; grant can mint less than a need asks (read for read-write, fewer hosts) | The model's, which is less restrictive; crescent's split into several named needs still works. Whether the review offers less than asked is the owner's |
+| Swapping | Host-side, with live swaps "a host/script agreement" over signals | switch.lua: content, the user of the front unaware | The model's: no agreement needed, and any holder can switch, not only the host |
+| Admin limits | A policy file checked against each declaration | What the person's grant holds | The model's: construction, not a check, and it covers capabilities the policy doesn't name |
+| Risk text | Per type, from the factory | From the host module, and through providers for content | Crescent's rule; the model follows it through content |
+| Sensitive fields | Stored with the other overrides, masked in the UI only ("currently a UI hint only") | A secret never reaches the module: the person's key goes to secrets.lua, the module gets a net that carries it | The model's: the key can't leak from a module that never has it |
+| Fields the operator changes | `configurable_fields` as a hint; any known field overridable, checked when the cap is built | "varies" as a hint; the person changes a narrowing's parameters, checked by the host module as it mints | Both the same idea; the model checks at the review, so a bad value is refused before anything runs |
+| Revoking | A flag in each cap's closure; calls return `nil, "capability revoked"` | A forwarder; calls raise "revoked" | The same; raising matches "gone" and "cancelled" |
+| Presets, rules, re-asking only for a manifest's new needs | As above | As above | Crescent's |
+
+Crescent's grant page rules (`docs/daemon-design.md`, "Browser approve flow") are screen design, so they are recorded here for the owner, not taken: Deny is the primary button, with the default focus; every box starts unchecked; the app's reason is shown in brackets, marked as the app's own words; a settings page lists every app's grants with a revoke for each and for all; friction grows with risk (typed or held confirmation for the widest grants, a short delay before submit); "just this session" grants; an opt-in auto-grant of harmless capabilities. What the model fixes regardless: nothing is granted without the person's answer, the module's words reach the host's screen apart from the host's own text, and only grant's own screens write presets and decisions.
+
 ## Gap 8, heavy work and libraries: what runs where
 
 ```
@@ -1435,6 +2047,11 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 | Live updates, several tabs, branch switches | store:watch and latest:watch, followed by a page module from a cursor |
 | Uploads and files outside the store | Pinned by the values naming them, leased until then; holds and their release list; accounts for quotas |
 | Allowing a URL, a LAN server, a folder | grant: a prompt the host draws, minting a narrowed net or files |
+| Switching the model or another provider mid-session | switch.lua: a forwarder; connections.lua keeps which adapter answers |
+| What a module asks for, reviewed at install; presets | Needs in its manifest; grant:install, with presets and first-match rules the person writes |
+| What a grant allows, in words | describe on the host module that mints it, followed through providers for content |
+| An admin's limits per person | What that person's grant holds (grant:narrow) |
+| Extensions in every chat, a card's own, their buttons and settings | Gap 5: UI slots as declared data; the turn by option A, B or C, the owner's |
 | Regex, Unicode, tokenizers, zip, PDF | wasm modules, the same build on both sides |
 | Local models, video, a headless browser | Host modules: infer, proc, browser |
 | Code editor, graph view (libraries needing a DOM) | The display handle's surface: the owner's decision |
@@ -1450,5 +2067,7 @@ Which of a and b exists, or both, is the display handle's surface, so it is the 
 Decided: modules are Lua, run by LuaJIT on the server and compiled to JavaScript on the page, which the browser's engine JITs, with the compiler deciding every name code can reach; the pure-computation libraries (regex, Unicode, tokenizers, zip, PDF) are wasm, one build for both sides (gap 8).
 
 2. **How does someone who doesn’t program build things?** a. Libraries in a module language that read data, as cond.lua reads ["all", …] · b. A declarative form the core itself evaluates, so it can index and explain it without running code. This puts a language in the core, which then has to pass both tests above
+
+5. **How do installed extensions and a card's own join a card's turn?** a. A hook library of named points the card runs · b. Steps the card names, which extensions' edits go after or around · c. Extensions wrapping the references a card is handed (gap 5)
 
 Left out: how much control the model gets over state. Each card or world decides that for itself.
