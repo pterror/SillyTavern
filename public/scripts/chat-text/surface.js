@@ -22,6 +22,8 @@ import { chatLook } from './look.js';
  * @property {Html} html
  * @property {(source: string) => Piece} macro
  * @property {() => Overlay[]} [overlays] the overlays of a reader made for a container
+ * @property {() => TextSetup} [now] the setup as the settings it reads are now: what a text shown with this one is
+ *   drawn with again when they change (`textSettingsChanged`); none for a setup that reads no settings
  */
 
 export const TEXT_CLASS = 'chat-text';
@@ -75,6 +77,37 @@ export function lookOf(setup, pill) {
 
 /** @type {WeakMap<Node, Reader>} each reader, by the element it draws into */
 const readers = new WeakMap();
+
+/**
+ * How each text shown now draws itself again from its setup as it is now, by the element its text is in: a reader's
+ * element, an editor's content. The page is what holds them: a text no longer in it is drawn again when shown again.
+ * @type {WeakMap<Element, () => void>}
+ */
+const redraws = new WeakMap();
+
+/**
+ * Says the settings text is drawn by changed: every text shown in the page, read or edited, is drawn again with its
+ * setup as it is now
+ */
+export function textSettingsChanged() {
+    for (const element of [...document.getElementsByClassName(TEXT_CLASS)]) redraws.get(element)?.();
+}
+
+/**
+ * Has an editor drawn again when the settings its text is drawn by change
+ * @param {Element} content the editor's content, holding its text
+ * @param {TextSetup} setup what it draws with now
+ * @param {(setup: TextSetup) => void} drawWith draws it with another setup
+ */
+export function redrawEditor(content, setup, drawWith) {
+    let current = setup;
+    redraws.set(content, () => {
+        const next = current.now?.();
+        if (!next || next.key === current.key) return;
+        current = next;
+        drawWith(next);
+    });
+}
 
 /**
  * The source position of a place in text a reader drew
@@ -158,7 +191,12 @@ export function showText(container, text, setup, { fade = false } = {}) {
     if (!held || held.key !== setup.key) {
         held?.reader.stop();
         const fader = fadeIn();
-        held = { key: setup.key, reader: readerOf(setup, [fader, ...(setup.overlays?.() ?? [])]), fade: fader, text: '' };
+        const made = { key: setup.key, reader: readerOf(setup, [fader, ...(setup.overlays?.() ?? [])]), fade: fader, text: '' };
+        redraws.set(made.reader.element, () => {
+            const next = setup.now?.();
+            if (next && next.key !== made.key && shown.get(container) === made) showText(container, made.text, next);
+        });
+        held = made;
         shown.set(container, held);
     }
     if (fade) {
@@ -202,12 +240,39 @@ function writtenMacro(source) {
 export const PLAIN_TEXT = { key: 'plain', grammar: { encodeTags: true }, html: () => undefined, macro: writtenMacro };
 
 /**
- * A reader of its own for a kind of text, for a place that keeps it
+ * A reader of its own for a kind of text, for a place that keeps it. Drawn again when the settings it reads change, it
+ * puts its new element where the one it had was: `element` is the one it has now.
  * @param {TextSetup} setup
  * @returns {Reader}
  */
 export function textReader(setup) {
-    return readerOf(setup, setup.overlays?.() ?? []);
+    let current = setup;
+    let made = readerOf(setup, setup.overlays?.() ?? []);
+    /** @type {string | null} */
+    let text = null;
+    const redraw = () => {
+        const next = current.now?.();
+        if (!next || next.key === current.key) return;
+        const was = made;
+        current = next;
+        made = readerOf(next, next.overlays?.() ?? []);
+        redraws.set(made.element, redraw);
+        if (text !== null) made.show(text);
+        was.element.replaceWith(made.element);
+        was.stop();
+    };
+    redraws.set(made.element, redraw);
+    return {
+        get element() {
+            return made.element;
+        },
+        show(shown) {
+            text = shown;
+            made.show(shown);
+        },
+        positionAt: (node, offset) => made.positionAt(node, offset),
+        stop: () => made.stop(),
+    };
 }
 
 /**

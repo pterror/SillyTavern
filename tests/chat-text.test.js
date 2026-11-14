@@ -338,6 +338,52 @@ describe('an image in chat text, clicked', () => {
     });
 });
 
+describe('chat text, when the settings it is drawn by change', () => {
+    /** A setup that reads `encodeTags` from a setting, as the chat's do */
+    const settings = { encodeTags: false };
+    /** @returns {import('../public/scripts/chat-text/surface.js').TextSetup} */
+    const live = () => ({ ...setup({ grammar: { encodeTags: settings.encodeTags } }), now: live });
+
+    test('a text shown in a container and one in a reader of its own are drawn again at once', () => {
+        settings.encodeTags = false;
+        const container = document.createElement('div');
+        document.body.append(container);
+        surface.showText(container, 'a <b>bold</b> word', live());
+        const own = surface.textReader(live());
+        const holder = document.createElement('div');
+        holder.append(own.element);
+        document.body.append(holder);
+        own.show('another <b>bold</b> word');
+        expect(container.querySelector('b')).not.toBeNull();
+        expect(holder.querySelector('b')).not.toBeNull();
+
+        settings.encodeTags = true;
+        surface.textSettingsChanged();
+        expect(container.querySelector('b')).toBeNull();
+        expect(container.textContent).toContain('<b>bold</b>');
+        expect(holder.querySelector('b')).toBeNull();
+        expect(holder.firstChild).toBe(own.element);
+        expect(holder.textContent).toContain('another <b>bold</b> word');
+
+        own.show('shown <b>after</b>');
+        expect(holder.textContent).toContain('shown <b>after</b>');
+        own.stop();
+        container.remove();
+        holder.remove();
+    });
+
+    test('a text no longer in the page is drawn with the settings as they are when shown again', () => {
+        settings.encodeTags = false;
+        const container = document.createElement('div');
+        surface.showText(container, 'a <b>bold</b> word', live());
+        settings.encodeTags = true;
+        surface.textSettingsChanged();
+        expect(container.querySelector('b')).not.toBeNull();
+        surface.showText(container, 'a <b>bold</b> word', live());
+        expect(container.querySelector('b')).toBeNull();
+    });
+});
+
 describe('chat text, shown in a container', () => {
     test('a streamed reply redraws what it added, which fades in', () => {
         const container = document.createElement('div');

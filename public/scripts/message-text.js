@@ -87,6 +87,7 @@ function chatSetup(speaker, kind, valuesOf, loreIn = null) {
         html: MESSAGE_POLICY,
         macro: macroValuePieces(values, name => withFilledAbout(page.macroPerson(name, { name: speaker ?? '' }), name, values.get), page.t),
         ...(loreIn ? { overlays: () => [page.loreMarks(loreIn, () => messageShownIn(loreIn)), page.chatLinks(loreIn, () => messageShownIn(loreIn))] } : {}),
+        now: () => chatSetup(speaker, kind, valuesOf, loreIn),
     };
 }
 
@@ -221,7 +222,9 @@ export function alternativeReader({ name, isUser, macros }) {
             return () => listeners.delete(listener);
         },
     };
-    const shown = textReader({ ...chatSetup(isUser ? null : name, 'alternative', () => macros() ?? undefined), overlays: () => [search] });
+    /** @returns {TextSetup} */
+    const setupNow = () => ({ ...chatSetup(isUser ? null : name, 'alternative', () => macros() ?? undefined), overlays: () => [search], now: setupNow });
+    const shown = textReader(setupNow());
     return {
         element: shown.element,
         show(text, found) {
@@ -246,7 +249,7 @@ export function cardTextSetup(kind, { values, person, styleScope = '' }) {
     const macro = macroValuePieces(values, name => withFilledAbout(person(name), name, values.valueOf), page.t);
     if (kind === 'greeting') {
         const grammar = grammarOptions(true);
-        return { key: JSON.stringify([kind, grammar]), grammar, html: MESSAGE_POLICY, macro };
+        return { key: JSON.stringify([kind, grammar]), grammar, html: MESSAGE_POLICY, macro, now: () => cardTextSetup(kind, { values, person, styleScope }) };
     }
     if (kind === 'notes') {
         return { key: JSON.stringify([kind, styleScope]), grammar: {}, html: policyFor(styleScope), macro };

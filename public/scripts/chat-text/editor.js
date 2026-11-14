@@ -10,6 +10,7 @@ import {
     modifierHeld,
     overtype,
     search as cmSearch,
+    state as cmState,
     suggestions,
     textEditor,
     toolbar,
@@ -22,11 +23,12 @@ import { boxSize } from './box-size.js';
 import { macroPills } from './macros.js';
 import { savedText } from './saved-text.js';
 import { macroSuggestions, mentionSuggestions } from './suggest.js';
-import { drawnText, grammarOf, lookOf, TEXT_CLASS } from './surface.js';
+import { drawnText, grammarOf, lookOf, redrawEditor, TEXT_CLASS } from './surface.js';
 
 const { EditorView, drawSelection, placeholder: placeholderText, keymap } = cmView;
 const { history, historyKeymap, defaultKeymap, deleteCharForward } = cmCommands;
 const { openSearchPanel } = cmSearch;
+const { Compartment } = cmState;
 
 /**
  * @typedef {import('@codemirror/view').EditorView} View
@@ -209,6 +211,16 @@ export function toolbarFor(view, tools) {
     };
 }
 
+/**
+ * How an editor draws its text: its grammar, and its look with macros as the given pieces
+ * @param {TextSetup} setup
+ * @param {(source: string) => import('@pterror/interact-editor/look').Piece | undefined} pill
+ * @returns {import('@codemirror/state').Extension}
+ */
+export function drawnWith(setup, pill) {
+    return [grammarLanguage(grammarOf(setup.grammar)), lookDecorations(lookOf(setup, pill))];
+}
+
 /** @returns {EditorPage} what editors read from the page */
 export const editorPage = () => page;
 
@@ -251,6 +263,7 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
     let asWritten = false;
     const stored = savedText(initial);
     const pill = macroPills({ get: macroValue }, name => page.person(name, speaker), page.t, () => asWritten);
+    const drawing = new Compartment();
     const holder = document.createElement('div');
     holder.className = className ? `chat-editor ${className}` : 'chat-editor';
     const editorHolder = document.createElement('div');
@@ -283,8 +296,7 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
             edited(current);
         },
         extensions: [
-            grammarLanguage(grammarOf(setup.grammar)),
-            lookDecorations(lookOf(setup, pill)),
+            drawing.of(drawnWith(setup, pill)),
             EditorView.contentAttributes.of({ class: TEXT_CLASS }),
             history(),
             keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
@@ -300,6 +312,7 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
         ],
     });
     view = made.view;
+    redrawEditor(view.contentDOM, setup, next => view.dispatch({ effects: drawing.reconfigure(drawnWith(next, pill)) }));
 
     const bar = toolbarFor(view, shownTools(byId));
     holder.prepend(bar.element);

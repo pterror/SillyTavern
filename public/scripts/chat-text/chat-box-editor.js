@@ -1,7 +1,5 @@
 import {
     commands as cmCommands,
-    grammarLanguage,
-    lookDecorations,
     markdownPaste,
     overtype,
     state as cmState,
@@ -10,10 +8,10 @@ import {
     view as cmView,
 } from '../../live-editor-lib.js';
 import { boxSize } from './box-size.js';
-import { commandKeys, editorPage, formatTools, shownTools, toolbarFor } from './editor.js';
+import { commandKeys, drawnWith, editorPage, formatTools, shownTools, toolbarFor } from './editor.js';
 import { macroPills } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
-import { drawnText, grammarOf, lookOf, TEXT_CLASS } from './surface.js';
+import { drawnText, redrawEditor, TEXT_CLASS } from './surface.js';
 
 const { EditorView, drawSelection, placeholder: placeholderText, keymap } = cmView;
 const { history, historyKeymap, defaultKeymap } = cmCommands;
@@ -60,6 +58,7 @@ export function chatBoxEditor({ parent, text, setup, label, keys, slashParser, s
     const filledWhenSent = () => null;
     const pill = macroPills({ get: filledWhenSent }, name => page.person(name, ''), page.t, () => false);
     const placeholders = new Compartment();
+    const drawing = new Compartment();
     const editorHolder = document.createElement('div');
     editorHolder.className = 'chat-box-editor';
     parent.append(editorHolder);
@@ -68,8 +67,7 @@ export function chatBoxEditor({ parent, text, setup, label, keys, slashParser, s
         text: text.port,
         edit: text.edited,
         extensions: [
-            grammarLanguage(grammarOf(setup.grammar)),
-            lookDecorations(lookOf(setup, pill)),
+            drawing.of(drawnWith(setup, pill)),
             EditorView.contentAttributes.of({ class: TEXT_CLASS, 'aria-multiline': 'true', 'aria-label': label }),
             history(),
             keymap.of([...keys, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
@@ -83,6 +81,7 @@ export function chatBoxEditor({ parent, text, setup, label, keys, slashParser, s
         ],
     });
     const { view } = made;
+    redrawEditor(view.contentDOM, setup, next => view.dispatch({ effects: drawing.reconfigure(drawnWith(next, pill)) }));
     const byId = new Map(formatTools().map(tool => [tool.id, tool]));
     const stopKeys = commandKeys(view, byId);
     const bar = toolbarFor(view, shownTools(byId));

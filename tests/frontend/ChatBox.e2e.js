@@ -83,6 +83,26 @@ test.describe('the chat box', () => {
         await emptyBox(page);
     });
 
+    test('is drawn again at once when a setting its text is drawn by changes', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        await chatBox(page).click();
+        await page.keyboard.type('a <b>loud</b> word');
+        const bold = page.locator('#chat_box .cm-content b');
+        await expect(bold).toHaveCount(1);
+        const showTags = (/** @type {boolean} */ on) => page.evaluate((on) => {
+            const box = /** @type {HTMLInputElement} */ (document.getElementById('encode_tags'));
+            box.checked = on;
+            box.dispatchEvent(new Event('input', { bubbles: true }));
+        }, on);
+        await showTags(true);
+        await expect(bold).toHaveCount(0);
+        await expect(page.locator('#chat_box .cm-content')).toContainText('<b>loud</b>');
+        await showTags(false);
+        await expect(bold).toHaveCount(1);
+        await emptyBox(page);
+    });
+
     test('Enter sends the message and empties the box; Shift+Enter adds a line', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openSeraphina(page);

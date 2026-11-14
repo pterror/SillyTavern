@@ -1,5 +1,6 @@
 import { blockWhileFieldEditing } from './character-field-editor.js';
 import { loadChatEditor } from './chat-text/editors.js';
+import { textSettingsChanged } from './chat-text/surface.js';
 import { editingIn, messageEditorSetup } from './message-text.js';
 import { drawerStackChanged } from './drawer-stack.js';
 import {
@@ -797,12 +798,14 @@ function loadReasoningSettings() {
     UI.$prefix.val(power_user.reasoning.prefix);
     UI.$prefix.on('input', function () {
         power_user.reasoning.prefix = String($(this).val());
+        textSettingsChanged();
         saveSettingsDebounced('power_user.reasoning.prefix');
     });
 
     UI.$suffix.val(power_user.reasoning.suffix);
     UI.$suffix.on('input', function () {
         power_user.reasoning.suffix = String($(this).val());
+        textSettingsChanged();
         saveSettingsDebounced('power_user.reasoning.suffix');
     });
 
@@ -855,6 +858,7 @@ function loadReasoningSettings() {
         power_user.reasoning.prefix = template.prefix;
         power_user.reasoning.suffix = template.suffix;
         power_user.reasoning.separator = template.separator;
+        textSettingsChanged();
 
         saveSettingsDebounced('power_user.reasoning.name', 'power_user.reasoning.prefix', 'power_user.reasoning.suffix', 'power_user.reasoning.separator');
     });

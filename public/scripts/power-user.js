@@ -21,6 +21,7 @@ import {
 import { printCharactersDebounced, printCharacters, entitiesFilter, resetCharacterListPositionOnNextPrint } from './character-list.js';
 import { chat } from './chat-state.js';
 import { messageStyles } from './message-text.js';
+import { textSettingsChanged } from './chat-text/surface.js';
 import { setActiveCharacter, setActiveGroup } from './app-selection-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characters, charactersStore, setCharacterId } from './character-store.js';
@@ -3179,6 +3180,7 @@ jQuery(() => {
 
     $('#markdown_escape_strings').on('input', function () {
         power_user.markdown_escape_strings = String($(this).val());
+        textSettingsChanged();
         saveSettingsDebounced('power_user.markdown_escape_strings');
     });
 
@@ -3742,7 +3744,7 @@ jQuery(() => {
 
     $('#encode_tags').on('input', async function () {
         power_user.encode_tags = !!$(this).prop('checked');
-        await reloadCurrentChat();
+        textSettingsChanged();
         saveSettingsDebounced('power_user.encode_tags');
     });
 
