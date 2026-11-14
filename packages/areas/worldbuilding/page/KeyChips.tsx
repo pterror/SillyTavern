@@ -278,9 +278,7 @@ function KeyField(props: {
                                             {one.text}
                                         </span>
                                         <span class="wb-key-more">
-                                            {one.keys === 1
-                                                ? t('· 1 entry')
-                                                : fill(t('· ${0} entries'), count(one.keys))}
+                                            {one.keys === 1 ? t('1 entry') : fill(t('${0} entries'), count(one.keys))}
                                         </span>
                                     </button>
                                 )}

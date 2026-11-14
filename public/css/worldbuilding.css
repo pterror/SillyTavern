@@ -876,7 +876,7 @@
     font-family: var(--monoFontFamily, monospace);
 }
 
-.wb .wb-suggestion {
+.wb .wb-opt.wb-suggestion {
     flex-direction: row;
     justify-content: space-between;
     gap: 12px;
@@ -888,6 +888,11 @@
     padding: 0 8px;
     line-height: 1.5;
     font-size: inherit;
+}
+
+.wb .wb-key,
+.wb .wb-key * {
+    white-space: nowrap;
 }
 
 .wb .wb-compact + .wb-key-field,

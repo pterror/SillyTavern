@@ -31,8 +31,8 @@ export const ROW_HEIGHT = 40;
 
 const WIDTHS: Record<RowField, string> = {
     relations: '190px',
-    names: '150px',
-    triggers: 'minmax(0,1fr)',
+    names: '190px',
+    triggers: 'minmax(180px,1fr)',
     comesIn: '130px',
     goes: '230px',
     order: '60px',
