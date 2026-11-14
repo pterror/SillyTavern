@@ -208,6 +208,7 @@ import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxMacros, chatBoxTex
 import { endOwnerOf } from './scripts/chat-box-ends.js';
 import { chatBoxSetup } from './scripts/message-text.js';
 import { initChatEditors, loadChatEditor } from './scripts/chat-text/editors.js';
+import { initTextBoxes, textBoxesIn } from './scripts/text-box-editor.js';
 import { readerSelection } from './scripts/chat-text/surface.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, discardFieldEdit, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
@@ -1298,6 +1299,12 @@ async function firstLoadInit() {
         toolbarChoice: () => (Array.isArray(power_user.editor_toolbar) ? power_user.editor_toolbar : []),
         uploadImage: uploadEditorImage,
         person: (macroName, speaker) => macroPerson(macroName, { name: speaker }),
+        t,
+    });
+    initTextBoxes({
+        macroScope: openChatMacroScope,
+        macroPerson: macroName => macroPerson(macroName, {}),
+        power_user,
         t,
     });
     initMacroColorsEditor({
@@ -7300,6 +7307,7 @@ export async function setCharacterSettingsOverrides() {
     const isGroup = !!selected_group;
 
     const $template = $(await renderTemplateAsync('scenarioOverride'));
+    textBoxesIn($template[0]);
     $template.find('[data-group="true"]').toggle(isGroup);
     $template.find('[data-character="true"]').toggle(!isGroup);
     const pendingChanges = {

@@ -7545,3 +7545,22 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     position: absolute;
     max-width: none !important;
 }
+
+.text_box_source {
+    display: none !important;
+}
+
+.text_box_bar {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+.text_box_view {
+    min-height: 3em;
+    cursor: text;
+}
+
+.text_box_bar [hidden] {
+    display: none !important;
+}

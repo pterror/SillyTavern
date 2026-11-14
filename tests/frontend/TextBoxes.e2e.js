@@ -1,0 +1,103 @@
+import { test, expect } from './fixtures.js';
+import { testSetup } from './frontent-test-utils.js';
+
+/** @param {import('@playwright/test').Page} page */
+async function openPersona(page) {
+    await page.locator('#persona-management-button > .drawer-toggle').click();
+    await expect(page.locator('#persona_description + .text_box')).toBeVisible();
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} on
+ */
+async function clickToEdit(page, on) {
+    await page.evaluate(async (on) => {
+        const { power_user } = await import('/scripts/power-user.js');
+        power_user.click_to_edit = on;
+    }, on);
+}
+
+const description = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#persona_description').inputValue();
+
+test.describe('prompt text boxes', () => {
+    test.beforeEach(testSetup.awaitST);
+
+    test('show their text drawn by the reader, with macros as values, in place of the textarea', async ({ page }) => {
+        await openPersona(page);
+        await page.evaluate(() => {
+            const area = /** @type {HTMLTextAreaElement} */ (document.querySelector('#persona_description'));
+            area.value = 'A *kind* traveller called {{user}}.';
+        });
+        const view = page.locator('#persona_description + .text_box .text_box_view');
+        await expect(view.locator('em')).toHaveText('kind');
+        await expect(view.locator('.macro-value')).toHaveCount(1);
+        await expect(page.locator('#persona_description')).toBeHidden();
+        await expect(page.locator('#persona_description + .text_box .cm-editor')).toHaveCount(0);
+    });
+
+    test('a double-click starts an edit in the shared editor with its toolbar; edits reach the textarea; confirm closes', async ({ page }) => {
+        await openPersona(page);
+        await clickToEdit(page, false);
+        await page.evaluate(() => {
+            /** @type {HTMLTextAreaElement} */ (document.querySelector('#persona_description')).value = 'Hello world';
+        });
+        const box = page.locator('#persona_description + .text_box');
+        await box.locator('.text_box_view').click();
+        await expect(box.locator('.cm-editor')).toHaveCount(0);
+        await box.locator('.text_box_view').dblclick();
+        await expect(box.locator('.cm-editor')).toBeVisible();
+        await expect(box.locator('.chat-editor-toolbar button[data-tool="bold"]')).toBeVisible();
+        await expect(box.locator('.text_box_view')).toBeHidden();
+        await page.keyboard.press('Control+End');
+        await page.keyboard.type('!');
+        expect(await description(page)).toBe('Hello world!');
+        await box.locator('.fa-check').click();
+        await expect(box.locator('.cm-editor')).toHaveCount(0);
+        await expect(box.locator('.text_box_view')).toContainText('Hello world!');
+        expect(await description(page)).toBe('Hello world!');
+    });
+
+    test('a click starts the edit when click to edit is on; the pencil always does; cancel puts the text back', async ({ page }) => {
+        await openPersona(page);
+        await clickToEdit(page, true);
+        await page.evaluate(() => {
+            /** @type {HTMLTextAreaElement} */ (document.querySelector('#persona_description')).value = 'Original';
+        });
+        const box = page.locator('#persona_description + .text_box');
+        await box.locator('.text_box_view').click();
+        await expect(box.locator('.cm-editor')).toBeVisible();
+        await page.keyboard.type(' changed');
+        expect(await description(page)).not.toBe('Original');
+        await box.locator('.fa-xmark').click();
+        expect(await description(page)).toBe('Original');
+        await box.locator('.fa-pencil').click();
+        await expect(box.locator('.cm-editor')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(box.locator('.cm-editor')).toHaveCount(0);
+        await clickToEdit(page, false);
+    });
+
+    test('a macro typed in an edit shows its value', async ({ page }) => {
+        await openPersona(page);
+        await page.evaluate(() => {
+            /** @type {HTMLTextAreaElement} */ (document.querySelector('#persona_description')).value = 'Hi ';
+        });
+        const box = page.locator('#persona_description + .text_box');
+        await box.locator('.fa-pencil').click();
+        await page.keyboard.press('Control+End');
+        await page.keyboard.type('{{user}}');
+        await expect(box.locator('.macro-pill-mention')).toHaveCount(1);
+        await box.locator('.fa-xmark').click();
+    });
+
+    test('the other prompt boxes are the same: an Author\'s Note, a quick prompt, a prompt manager prompt, a story string, an override', async ({ page }) => {
+        const ids = await page.evaluate(() => [...document.querySelectorAll('textarea[data-text-box]')].map(el => el.id));
+        expect(ids).toEqual(expect.arrayContaining([
+            'persona_description', 'extension_floating_prompt', 'extension_floating_chara', 'extension_floating_default',
+            'main_prompt_quick_edit_textarea', 'nsfw_prompt_quick_edit_textarea', 'jailbreak_prompt_quick_edit_textarea',
+            'context_story_string', 'completion_prompt_manager_popup_entry_form_prompt',
+        ]));
+        for (const id of ids) await expect(page.locator(`#${id} + .text_box`)).toHaveCount(1);
+    });
+});

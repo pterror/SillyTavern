@@ -613,21 +613,21 @@
                                             <div class="justifyLeft" data-i18n="Main">Main</div>
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="main_prompt_quick_edit_textarea" data-i18n="[title]Expand the editor"></i>
                                             <div class="wide100p">
-                                                <textarea id="main_prompt_quick_edit_textarea" class="text_pole textarea_compact autoSetHeight" rows="6" placeholder="&mdash;" data-pm-prompt="main"></textarea>
+                                                <textarea id="main_prompt_quick_edit_textarea" data-text-box="literal" class="text_pole textarea_compact autoSetHeight" rows="6" placeholder="&mdash;" data-pm-prompt="main"></textarea>
                                             </div>
                                         </div>
                                         <div class="range-block m-t-1">
                                             <div class="justifyLeft" data-i18n="Auxiliary">Auxiliary</div>
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="nsfw_prompt_quick_edit_textarea" data-i18n="[title]Expand the editor"></i>
                                             <div class="wide100p">
-                                                <textarea id="nsfw_prompt_quick_edit_textarea" class="text_pole textarea_compact autoSetHeight" rows="6" placeholder="&mdash;" data-pm-prompt="nsfw"></textarea>
+                                                <textarea id="nsfw_prompt_quick_edit_textarea" data-text-box="literal" class="text_pole textarea_compact autoSetHeight" rows="6" placeholder="&mdash;" data-pm-prompt="nsfw"></textarea>
                                             </div>
                                         </div>
                                         <div class="range-block m-t-1">
                                             <div class="justifyLeft" data-i18n="Post-History Instructions">Post-History Instructions</div>
                                             <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="jailbreak_prompt_quick_edit_textarea" data-i18n="[title]Expand the editor"></i>
                                             <div class="wide100p">
-                                                <textarea id="jailbreak_prompt_quick_edit_textarea" class="text_pole textarea_compact autoSetHeight" rows="6" placeholder="&mdash;" data-pm-prompt="jailbreak"></textarea>
+                                                <textarea id="jailbreak_prompt_quick_edit_textarea" data-text-box="literal" class="text_pole textarea_compact autoSetHeight" rows="6" placeholder="&mdash;" data-pm-prompt="jailbreak"></textarea>
                                             </div>
                                         </div>
                                     </div>
@@ -2981,7 +2981,7 @@
                                         <small data-i18n="Story String">Story String</small>
                                         <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="context_story_string" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                     </label>
-                                    <textarea id="context_story_string" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
+                                    <textarea id="context_story_string" data-text-box="literal" data-macros class="text_pole textarea_compact autoSetHeight"></textarea>
                                 </div>
                                 <div class="flex-container flexFlowColumn" data-cc-null>
                                     <div id="context_story_string_position_block">
@@ -4463,7 +4463,7 @@
                                     <span data-i18n="Persona Description">Persona Description</span>
                                     <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="persona_description" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                 </h4>
-                                <textarea id="persona_description" name="persona_description" data-macros data-i18n="[placeholder]Example: [{{user}} is a 28-year-old Romanian cat girl.]" placeholder="Example:&#10;[{{user}} is a 28-year-old Romanian cat girl.]" class="text_pole textarea_compact" value="" autocomplete="off" rows="8"></textarea>
+                                <textarea id="persona_description" data-text-box="notes" name="persona_description" data-macros data-i18n="[placeholder]Example: [{{user}} is a 28-year-old Romanian cat girl.]" placeholder="Example:&#10;[{{user}} is a 28-year-old Romanian cat girl.]" class="text_pole textarea_compact" value="" autocomplete="off" rows="8"></textarea>
 
                                 <div class="flex-container justifySpaceBetween">
                                     <h4 data-i18n="Position">Position</h4>
@@ -5511,7 +5511,7 @@
                                 <span>&nbsp;</span>
                                 <span id="completion_prompt_manager_popup_entry_source"></span>
                             </div>
-                            <textarea id="completion_prompt_manager_popup_entry_form_prompt" class="text_pole" name="prompt" data-macros data-macros-autocomplete="always" data-macros-autocomplete-style="expanded" placeholder="The prompt to be sent." data-i18n="[placeholder]The prompt to be sent."></textarea>
+                            <textarea id="completion_prompt_manager_popup_entry_form_prompt" data-text-box="literal" class="text_pole" name="prompt" data-macros data-macros-autocomplete="always" data-macros-autocomplete-style="expanded" placeholder="The prompt to be sent." data-i18n="[placeholder]The prompt to be sent."></textarea>
                         </div>
                         <div class="completion_prompt_manager_popup_entry_form_footer">
                             <a id="completion_prompt_manager_popup_entry_form_close" title="Close" data-i18n="[title]close" class="fa-solid fa-close menu_button"></a>
@@ -5831,7 +5831,7 @@
                             <b data-i18n="Unique to this chat">Unique to this chat</b>.<br>
                             <span data-i18n="Bookmarks inherit the Note from their parent, and can be changed individually after that.">Bookmarks inherit the Note from their parent, and can be changed individually after that.</span><br>
                         </small>
-                        <textarea id="extension_floating_prompt" data-macros class="text_pole textarea_compact" rows="8"></textarea>
+                        <textarea id="extension_floating_prompt" data-text-box="literal" data-macros class="text_pole textarea_compact" rows="8"></textarea>
                         <div class="extension_token_counter">
                             <span data-i18n="extension_token_counter">Tokens:</span> <span id="extension_floating_prompt_token_counter">0</span>
                         </div>
@@ -5888,7 +5888,7 @@
                     <div class="inline-drawer-content">
                         <small data-i18n="Will be automatically added as the author's note for this character. Will be used in groups, but can't be modified when a group chat is open.">Will be automatically added as the author's note for this character. Will be used in groups, but
                             can't be modified when a group chat is open.</small>
-                        <textarea id="extension_floating_chara" data-macros class="text_pole textarea_compact" rows="8" placeholder="Example:&#10;[Scenario: wacky adventures; Genre: romantic comedy; Style: verbose, creative]"></textarea>
+                        <textarea id="extension_floating_chara" data-text-box="literal" data-macros class="text_pole textarea_compact" rows="8" placeholder="Example:&#10;[Scenario: wacky adventures; Genre: romantic comedy; Style: verbose, creative]"></textarea>
                         <div class="extension_token_counter">
                             <span data-i18n="extension_token_counter">Tokens:</span> <span id="extension_floating_chara_token_counter">0</span>
                         </div>
@@ -5920,7 +5920,7 @@
                     </div>
                     <div class="inline-drawer-content">
                         <small data-i18n="Will be automatically added as the Author's Note for all new chats.">Will be automatically added as the Author's Note for all new chats.</small>
-                        <textarea id="extension_floating_default" data-macros class="text_pole textarea_compact" rows="8" placeholder="Example:&#10;[Scenario: wacky adventures; Genre: romantic comedy; Style: verbose, creative]"></textarea>
+                        <textarea id="extension_floating_default" data-text-box="literal" data-macros class="text_pole textarea_compact" rows="8" placeholder="Example:&#10;[Scenario: wacky adventures; Genre: romantic comedy; Style: verbose, creative]"></textarea>
                         <div class="extension_token_counter">
                             <span data-i18n="extension_token_counter">Tokens:</span> <span id="extension_floating_default_token_counter">0</span>
                         </div>
