@@ -1500,6 +1500,8 @@ export class WorldInfoEngine {
      * @returns {Promise<{ next: Record<string, unknown> | { refused: string } } | { conflict: EntryConflict }>}
      */
     async editOver(e, form, current, edit, actor, madeAt) {
+        const [version] = await this.store.worldRead('lastChanges', { entities: [e.id] });
+        if (version === madeAt) return { next: edit(current) };
         const [session] = actor?.session ? await this.store.chatRead('ids', { space: SPACE.session, keys: [actor.session] }) : [null];
         /** @type {import('./world-info/entry-merge.js').SlotSince[]} */
         const since = await this.store.worldRead('entryChangesSince', { entity: e.id, since: madeAt, ...(session === null ? {} : { session }) });
@@ -1510,7 +1512,6 @@ export class WorldInfoEngine {
         if (typeof mine.refused === 'string') return { next: mine };
         const merged = was ? mergeEntry(base, mine, current) : { conflicts: unmerged(mine, current) };
         if ('merged' in merged) return { next: merged.merged };
-        const [version] = await this.store.worldRead('lastChanges', { entities: [e.id] });
         return { conflict: { version, fields: merged.conflicts } };
     }
 

@@ -1507,3 +1507,69 @@ fn a_value_the_history_no_longer_starts_reads_as_unknown() {
     drop(s);
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn the_kept_version_is_the_newest_change_through_random_writes_deletes_restores_and_reopens() {
+    for seed in 1..=3u64 {
+        let mut rng = Rng(seed);
+        let dir = temp_dir(&format!("kept-version-{seed}"));
+        let mut s = open(&dir);
+        let fields = [content(), FieldRef::Key(b"note".to_vec()), FieldRef::Code(UID)];
+        let mut newest = 0u64;
+        let mut has = [false; 3];
+        let mut placed = false;
+        let mut gone = false;
+        let mut next = 1000u64;
+        for step in 0..200 {
+            let c = next;
+            let rec = match rng.below(10) {
+                _ if gone => {
+                    gone = false;
+                    restore(c, "1:0")
+                }
+                0..=4 => {
+                    let fi = rng.below(3) as usize;
+                    has[fi] = true;
+                    set(c, &fields[fi], &format!("v{c}"), fi == 2, NOBODY)
+                }
+                5 if has.iter().any(|h| *h) => {
+                    let fi = has.iter().position(|h| *h).unwrap();
+                    has[fi] = false;
+                    del(c, &fields[fi], NOBODY)
+                }
+                6 => {
+                    placed = !placed;
+                    place(c, KEYS, 1, placed.then_some(10 + c), NOBODY)
+                }
+                7 => {
+                    gone = true;
+                    entity_delete(c)
+                }
+                8 => {
+                    s.inner.ks.freeze_at(s.durable_end());
+                    s.inner.ks.wait_flushed().unwrap();
+                    continue;
+                }
+                _ => {
+                    drop(s);
+                    s = open(&dir);
+                    continue;
+                }
+            };
+            s.commit_wait(vec![rec])
+                .unwrap_or_else(|e| panic!("seed {seed} step {step}: {e:?}"));
+            next += 1;
+            newest = c;
+            assert_eq!(
+                s.chat_read(|v| history::last_change(v, ENTRY_ID)).unwrap(),
+                newest,
+                "seed {seed} step {step}"
+            );
+        }
+        drop(s);
+        let s = open(&dir);
+        assert_eq!(s.chat_read(|v| history::last_change(v, ENTRY_ID)).unwrap(), newest);
+        drop(s);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}

@@ -20,6 +20,8 @@ use crate::log::format::{
 };
 
 pub const HIST: u64 = 210;
+// An entity's version: the id of its newest change, kept on every change to it.
+pub const LAST: u64 = 211;
 pub const JSON_EDIT: u64 = 212;
 pub const GONE: u64 = 213;
 pub const DELETED: u64 = 214;
@@ -812,6 +814,7 @@ fn file(
     o.put(change_key(c), loc_bytes(at));
     o.put(hist_key(e, slot, part_of(fam), c), Vec::new());
     o.max(key::of(NEXT_CHANGE), c + 1);
+    o.max(key::id(LAST, e), c);
     out.entries.extend(o.entries.iter().cloned());
     o.apply(local);
 }
@@ -1257,6 +1260,7 @@ pub fn erase(view: &View, out: &mut Out, e: u64, at: Loc) -> Result<bool, StoreE
             out.del(vk);
         }
     }
+    out.del(key::id(LAST, e));
     let slots = slots(view, e)?;
     if slots.is_empty() {
         dead(out, at);
@@ -2047,17 +2051,9 @@ pub fn deleted_page(
     ]))
 }
 
-// The entity's version: the id of its newest change to a field or a place, 0 for one with none.
+// The entity's version: the id of its newest change, 0 for one with none.
 pub fn last_change(view: &View, e: u64) -> Result<u64, StoreError> {
-    let mut last = 0;
-    for slot in slots(view, e)? {
-        for part in [VALUES, PLACES] {
-            if let Some((c, _)) = latest(view, e, slot.as_ref(), part)? {
-                last = last.max(c);
-            }
-        }
-    }
-    Ok(last)
+    Ok(view.get(&key::id(LAST, e))?.and_then(|b| max_value(&b)).unwrap_or(0))
 }
 
 enum Was<T> {
