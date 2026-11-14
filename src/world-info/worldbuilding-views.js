@@ -1,4 +1,4 @@
-import { ROW_FIELDS } from '@st/worldbuilding/protocol';
+import { ROW_FIELDS, SORTS, WORLD_SORT } from '@st/worldbuilding/protocol';
 import { TYPE } from '../library-codes.js';
 import { READER_VIEWS_FIELD } from '../world-info-engine.js';
 
@@ -8,6 +8,7 @@ export const WORLD_VIEWS_FIELD = 'views';
 const VIEW_ID = /^[a-z0-9-]{1,40}$/;
 const DEPTHS = new Set(['directly', 'anyDepth']);
 const FIELDS = new Set(ROW_FIELDS);
+const SORT_BY = new Set(SORTS);
 
 const isRecord = (/** @type {unknown} */ value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const kindOf = (/** @type {unknown} */ kind) => (Number.isSafeInteger(kind) && /** @type {number} */ (kind) > 0 ? String(kind) : typeof kind === 'string' && /^[1-9]\d{0,15}$/.test(kind) ? kind : null);
@@ -46,6 +47,7 @@ export function viewOf(value) {
         id: v.id,
         name: v.name.trim(),
         groupBy,
+        sort: isRecord(v.sort) && SORT_BY.has(v.sort.by) ? { by: v.sort.by, descending: v.sort.descending === true } : WORLD_SORT,
         drawing: v.drawing === 'rows' ? 'rows' : 'cards',
         fields: [...new Set((Array.isArray(v.fields) ? v.fields : []).filter(field => FIELDS.has(field)))],
         query: typeof v.query === 'string' ? v.query : '',

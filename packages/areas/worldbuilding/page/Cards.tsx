@@ -12,7 +12,6 @@ export { Label, Picture };
 import { Icon } from './icons.tsx';
 import { OnOff } from './OnOff.tsx';
 import { goesWords, triggerWords } from './facts.ts';
-import { PHONE } from './layout.ts';
 import { count, fill } from './words.ts';
 
 export type CardActions = {
@@ -22,6 +21,8 @@ export type CardActions = {
     grouping(): Grouping | null;
     // The world the cards are in.
     book(): string | null;
+    // The list is drawn in the world's own order: a top-level card can be dragged to another place in it.
+    worldOrder?(): boolean;
     // Pointing at a card shows its hover card.
     hover?: { enter(entry: string, element: HTMLElement): void; leave(event: MouseEvent): void; hide(): void };
 };
@@ -33,13 +34,17 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
     let root: HTMLElement | undefined;
     const press = (event: PointerEvent) => {
         const grouping = props.actions.grouping();
-        if (!grouping || !root || (event.target as Element).closest('.wb-card-more, .wb-region-search')) return;
+        const book = props.actions.book();
+        const reorders = props.region === null && props.actions.worldOrder?.() === true ? book : null;
+        if (!grouping && reorders === null) return;
+        if (!root || (event.target as Element).closest('.wb-card-more, .wb-region-search')) return;
         wb.drag.press(event, {
             entry: props.entry,
             name: props.label.text,
             grouping,
             region: props.region,
             element: root,
+            ...(reorders === null ? {} : { reorders }),
         });
     };
     const reorder = (event: KeyboardEvent, entry: string, region: Membership, grouping: Grouping | null) => {
@@ -80,8 +85,7 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
         if (!wb.drag.clickIsDrop()) props.actions.open(props.entry);
     };
     const enter = (event: MouseEvent) => {
-        if (!menu() && !window.matchMedia(PHONE).matches)
-            props.actions.hover?.enter(props.entry, event.currentTarget as HTMLElement);
+        if (!menu()) props.actions.hover?.enter(props.entry, event.currentTarget as HTMLElement);
     };
     const leave = (event: MouseEvent) => props.actions.hover?.leave(event);
     const Menu = () => (

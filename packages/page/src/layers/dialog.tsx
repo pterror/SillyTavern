@@ -3,13 +3,19 @@ import { render } from 'solid-js/web';
 
 export type Question =
     | { kind: 'input'; message: string; value: string }
-    | { kind: 'confirm'; message: string; detail?: string; checkbox?: { label: string; checked: boolean } }
+    | {
+          kind: 'confirm';
+          message: string;
+          detail?: string;
+          numbers?: { id: string; label: string; value: number; min: number }[];
+          checkbox?: { label: string; checked: boolean };
+      }
     | { kind: 'choose'; message: string; options: { id: string; label: string; checked: boolean }[] };
 
 type Answer<Q extends Question> = Q extends { kind: 'input' }
     ? string
     : Q extends { kind: 'confirm' }
-      ? { checked: boolean }
+      ? { checked: boolean; numbers: Record<string, number> }
       : string[];
 
 export function ask<Q extends Question>(question: Q, t: (text: string) => string): Promise<Answer<Q> | null> {
@@ -31,7 +37,7 @@ export function ask<Q extends Question>(question: Q, t: (text: string) => string
 function dialog(
     question: Question,
     t: (text: string) => string,
-    onAnswer: (answer: string | { checked: boolean } | string[] | null) => void,
+    onAnswer: (answer: string | { checked: boolean; numbers: Record<string, number> } | string[] | null) => void,
 ) {
     const [text, setText] = createSignal(question.kind === 'input' ? question.value : '');
     const [checked, setChecked] = createSignal(
@@ -40,9 +46,14 @@ function dialog(
     const [chosen, setChosen] = createSignal(
         new Set(question.kind === 'choose' ? question.options.filter((o) => o.checked).map((o) => o.id) : []),
     );
+    const [numbers, setNumbers] = createSignal<Record<string, number>>(
+        question.kind === 'confirm'
+            ? Object.fromEntries((question.numbers ?? []).map((field) => [field.id, field.value]))
+            : {},
+    );
     const answer = () => {
         if (question.kind === 'input') return text().trim() === '' ? null : text().trim();
-        if (question.kind === 'confirm') return { checked: checked() };
+        if (question.kind === 'confirm') return { checked: checked(), numbers: numbers() };
         return [...chosen()];
     };
     const toggle = (id: string, on: boolean) => {
@@ -54,6 +65,7 @@ function dialog(
     const message = question.message;
     const detail = question.kind === 'confirm' ? question.detail : undefined;
     const checkbox = question.kind === 'confirm' ? question.checkbox : undefined;
+    const numberFields = question.kind === 'confirm' ? question.numbers : undefined;
     const options = question.kind === 'choose' ? question.options : undefined;
     const isInput = question.kind === 'input';
     let element: HTMLDialogElement | undefined;
@@ -89,6 +101,34 @@ function dialog(
                             onInput={(event) => setText(event.currentTarget.value)}
                         />
                     }
+                </Show>
+                <Show when={numberFields}>
+                    {(fields) => (
+                        <div class="popup-inputs">
+                            <For each={fields()}>
+                                {(field) => (
+                                    <label class="popup-input-label">
+                                        <span>{field.label}</span>
+                                        <input
+                                            type="number"
+                                            class="text_pole"
+                                            min={field.min}
+                                            step="1"
+                                            value={numbers()[field.id]}
+                                            onInput={(event) => {
+                                                const value = Math.max(
+                                                    field.min,
+                                                    Math.floor(Number(event.currentTarget.value)),
+                                                );
+                                                if (Number.isFinite(value))
+                                                    setNumbers({ ...numbers(), [field.id]: value });
+                                            }}
+                                        />
+                                    </label>
+                                )}
+                            </For>
+                        </div>
+                    )}
                 </Show>
                 <Show when={checkbox}>
                     {(box) => (

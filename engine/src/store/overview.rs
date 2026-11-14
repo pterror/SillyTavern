@@ -665,6 +665,39 @@ pub fn read_overview(
     ]))
 }
 
+// The world's entries ungrouped, ranks `first_rank..end_rank` of `sort` (`descending`: read from its end).
+pub fn read_sorted_overview(
+    view: &View,
+    book: u64,
+    layout: &OverviewLayout,
+    sort: super::sorts::Sort,
+    descending: bool,
+    first_rank: u64,
+    end_rank: u64,
+) -> Result<Js, StoreError> {
+    let grouping = Grouping::World { book, kind: None };
+    let total = super::sorts::count(view, book, sort)?;
+    let first_rank = first_rank.min(total);
+    let end_rank = end_rank.clamp(first_rank, total);
+    let keys_list = super::references::key_list(view, book)?;
+    let mut entries = Vec::new();
+    let found = super::sorts::from_rank(view, book, sort, descending, first_rank, (end_rank - first_rank) as usize)?;
+    for (index, top) in found.into_iter().enumerate() {
+        let drawn = draw_entry(view, grouping, &[], &mut grouping.path_from(top))?;
+        let Js::Obj(mut fields) = drawn_js(view, grouping, layout, keys_list, &drawn)? else {
+            unreachable!("a card is an object")
+        };
+        fields.push(("topLevelRank", Js::Num((first_rank + index as u64) as f64)));
+        entries.push(Js::Obj(fields));
+    }
+    Ok(Js::Obj(vec![
+        ("topLevelCount", Js::Num(total as f64)),
+        ("firstRank", Js::Num(first_rank as f64)),
+        ("entries", Js::Arr(entries)),
+        ("stepLanding", Js::Null),
+    ]))
+}
+
 pub struct HeldRange {
     pub kind: u64,
     pub first_rank: u64,

@@ -48,7 +48,7 @@ const COMES: { comes: EntryFacts['comesIn']; words: string; change: Partial<Plac
 const capitalized = (words: string) => words.charAt(0).toUpperCase() + words.slice(1);
 
 export const columnsOf = (fields: RowField[]): string =>
-    ['40px', '36px', '230px', ...fields.map((field) => WIDTHS[field])].join(' ');
+    ['58px', '36px', '230px', ...fields.map((field) => WIDTHS[field])].join(' ');
 
 type Selected = Extract<SelectionView, { book: string }>;
 
@@ -59,6 +59,8 @@ export type RowsContext = {
     isSelected: (entry: string) => boolean;
     press: (entry: string, event: PointerEvent) => void;
     enter: (entry: string) => void;
+    // The world whose own order the rows are drawn in: each top-level row has a grip that moves it there.
+    reorders: string | null;
     open: (entry: string) => void;
 };
 
@@ -138,7 +140,7 @@ export function RowsHead(props: { fields: RowField[]; selection: Selected | null
     const all = () => props.selection?.base === 'matching';
     return (
         <div class="wb-tr wb-th" style={{ 'grid-template-columns': columnsOf(props.fields) }}>
-            <span>
+            <span class="wb-tr-pick">
                 <input
                     type="checkbox"
                     class="wb-cb"
@@ -198,6 +200,7 @@ export function EntryRows(props: { cell: RegionCell; depth: number; context: Row
 
 function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
     const { t } = useUi();
+    const wb = useWb();
     const selected = () => props.context.isSelected(props.cell.entry);
     const facts = () => props.cell.facts;
     const relations = () =>
@@ -261,7 +264,30 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
             style={{ 'grid-template-columns': columnsOf(props.context.fields) }}
             onPointerEnter={() => props.context.enter(props.cell.entry)}
         >
-            <span>
+            <span class="wb-tr-pick">
+                <Show when={props.depth === 0 && props.context.reorders}>
+                    {(book) => (
+                        <button
+                            type="button"
+                            class="wb-grip fa-solid fa-grip-vertical"
+                            title={t('Drag to move it in the world’s order')}
+                            aria-label={fill(t('Move ${0} in the world’s order'), props.cell.label.text)}
+                            onPointerDown={(event) => {
+                                const row = (event.target as Element).closest<HTMLElement>('.wb-top-row');
+                                event.preventDefault();
+                                if (row)
+                                    wb.drag.press(event, {
+                                        entry: props.cell.entry,
+                                        name: props.cell.label.text,
+                                        grouping: null,
+                                        region: null,
+                                        element: row,
+                                        reorders: book(),
+                                    });
+                            }}
+                        />
+                    )}
+                </Show>
                 <input
                     type="checkbox"
                     class="wb-cb"

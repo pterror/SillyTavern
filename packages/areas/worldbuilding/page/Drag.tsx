@@ -34,9 +34,12 @@ export type Dragged = {
     region: Membership;
     element: HTMLElement;
     cells?: CellsDrag;
+    // The world whose own order a top-level card or row moves in, when the list is drawn in that order.
+    reorders?: string;
 };
 
-type Over = { entry: string; name: string; element: HTMLElement; slot: Slot; cell: CellAt | null };
+// `top`: a place among the top-level cards or rows, in the world's own order; `name` is then the one it goes before.
+type Over = { entry: string; name: string; element: HTMLElement; slot: Slot; cell: CellAt | null; top?: boolean };
 
 type Held = {
     dragged: Dragged;
@@ -52,9 +55,18 @@ const GHOST_WIDTH_PX = 330;
 
 // Where among a region's own cells (not its nested regions' cells) a drop at (x, y) lands, leaving out the dragged
 // entry: the cells read in their order, the drop going before the first one the point is above or left of the middle of.
-export function slotAt(cells: { entry: string; rect: DOMRect }[], x: number, y: number, dragged: string): Slot {
+// Rows (`rows`) are read top to bottom only: a drop goes before the first row the point is above the middle of.
+export function slotAt(
+    cells: { entry: string; rect: DOMRect }[],
+    x: number,
+    y: number,
+    dragged: string,
+    rows = false,
+): Slot {
     const shown = cells.filter((cell) => cell.entry !== dragged);
-    const at = shown.findIndex(({ rect }) => y < rect.top || (y < rect.bottom && x < rect.left + rect.width / 2));
+    const at = shown.findIndex(({ rect }) =>
+        rows ? y < rect.top + rect.height / 2 : y < rect.top || (y < rect.bottom && x < rect.left + rect.width / 2),
+    );
     if (at === -1) return { after: shown.at(-1)?.entry ?? null, before: null };
     return { after: shown[at - 1]?.entry ?? null, before: shown[at]?.entry ?? null };
 }
@@ -95,11 +107,33 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
         return { entry: '', name: '', element, slot: slotAt(shown, x, y, dragged.entry), cell };
     };
 
+    const topOver = (under: Element | null, x: number, y: number, dragged: Dragged): Over | null => {
+        const list = under?.closest<HTMLElement>('.wb-top, .wb-trs');
+        if (!list) return null;
+        const placed = [...list.querySelectorAll<HTMLElement>(':scope > [data-entry]')];
+        const rows = list.classList.contains('wb-trs');
+        const slot = slotAt(
+            placed.map((cell) => ({ entry: cell.dataset['entry'] ?? '', rect: cell.getBoundingClientRect() })),
+            x,
+            y,
+            dragged.entry,
+            rows,
+        );
+        const before = placed.find((cell) => cell.dataset['entry'] === slot.before);
+        return { entry: '', name: before?.dataset['name'] ?? '', element: list, slot, cell: null, top: true };
+    };
+
     const overAt = (x: number, y: number, dragged: Dragged): Over | null => {
         const under = document.elementFromPoint(x, y);
         if (dragged.cells) return cellOver(under, x, y, dragged, dragged.cells);
-        if (!dragged.grouping) return null;
         const region = under instanceof Element ? under.closest<HTMLElement>('[data-region]') : null;
+        const inRegion =
+            dragged.grouping !== null &&
+            region !== null &&
+            !dragged.element.contains(region) &&
+            region.dataset['kind'] === dragged.grouping.kind;
+        if (!inRegion && dragged.reorders !== undefined) return topOver(under, x, y, dragged);
+        if (!dragged.grouping) return null;
         if (!region || dragged.element.contains(region)) return null;
         if (region.dataset['kind'] !== dragged.grouping.kind) return null;
         const entry = region.dataset['region'] ?? '';
@@ -116,6 +150,7 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
     const moves = (holding: Pick<Held, 'dragged' | 'over'>): boolean => {
         const { over, dragged } = holding;
         if (!over) return false;
+        if (over.top === true) return true;
         if (over.cell && dragged.cells)
             return over.cell.column !== dragged.cells.from.column || over.cell.row !== dragged.cells.from.row;
         return over.entry !== dragged.region?.entry;
@@ -193,6 +228,15 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
         const keeps = event.altKey || holding.alt;
         if (over.cell && dragged.cells) {
             dragged.cells.drop(dragged.entry, dragged.cells.from, over.cell, keeps, over.slot);
+            return;
+        }
+        if (over.top === true && dragged.reorders !== undefined) {
+            if (over.slot.after !== null || over.slot.before !== null)
+                void act('worldbuilding.placeInWorldOrder', {
+                    book: dragged.reorders,
+                    entry: dragged.entry,
+                    after: over.slot.after,
+                });
             return;
         }
         if (!dragged.grouping) return;
@@ -276,7 +320,15 @@ export function DragLayer(props: { control: DragControl }) {
                                 </div>
                             )}
                         </Show>
-                        <Show when={!holding().over?.cell && moving()}>
+                        <Show when={holding().over?.top === true && holding().over}>
+                            {(over) => (
+                                <div class="wb-intent">
+                                    <span class="wb-intent-kind">{t('World order')}</span>
+                                    <b>{over().name === '' ? t('Last') : fill(t('Before ${0}'), over().name)}</b>
+                                </div>
+                            )}
+                        </Show>
+                        <Show when={!holding().over?.cell && holding().over?.top !== true && moving()}>
                             {(over) => (
                                 <div class="wb-intent">
                                     <span class="wb-intent-kind">{holding().dragged.grouping?.kindName ?? ''}</span>

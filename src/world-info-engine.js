@@ -1478,6 +1478,79 @@ export class WorldInfoEngine {
     }
 
     /**
+     * Moves an entry in the world's order to right after `after`, or first when `after` is null, in one commit; entries
+     * that share `after`'s place and come after it move to make room.
+     * @param {bigint} book
+     * @param {bigint} entry
+     * @param {bigint | null} after
+     * @returns {Promise<'ok' | 'missing' | 'no entry' | { refused: string }>}
+     */
+    placeInWorldOrder(book, entry, after) {
+        return this.inWorld(book, async (form, commit) => {
+            if (form !== 'world') return { refused: 'A character\'s own lorebook keeps the order its card gives it.' };
+            const e = await this.entryIn(book, entry);
+            if (!e) return 'no entry';
+            if (after === entry) return 'ok';
+            /** @type {{ refused: string } | { displayIndex: number, moved: { entry: bigint, displayIndex: number }[] }} */
+            const placed = await this.store.worldRead('worldbuildingPlaceAfter', { book, after, first: after === null });
+            if ('refused' in placed) return { refused: placed.refused };
+            const records = [
+                { kind: 'entryIndex', entry: e.id, book, index: placed.displayIndex },
+                ...placed.moved.filter(m => m.entry !== e.id).map(m => ({ kind: 'entryIndex', entry: m.entry, book, index: m.displayIndex })),
+            ];
+            await commit(records);
+            return 'ok';
+        });
+    }
+
+    /**
+     * Renumbers every entry's order by its place in `sort`: the first gets `start`, each next one `step` less (to no
+     * less than 0), or more when `ascending`. The order is read whole first, then written a chunk a commit, all in the
+     * world's lane, so nothing else writes the world between the read and the last chunk.
+     * @param {bigint} book
+     * @param {{ by: string, descending: boolean }} sort
+     * @param {{ start: number, step: number, ascending: boolean }} numbering
+     * @param {Actor | null} [actor]
+     * @returns {Promise<{ changed: number } | 'missing' | { refused: string }>}
+     */
+    applySortAsOrder(book, sort, { start, step, ascending }, actor = null) {
+        return this.inWorld(book, async (form, commit) => {
+            if (form !== 'world') return { refused: CARD_BOOK_BULK_REFUSAL };
+            /** @type {bigint[]} */
+            const sorted = [];
+            for (;;) {
+                /** @type {bigint[]} */
+                const page = await this.store.worldRead('worldbuildingSorted', { book, sort: sort.by, descending: sort.descending, firstRank: sorted.length, limit: RELATION_CHANGES_PER_STEP });
+                sorted.push(...page);
+                if (page.length < RELATION_CHANGES_PER_STEP) break;
+            }
+            let changed = 0;
+            for (let at = 0; at < sorted.length; at += RELATION_CHANGES_PER_STEP) {
+                const chunk = sorted.slice(at, at + RELATION_CHANGES_PER_STEP);
+                const entities = (await this.lib.entities(chunk)).filter(e => e !== null && e.type === TYPE.entry && e.key.startsWith(`${book}:`));
+                const rank = new Map(chunk.map((id, i) => [String(id), at + i]));
+                /** @type {object[]} */
+                const records = [];
+                const stamp = await this.stamper(actor, records);
+                const written = entities.flatMap(e => {
+                    const index = /** @type {number} */ (rank.get(String(e.id)));
+                    const order = ascending ? start + index * step : Math.max(start - index * step, 0);
+                    const stored = /** @type {Record<string, unknown>} */ (entryObject(e, false));
+                    return stored.order === order ? [] : [{ e, next: { ...stored, order } }];
+                });
+                if (written.length === 0) continue;
+                const targets = await this.relationTargets(book, written.map(w => w.next), written.map(w => w.e), new Map(written.map(w => [w.e.key.slice(w.e.key.indexOf(':') + 1), w.e.id])), new Set());
+                for (const { e, next } of written) {
+                    pushAll(records, valueRecords(e.id, e, entryValues(next, e.key.slice(e.key.indexOf(':') + 1), false, { targets, stored: e }), historyWrites(stamp)));
+                }
+                await commit(records);
+                changed += written.length;
+            }
+            return { changed };
+        });
+    }
+
+    /**
      * Makes an entry right after `after` in the world's order (last without one), with `relation` if given, in one
      * commit. Entries that share `after`'s place in the order and come after it move to make room.
      * @param {bigint} book

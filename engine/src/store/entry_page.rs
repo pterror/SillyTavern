@@ -106,6 +106,15 @@ fn placed(display_index: f64, moved: Vec<(u64, f64)>) -> Js {
     ])
 }
 
+// Where an entry goes to be first in the world's order: below the first numbered entry's place.
+pub fn place_first(view: &View, book: u64) -> Result<Js, StoreError> {
+    let book_tree = order_tree_space(book);
+    let first = tree::top_level_from_rank(view, &book_tree, None, 0, 1)?
+        .first()
+        .and_then(number_of_order_value);
+    Ok(placed(first.map_or(0.0, |first| first.ceil() - 1.0), Vec::new()))
+}
+
 pub fn place_after(view: &View, book: u64, after: Option<u64>) -> Result<Js, StoreError> {
     let book_tree = order_tree_space(book);
     let numbered = tree::top_level_rank(view, &book_tree, &tree::order_key(u64::MAX, 0), None)?;

@@ -430,11 +430,19 @@ export type RowField = (typeof ROW_FIELDS)[number];
 // One column or row of a board or grid: the entries with a relation of `kind` to a target, with any, or with none.
 export type AxisItem = { kind: string; is: { target: string; depth: Depth } | 'any' | 'none' };
 
+// How a view lists the world's entries: in the world's own order, or by a field (each field's ties by order, highest
+// first, then uid). A field's sort reads the world ungrouped.
+export const SORTS = ['world', 'title', 'depth', 'order', 'uid', 'probability', 'priority'] as const;
+export type SortBy = (typeof SORTS)[number];
+export type ViewSort = { by: SortBy; descending: boolean };
+export const WORLD_SORT: ViewSort = { by: 'world', descending: false };
+
 // A saved view. Targets are entity ids. The world file carries the author's views with targets as entries' keys (uids).
 export type SavedView = {
     id: string;
     name: string;
     groupBy: string | null;
+    sort: ViewSort;
     drawing: 'cards' | 'rows';
     fields: RowField[];
     query: string;
@@ -615,6 +623,7 @@ const viewName = v.pipe(v.string(), v.trim(), v.minLength(1, 'A view needs a nam
 const viewChangeFields = v.partial(
     v.strictObject({
         groupBy: v.nullable(kindId),
+        sort: v.strictObject({ by: v.picklist(SORTS), descending: v.boolean() }),
         drawing: v.picklist(['cards', 'rows']),
         fields: v.pipe(v.array(rowField), v.maxLength(ROW_FIELDS.length)),
         columns: axis,
@@ -719,6 +728,15 @@ export const actions = {
     'worldbuilding.moveEntryToWorld': v.object({ ...entryNamed, toBook: entityId }),
     'worldbuilding.copyEntryToWorld': v.object({ ...entryNamed, toBook: entityId }),
     'worldbuilding.duplicateEntry': v.object({ ...entryNamed, loopCheckLimit }),
+    // Moves an entry in the world's own order: right after `after`, or first when it is null.
+    'worldbuilding.placeInWorldOrder': v.object({ ...entryNamed, after: v.nullable(entityId) }),
+    // Renumbers every entry's order by its place in the shown view's sort (see applySortAsOrder in the server).
+    'worldbuilding.applySortAsOrder': v.object({
+        book: entityId,
+        start: v.pipe(wholeNumber, v.minValue(0)),
+        step: v.pipe(wholeNumber, v.minValue(1)),
+        ascending: v.boolean(),
+    }),
     'worldbuilding.openWorlds': v.object({}),
     // A world by its name, and in it the entry with upstream's `uid` when one is named.
     'worldbuilding.openNamed': v.object({

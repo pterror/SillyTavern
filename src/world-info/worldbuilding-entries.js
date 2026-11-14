@@ -262,7 +262,7 @@ async function worldKey(lib, book) {
 /**
  * The entry actions and the entry view of the worldbuilding area, over the store.
  * @param {EntryPortsWiring} wiring
- * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'readFacts' | 'findCharacters' | 'readKeySharers' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld' | 'copyEntryToWorld' | 'duplicateEntry'>}
+ * @returns {Pick<import('@st/worldbuilding/server').Ports, 'readEntry' | 'readFacts' | 'findCharacters' | 'readKeySharers' | 'editEntry' | 'createEntry' | 'deleteEntry' | 'restoreEntry' | 'moveEntryToWorld' | 'copyEntryToWorld' | 'duplicateEntry' | 'applySortAsOrder' | 'placeInWorldOrder'>}
  */
 export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
     const actorOf = (/** @type {import('@st/worldbuilding/server').Who} */ who) => ({ user: who.user.handle, session: who.session });
@@ -437,6 +437,14 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
         },
         moveEntryToWorld: (who, book, entry, toBook) => transferEntry(who, book, entry, toBook, false),
         copyEntryToWorld: (who, book, entry, toBook) => transferEntry(who, book, entry, toBook, true),
+        async placeInWorldOrder(who, book, entry, after) {
+            const lib = await libOf(who.user);
+            return lib.books.placeInWorldOrder(BigInt(book), BigInt(entry), after === null ? null : BigInt(after));
+        },
+        async applySortAsOrder(who, book, sort, numbering) {
+            const lib = await libOf(who.user);
+            return lib.books.applySortAsOrder(BigInt(book), sort, numbering, actorOf(who));
+        },
         async duplicateEntry(who, book, entry, loopCheckLimit) {
             const lib = await libOf(who.user);
             const made = await lib.books.duplicateIn(BigInt(book), BigInt(entry), loopCheckLimit, actorOf(who));

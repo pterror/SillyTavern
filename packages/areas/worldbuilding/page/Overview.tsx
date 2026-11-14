@@ -17,6 +17,9 @@ export function drawnEntries(view: OverviewView): OverviewCell[] {
     return all;
 }
 
+const entryOf = (cell: OverviewCell) => (cell.cell === 'entry' ? cell.entry : undefined);
+const nameOf = (cell: OverviewCell) => (cell.cell === 'entry' ? cell.label.text : undefined);
+
 // Every top-level entry read is drawn and stays. While less than SCREENS_AHEAD screens of them are below what is on
 // screen, the page asks for as many more as fill that many screens, as far as it has drawn tells it; past that it waits
 // until the person scrolls on.
@@ -83,9 +86,8 @@ export function TopLevel(props: {
                                 <div
                                     class="wb-top-cell"
                                     data-rank={cell().topLevelRank}
-                                    data-entry={
-                                        cell().cell === 'entry' ? (cell() as { entry: string }).entry : undefined
-                                    }
+                                    data-entry={entryOf(cell())}
+                                    data-name={nameOf(cell())}
                                     classList={{ 'wb-wide': cell().region.length > 0 }}
                                 >
                                     <Cell cell={cell()} region={null} actions={props.actions} />
@@ -93,7 +95,12 @@ export function TopLevel(props: {
                             }
                         >
                             {(draw) => (
-                                <div class="wb-top-row" data-rank={cell().topLevelRank}>
+                                <div
+                                    class="wb-top-row"
+                                    data-rank={cell().topLevelRank}
+                                    data-entry={entryOf(cell())}
+                                    data-name={nameOf(cell())}
+                                >
                                     {draw()(cell())}
                                 </div>
                             )}

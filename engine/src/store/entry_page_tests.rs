@@ -202,6 +202,8 @@ fn a_new_entry_goes_right_after_another_in_the_worlds_order_by_the_smallest_chan
     assert_eq!(placement(&store, Some(106)), (6.0, vec![]));
     let refused = read(&store, |view| entry_page::place_after(view, 1, Some(999)));
     assert_eq!(field(&refused, "refused"), &Js::Text(b"That entry isn't in this world.".to_vec()));
+    let first = read(&store, |view| entry_page::place_first(view, 1));
+    assert_eq!(field(&first, "displayIndex"), &Js::Num(-1.0));
     store.close();
     let _ = fs::remove_dir_all(&dir);
 }

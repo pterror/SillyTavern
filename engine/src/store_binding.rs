@@ -3029,6 +3029,17 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                         text("stepLandedOn")?,
                     );
                     let characters = req_integer(a, "cardTextCharacters")? as usize;
+                    let sort = match text("sort")? {
+                        None => None,
+                        Some(name) => {
+                            let sort = crate::store::sorts::Sort::named(&name)
+                                .ok_or_else(|| invalid(format!("no sort is called {name}")))?;
+                            if !matches!(grouping, overview::Grouping::World { kind: None, .. }) {
+                                return Err(invalid("a sort reads the world ungrouped".into()));
+                            }
+                            Some((sort, a.get::<bool>("descending")?.unwrap_or(false)))
+                        }
+                    };
                     Box::new(move |store| {
                         store
                             .chat_read(|view| {
@@ -3036,6 +3047,11 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
                                     regions_by_nesting_level: &regions,
                                     card_text_characters: characters,
                                 };
+                                if let Some((sort, descending)) = sort {
+                                    return overview::read_sorted_overview(
+                                        view, book, &layout, sort, descending, first_rank, end_rank,
+                                    );
+                                }
                                 overview::read_overview(
                                     view,
                                     grouping,
@@ -3367,9 +3383,34 @@ fn world_read_job(op: String, args: &Object) -> Result<TreeRead> {
         }
         "worldbuildingPlaceAfter" => {
             let (book, after) = (req_integer(a, "book")?, opt_integer(a, "after")?);
+            let first = a.get::<bool>("first")?.unwrap_or(false);
             Box::new(move |store| {
                 store
-                    .chat_read(|view| crate::store::entry_page::place_after(view, book, after))
+                    .chat_read(|view| match (first, after) {
+                        (true, _) => crate::store::entry_page::place_first(view, book),
+                        (false, after) => crate::store::entry_page::place_after(view, book, after),
+                    })
+                    .map(JsTree)
+            })
+        }
+        "worldbuildingSorted" => {
+            let (book, first_rank, limit) = (
+                req_integer(a, "book")?,
+                req_integer(a, "firstRank")?,
+                req_integer(a, "limit")? as usize,
+            );
+            let name = a.get::<String>("sort")?.ok_or_else(|| invalid(format!("{op} needs a sort")))?;
+            let sort = crate::store::sorts::Sort::named(&name).ok_or_else(|| invalid(format!("no sort is called {name}")))?;
+            let descending = a.get::<bool>("descending")?.unwrap_or(false);
+            Box::new(move |store| {
+                store
+                    .chat_read(|view| {
+                        let found =
+                            crate::store::sorts::from_rank(view, book, sort, descending, first_rank, limit)?;
+                        Ok(crate::store::chat_read::Js::Arr(
+                            found.into_iter().map(crate::store::chat_read::Js::Big).collect(),
+                        ))
+                    })
                     .map(JsTree)
             })
         }

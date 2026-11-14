@@ -1,9 +1,10 @@
-import { For, Show, createSignal } from 'solid-js';
+import { For, Show, createSignal, onCleanup } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { CARD_VIEW } from '../protocol.ts';
 import type { CardAsked, CardView, EntryAt, HoverCard } from '../protocol.ts';
 import { Label, Picture } from './Cards.tsx';
 import { useWb } from './context.ts';
+import { PHONE } from './layout.ts';
 import { shownView } from './views.ts';
 import { fill } from './words.ts';
 
@@ -86,14 +87,24 @@ type Pointed = { asked: CardAsked; word: HTMLElement; left: number; top: number;
 
 // The card of a linked name, shown while the name or the card is pointed at; each name pointed at asks for its card.
 // The card's box reaches the name, so moving the pointer from one to the other never leaves both.
+// Pointing shows no card on a phone, where a tap opens instead, nor while a card is dragged, where it would cover what
+// the drag points at; a card pointed at before either goes with the change.
 export function hoverCards() {
     const { client } = useUi();
     const wb = useWb();
     const view = shownView<CardView>(client, CARD_VIEW);
     const [pointed, setPointed] = createSignal<Pointed | null>(null);
+    const phone = window.matchMedia(PHONE);
+    const [onPhone, setOnPhone] = createSignal(phone.matches);
+    const layoutChanged = () => {
+        setOnPhone(phone.matches);
+        if (phone.matches) setPointed(null);
+    };
+    phone.addEventListener('change', layoutChanged);
+    onCleanup(() => phone.removeEventListener('change', layoutChanged));
     let box: HTMLElement | undefined;
     const enter = (book: string, entry: string, word: HTMLElement) => {
-        if (pointed()?.word === word) return;
+        if (onPhone() || wb.drag.held() !== null || pointed()?.word === word) return;
         const host = word.closest('.wb-hover-host');
         const pane = word.closest('.wb-pane');
         if (!(host instanceof HTMLElement) || !(pane instanceof HTMLElement)) return;
@@ -113,7 +124,7 @@ export function hoverCards() {
         setPointed(null);
     };
     const shown = () => {
-        const at = pointed();
+        const at = onPhone() || wb.drag.held() !== null ? null : pointed();
         const card = at ? cardsFor(view(), at.asked)?.[0] : undefined;
         return at && card ? { at, card } : null;
     };

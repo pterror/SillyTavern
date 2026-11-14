@@ -2,8 +2,17 @@ import { For, Show, createSignal } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
-import { ROW_FIELDS } from '../protocol.ts';
-import type { AxesView, RelationKind, RowField, SavedView, ViewShape, ViewsView } from '../protocol.ts';
+import { ROW_FIELDS, WORLD_SORT } from '../protocol.ts';
+import type {
+    AxesView,
+    RelationKind,
+    RowField,
+    SavedView,
+    SortBy,
+    ViewShape,
+    ViewSort,
+    ViewsView,
+} from '../protocol.ts';
 import { AxisControl } from './Axes.tsx';
 import type { Wb } from './context.ts';
 import { dismissOn } from './dismiss.ts';
@@ -18,6 +27,29 @@ const SHAPES: Record<ViewShape, string> = {
     board: 'M4 4h4v16H4zM10 4h4v10h-4zM16 4h4v13h-4z',
     grid: 'M4 4h16v16H4zM4 12h16M12 4v16',
 };
+
+// The sorts the Order control offers, upstream's names; a field's sort reads the world ungrouped.
+const SORT_CHOICES: { sort: ViewSort; label: string }[] = [
+    { sort: WORLD_SORT, label: 'World order' },
+    { sort: { by: 'title', descending: false }, label: 'Title A-Z' },
+    { sort: { by: 'title', descending: true }, label: 'Title Z-A' },
+    { sort: { by: 'depth', descending: false }, label: 'Depth ↗' },
+    { sort: { by: 'depth', descending: true }, label: 'Depth ↘' },
+    { sort: { by: 'order', descending: false }, label: 'Order ↗' },
+    { sort: { by: 'order', descending: true }, label: 'Order ↘' },
+    { sort: { by: 'uid', descending: false }, label: 'UID ↗' },
+    { sort: { by: 'uid', descending: true }, label: 'UID ↘' },
+    { sort: { by: 'probability', descending: false }, label: 'Trigger% ↗' },
+    { sort: { by: 'probability', descending: true }, label: 'Trigger% ↘' },
+    { sort: { by: 'priority', descending: false }, label: 'Priority' },
+];
+
+const sortValue = (sort: ViewSort) => `${sort.by}:${sort.descending ? 'desc' : 'asc'}`;
+
+function sortOf(value: string): ViewSort {
+    const [by, direction] = value.split(':') as [SortBy, string];
+    return { by, descending: direction === 'desc' };
+}
 
 export const FIELD_WORDS: Record<RowField, string> = {
     relations: 'Relations',
@@ -169,7 +201,10 @@ export function ViewBar(props: {
     views: Shown;
     kinds: RelationKind[];
     axes: Extract<AxesView, { book: string }> | null;
-    onChange: (change: Partial<Pick<SavedView, 'groupBy' | 'drawing' | 'fields' | 'columns' | 'rows'>>) => void;
+    onChange: (
+        change: Partial<Pick<SavedView, 'groupBy' | 'sort' | 'drawing' | 'fields' | 'columns' | 'rows'>>,
+    ) => void;
+    onApplySort: (numbering: { start: number; step: number; ascending: boolean }) => void;
     onSave: () => void;
     onDiscard: () => void;
     onReset: () => void;
@@ -217,10 +252,63 @@ export function ViewBar(props: {
                         </select>
                     </Control>
                     <Control label={t('Order')}>
-                        <select class="text_pole margin0" aria-label={t('Order')} value="world">
-                            <option value="world">{t('World order')}</option>
+                        <select
+                            class="text_pole margin0"
+                            aria-label={t('Order')}
+                            value={sortValue(view().groupBy === null ? view().sort : WORLD_SORT)}
+                            onChange={(event) => props.onChange({ sort: sortOf(event.currentTarget.value) })}
+                        >
+                            <For each={SORT_CHOICES}>
+                                {(choice) => (
+                                    <option
+                                        value={sortValue(choice.sort)}
+                                        disabled={view().groupBy !== null && choice.sort.by !== 'world'}
+                                        title={
+                                            view().groupBy !== null && choice.sort.by !== 'world'
+                                                ? t('Group by nothing to sort by a field.')
+                                                : undefined
+                                        }
+                                    >
+                                        {t(choice.label)}
+                                    </option>
+                                )}
+                            </For>
                         </select>
                     </Control>
+                    <Show when={view().groupBy === null && view().sort.by !== 'world'}>
+                        <button
+                            type="button"
+                            class="menu_button margin0 whitespacenowrap"
+                            title={t("Sets each entry's Order by its place in this sort.")}
+                            onClick={() =>
+                                void (async () => {
+                                    const answer = await ask(
+                                        {
+                                            kind: 'confirm',
+                                            message: t('Apply current sorting as Order'),
+                                            detail: t(
+                                                'The first entry gets the starting value and each next one the step less, down to 0; with ascending, the step more.',
+                                            ),
+                                            numbers: [
+                                                { id: 'start', label: t('Starting value'), value: 100, min: 0 },
+                                                { id: 'step', label: t('Step'), value: 1, min: 1 },
+                                            ],
+                                            checkbox: { label: t('Ascending order'), checked: false },
+                                        },
+                                        t,
+                                    );
+                                    if (answer)
+                                        props.onApplySort({
+                                            start: answer.numbers['start'] ?? 100,
+                                            step: answer.numbers['step'] ?? 1,
+                                            ascending: answer.checked,
+                                        });
+                                })()
+                            }
+                        >
+                            {t('Apply as Order')}
+                        </button>
+                    </Show>
                     <span class="wb-vseg tab-container" aria-label={t('Drawn as')}>
                         <label class="tab-title">
                             <input
@@ -381,6 +469,9 @@ export function viewActions(wb: Wb, book: () => string | null) {
         },
         delete: (view: string) => {
             send('worldbuilding.deleteView', { view, overview: overview() });
+        },
+        applySort: (numbering: { start: number; step: number; ascending: boolean }) => {
+            send('worldbuilding.applySortAsOrder', numbering);
         },
     };
 }

@@ -182,6 +182,7 @@ function Page(props: Props) {
             press: picking.press,
             enter: picking.enter,
             open,
+            reorders: actions.worldOrder?.() === true ? book : null,
         };
     };
 
@@ -212,6 +213,10 @@ function Page(props: Props) {
             const shown = shownOverview();
             const kind = shownKinds().find((one) => one.id === shown?.groupBy);
             return shown && kind ? { book: shown.book ?? '', kind: kind.id, kindName: kind.name } : null;
+        },
+        worldOrder() {
+            const sort = shownViews()?.shown?.sort;
+            return shownOverview()?.groupBy !== null || sort === undefined || sort.by === 'world';
         },
     };
 
@@ -331,6 +336,7 @@ function Page(props: Props) {
                                 kinds={shownKinds()}
                                 axes={shownAxes()}
                                 onChange={viewActions.change}
+                                onApplySort={viewActions.applySort}
                                 onSave={viewActions.save}
                                 onDiscard={viewActions.discard}
                                 onReset={viewActions.reset}

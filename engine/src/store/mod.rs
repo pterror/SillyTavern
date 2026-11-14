@@ -25,6 +25,7 @@ pub mod prune;
 pub mod references;
 pub mod relations;
 pub mod searched;
+pub mod sorts;
 pub mod sessions;
 pub mod state;
 pub mod stats;
@@ -2183,6 +2184,8 @@ mod references_tests;
 mod relations_tests;
 #[cfg(test)]
 mod searched_tests;
+#[cfg(test)]
+mod sorts_tests;
 #[cfg(test)]
 mod drafts_tests;
 #[cfg(test)]

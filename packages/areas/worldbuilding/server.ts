@@ -38,6 +38,7 @@ import {
     shapeOf,
     ENTRIES_NAMED_PER_LOOP,
     LOOPS_SHOWN,
+    WORLD_SORT,
 } from './protocol.ts';
 import type {
     AxesView,
@@ -89,6 +90,7 @@ import type {
     RegionCell,
     EntryFacts,
     SavedView,
+    ViewSort,
     ViewsView,
 } from './protocol.ts';
 import { defineArea, patch, patchOf } from '@st/server-ui';
@@ -107,9 +109,10 @@ export type PagesRun = { from: string | null; pages: number };
 export type EntryReadAsked = { mentions: PagesRun; mentionChecks: number; textLinkReads: number };
 
 // The top-level entries the tab has read, from the first to `endRank`, streamed a read's worth (topLevelPerRead) a part.
-export type ShownOverview = Grouping & { endRank: number; layout: OverviewLayout };
+export type ShownOverview = Grouping & { sort: ViewSort; endRank: number; layout: OverviewLayout };
 
-export type OverviewRead = Grouping & { firstRank: number; endRank: number; layout: OverviewLayout };
+// `sort`: a field's sort reads the world ungrouped (`groupBy` null); grouped, the world's order.
+export type OverviewRead = Grouping & { sort: ViewSort; firstRank: number; endRank: number; layout: OverviewLayout };
 
 export type OverviewRangeRead = { topLevelCount: number; firstRank: number; entries: OverviewCell[] };
 
@@ -367,6 +370,14 @@ export type Ports = {
         entry: string,
         loopCheckLimit: number,
     ): Promise<{ entry: string; unreachedLoops: UnreachedLoop[] } | EntryWriteRefusal>;
+    placeInWorldOrder(who: Who, book: string, entry: string, after: string | null): Promise<'ok' | EntryWriteRefusal>;
+    // The first entry of `sort` gets `start`, each next one `step` less (to no less than 0), or more when `ascending`.
+    applySortAsOrder(
+        who: Who,
+        book: string,
+        sort: ViewSort,
+        numbering: { start: number; step: number; ascending: boolean },
+    ): Promise<{ changed: number } | 'missing' | { refused: string }>;
 };
 
 const SESSIONS_REMEMBERED = 32;
@@ -1032,11 +1043,13 @@ export function worldbuildingArea(ports: Ports) {
             return;
         }
         const { book, groupBy, endRank } = overview;
+        const sort = groupBy === null ? overview.sort : WORLD_SORT;
         const pageSize = pageSizeOf(overview);
         const page = async (at: number): Promise<OverviewRangeRead | null> => {
             const read = await ports.readOverview(context.user, {
                 book,
                 groupBy,
+                sort,
                 firstRank: at * pageSize,
                 endRank: Math.min(endRank, (at + 1) * pageSize),
                 layout: drawnLayout(overview),
@@ -1051,7 +1064,7 @@ export function worldbuildingArea(ports: Ports) {
             return;
         }
         const pageCount = Math.max(1, Math.ceil(Math.min(endRank, first.topLevelCount) / pageSize));
-        const key = `${book}/${groupBy}/${pageSize}`;
+        const key = `${book}/${groupBy}/${sort.by}/${sort.descending}/${pageSize}`;
         const sent = stateOf(context.session).overviewSent;
         const held = sent?.key === key ? sent.count : null;
         remember(context.session, { overviewSent: { key, count: pageCount } });
@@ -1171,7 +1184,13 @@ export function worldbuildingArea(ports: Ports) {
             id: viewId,
             draft: view && groupBy !== undefined && groupBy !== view.groupBy ? { ...view, groupBy } : draft,
         };
-        const overview: ShownOverview = { book: opened, groupBy: grouping, endRank: ahead, layout };
+        const overview: ShownOverview = {
+            book: opened,
+            groupBy: grouping,
+            sort: viewState.draft?.sort ?? view?.sort ?? WORLD_SORT,
+            endRank: ahead,
+            layout,
+        };
         if (around !== null && stepFitsTheBudget(1, layout)) {
             const landed = await ports.stepOverview(context.user, {
                 book: opened,
@@ -1600,6 +1619,25 @@ export function worldbuildingArea(ports: Ports) {
                     own: [OVERVIEW_VIEW, LAST_CHANGE_VIEW],
                 };
             },
+            'worldbuilding.placeInWorldOrder': async (context, { book, entry, after }) => {
+                const done = await ports.placeInWorldOrder(who(context), book, entry, after);
+                if (done !== 'ok') return refusedWrite(done);
+                return { changed: VIEWS_OF_CARDS, own: [OVERVIEW_VIEW] };
+            },
+            'worldbuilding.applySortAsOrder': async (context, { book, start, step, ascending }) => {
+                const overview = overviewOf(context.session);
+                if (overview?.book !== book) return { refused: NOT_SHOWN };
+                if (overview.groupBy !== null || overview.sort.by === 'world')
+                    return { refused: 'Sort the view by a field, grouped by nothing, first.' };
+                const done = await ports.applySortAsOrder(who(context), book, overview.sort, {
+                    start,
+                    step,
+                    ascending,
+                });
+                if (done === 'missing') return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                if ('refused' in done) return done;
+                return { changed: VIEWS_OF_CARDS, own: [OVERVIEW_VIEW], answer: done };
+            },
             'worldbuilding.openWorlds': async () => ({ changed: [], opensViews: [WORLDS_VIEW] }),
             'worldbuilding.openNamed': async (context, { world, uid, overview, pointingAt }) => {
                 const book = await ports.worldNamed(context.user, world);
@@ -1773,12 +1811,13 @@ export function worldbuildingArea(ports: Ports) {
                 const draft: SavedView = {
                     ...shown.shown,
                     ...(change.groupBy === undefined ? {} : { groupBy: change.groupBy }),
+                    ...(change.sort === undefined ? {} : { sort: change.sort }),
                     ...(change.drawing === undefined ? {} : { drawing: change.drawing }),
                     ...(change.fields === undefined ? {} : { fields: change.fields }),
                     ...(change.columns === undefined ? {} : { columns: change.columns }),
                     ...(change.rows === undefined ? {} : { rows: change.rows }),
                 };
-                if (change.groupBy === undefined) {
+                if (change.groupBy === undefined && change.sort === undefined) {
                     const axesChanged = change.columns !== undefined || change.rows !== undefined;
                     remember(context.session, {
                         view: { ...shown.state, draft },
@@ -1829,7 +1868,16 @@ export function worldbuildingArea(ports: Ports) {
                 const made: SavedView = {
                     ...(shown?.state.book === book
                         ? shown.shown
-                        : { groupBy, drawing: 'cards', fields: [], query: '', chips: [], columns: [], rows: [] }),
+                        : {
+                              groupBy,
+                              sort: WORLD_SORT,
+                              drawing: 'cards',
+                              fields: [],
+                              query: '',
+                              chips: [],
+                              columns: [],
+                              rows: [],
+                          }),
                     id: `own-${n}`,
                     name: NEW_VIEW_NAME,
                 };

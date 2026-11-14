@@ -163,6 +163,9 @@ fn owned_value_changed(
             super::relations::relations_field_written(view, out, *book, e, own_key, new)?;
         }
         super::names_offer::entry_value_written(view, out, *book, e, f, json, new, entry_is_new)?;
+        if !entry_is_new {
+            super::sorts::entry_value_written(view, out, *book, e, own_key, f, json, new)?;
+        }
     } else if super::names_offer::is_offer_field(f) {
         super::names_offer::offer_field_written(out, e, json, new);
     } else if let Some(job) = super::world_bulk::job_of_field(f) {
@@ -261,15 +264,16 @@ pub fn created(view: &View, out: &mut Out, e: u64, kind: u64, k: &[u8]) -> Resul
             owned_value_changed(view, out, &o, e, &f, true, Some(&j), true)?;
         }
     }
-    if let Owner::Entry { book, .. } = &o {
+    if let Owner::Entry { book, own_key } = &o {
         super::references::entry_keys_came(view, out, *book, e)?;
         super::names_offer::entry_came(view, out, *book, e)?;
+        super::sorts::entry_came(view, out, *book, e, own_key)?;
     }
     Ok(())
 }
 
 /// One step of counting every live entry and book again from its stored fields, for a store whose counts predate the
-/// derivers that keep them. The first step (`after` none) drops every count; each step then counts `batch` entities of
+/// derivers that keep them. The first step (`after` none) drops every count and sorted tree; each step then counts `batch` entities of
 /// the entity index (books, owned books, entries) in key order and returns the last key read, or none at the end.
 pub fn recount_step(
     view: &View,
@@ -296,6 +300,7 @@ pub fn recount_step(
                 cleared.del(k);
             }
         }
+        super::sorts::cleared(view, &mut cleared)?;
         out.entries.extend(cleared.entries.iter().cloned());
         cleared.apply(&mut local);
     }
@@ -307,8 +312,9 @@ pub fn recount_step(
             continue;
         };
         let mut counted = Out::default();
-        if let Owner::Entry { book, .. } = &o {
+        if let Owner::Entry { book, own_key } = &o {
             counted.add(key::ids(STAT_BOOK, *book, ENTRIES), 1);
+            super::sorts::entry_came(&layered, &mut counted, *book, e, own_key)?;
         }
         let p = key::id(key::HEAD, e);
         for (hk, _) in layered.scan(&p, &key::prefix_end(&p), usize::MAX)? {
@@ -346,6 +352,7 @@ pub fn gone(
         if let Some(Owner::Entry { book, own_key }) = owner_of(view, kind, k)? {
             super::relations::entry_deleted(view, out, book, e, &own_key, erased)?;
             super::names_offer::entry_gone(view, out, book, e)?;
+            super::sorts::entry_gone(view, out, book, e, &own_key)?;
             let s = entry_stat(view, e)?;
             add(
                 out,

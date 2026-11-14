@@ -9,7 +9,6 @@ import type { CardActions } from './Cards.tsx';
 import { Label, Picture } from './Label.tsx';
 import { OnOff } from './OnOff.tsx';
 import { goesWords, triggerWords } from './facts.ts';
-import { PHONE } from './layout.ts';
 import { TargetPicker } from './Picker.tsx';
 import { count, fill } from './words.ts';
 
@@ -62,9 +61,7 @@ function SmallCard(props: { card: CellCard; cell: AxisCell; at: CardsAt }) {
             classList={{ 'wb-card-off': props.card.facts?.comesIn === 'never' }}
             data-entry={props.card.entry}
             ref={(element) => (root = element)}
-            onMouseEnter={(event) => {
-                if (!window.matchMedia(PHONE).matches) props.at.hover?.enter(props.card.entry, event.currentTarget);
-            }}
+            onMouseEnter={(event) => props.at.hover?.enter(props.card.entry, event.currentTarget)}
             onMouseLeave={(event) => props.at.hover?.leave(event)}
         >
             <button

@@ -2419,3 +2419,26 @@
 .wb-bulk > b {
     white-space: nowrap;
 }
+
+.wb-tr > .wb-tr-pick {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.wb-tr-pick > .wb-grip {
+    width: 16px;
+    padding: 4px 0;
+    border: 0;
+    background: none;
+    color: var(--wb-ink-dim);
+    cursor: grab;
+}
+
+.wb-tr-pick > .wb-grip:hover {
+    color: var(--SmartThemeBodyColor);
+}
+
+.wb-tr-pick > .wb-cb:first-child {
+    margin-left: 18px;
+}

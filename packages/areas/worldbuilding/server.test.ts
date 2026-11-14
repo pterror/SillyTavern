@@ -56,6 +56,7 @@ import {
 } from './protocol.ts';
 import type {
     KeySharersView,
+    ViewSort,
     BulkAction,
     BulkJob,
     BulkJobsView,
@@ -321,6 +322,8 @@ function world(
         moved: { entry: string; toBook: string }[];
         copied: { entry: string; toBook: string }[];
         duplicated: { entry: string; loopCheckLimit: number }[];
+        renumbered: { book: string; sort: ViewSort; start: number; step: number; ascending: boolean }[];
+        placed: { entry: string; after: string | null }[];
         opened: (string | null)[];
         imported: Upload[];
         pointingAt: PointingAtQuery[];
@@ -349,6 +352,8 @@ function world(
         moved: [],
         copied: [],
         duplicated: [],
+        renumbered: [],
+        placed: [],
         opened: [],
         imported: [],
         pointingAt: [],
@@ -811,6 +816,14 @@ function world(
             asked.copied.push({ entry, toBook });
             if (book !== '1' || !entries.has(entry)) return 'no entry';
             return { entry: '91', unreachedLoops: [] };
+        },
+        placeInWorldOrder: async (_w, book, entry, after) => {
+            asked.placed.push({ entry, after });
+            return book === '1' && entries.has(entry) ? 'ok' : 'no entry';
+        },
+        applySortAsOrder: async (_w, book, sort, numbering) => {
+            asked.renumbered.push({ book, sort, ...numbering });
+            return book === '1' ? { changed: 3 } : 'missing';
         },
         duplicateEntry: async (_w, book, entry, loopCheckLimit) => {
             asked.duplicated.push({ entry, loopCheckLimit });
@@ -2834,6 +2847,7 @@ const savedView = (id: string, name: string, change: Partial<SavedView> = {}): S
     id,
     name,
     groupBy: '1',
+    sort: { by: 'world', descending: false },
     drawing: 'cards',
     fields: [],
     query: '',
@@ -2877,6 +2891,57 @@ test("a world's views are its tabs, the world's first, the reader's changed copi
     expect(await w.act('worldbuilding.showView', { book: '1', view: 'gone', overview: shownRange })).toMatchObject({
         refused: 'This world has no such view.',
     });
+});
+
+test("a view's sort reads the world ungrouped by that field; grouped, the world's order", async () => {
+    const w = world(1000);
+    w.storedViews.set('1', { world: [savedView('places', 'Places')], reader: { changed: {}, own: [] } });
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: undefined });
+    const titleDown = { by: 'title', descending: true } as const;
+    await w.act('worldbuilding.changeView', { book: '1', change: { sort: titleDown }, overview: shownRange });
+    expect(await w.view<ViewsView>(VIEWS_VIEW)).toMatchObject({ unsaved: true, shown: { sort: titleDown } });
+    await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect(w.asked.overview.at(-1)).toMatchObject({ groupBy: '1', sort: { by: 'world' } });
+    await w.act('worldbuilding.changeView', { book: '1', change: { groupBy: null }, overview: shownRange });
+    await w.view<OverviewView>(OVERVIEW_VIEW);
+    expect(w.asked.overview.at(-1)).toMatchObject({ groupBy: null, sort: titleDown });
+    await w.act('worldbuilding.saveView', { book: '1' });
+    expect(w.readerWrites.at(-1)).toMatchObject({
+        reader: { changed: { places: { sort: titleDown, groupBy: null } } },
+    });
+});
+
+test("an entry moves in the world's own order after another, or first, in one action", async () => {
+    const w = world(1000);
+    await w.act('worldbuilding.openOverview', open);
+    expect(await w.act('worldbuilding.placeInWorldOrder', { book: '1', entry: '7', after: null })).toMatchObject({
+        own: [OVERVIEW_VIEW],
+    });
+    await w.act('worldbuilding.placeInWorldOrder', { book: '1', entry: '7', after: '8' });
+    expect(w.asked.placed).toEqual([
+        { entry: '7', after: null },
+        { entry: '7', after: '8' },
+    ]);
+    expect(await w.act('worldbuilding.placeInWorldOrder', { book: '1', entry: '404', after: null })).toMatchObject({
+        refused: "That entry isn't in this world.",
+    });
+});
+
+test("applying a sort as order renumbers by the shown view's sort, and only a field's sort", async () => {
+    const w = world(1000);
+    w.storedViews.set('1', { world: [savedView('places', 'Places')], reader: { changed: {}, own: [] } });
+    await w.act('worldbuilding.openOverview', { ...open, groupBy: undefined });
+    const numbering = { book: '1', start: 100, step: 1, ascending: false };
+    expect(await w.act('worldbuilding.applySortAsOrder', numbering)).toMatchObject({
+        refused: 'Sort the view by a field, grouped by nothing, first.',
+    });
+    const sort = { by: 'depth', descending: false } as const;
+    await w.act('worldbuilding.changeView', { book: '1', change: { groupBy: null, sort }, overview: shownRange });
+    expect(await w.act('worldbuilding.applySortAsOrder', numbering)).toMatchObject({
+        own: [OVERVIEW_VIEW],
+        answer: { changed: 3 },
+    });
+    expect(w.asked.renumbered).toEqual([{ book: '1', sort, start: 100, step: 1, ascending: false }]);
 });
 
 test("a changed view is the tab's until saved for the reader, discarded, or reset to the world's", async () => {
