@@ -171,6 +171,16 @@ export function greetingRecords(entity, stored, model) {
 }
 
 /**
+ * @param {import('./entity-values.js').StoredEntity | null} stored
+ * @param {GreetingModel} model
+ * @returns {number[]} the ids of the stored greetings the model no longer has
+ */
+export function goneGreetings(stored, model) {
+    const kept = new Set(model.greetings.map(g => g.id));
+    return greetingModelOf(stored).greetings.map(g => g.id).filter(id => !kept.has(id));
+}
+
+/**
  * @param {any} card a card as written, upstream's format
  * @returns {any} the card with each greeting's text once: the first copy kept, the default on it
  */

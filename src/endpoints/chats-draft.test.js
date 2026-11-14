@@ -117,6 +117,30 @@ test('a draft follows the shown greeting, is kept when the person leaves it, and
     assert.equal(await user.store.chats.draftOf({ tree, greeting }), '');
 });
 
+test('a greeting taken out of its card takes its draft with it, in the same write; the greetings kept keep theirs', async () => {
+    await writeCharacter('Gia.png', 'Gia', 'One.', ['Two.', 'Three.']);
+    const tab = newSessionKey();
+    const opened = await post('open', { avatar_url: 'Gia.png' }, tab);
+    const idOf = (/** @type {string} */ text) => opened.body.openings.alternatives.find((/** @type {any} */ a) => a.mes === text).extra.greeting_id;
+    for (const text of ['One.', 'Two.', 'Three.']) {
+        const kept = await post('draft', { avatar_url: 'Gia.png', owner: { greeting: idOf(text), avatar: 'Gia.png' }, ...over('', `after ${text}`) }, tab);
+        assert.equal(kept.body.left, 'kept');
+    }
+    const tree = await treeOf(user.store, { avatar: 'Gia.png' });
+    const before = user.store.lib.store.commit;
+    /** @type {any[][]} */
+    const commits = [];
+    user.store.lib.store.commit = (/** @type {any[]} */ records) => (commits.push(records), before.call(user.store.lib.store, records));
+    await writeCharacter('Gia.png', 'Gia', 'Three.', ['One.']);
+    user.store.lib.store.commit = before;
+    assert.equal(await user.store.chats.draftOf({ tree, greeting: idOf('Two.') }), '');
+    assert.equal(await user.store.chats.draftOf({ tree, greeting: idOf('One.') }), 'after One.', 'a greeting no longer the default keeps its draft');
+    assert.equal(await user.store.chats.draftOf({ tree, greeting: idOf('Three.') }), 'after Three.', 'a greeting made the default keeps its draft');
+    const write = commits.find(records => records.some(r => r.kind === 'itemDelete'));
+    assert.ok(write?.some(r => r.kind === 'draftValue' && r.text === '' && r.greeting === idOf('Two.')), 'dropped in the write that takes the greeting out');
+    assert.deepEqual((await post('draft', { avatar_url: 'Gia.png', owner: { greeting: idOf('Two.'), avatar: 'Gia.png' }, ...over('', 'late') }, tab)).body, { ok: true, left: 'gone' });
+});
+
 test('a draft stays with the message it responds to: each alternative shows its own', async () => {
     await writeCharacter('Bo.png', 'Bo', 'Yo.');
     const tab = newSessionKey();

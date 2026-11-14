@@ -7,7 +7,7 @@ import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords, withoutLook, withoutStatements } from './entity-values.js';
-import { GREETING_LIST, greetingModelOf, greetingRecords, greetingTextsOf, hasSameGreetings, matchedGreetings, withUniqueGreetings } from './greeting-items.js';
+import { GREETING_LIST, goneGreetings, greetingModelOf, greetingRecords, greetingTextsOf, hasSameGreetings, matchedGreetings, withUniqueGreetings } from './greeting-items.js';
 import { SPACE, actorIds } from './actor-ids.js';
 import { LINKS, characterLinks, linkList, linkListRecords } from './character-links.js';
 import { FIELD, HASH, LOOK_FIELD, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
@@ -541,6 +541,9 @@ export class LibraryEngine {
             for (const [field, value] of byId.values) next.values.set(field, value);
             records.push(...valueRecords(id, withoutGreetingItems(withoutLook(withoutStatements(stored))), next));
             records.push(...byId.records);
+            for (const greeting of goneGreetings(stored, model)) {
+                if (await this.store.chatRead('draft', { tree: id, greeting }) !== null) records.push({ kind: 'draftValue', tree: id, greeting, text: '' });
+            }
             const { getCharaCardV2 } = await import('./character-card-normalize.js');
             const normalized = getCharaCardV2(structuredClone(card), false);
             const size = calculateDataSize(normalized.data ?? {});

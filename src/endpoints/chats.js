@@ -473,15 +473,23 @@ async function keepDraft(request, given) {
         const from = named ? draft : request.body;
         if (typeof from.avatar_url === 'string' && forbiddenRegExp.test(from.avatar_url)) return { left: 'gone' };
         const chat = await chatOf(request, from);
-        const owner = chat ? await draftOwnerOf(chat, draft.owner) : null;
-        if (!chat || !owner) return { left: 'gone' };
-        const save = { text: draft.text, changes: draft.changes, ...(typeof draft.tab === 'string' ? { tab: draft.tab } : {}), ...(typeof draft.change === 'string' ? { change: draft.change } : {}) };
-        const saved = await chat.store.chats.saveDraft({ tree: chat.tree, owner, save, actor: chat.session.actor() });
-        if (saved === null) {
-            console.warn('A draft was not kept: its changes do not fit its text');
-            return { left: null };
-        }
-        return { left: 'kept', text: saved };
+        if (!chat) return { left: 'gone' };
+        const card = draft.owner && typeof draft.owner === 'object' && typeof draft.owner.avatar === 'string' ? draft.owner.avatar : null;
+        /** @returns {Promise<{ left: DraftLeft, text?: string }>} */
+        const keep = async () => {
+            const owner = await draftOwnerOf(chat, draft.owner);
+            if (!owner) return { left: 'gone' };
+            const save = { text: draft.text, changes: draft.changes, ...(typeof draft.tab === 'string' ? { tab: draft.tab } : {}), ...(typeof draft.change === 'string' ? { change: draft.change } : {}) };
+            const saved = await chat.store.chats.saveDraft({ tree: chat.tree, owner, save, actor: chat.session.actor() });
+            if (saved === null) {
+                console.warn('A draft was not kept: its changes do not fit its text');
+                return { left: null };
+            }
+            return { left: 'kept', text: saved };
+        };
+        // A greeting's draft is written in its card's lane, as the card's writes are, so it is never kept after a
+        // write that takes the greeting away (`writeCard`)
+        return card === null ? await keep() : await chat.store.lib.serialized(TYPE.character, card, keep);
     } catch (error) {
         console.error('A draft was not kept:', error);
         return { left: null };
