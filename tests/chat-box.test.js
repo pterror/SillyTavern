@@ -327,7 +327,7 @@ describe('the chat box\'s drafts', () => {
 
     beforeAll(async () => {
         globalThis.localStorage = /** @type {any} */ (storage);
-        await box.initChatBox(/** @type {any} */ ({ chat: () => open, endOwner: () => end, setup: () => ({}) }));
+        await box.initChatBox(/** @type {any} */ ({ chat: () => open, endOwner: () => end, setup: () => ({}), macroScope: () => ({}) }));
     });
 
     test('text written before any chat is open stays when one opens, and is copied for it', async () => {

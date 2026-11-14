@@ -6,7 +6,7 @@ const stubs = {
     'scripts/chat-text/search.js': ['liveSearch', 'showPresets'],
     'scripts/chat-text/suggest.js': ['macroSuggestions', 'mentionSuggestions'],
     'scripts/chat-text/tooltips.js': ['editorTooltips'],
-    'scripts/chat-text/macros.js': ['macroPills'],
+    'scripts/chat-text/macros.js': ['macroCursorTooltip', 'macroPills', 'macroValueRequests', 'openableMacros'],
 };
 for (const [module, names] of Object.entries(stubs)) {
     jest.unstable_mockModule(`../public/${module}`, () => Object.fromEntries(names.map(name => [name, {}])));
