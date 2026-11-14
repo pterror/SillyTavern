@@ -71,6 +71,18 @@ test.describe('the chat box', () => {
         await emptyBox(page);
     });
 
+    test('its toolbar holds every formatting command, which run on its text', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        const buttons = page.locator('#chat_box .chat-editor-toolbar button');
+        await expect(buttons).toHaveCount(11);
+        await chatBox(page).click();
+        await page.locator('#chat_box .chat-editor-toolbar button[data-tool="bold"]').click();
+        await page.keyboard.type('loud');
+        expect(await boxText(page)).toBe('**loud**');
+        await emptyBox(page);
+    });
+
     test('Enter sends the message and empties the box; Shift+Enter adds a line', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openSeraphina(page);

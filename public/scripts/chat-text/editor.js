@@ -38,7 +38,8 @@ const { openSearchPanel } = cmSearch;
  * What editors read from the page
  * @typedef {object} EditorPage
  * @property {() => boolean} hotkeys whether the formatting keys are on (`enable_md_hotkeys`)
- * @property {() => readonly string[]} toolbarChoice the commands a person put on the toolbar, in order
+ * @property {() => readonly string[]} toolbarChoice the commands a person put on the toolbar, in order; none when they
+ *   chose none, and the toolbar holds every formatting command
  * @property {(file: File) => Promise<string>} uploadImage
  * @property {(macroName: string, speaker: string) => import('../macro-pill.js').MacroPerson | null} person
  * @property {import('../macro-pill.js').Translate} t
@@ -166,6 +167,23 @@ export function commandKeys(view, byId) {
 }
 
 /**
+ * The tools an editor's toolbar shows: those the person chose, in their order, of the editor's own; every formatting
+ * command when they chose none
+ * @param {ReadonlyMap<string, Tool>} byId the editor's tools by id
+ * @returns {import('@pterror/interact-editor/toolbar').Watched<readonly Tool[]>}
+ */
+export function shownTools(byId) {
+    return {
+        get() {
+            const chosen = page.toolbarChoice();
+            const ids = chosen.length ? chosen : formatTools().map(tool => tool.id);
+            return ids.map(id => byId.get(id)).filter(tool => tool !== undefined);
+        },
+        watch: () => () => {},
+    };
+}
+
+/**
  * The toolbar of an editor, in the space it reserves, its buttons naming their keys
  * @param {View} view
  * @param {import('@pterror/interact-editor/toolbar').Watched<readonly Tool[]>} tools
@@ -255,10 +273,6 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
         { id: 'presets', label: page.t`Find and replace presets`, icon: icon('fa-wand-magic-sparkles'), run: v => (showPresets(v), true) },
     ];
     const byId = new Map(tools.map(tool => [tool.id, tool]));
-    const shownTools = {
-        get: () => page.toolbarChoice().map(id => byId.get(id)).filter(tool => tool !== undefined),
-        watch: () => () => {},
-    };
 
     const made = textEditor({
         parent: editorHolder,
@@ -287,7 +301,7 @@ export function chatEditor({ parent, setup, macroValue, speaker, initial, edited
     });
     view = made.view;
 
-    const bar = toolbarFor(view, shownTools);
+    const bar = toolbarFor(view, shownTools(byId));
     holder.prepend(bar.element);
     const stopKeys = commandKeys(view, byId);
 

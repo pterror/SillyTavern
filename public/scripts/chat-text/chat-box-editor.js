@@ -10,7 +10,7 @@ import {
     view as cmView,
 } from '../../live-editor-lib.js';
 import { boxSize } from './box-size.js';
-import { commandKeys, editorPage, formatTools, toolbarFor } from './editor.js';
+import { commandKeys, editorPage, formatTools, shownTools, toolbarFor } from './editor.js';
 import { macroPills } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
 import { drawnText, grammarOf, lookOf, TEXT_CLASS } from './surface.js';
@@ -51,8 +51,7 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
 
 /**
  * The chat box: an editor over the box's text, drawn as messages are, with suggestions for slash commands, macros and
- * mentions, formatting on keys, overtype and pasted HTML as markdown, sized to its text, with a toolbar holding no
- * tools in the space it reserves
+ * mentions, formatting on keys and its toolbar, overtype and pasted HTML as markdown, sized to its text
  * @param {ChatBoxEditorOptions} options
  * @returns {ChatBoxEditor}
  */
@@ -86,7 +85,7 @@ export function chatBoxEditor({ parent, text, setup, label, keys, slashParser, s
     const { view } = made;
     const byId = new Map(formatTools().map(tool => [tool.id, tool]));
     const stopKeys = commandKeys(view, byId);
-    const bar = toolbarFor(view, { get: () => [], watch: () => () => {} });
+    const bar = toolbarFor(view, shownTools(byId));
     parent.prepend(bar.element);
     return {
         view,
