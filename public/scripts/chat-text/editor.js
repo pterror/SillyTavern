@@ -20,7 +20,7 @@ import {
 import { DOMPurify } from '../../lib.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
-import { macroCursorTooltip, macroPills } from './macros.js';
+import { macroCursorTooltip, macroPills, macroValueRequests, openableMacros } from './macros.js';
 import { pastePicker } from './paste.js';
 import { savedText } from './saved-text.js';
 import { liveSearch, showPresets } from './search.js';
@@ -161,6 +161,21 @@ export function formatTools() {
 }
 
 /**
+ * The tool that draws macros as written instead of their values
+ * @param {import('@codemirror/view').Command} toggle
+ * @param {() => boolean} on whether they are drawn as written
+ * @returns {Tool}
+ */
+export function macroTool(toggle, on) {
+    return { id: 'macros', label: page.t`Show macros as written`, icon: icon('fa-file-code'), run: toggle, on };
+}
+
+/** @returns {Tool} the tool that opens find and replace */
+export function findTool() {
+    return { id: 'find', label: page.t`Find and replace`, icon: icon('fa-magnifying-glass'), run: openSearchPanel };
+}
+
+/**
  * Binds each command's key on an editor, running it there
  * @param {View} view
  * @param {ReadonlyMap<string, Tool>} byId the editor's tools by id
@@ -221,7 +236,7 @@ export function toolbarFor(view, tools) {
 /**
  * How an editor draws its text: its grammar, and its look with macros as the given pieces
  * @param {TextSetup} setup
- * @param {(source: string) => import('@pterror/interact-editor/look').Piece | undefined} pill
+ * @param {(source: string, from: number) => import('@pterror/interact-editor/look').Piece | undefined} pill
  * @returns {import('@codemirror/state').Extension}
  */
 export function drawnWith(setup, pill) {
@@ -249,6 +264,8 @@ export const editorPage = () => page;
  * @property {Element} parent where the editor and its toolbar go
  * @property {TextSetup} setup how the text is drawn
  * @property {(source: string) => string | null | undefined} macroValue a macro's value, as the text came with it
+ * @property {import('./macros.js').WantedValues} [macroValues] where the value of a macro the text has none for is
+ *   asked, when it is typed or pasted; none leaves those macros without one
  * @property {string} speaker whose text it is, for mentions
  * @property {(macroName: string) => import('../macro-pill.js').MacroPerson | null} [person] who a mention names; by
  *   default the page's person for the speaker
@@ -277,14 +294,15 @@ export const editorPage = () => page;
  * @param {ChatEditorOptions} options
  * @returns {ChatEditor}
  */
-export function chatEditor({ parent, setup, macroValue, speaker, person = name => page.person(name, speaker), initial, edited, save, className, label, placeholder, presetContext }) {
+export function chatEditor({ parent, setup, macroValue, macroValues, speaker, person = name => page.person(name, speaker), initial, edited, save, className, label, placeholder, presetContext }) {
     let current = initial;
     /** @type {string | undefined} */
     let latest;
     let sent = 0;
     let asWritten = false;
     const stored = savedText(initial);
-    const pill = macroPills({ get: macroValue }, person, page.t, () => asWritten);
+    const opened = openableMacros(() => view, () => redraw());
+    const pill = macroPills({ get: macroValue }, person, page.t, () => asWritten, opened.isOpen);
     const drawing = new Compartment();
     const holder = document.createElement('div');
     holder.className = className ? `chat-editor ${className}` : 'chat-editor';
@@ -303,8 +321,8 @@ export function chatEditor({ parent, setup, macroValue, speaker, person = name =
     /** @type {readonly Tool[]} */
     const tools = [
         ...formatTools(),
-        { id: 'macros', label: page.t`Show macros as written`, icon: icon('fa-file-code'), run: toggleMacros, on: () => asWritten },
-        { id: 'find', label: page.t`Find and replace`, icon: icon('fa-magnifying-glass'), run: openSearchPanel },
+        macroTool(toggleMacros, () => asWritten),
+        findTool(),
         { id: 'presets', label: page.t`Find and replace presets`, icon: icon('fa-wand-magic-sparkles'), run: v => (showPresets(v), true) },
     ];
     const byId = new Map(tools.map(tool => [tool.id, tool]));
@@ -326,6 +344,8 @@ export function chatEditor({ parent, setup, macroValue, speaker, person = name =
             boxSize('75dvh'),
             editorTooltips(),
             macroCursorTooltip({ get: macroValue }, person, page.t),
+            opened.extension,
+            ...(macroValues ? [macroValueRequests({ values: { get: macroValue }, wanted: macroValues, redraw: () => redraw() })] : []),
             escapePastPendingSuggestions(),
             drawSelection(),
             caretInTextColor(),

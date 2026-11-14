@@ -68,7 +68,7 @@ function readerOf(setup, overlays) {
 /**
  * How a kind of text is drawn, for reading and, with the pieces macros are drawn as there, for editing
  * @param {TextSetup} setup
- * @param {(source: string) => Piece | undefined} [pill] the piece a macro is drawn as in an editor
+ * @param {(source: string, from: number) => Piece | undefined} [pill] the piece the macro starting at `from` is drawn as in an editor
  * @returns {import('@pterror/interact-editor/look').Look}
  */
 export function lookOf(setup, pill) {

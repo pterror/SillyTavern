@@ -277,4 +277,16 @@ test.describe('an edit sends only what changed', () => {
         await mes.locator('.mes_edit_done').click();
         expect((await storedMessage(page, id)).mes).toBe('Before Hello bold.');
     });
+
+    test('a macro typed in an edit shows its value once it is complete', async ({ page }) => {
+        await setAutoSave(page, false);
+        const id = await chatWithUserMessage(page, 'Hi ');
+        const mes = page.locator(`#chat .mes[mesid="${id}"]`);
+        await mes.locator('.mes_edit').click();
+        await expect(mes.locator('.cm-editor')).toBeVisible();
+        await page.keyboard.press('Control+End');
+        await page.keyboard.type('{{char}}');
+        await expect(mes.locator('.macro-pill-mention')).toHaveText('Seraphina');
+        await mes.locator('.mes_edit_cancel').click();
+    });
 });

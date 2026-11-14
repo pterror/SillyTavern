@@ -1,9 +1,9 @@
-import { state as cmState, syntaxTree, view as cmView } from '../../live-editor-lib.js';
+import { lookChanged, state as cmState, syntaxTree, view as cmView } from '../../live-editor-lib.js';
 import { macroPersonCard, macroPill, macroPillContent, macroTooltipAttributes } from '../macro-pill.js';
 import { withFilledAbout } from '../safe-macros.js';
 
 const { StateEffect, StateField } = cmState;
-const { EditorView, showTooltip } = cmView;
+const { EditorView, ViewPlugin, showTooltip } = cmView;
 
 /**
  * @typedef {import('@pterror/interact-editor/look').Piece} Piece
@@ -81,12 +81,13 @@ export function macroValuePieces(values, person, t) {
  * @param {(macroName: string) => MacroPerson | null} person
  * @param {import('../macro-pill.js').Translate} t
  * @param {() => boolean} asWritten whether macros are shown as written now
- * @returns {(source: string) => Piece | undefined}
+ * @param {(from: number) => boolean} [opened] whether the macro starting at a position is open for editing as written
+ * @returns {(source: string, from: number) => Piece | undefined}
  */
-export function macroPills(values, person, t, asWritten) {
-    return (source) => {
+export function macroPills(values, person, t, asWritten, opened = () => false) {
+    return (source, from) => {
         const value = values.get(source);
-        if (asWritten()) return undefined;
+        if (asWritten() || opened(from)) return undefined;
         const name = macroNameOf(source);
         const macro = { source, name, value };
         const shownPerson = macroPillContent(macro, t).kind === 'mention' && name ? person(name) : null;
@@ -137,20 +138,12 @@ function fillMacroDetails(dom, source, values, person, t) {
 const focused = StateEffect.define();
 
 /**
- * The macro the cursor is in or beside: the range of its `Macro` node
  * @param {import('@codemirror/state').EditorState} state
- * @returns {{ from: number, to: number } | null}
+ * @returns {{ from: number, to: number } | null} the macro the cursor is in or beside
  */
 function macroAtCursor(state) {
     const { empty, head } = state.selection.main;
-    if (!empty) return null;
-    const tree = syntaxTree(state);
-    for (const side of /** @type {const} */ ([-1, 1])) {
-        for (let node = tree.resolveInner(head, side); node.parent; node = node.parent) {
-            if (node.name === 'Macro') return { from: node.from, to: node.to };
-        }
-    }
-    return null;
+    return empty ? macroAt(state, head) : null;
 }
 
 /**
@@ -193,3 +186,151 @@ export function macroCursorTooltip(values, person, t) {
         }),
     ];
 }
+
+/**
+ * @param {import('@codemirror/state').EditorState} state
+ * @param {number} pos
+ * @returns {{ from: number, to: number } | null} the macro the position is in or beside
+ */
+function macroAt(state, pos) {
+    const tree = syntaxTree(state);
+    for (const side of /** @type {const} */ ([-1, 1])) {
+        for (let node = tree.resolveInner(pos, side); node.parent; node = node.parent) {
+            if (node.name === 'Macro') return { from: node.from, to: node.to };
+        }
+    }
+    return null;
+}
+
+const openSource = StateEffect.define();
+
+/** The macro open for editing as written: until the cursor leaves it */
+const openedMacro = StateField.define({
+    /** @returns {{ from: number, to: number } | null} */
+    create: () => null,
+    update(opened, tr) {
+        for (const effect of tr.effects) {
+            if (effect.is(openSource)) return effect.value;
+        }
+        if (!opened) return null;
+        const from = tr.changes.mapPos(opened.from, -1);
+        const to = tr.changes.mapPos(opened.to, 1);
+        const head = tr.newSelection.main.head;
+        return head < from || head > to ? null : { from, to };
+    },
+});
+
+/**
+ * A double-click on a macro's pill opens it as written, to edit its source, until the cursor leaves it
+ * @param {() => import('@codemirror/view').EditorView} viewOf the editor the extension is in
+ * @param {() => void} redraw draws the text's macros again
+ * @returns {{ extension: import('@codemirror/state').Extension, isOpen: (from: number) => boolean }}
+ */
+export function openableMacros(viewOf, redraw) {
+    const redrawn = ViewPlugin.fromClass(class {
+        /** @param {import('@codemirror/view').ViewUpdate} update */
+        update(update) {
+            if (update.startState.field(openedMacro) !== update.state.field(openedMacro) && update.state.field(openedMacro) === null) {
+                queueMicrotask(redraw);
+            }
+        }
+    });
+    const open = EditorView.domEventHandlers({
+        dblclick(event, view) {
+            const pill = event.target instanceof Element ? event.target.closest('.macro-pill') : null;
+            if (!pill) return false;
+            const macro = macroAt(view.state, view.posAtDOM(pill));
+            if (!macro) return false;
+            view.dispatch({ effects: [openSource.of(macro), lookChanged.of(undefined)], selection: { anchor: macro.to - 2 } });
+            event.preventDefault();
+            return true;
+        },
+    });
+    return {
+        extension: [openedMacro, redrawn, open],
+        isOpen(from) {
+            const opened = viewOf()?.state.field(openedMacro, false);
+            return opened?.from === from;
+        },
+    };
+}
+
+/**
+ * @typedef {object} WantedValues
+ * @property {(sources: string[]) => Promise<boolean>} wantMacros asks for the values of macros, answering whether
+ *   that changed what is shown
+ * @property {() => Promise<boolean>} [refresh] asks for the values known again, answering whether any changed
+ */
+
+/**
+ * Asks for the value of each macro the text comes to have without one: those it has when the editor starts, and those
+ * typed or pasted, once the text has been still for a moment, in one request for all of them. A moment after an edit
+ * it asks for the values it has again, since they may depend on it.
+ * @param {object} options
+ * @param {MacroValueSource} options.values the values the text has
+ * @param {WantedValues} options.wanted where the others are asked
+ * @param {() => void} options.redraw draws the text's macros again
+ * @returns {import('@codemirror/state').Extension}
+ */
+export function macroValueRequests({ values, wanted, redraw }) {
+    return ViewPlugin.fromClass(class {
+        /** @param {import('@codemirror/view').EditorView} view */
+        constructor(view) {
+            this.view = view;
+            /** @type {Set<string>} */
+            this.sources = new Set();
+            /** @type {Set<string>} */
+            this.asked = new Set();
+            this.stopped = false;
+            this.asking = setTimeout(() => this.ask(), 0);
+            this.refreshing = 0;
+            this.collect(0, view.state.doc.length);
+        }
+
+        /** @param {import('@codemirror/view').ViewUpdate} update */
+        update(update) {
+            if (!update.docChanged) return;
+            update.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => this.collect(fromB, toB));
+            clearTimeout(this.asking);
+            this.asking = setTimeout(() => this.ask(), ASK_DELAY);
+            if (wanted.refresh) {
+                clearTimeout(this.refreshing);
+                this.refreshing = setTimeout(() => void wanted.refresh?.().then(changed => changed && !this.stopped && redraw()), REFRESH_DELAY);
+            }
+        }
+
+        /**
+         * @param {number} from
+         * @param {number} to
+         */
+        collect(from, to) {
+            const { state } = this.view;
+            syntaxTree(state).iterate({
+                from,
+                to,
+                enter: (node) => {
+                    if (node.name !== 'Macro') return;
+                    this.sources.add(state.sliceDoc(node.from, node.to));
+                    return false;
+                },
+            });
+        }
+
+        ask() {
+            const missing = [...this.sources].filter(source => values.get(source) === undefined && !this.asked.has(source));
+            this.sources.clear();
+            if (missing.length === 0) return;
+            for (const source of missing) this.asked.add(source);
+            void wanted.wantMacros(missing).then(learned => learned && !this.stopped && redraw());
+        }
+
+        destroy() {
+            this.stopped = true;
+            clearTimeout(this.asking);
+            clearTimeout(this.refreshing);
+        }
+    });
+}
+
+const ASK_DELAY = 300;
+const REFRESH_DELAY = 2000;

@@ -9,8 +9,9 @@ import {
 } from '../../live-editor-lib.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
-import { commandKeys, drawnWith, editorPage, formatTools, pasteFor, shownTools, toolbarFor } from './editor.js';
-import { macroCursorTooltip, macroPills } from './macros.js';
+import { commandKeys, drawnWith, editorPage, findTool, formatTools, macroTool, pasteFor, shownTools, toolbarFor } from './editor.js';
+import { liveSearch } from './search.js';
+import { macroCursorTooltip, macroPills, macroValueRequests, openableMacros } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
 import { redrawEditor, TEXT_CLASS } from './surface.js';
 import { escapePastPendingSuggestions } from './escape.js';
@@ -35,6 +36,8 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
  * @property {import('./surface.js').TextSetup} setup
  * @property {(source: string) => string | null | undefined} macroValue a macro's value, as the server sent it with the
  *   box's text: null when only known when sent, undefined when it sent none
+ * @property {import('./macros.js').WantedValues} [macroValues] where the value of a macro the text has none for is
+ *   asked, when it is typed or pasted
  * @property {string} label what the field is, for assistive technology
  * @property {readonly KeyBinding[]} keys the box's own commands on keys (Enter sends), taken before the editor's
  * @property {Parameters<typeof slashSuggestions>[0]} slashParser
@@ -59,9 +62,13 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
  * @param {ChatBoxEditorOptions} options
  * @returns {ChatBoxEditor}
  */
-export function chatBoxEditor({ parent, text, setup, macroValue, label, keys, slashParser, slashWanted, maxHeight }) {
+export function chatBoxEditor({ parent, text, setup, macroValue, macroValues, label, keys, slashParser, slashWanted, maxHeight }) {
     const page = editorPage();
-    const pill = macroPills({ get: macroValue }, name => page.person(name, ''), page.t, () => false);
+    /** @type {View} */
+    let view;
+    const opened = openableMacros(() => view, () => view.dispatch({ effects: lookChanged.of(undefined) }));
+    let asWritten = false;
+    const pill = macroPills({ get: macroValue }, name => page.person(name, ''), page.t, () => asWritten, opened.isOpen);
     const placeholders = new Compartment();
     const drawing = new Compartment();
     const editorHolder = document.createElement('div');
@@ -80,18 +87,26 @@ export function chatBoxEditor({ parent, text, setup, macroValue, label, keys, sl
             drawSelection(),
             caretInTextColor(),
             overtype(),
+            liveSearch(),
             pasteFor(setup),
             suggestions([slashSuggestions(slashParser, slashWanted), macroSuggestions(macroValue, page.t), mentionSuggestions(name => page.person(name, ''))]),
             boxSize(maxHeight),
             editorTooltips(),
             macroCursorTooltip({ get: macroValue }, name => page.person(name, ''), page.t),
+            opened.extension,
+            ...(macroValues ? [macroValueRequests({ values: { get: macroValue }, wanted: macroValues, redraw: () => view.dispatch({ effects: lookChanged.of(undefined) }) })] : []),
             escapePastPendingSuggestions(),
             placeholders.of([]),
         ],
     });
-    const { view } = made;
+    view = made.view;
     redrawEditor(view.contentDOM, setup, next => view.dispatch({ effects: drawing.reconfigure(drawnWith(next, pill)) }));
-    const byId = new Map(formatTools().map(tool => [tool.id, tool]));
+    const toggleMacros = () => {
+        asWritten = !asWritten;
+        view.dispatch({ effects: lookChanged.of(undefined) });
+        return true;
+    };
+    const byId = new Map([...formatTools(), macroTool(toggleMacros, () => asWritten), findTool()].map(tool => [tool.id, tool]));
     const stopKeys = commandKeys(view, byId);
     const bar = toolbarFor(view, shownTools(byId));
     parent.prepend(bar.element);

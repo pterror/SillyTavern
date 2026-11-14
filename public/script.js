@@ -1375,6 +1375,7 @@ async function firstLoadInit() {
         },
         endOwner: () => endOwnerOf(chat, selected_group ? null : getCurrentCharacter()?.avatar ?? null),
         setup: chatBoxSetup,
+        macroScope: openChatMacroScope,
         label: t`Message`,
         keys: chatBoxKeys(),
         slashParser: chatBoxSlashParser,
@@ -6473,11 +6474,12 @@ export async function messageEdit(editMessageId, place, reasoningAt) {
 
     const text = String(editMessage.mes ?? '');
     stopMessageEditor();
-    const { setup, macroValue, speaker } = messageEditorSetup(messageText[0], editMessage, 'message');
+    const { setup, macroValue, macroValues, speaker } = messageEditorSetup(messageText[0], editMessage, 'message');
     const editor = chatEditor({
         parent: messageText[0],
         setup,
         macroValue,
+        macroValues,
         speaker,
         initial: text,
         edited: (now) => {

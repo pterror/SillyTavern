@@ -15,8 +15,8 @@ import { htmlAttributeRegex, parseImageSize } from './grammar.js';
  * @property {Html} html the HTML policy
  * @property {Readonly<Record<string, string>>} emojis what each shortcode draws
  * @property {(source: string) => Piece} macro the piece a macro is drawn as in reading
- * @property {(source: string) => Piece | undefined} [pill] the piece a macro is drawn as in an editor; none draws it as
- *   written
+ * @property {(source: string, from: number) => Piece | undefined} [pill] the piece a macro starting at `from` is drawn as in an
+ *   editor; none draws it as written
  * @property {readonly string[]} [reasoningMarkers] the reasoning prefix and suffix, drawn as text where they are
  */
 
@@ -174,7 +174,7 @@ export function chatLook({ html, emojis, macro, pill, reasoningMarkers = [] }) {
         ImageSize: MARK,
         Macro: {
             source: 'replaced',
-            piece: (node, read, surface) => (surface === 'reader' ? macro(read(node.from, node.to)) : pill?.(read(node.from, node.to))),
+            piece: (node, read, surface) => (surface === 'reader' ? macro(read(node.from, node.to)) : pill?.(read(node.from, node.to), node.from)),
         },
         MacroMark: MARK,
         ReasoningMarkerLine: { block: true, element: 'p' },

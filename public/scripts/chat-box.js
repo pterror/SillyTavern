@@ -3,6 +3,7 @@ import { boxCopies, guardedStorage } from './chat-box-copies.js';
 import { sameOwner } from './chat-box-ends.js';
 import { loadChatEditor } from './chat-text/editors.js';
 import { getRequestHeaders } from './request-headers.js';
+import { MacroValues as AskedValues } from './macro-values.js';
 import { macrosIn } from './safe-macros.js';
 import { tabToken } from './tab-session.js';
 
@@ -35,6 +36,7 @@ import { tabToken } from './tab-session.js';
  * @property {() => DraftOwner} endOwner what the open chat ends on now
  * @property {(valuesOf: () => MacroValues | undefined) => import('./chat-text/surface.js').TextSetup} setup how the box's
  *   text is drawn, its macros' values as `valuesOf` has them
+ * @property {() => import('./macro-values.js').MacroScope} macroScope what the open chat's macros are filled in from
  * @property {string} label
  * @property {readonly KeyBinding[]} keys the box's commands
  * @property {Parameters<typeof import('./chat-text/suggest.js').slashSuggestions>[0]} slashParser
@@ -56,7 +58,10 @@ let here = null;
  * @param {string} source a macro as written
  * @returns {string | null | undefined} its value as the server sent it; undefined when it sent none
  */
-const macroValue = source => (here?.values && Object.hasOwn(here.values, source) ? here.values[source] : undefined);
+const macroValue = source => (here?.values && Object.hasOwn(here.values, source) ? here.values[source] : asked?.get(source));
+
+/** @type {AskedValues | undefined} the values of the macros typed since, which the server was asked for */
+let asked;
 
 const tab = () => tabToken();
 
@@ -164,6 +169,7 @@ function follow(known) {
  */
 export async function initChatBox(dependencies) {
     page = dependencies;
+    asked = new AskedValues(() => dependencies.macroScope());
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') keepLeft();
     });
@@ -175,6 +181,7 @@ export async function initChatBox(dependencies) {
         text,
         setup: page.setup(() => here?.values),
         macroValue,
+        macroValues: asked,
         label: page.label,
         keys: page.keys,
         slashParser: page.slashParser,

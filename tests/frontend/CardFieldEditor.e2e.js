@@ -292,4 +292,37 @@ test.describe('card fields edit in the editor', () => {
         await expect(tooltip).toHaveCount(0);
         await page.locator('.field_edit_cancel[data-for="scenario_pole"]').click();
     });
+
+    test('a double-click on a pill opens the macro as written until the cursor leaves it', async ({ page }) => {
+        const avatar = await createAndOpen(page, { scenario: 'Hello {{char}} there' });
+        await openInfoTab(page, 'scenario');
+        await page.locator('.field_edit_toggle[data-for="scenario_pole"]').click();
+        const editor = page.locator('#charInfoTab_scenario .chat-editor');
+        await expect(editor.locator('.macro-pill')).toHaveCount(1);
+        await editor.locator('.macro-pill').dblclick();
+        await expect(editor.locator('.macro-pill')).toHaveCount(0);
+        await expect(editor.locator('.cm-content')).toContainText('{{char}}');
+        await page.keyboard.type('!');
+        await expect(page.locator('#scenario_pole')).toHaveValue('Hello {{char!}} there');
+        await page.keyboard.press('Backspace');
+        await page.keyboard.press('End');
+        await expect(editor.locator('.macro-pill')).toHaveCount(1);
+        await page.locator('.field_edit_cancel[data-for="scenario_pole"]').click();
+        await expect.poll(async () => (await stored(page, avatar)).scenario).toBe('Hello {{char}} there');
+    });
+
+    test('a macro typed shows its value once it is complete, asking the server once', async ({ page }) => {
+        await createAndOpen(page, { scenario: 'Hello ' });
+        await openInfoTab(page, 'scenario');
+        await page.locator('.field_edit_toggle[data-for="scenario_pole"]').click();
+        const editor = page.locator('#charInfoTab_scenario .chat-editor');
+        await page.keyboard.press('Control+End');
+        const asked = [];
+        page.on('request', request => { if (request.url().endsWith('/api/macros/values')) asked.push(request.postDataJSON().macros); });
+        await page.keyboard.type('{{char}}', { delay: 20 });
+        await expect(editor.locator('.macro-pill-mention')).toHaveText(await page.locator('#character_name_pole').inputValue());
+        expect(asked).toHaveLength(1);
+        expect(asked[0]).toContain('{{char}}');
+        await page.locator('.field_edit_cancel[data-for="scenario_pole"]').click();
+    });
 });

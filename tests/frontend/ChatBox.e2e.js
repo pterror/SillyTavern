@@ -89,11 +89,11 @@ test.describe('the chat box', () => {
         await emptyBox(page);
     });
 
-    test('its toolbar holds every formatting command, which run on its text', async ({ page }) => {
+    test('its toolbar holds every formatting command and find and replace, which run on its text', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openSeraphina(page);
         const buttons = page.locator('#chat_box .chat-editor-toolbar button');
-        await expect(buttons).toHaveCount(11);
+        await expect(buttons).toHaveCount(12);
         await chatBox(page).click();
         await page.locator('#chat_box .chat-editor-toolbar button[data-tool="bold"]').click();
         await page.keyboard.type('loud');
@@ -128,6 +128,40 @@ test.describe('the chat box', () => {
         await page.keyboard.press('Home');
         await expect(tooltip).toHaveCount(0);
         expect(await page.locator('#chat_box').boundingBox()).toEqual(area);
+        await emptyBox(page);
+    });
+
+    test('a macro typed shows its value, Ctrl+Shift+M shows macros as written, a double-click opens one', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        await chatBox(page).click();
+        await page.keyboard.type('Hi {{char}} and');
+        const pill = page.locator('#chat_box .macro-pill-mention');
+        await expect(pill).toHaveCount(1);
+        await page.keyboard.press('Control+Shift+m');
+        await expect(page.locator('#chat_box .macro-pill')).toHaveCount(0);
+        await page.keyboard.press('Control+Shift+m');
+        await expect(pill).toHaveCount(1);
+        await pill.dblclick();
+        await expect(page.locator('#chat_box .macro-pill')).toHaveCount(0);
+        await page.keyboard.press('End');
+        await expect(pill).toHaveCount(1);
+        expect(await boxText(page)).toBe('Hi {{char}} and');
+        await emptyBox(page);
+    });
+
+    test('Ctrl+F opens find and replace in the box', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        await chatBox(page).click();
+        await page.keyboard.type('a cat and a cat');
+        await page.keyboard.press('Control+f');
+        const search = page.locator('#chat_box .cm-search');
+        await expect(search).toBeVisible();
+        await search.locator('input[name="search"]').fill('cat');
+        await search.locator('input[name="replace"]').fill('dog');
+        await search.locator('button[name="replaceAll"]').click();
+        expect(await boxText(page)).toBe('a dog and a dog');
         await emptyBox(page);
     });
 

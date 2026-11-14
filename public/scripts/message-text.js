@@ -3,6 +3,7 @@ import { chat } from './chat-state.js';
 import { macroValuePieces } from './chat-text/macros.js';
 import { chatHtmlPolicy } from './chat-text/policy.js';
 import { drawnText, showText, stopText, textReader } from './chat-text/surface.js';
+import { MacroValues } from './macro-values.js';
 import { macrosIn, withFilledAbout } from './safe-macros.js';
 
 /**
@@ -298,13 +299,20 @@ export function chatBoxSetup(valuesOf) {
  * @param {Element} element the message's text or reasoning element
  * @param {ChatMessage} message
  * @param {'message' | 'reasoning'} kind
- * @returns {{ setup: TextSetup, macroValue: (source: string) => string | null | undefined, speaker: string }}
+ * @returns {{ setup: TextSetup, macroValue: (source: string) => string | null | undefined, macroValues: MacroValues, speaker: string }}
+ *   the values of macros typed in the edit are asked for with `macroValues`
  */
 export function messageEditorSetup(element, message, kind) {
     const valuesOf = valuesIn(element);
+    const speaker = speakerOf(message);
+    const typed = new MacroValues(() => ({ ...page.macroScope(), ...(speaker === null ? {} : { name2: speaker }) }));
     return {
-        setup: chatSetup(speakerOf(message), kind, valuesOf),
-        macroValue: source => valuesOf()?.[source],
-        speaker: speakerOf(message) ?? '',
+        setup: chatSetup(speaker, kind, valuesOf),
+        macroValue: (source) => {
+            const values = valuesOf();
+            return values && Object.hasOwn(values, source) ? values[source] : typed.get(source);
+        },
+        macroValues: typed,
+        speaker: speaker ?? '',
     };
 }

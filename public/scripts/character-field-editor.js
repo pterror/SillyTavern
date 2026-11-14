@@ -251,6 +251,7 @@ async function mountFieldEditor(id, text, at) {
             parent: preview.parentElement,
             setup: fieldSetup(id, values),
             macroValue: values.valueOf,
+            macroValues: values,
             speaker: '',
             person: name => withFilledAbout(deps.macroPerson(name), name, values.valueOf),
             initial: text,
