@@ -168,7 +168,7 @@ test('a stored look keeps what passes, says what was refused, and is no look in 
         note: 'the heir',
         uses: ['00000000-0000-4000-8000-000000000001'],
     });
-    expect(out).toEqual([{ property: 'position', value: 'fixed', why: 'a look may not set this property' }]);
+    expect(out).toEqual([{ property: 'position', value: 'fixed', why: 'This property can’t be set.' }]);
     expect(storedLook('red', new Set()).look).toBeNull();
     expect(storedLook({ rest: 'color: red' }, new Set()).look).toBeNull();
     const many = Array.from({ length: MAX_USES + 2 }, (_, i) => `00000000-0000-4000-8000-00000000000${i}`);

@@ -84,7 +84,7 @@ test('an entry\'s look is stored on the entry, sanitized by every write, and ref
     assert.deepEqual(JSON.parse(stored.values[0].json), { rest: [{ property: 'color', value: 'teal' }] });
     const answer = await set({ thing: entry }, 'wordPointed', [{ property: 'text-shadow', value: '0 0 2px gold' }, { property: 'width', value: '9px' }]);
     assert.deepEqual(answer.changed, ['looks.look', 'looks.drawn']);
-    assert.deepEqual(answer.answer, { refused: [{ property: 'width', value: '9px', why: 'a look may not set this property' }] });
+    assert.deepEqual(answer.answer, { refused: [{ property: 'width', value: '9px', why: 'This property can’t be set.' }] });
     const exported = JSON.parse((await worlds.exportWorld(uiUser, book)).json);
     assert.deepEqual(exported.entries[0].extensions.look, {
         rest: [{ property: 'color', value: 'teal' }],
@@ -115,8 +115,8 @@ test('looks resolve theme, world, shared looks in order, then the thing; a world
     assert.equal((await drawn([a]))[a].layers.rest.find(d => d.property === 'font-weight').value, 'bold');
     const other = await importWorld({ entries: { 0: { uid: 0, key: ['C'], content: 'c' } } }, 'Elsewhere');
     const c = await entryOf(other, 0);
-    assert.equal((await act('looks.use', { thing: c, shared: house, before: null })).refused, 'That shared look isn\'t one of this world\'s or yours.');
-    assert.equal((await act('looks.makeShared', { name: 'Stray', world: book, usedBy: c })).refused, 'That shared look isn\'t one of this world\'s or yours.');
+    assert.equal((await act('looks.use', { thing: c, shared: house, before: null })).refused, 'That shared look isn’t available here.');
+    assert.equal((await act('looks.makeShared', { name: 'Stray', world: book, usedBy: c })).refused, 'That shared look isn’t available here.');
     assert.deepEqual(lookCss(a, (await drawn([a]))[a]).split('\n')[0], `.look-${a} { font-style: italic; color: gold; font-weight: bold; }`);
     await set({ theme: true }, 'rest', []);
     await act('looks.setDeclarations', { level: { theme: true }, state: 'rest', set: [], reset: ['color', 'font-style'] });
@@ -306,7 +306,7 @@ test('an effect moves between the levels that draw a name: down onto the thing k
     assert.deepEqual((await drawn([a]))[a].layers.wordPointed, teal);
     assert.deepEqual((await drawn([b]))[b].layers.rest, teal);
     await act('looks.applyTo', { thing: a, what: { note: true }, from: { thing: a }, to: { thing: book } });
-    assert.equal((await act('looks.applyTo', { thing: a, what: { note: true }, from: { thing: b }, to: { theme: true } })).refused, 'That isn\'t one of the looks this name is drawn through.');
+    assert.equal((await act('looks.applyTo', { thing: a, what: { note: true }, from: { thing: b }, to: { theme: true } })).refused, 'That look isn’t applied to this name.');
     await act('looks.setPicture', { level: { thing: a }, before: true, after: null });
     await act('looks.applyTo', { thing: a, what: { picture: true }, from: { thing: a }, to: { thing: book } });
     assert.deepEqual((await drawn([b]))[b].picture, { before: true, after: false, crop: null, image: null });
@@ -321,7 +321,7 @@ test('a small picture is a crop of the thing\'s own picture or another image, st
     await act('looks.setPicture', { level: { thing: a }, before: true, after: null });
     await act('looks.cropPicture', { thing: a, crop });
     assert.deepEqual((await drawn([a]))[a].picture, { before: true, after: false, crop, image: null });
-    assert.equal((await act('looks.cropPicture', { thing: a, crop: { x: 0.9, y: 0, width: 0.5, height: 0.5 } })).refused, 'A crop is a part of the picture, at least a twentieth of each side.');
+    assert.equal((await act('looks.cropPicture', { thing: a, crop: { x: 0.9, y: 0, width: 0.5, height: 0.5 } })).refused, 'The crop must cover at least 5% of each side.');
     assert.equal((await act('looks.uploadPicture', { thing: a }, upload('n.txt', 'hello'))).refused, 'That file is no image: send a PNG, JPEG, WebP or GIF.');
     const sent = await act('looks.uploadPicture', { thing: a }, upload('i.png', image));
     assert.deepEqual(sent.changed, ['looks.look', 'looks.drawn']);
@@ -390,7 +390,7 @@ test('the trigger mark is the theme\'s, set per state and drawn by the view of w
     assert.deepEqual((await looks.area.views['looks.look'](context)).mark, theme.mark);
     await act('looks.close', {});
 
-    assert.equal((await act('looks.setMark', { change: { rest: { color: 'red; position: fixed' } } })).refused.startsWith('The mark\'s color'), true);
+    assert.equal((await act('looks.setMark', { change: { rest: { color: 'red; position: fixed' } } })).refused.startsWith('Highlight color'), true);
     await act('looks.setMark', { change: { rest: { style: null }, messagePointed: { color: null } } });
     assert.deepEqual((await looks.area.views['looks.theme'](context)).mark.stored, { messagePointed: { style: 'dashed' } });
     await act('looks.resetMark', {});
@@ -414,7 +414,7 @@ test('the CSS of a state goes to the levels that set each declaration, a new one
         replaces: ['text-shadow', 'letter-spacing', 'font-weight'],
         newAt: { thing: book },
     });
-    assert.deepEqual(written.answer.refused, [{ property: 'width', value: '9px', why: 'a look may not set this property' }]);
+    assert.deepEqual(written.answer.refused, [{ property: 'width', value: '9px', why: 'This property can’t be set.' }]);
     await act('looks.open', { thing: entry });
     const shown = (await looks.area.views['looks.look'](context)).shown.rest.map(d => [d.property, d.value, d.level]);
     assert.deepEqual(shown.sort(), [['font-style', 'italic', 1], ['letter-spacing', '1px', 2], ['text-shadow', '0 0 2px gold', 0]]);
@@ -422,7 +422,7 @@ test('the CSS of a state goes to the levels that set each declaration, a new one
     await act('looks.writeCss', { thing: entry, state: 'rest', css: 'letter-spacing: 2px', replaces: ['text-shadow', 'letter-spacing', 'font-style'], newAt: { thing: entry } });
     const after = (await looks.area.views['looks.look'](context)).shown.rest.map(d => [d.property, d.value, d.level]);
     assert.deepEqual(after, [['letter-spacing', '2px', 2]]);
-    assert.equal((await act('looks.writeCss', { thing: entry, state: 'rest', css: '', replaces: [], newAt: { thing: '1' } })).refused, 'That isn\'t one of the looks this name is drawn through.');
+    assert.equal((await act('looks.writeCss', { thing: entry, state: 'rest', css: '', replaces: [], newAt: { thing: '1' } })).refused, 'That look isn’t applied to this name.');
     await act('looks.close', {});
     await act('looks.setDeclarations', { level: { thing: entry }, state: 'rest', set: [], reset: ['letter-spacing'] });
 });

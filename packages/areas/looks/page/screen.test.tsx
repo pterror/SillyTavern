@@ -134,11 +134,11 @@ test('the screen names the thing, its uses with where they live, and each state 
     const { host } = stand(VIEW);
     expect(host.querySelector('.look-back')?.textContent).toBe('Ilse Varro');
     expect(host.querySelector('.look-uchip')?.textContent).toContain('Lantern House regulars');
-    expect(host.querySelector('.look-uchip .look-uat')?.textContent).toBe('this world');
+    expect(host.querySelector('.look-uchip .look-uat')?.textContent).toBe('This world');
     expect([...host.querySelectorAll('[role="radio"]')].map((r) => r.getAttribute('title'))).toEqual([
-        'As it sits',
-        'Message pointed at',
-        'Word pointed at or focused',
+        'Normal',
+        'Message hover',
+        'Word hover or focus',
         'Selected',
     ]);
     expect((host.querySelector('.look-notein') as HTMLInputElement).value).toBe('the innkeeper');
@@ -146,7 +146,7 @@ test('the screen names the thing, its uses with where they live, and each state 
 
 test('a dim tool turns its effect on for just this name, in the state picked, with one action', () => {
     const { host, sent } = stand(VIEW);
-    byLabel(host, 'Word pointed at or focused').click();
+    byLabel(host, 'Word hover or focus').click();
     const outline = byLabel(host, 'Outline');
     expect(outline.classList.contains('look-on')).toBe(false);
     outline.click();
@@ -169,7 +169,7 @@ test('a dim tool turns its effect on for just this name, in the state picked, wi
 
 test('Applies to lists the thing’s chain and moves the effect to the level chosen; Reset takes it off its level', () => {
     const { host, sent } = stand(VIEW);
-    byLabel(host, 'Word pointed at or focused').click();
+    byLabel(host, 'Word hover or focus').click();
     byLabel(host, 'Glow').click();
     const scope = host.querySelector('select.look-scope') as HTMLSelectElement;
     expect([...scope.options].map((o) => o.textContent)).toEqual([
@@ -177,8 +177,8 @@ test('Applies to lists the thing’s chain and moves the effect to the level cho
         'Everything in The Drowned Coast',
         'Lantern House regulars',
         'Just Ilse Varro',
-        'New shared look in this world…',
-        'New shared look for every world…',
+        'New for this world…',
+        'New for all worlds…',
     ]);
     expect(scope.value).toBe('3');
     scope.value = '0';
@@ -201,7 +201,7 @@ test('Applies to lists the thing’s chain and moves the effect to the level cho
 
 test('the CSS panel shows the controls’ lines apart and sends what is typed for the thing’s level', () => {
     const { host, sent } = stand(VIEW);
-    byLabel(host, 'Word pointed at or focused').click();
+    byLabel(host, 'Word hover or focus').click();
     byLabel(host, 'CSS').click();
     expect(host.querySelector('.look-cssfx')?.textContent).toBe('filter: drop-shadow(0 0 12px #ffd27a);');
     const typed = host.querySelector('.look-cssta') as HTMLTextAreaElement;
@@ -223,11 +223,7 @@ test('+ shared look offers the looks not in use and uses the one picked', () => 
     const { host, sent } = stand(VIEW);
     (host.querySelector('.look-uadd') as HTMLElement).click();
     const items = [...host.querySelectorAll('.look-upop button')].map((b) => b.textContent);
-    expect(items).toEqual([
-        'Soft gloweverywhere',
-        'New shared look in this world…',
-        'New shared look for every world…',
-    ]);
+    expect(items).toEqual(['Soft glowAll worlds', 'New for this world…', 'New for all worlds…']);
     (host.querySelector('.look-upop button') as HTMLElement).click();
     expect(sent.at(-1)).toEqual({ type: 'looks.use', payload: { thing: '7', shared: 'b', before: null } });
 });
@@ -235,7 +231,7 @@ test('+ shared look offers the looks not in use and uses the one picked', () => 
 test('clicking the marked word opens the mark’s settings, which are the theme’s', () => {
     const { host, sent } = stand(VIEW);
     (host.querySelector('.look-mkbtn') as HTMLElement).click();
-    expect(host.querySelector('.look-fixed')?.textContent).toBe('Every world');
+    expect(host.querySelector('.look-fixed')?.textContent).toBe('All worlds');
     ([...host.querySelectorAll('.look-seg button')].find((b) => b.textContent === 'Dashed') as HTMLElement).click();
     expect(sent.at(-1)).toEqual({ type: 'looks.setMark', payload: { change: { rest: { style: 'dashed' } } } });
 });

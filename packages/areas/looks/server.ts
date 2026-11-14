@@ -79,13 +79,13 @@ export type Ports = {
     ): Promise<{ id: string } | 'missing' | { refused: string }>;
 };
 
-const NOT_FOUND = 'That is gone.';
-const NOT_AVAILABLE = "That shared look isn't one of this world's or yours.";
-const NO_UPLOAD = 'Send the font with it.';
-const NO_PICTURE = 'Send the image with it.';
-const NOT_IN_CHAIN = "That isn't one of the looks this name is drawn through.";
-const TOO_MANY_USES = `A thing uses at most ${MAX_USES} shared looks.`;
-const BAD_CROP = 'A crop is a part of the picture, at least a twentieth of each side.';
+const NOT_FOUND = 'Not found.';
+const NOT_AVAILABLE = 'That shared look isn’t available here.';
+const NO_UPLOAD = 'Choose a font file.';
+const NO_PICTURE = 'Choose an image.';
+const NOT_IN_CHAIN = 'That look isn’t applied to this name.';
+const TOO_MANY_USES = `Up to ${MAX_USES} shared looks.`;
+const BAD_CROP = 'The crop must cover at least 5% of each side.';
 
 // A layer of a look, changed as a map from property to value, in the order they were last set.
 function withLayer(look: StoredLook, state: LookState, change: (layer: Map<string, string>) => void): StoredLook {
@@ -637,7 +637,7 @@ export function looksArea(ports: Ports) {
                     const color = change[state]?.color;
                     if (typeof color !== 'string') continue;
                     const checked = markColor(color);
-                    if ('refused' in checked) return { refused: `The mark's color: ${checked.refused}`, changed: [] };
+                    if ('refused' in checked) return { refused: `Highlight color: ${checked.refused}`, changed: [] };
                     colors.set(state, checked.color);
                 }
                 const written = await ports.editMark(who(context), (current) => {

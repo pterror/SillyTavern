@@ -395,11 +395,12 @@ export function sanitizeDeclaration(property: string, value: string, fonts: Font
     const refuse = (why: string): Refusal => ({ property, value, why });
     const name = property.trim().toLowerCase();
     if (!/^-?[a-z]+(-[a-z]+)*$/.test(name) || !Object.hasOwn(PROPERTIES, name))
-        return refuse('a look may not set this property');
+        return refuse('This property can’t be set.');
     const rule = PROPERTIES[name] as Rule;
     const written = value.trim().replace(/\s+/g, ' ');
-    if (written === '') return refuse('the value is empty');
-    if (written.length > VALUE_LENGTH_AT_MOST) return refuse(`a value is at most ${VALUE_LENGTH_AT_MOST} characters`);
+    if (written === '') return refuse('The value is empty.');
+    if (written.length > VALUE_LENGTH_AT_MOST)
+        return refuse(`Values are limited to ${VALUE_LENGTH_AT_MOST} characters.`);
     const parts = tokens(written);
     if (typeof parts === 'string') return refuse(parts);
     let depth = 0;
@@ -409,21 +410,21 @@ export function sanitizeDeclaration(property: string, value: string, fonts: Font
             if (!allowed.has(p.v)) return refuse(`\`${p.v}()\` is not allowed here`);
             depth++;
         } else if (p.t === 'close') {
-            if (depth === 0) return refuse('a `)` closes nothing');
+            if (depth === 0) return refuse('Unmatched `)`.');
             depth--;
         } else if (p.t === 'url') {
             if (rule.urls !== true) return refuse('`url()` is not allowed here');
             const why = urlRefusal(p.v);
             if (why !== null) return refuse(why);
         } else if (p.t === 'string') {
-            if (name !== 'font-family') return refuse('a string is not allowed here');
+            if (name !== 'font-family') return refuse('Strings aren’t allowed here.');
         } else if (p.t === 'ident' && depth === 0) {
             const word = p.v.toLowerCase();
             if (rule.keywords !== 'any' && !rule.keywords.includes(word) && !CSS_WIDE.has(word))
                 return refuse(`\`${p.v}\` is not allowed here`);
         }
     }
-    if (depth !== 0) return refuse('a `(` is not closed');
+    if (depth !== 0) return refuse('Unclosed `(`.');
     const why = name === 'font-family' ? fontFamilyRefusal(parts, fonts) : (rule.check?.(parts) ?? null);
     if (why !== null) return refuse(why);
     return { property: name, value: written };
@@ -433,12 +434,12 @@ export const isRefusal = (d: Declaration | Refusal): d is Refusal => 'why' in d;
 
 // Anything but declarations refuses the whole text.
 export function declarationsOfCss(css: string): { property: string; value: string }[] | { refused: string } {
-    if (css.length > CSS_LENGTH_AT_MOST) return { refused: `The CSS is at most ${CSS_LENGTH_AT_MOST} characters.` };
-    if (/[{}]/.test(css)) return { refused: 'The CSS holds only declarations: no selectors, braces or at-rules.' };
+    if (css.length > CSS_LENGTH_AT_MOST) return { refused: `CSS is limited to ${CSS_LENGTH_AT_MOST} characters.` };
+    if (/[{}]/.test(css)) return { refused: 'Declarations only: no selectors, braces or at-rules.' };
     const sheet = parse(`x{${css}}`, { silent: true }).stylesheet;
     const [rule, ...others] = sheet.rules;
     if ((sheet.parsingErrors ?? []).length > 0 || others.length > 0 || rule === undefined || rule.type !== 'rule')
-        return { refused: 'The CSS holds only declarations: no selectors, braces or at-rules.' };
+        return { refused: 'Declarations only: no selectors, braces or at-rules.' };
     const found: { property: string; value: string }[] = [];
     for (const d of rule.declarations) {
         if (d.type !== 'declaration') continue;

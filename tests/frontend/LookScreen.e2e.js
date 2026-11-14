@@ -30,7 +30,7 @@ async function openLook(page, name) {
     await makeWorld(page, name, WORLD);
     const pane = page.locator('#Worldbuilding');
     await pane.locator('.wb-card-open', { hasText: 'Ilse Varro' }).first().click();
-    await pane.getByRole('button', { name: 'How this entry’s names look' }).click();
+    await pane.getByRole('button', { name: 'Look', exact: true }).click();
     await expect(screen(page).locator('.look-back')).toHaveText('Ilse Varro');
 }
 
@@ -40,7 +40,7 @@ test.describe('the Look screen', () => {
     test('opens from an entry, turns an effect on in a state, moves it to every name, and resets it', async ({ page }) => {
         const name = unique('Look');
         await openLook(page, name);
-        await screen(page).getByRole('radio', { name: 'Word pointed at or focused' }).click();
+        await screen(page).getByRole('radio', { name: 'Word hover or focus' }).click();
         const glow = screen(page).getByRole('button', { name: 'Glow', exact: true });
         await expect(glow).not.toHaveClass(/look-on/);
         await glow.click();
@@ -66,17 +66,17 @@ test.describe('the Look screen', () => {
     test('a new shared look is made in the world and used; the CSS panel takes declarations the controls don\'t cover', async ({ page }) => {
         const name = unique('Shared');
         await openLook(page, name);
-        await screen(page).getByRole('button', { name: '+ shared look' }).click();
-        await screen(page).getByRole('menuitem', { name: 'New shared look in this world…' }).click();
+        await screen(page).getByRole('button', { name: '+ Shared look' }).click();
+        await screen(page).getByRole('menuitem', { name: 'New for this world…' }).click();
         const dialog = page.locator('dialog[open]');
         await dialog.locator('input').fill('Lantern House regulars');
         await dialog.locator('input').press('Enter');
         const chip = screen(page).locator('.look-uchip');
         await expect(chip).toContainText('Lantern House regulars');
-        await expect(chip.locator('.look-uat')).toHaveText('this world');
+        await expect(chip.locator('.look-uat')).toHaveText('This world');
 
         await screen(page).getByRole('button', { name: 'CSS', exact: true }).click();
-        const typed = screen(page).getByLabel('Other declarations');
+        const typed = screen(page).getByLabel('Custom CSS');
         await typed.fill('word-spacing: 2px;');
         await typed.blur();
         await expect.poll(() => previewStyle(page, 'word-spacing')).toBe('2px');
@@ -97,7 +97,7 @@ test.describe('the Look screen', () => {
         await expect(screen(page).getByLabel('Applies to').locator('option')).toHaveText([
             'Every name',
             'Just Alice',
-            'New shared look for every world…',
+            'New for all worlds…',
         ]);
         await expect(screen(page).locator('.look-cp')).toHaveText('Character');
         await screen(page).getByRole('button', { name: 'Reset' }).click();
