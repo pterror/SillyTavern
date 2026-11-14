@@ -1,15 +1,27 @@
 import { describe, test, expect, jest, beforeAll } from '@jest/globals';
-import * as lezerMarkdown from '@lezer/markdown';
-import * as lezerHighlight from '@lezer/highlight';
+import { Window } from 'happy-dom';
 
-jest.unstable_mockModule('../public/live-editor-lib.js', () => ({ lezerMarkdown, lezerHighlight }));
+const window = new Window({ url: 'http://localhost:8000/' });
+globalThis.window = /** @type {any} */ (window);
+globalThis.document = /** @type {any} */ (window.document);
+
+jest.unstable_mockModule('../public/lib.js', async () => {
+    const { default: createDOMPurify } = await import('dompurify');
+    const { default: css } = await import('@adobe/css-tools');
+    const { default: hljs } = await import('highlight.js');
+    const { reader } = await import('@pterror/interact-editor/reader');
+    const { GFM, parser: markdownParser } = await import('@lezer/markdown');
+    const { htmlInMarkdown } = await import('@pterror/interact-markdown/html-in-markdown');
+    const { definitionOf, gfmLook, htmlLook, markdownLook } = await import('@pterror/interact-markdown/look');
+    return { DOMPurify: createDOMPurify(/** @type {any} */ (window)), css, hljs, reader, markdownParser, GFM, htmlInMarkdown, markdownLook, gfmLook, htmlLook, definitionOf };
+});
 jest.unstable_mockModule('../public/scripts/i18n.js', () => ({ t: (strings, ...values) => String.raw({ raw: strings }, ...values) }));
 
-/** @type {typeof import('../public/scripts/live-editor/presets.js')} */
+/** @type {typeof import('../public/scripts/chat-text/presets.js')} */
 let presets;
 
 beforeAll(async () => {
-    presets = await import('../public/scripts/live-editor/presets.js');
+    presets = await import('../public/scripts/chat-text/presets.js');
 });
 
 describe('remove italics', () => {

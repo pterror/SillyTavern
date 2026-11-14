@@ -28,7 +28,7 @@ export function registeredMacros() {
  * @param {string | undefined} category
  * @returns {Record<string, string>}
  */
-export function macroColorAttributes(name, category) {
+function macroColorAttributes(name, category) {
     category ??= name ? registry.categoryOf(name) : undefined;
     return {
         ...(category ? { 'data-macro-category': category } : {}),

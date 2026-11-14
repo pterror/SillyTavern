@@ -6,7 +6,6 @@ import { AutoCompleteFuzzyScore } from './AutoCompleteFuzzyScore.js';
 import { BlankAutoCompleteOption } from './BlankAutoCompleteOption.js';
 import { AutoCompleteNameResult } from './AutoCompleteNameResult.js';
 import { AutoCompleteSecondaryNameResult } from './AutoCompleteSecondaryNameResult.js';
-import { getFocusedField, getMountedEditor } from '../live-editor/registry.js';
 
 /**@readonly*/
 /**@enum {Number}*/
@@ -290,11 +289,8 @@ export class AutoComplete {
         this.isReplaceable = false;
         this.isShowForced = isForced; // Store forced state for checkIfActivate to access
 
-        if (getFocusedField() != this.textarea) {
+        if (document.activeElement != this.textarea) {
             // only show with textarea in focus
-            return this.hide();
-        }
-        if (this.isMacroAutoComplete && getMountedEditor(this.textarea)?.macroSuggestions) {
             return this.hide();
         }
         if (!this.checkIfActivate()) {
@@ -545,7 +541,7 @@ export class AutoComplete {
      * @returns {DOMRect}
      */
     getFieldRect() {
-        return (getMountedEditor(this.textarea)?.root ?? this.textarea).getBoundingClientRect();
+        return this.textarea.getBoundingClientRect();
     }
 
     /**
@@ -689,10 +685,6 @@ export class AutoComplete {
      * @returns {{left:number, top:number, bottom:number}}
      */
     getCursorPosition() {
-        const caret = getMountedEditor(this.textarea)?.caretRect();
-        if (caret) {
-            return { left: caret.left, top: caret.top, bottom: caret.bottom };
-        }
         const inputRect = this.textarea.getBoundingClientRect();
         const style = window.getComputedStyle(this.textarea);
         if (!this.clone) {

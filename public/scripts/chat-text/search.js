@@ -1,5 +1,5 @@
 import { state as cmState, view as cmView, search as cmSearch } from '../../live-editor-lib.js';
-import { getRequestHeaders } from '../../script.js';
+import { getRequestHeaders } from '../request-headers.js';
 import { t } from '../i18n.js';
 import { builtinPresets } from './presets.js';
 
@@ -292,6 +292,13 @@ function presetsPanel(view) {
         body.append(listActions);
     };
 
+    dom.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape' || event.isComposing) return;
+        event.preventDefault();
+        showPresets(view, false);
+        view.focus();
+    });
+
     draw();
     say(t`Loading your presets…`);
     loadPresets().then(() => {
@@ -313,12 +320,4 @@ export function liveSearch(options = {}) {
         keymap.of(searchKeymap),
         presetsOpen,
     ];
-}
-
-/**
- * @param {import('@codemirror/state').EditorState} state
- * @returns {boolean}
- */
-export function hasPresets(state) {
-    return state.field(presetsOpen, false) !== undefined;
 }

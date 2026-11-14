@@ -1674,8 +1674,6 @@ textarea.autoSetHeight {
     text-decoration: none;
 }
 
-.cm-editor.live-editor .macro-pill,
-.cm-editor.live-editor .macro-pill-glue,
 .chat-editor .macro-pill {
     white-space: nowrap;
 }
@@ -1697,11 +1695,6 @@ textarea.autoSetHeight {
     font-style: italic;
 }
 
-.cm-editor.live-editor .macro-source,
-.cm-editor.live-editor .macro-source * {
-    color: var(--macro-color);
-}
-
 .macro-tooltip {
     position: fixed;
     inset: auto;
@@ -1710,15 +1703,6 @@ textarea.autoSetHeight {
     max-width: min(30em, calc(100vw - 8px));
     font-size: calc(var(--mainFontSize) * 0.85);
     pointer-events: none;
-}
-
-.live-mention-avatar {
-    width: 1.4em;
-    height: 1.4em;
-    margin-inline-end: 0.4em;
-    border-radius: 50%;
-    object-fit: cover;
-    vertical-align: middle;
 }
 
 .macro-person-card {
@@ -7340,40 +7324,6 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     height: 32px;
 }
 
-textarea.live-editor-textarea {
-    position: absolute !important;
-    width: 1px !important;
-    height: 1px !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-    clip-path: inset(50%) !important;
-    white-space: nowrap;
-    pointer-events: none;
-}
-
-.cm-editor.live-editor {
-    width: 100%;
-}
-
-.cm-editor.live-editor.cm-focused {
-    outline: none;
-}
-
-.cm-editor.live-editor .cm-scroller {
-    font-family: inherit;
-    line-height: inherit;
-}
-
-.cm-editor.live-editor .cm-cursor,
-.cm-editor.live-editor .cm-dropCursor {
-    border-left-color: var(--live-caret-color, currentColor);
-}
-
-.cm-editor.live-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground,
-.cm-editor.live-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
-    background: color-mix(in srgb, Highlight 55%, transparent);
-}
-
 @keyframes field_edit_attention {
     0%, 100% { transform: scale(1); filter: none; }
     30%, 70% { transform: scale(1.35); filter: drop-shadow(0 0 4px var(--SmartThemeQuoteColor)); }
@@ -7382,38 +7332,6 @@ textarea.live-editor-textarea {
 .char_info_tab_panel.field_edit_attention .field_edit_done,
 .char_info_tab_panel.field_edit_attention .field_edit_cancel {
     animation: field_edit_attention 0.8s ease-in-out;
-}
-
-.cm-editor.live-editor .live-syntax {
-    opacity: 0.55;
-}
-
-/* CodeMirror places lines by the border box of each line, block widget and wrapper; a margin, or one leaking out of
- * a line, is space its height map doesn't have. */
-.cm-editor.live-editor :is(.cm-content, .live-block) > * {
-    display: flow-root;
-    margin: 0;
-}
-
-/* The <br> CodeMirror puts in an empty line (or after a widget ending one) gives the line its height; page rules for
- * rendered <br>s must not reach it. */
-.cm-editor.live-editor .cm-line > br {
-    all: revert !important;
-}
-
-.cm-editor.live-editor .live-link {
-    text-decoration: underline;
-}
-
-.cm-editor.live-editor .live-html {
-    opacity: 0.55;
-}
-
-.cm-editor.live-editor .live-html-render {
-    cursor: default;
-    white-space: normal;
-    padding: 2px 0 4px;
-    user-select: none;
 }
 
 #chat_box q {
@@ -7429,58 +7347,29 @@ textarea.live-editor-textarea {
     content: '';
 }
 
-.cm-editor.live-editor .live-image img {
-    max-width: 100%;
-    vertical-align: middle;
-}
-
-.cm-editor.live-editor .cm-panels-top {
-    background: transparent;
-    border-bottom: 1px solid var(--SmartThemeBorderColor);
-}
-
-.cm-editor.live-editor .live-toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 4px;
-    padding: 3px;
-}
-
-.cm-editor.live-editor .live-toolbar-block {
-    width: auto;
-    margin: 0;
-}
-
-.cm-editor.live-editor .live-toolbar-button {
-    margin: 0;
-    padding: 4px 6px;
-    font-size: calc(var(--mainFontSize) * 0.9);
-}
-
-.cm-editor.live-editor .cm-panels {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-panels {
     background: var(--SmartThemeBlurTintColor);
     color: var(--SmartThemeBodyColor);
 }
 
-.cm-editor.live-editor .cm-panels-bottom {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-panels-bottom {
     border-top: 1px solid var(--SmartThemeBorderColor);
 }
 
-.cm-editor.live-editor .cm-search input,
-.cm-editor.live-editor .cm-search button {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search input,
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search button {
     font: inherit;
     color: inherit;
 }
 
-.cm-editor.live-editor .cm-search input[type="text"],
-.cm-editor.live-editor .cm-search .cm-textfield {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search input[type="text"],
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search .cm-textfield {
     background: var(--black30a);
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 5px;
 }
 
-.cm-editor.live-editor .cm-search .cm-button {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search .cm-button {
     background-image: none;
     background-color: var(--SmartThemeBlurTintColor);
     border: 1px solid var(--SmartThemeBorderColor);
@@ -7489,11 +7378,11 @@ textarea.live-editor-textarea {
     cursor: pointer;
 }
 
-.cm-editor.live-editor .cm-search .cm-button:hover {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search .cm-button:hover {
     background-color: var(--white30a);
 }
 
-.cm-editor.live-editor .cm-search label {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search label {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -7501,22 +7390,22 @@ textarea.live-editor-textarea {
     cursor: pointer;
 }
 
-.cm-editor.live-editor .cm-search label input[type="checkbox"] {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search label input[type="checkbox"] {
     margin: 0;
 }
 
-.cm-editor.live-editor .cm-search button[name="close"] {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search button[name="close"] {
     color: inherit;
     opacity: 0.7;
     cursor: pointer;
 }
 
-.cm-editor.live-editor .cm-search button[name="close"]:hover {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-search button[name="close"]:hover {
     opacity: 1;
 }
 
-.cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete,
-.cm-editor.live-editor .cm-tooltip.cm-completionInfo,
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-tooltip.cm-tooltip-autocomplete,
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-tooltip.cm-completionInfo,
 .macro-tooltip {
     background: var(--ac-style-color-background, rgba(32 32 32 / 1));
     backdrop-filter: blur(var(--SmartThemeBlurStrength));
@@ -7525,116 +7414,65 @@ textarea.live-editor-textarea {
     color: var(--ac-style-color-text, rgba(204 204 204 / 1));
 }
 
-.cm-editor.live-editor .cm-tooltip-autocomplete > ul {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-tooltip-autocomplete > ul {
     font-family: inherit;
 }
 
-.cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li:hover {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li:hover {
     background: var(--ac-style-color-hoveredBackground, rgba(43 45 46 / 1));
     color: var(--ac-style-color-hoveredText, rgba(204 204 204 / 1));
 }
 
-.cm-editor.live-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
     background: var(--ac-style-color-selectedBackground, rgba(32 57 92 / 1));
     color: var(--ac-style-color-selectedText, rgba(255 255 255 / 1));
 }
 
-.cm-editor.live-editor .cm-completionMatchedText {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-completionMatchedText {
     text-decoration: none;
     color: var(--ac-style-color-matchedText, rgba(108 171 251 / 1));
 }
 
-.cm-editor.live-editor .cm-completionDetail {
+:is(.chat-editor, .chat-box-editor) .cm-editor .cm-completionDetail {
     opacity: 0.7;
 }
 
-.cm-editor.live-editor .live-presets {
+:is(.chat-editor, .chat-box-editor) .cm-editor .live-presets {
     padding: 4px 6px;
     max-height: 40vh;
     overflow-y: auto;
 }
 
-.cm-editor.live-editor .live-presets-heading {
+:is(.chat-editor, .chat-box-editor) .cm-editor .live-presets-heading {
     font-weight: bold;
     margin-top: 6px;
 }
 
-.cm-editor.live-editor .live-presets-row,
-.cm-editor.live-editor .live-presets-actions {
+:is(.chat-editor, .chat-box-editor) .cm-editor .live-presets-row,
+:is(.chat-editor, .chat-box-editor) .cm-editor .live-presets-actions {
     display: flex;
     align-items: center;
     gap: 4px;
     flex-wrap: wrap;
 }
 
-.cm-editor.live-editor .live-presets-name {
+:is(.chat-editor, .chat-box-editor) .cm-editor .live-presets-name {
     flex: 1;
 }
 
-.cm-editor.live-editor .live-presets-button {
+:is(.chat-editor, .chat-box-editor) .cm-editor .live-presets-button {
     margin: 1px 0;
     padding: 2px 8px;
 }
 
-.cm-editor.live-editor .live-presets-new-name {
+:is(.chat-editor, .chat-box-editor) .cm-editor .live-presets-new-name {
     flex: 1;
     min-width: 10em;
     margin: 0;
 }
 
-.cm-editor.live-editor .live-presets-status:empty {
+:is(.chat-editor, .chat-box-editor) .cm-editor .live-presets-status:empty {
     display: none;
-}
-
-.cm-editor.live-editor .cm-tooltip.cm-tooltip-below:has(.live-paste-picker),
-.cm-editor.live-editor .cm-tooltip.cm-tooltip-above:has(.live-paste-picker) {
-    background: transparent;
-    border: none;
-}
-
-.cm-editor.live-editor .live-paste-picker {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    font-size: calc(var(--mainFontSize) * 0.8);
-}
-
-.cm-editor.live-editor .live-paste-picker button {
-    font: inherit;
-    color: var(--SmartThemeBodyColor);
-    background: var(--SmartThemeBlurTintColor);
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 5px;
-    cursor: pointer;
-}
-
-.cm-editor.live-editor .live-paste-picker-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 1px 5px;
-    opacity: 0.85;
-}
-
-.cm-editor.live-editor .live-paste-picker-toggle:hover,
-.cm-editor.live-editor .live-paste-picker-toggle[aria-expanded="true"] {
-    opacity: 1;
-}
-
-.cm-editor.live-editor .live-paste-picker-menu {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.cm-editor.live-editor .live-paste-picker-item {
-    padding: 2px 8px;
-    text-align: start;
-}
-
-.cm-editor.live-editor .live-paste-picker-item[aria-checked="true"] {
-    border-color: var(--SmartThemeQuoteColor);
 }
 
 .framed_image {

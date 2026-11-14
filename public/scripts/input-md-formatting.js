@@ -1,10 +1,8 @@
 import { power_user } from './power-user.js';
-import { isEditorEvent } from './live-editor/registry.js';
 
 export function initInputMarkdown() {
     $(document).on('keydown', 'textarea.mdHotkeys', function (e) {
         if (!power_user.enable_md_hotkeys) { return; }
-        if (isEditorEvent(e.originalEvent)) { return; }
 
         // Ensure that the element is a textarea
         let textarea = this;

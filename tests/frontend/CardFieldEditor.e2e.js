@@ -125,4 +125,47 @@ test.describe('card fields edit in the editor', () => {
         await expect(page.locator('#charInfoTab_personality .cm-editor')).toHaveCount(0);
         await expect.poll(async () => (await stored(page, avatar)).personality).toBe('kind and brave');
     });
+
+    test('a macro is a pill showing its value, deleted whole by Backspace; {{ suggests macros', async ({ page }) => {
+        const avatar = await createAndOpen(page, { scenario: 'Meet {{char}}' });
+        await openInfoTab(page, 'scenario');
+        await page.locator('.field_edit_toggle[data-for="scenario_pole"]').click();
+        const editor = page.locator('#charInfoTab_scenario .chat-editor');
+        const name = await page.locator('#character_name_pole').inputValue();
+        await expect(editor.locator('.macro-pill')).toHaveText(name);
+        await page.keyboard.press('Control+End');
+        await page.keyboard.press('Backspace');
+        await expect(page.locator('#scenario_pole')).toHaveValue('Meet ');
+        await page.keyboard.type('{{us');
+        await expect(editor.locator('.cm-tooltip-autocomplete')).toBeVisible();
+        await page.locator('.field_edit_cancel[data-for="scenario_pole"]').click();
+        await expect.poll(async () => (await stored(page, avatar)).scenario).toBe('Meet {{char}}');
+    });
+
+    test('the markdown keys format the text when they are on, and do nothing when off', async ({ page }) => {
+        await createAndOpen(page, { personality: 'kind' });
+        await openInfoTab(page, 'personality');
+        const setKeys = (/** @type {boolean} */ on) => page.evaluate(async (on) => {
+            const { power_user } = await import('/scripts/power-user.js');
+            const was = power_user.enable_md_hotkeys;
+            power_user.enable_md_hotkeys = on;
+            return was;
+        }, on);
+        const was = await setKeys(true);
+        try {
+            await page.locator('.field_edit_toggle[data-for="personality_textarea"]').click();
+            await expect(page.locator('#charInfoTab_personality .cm-content')).toBeFocused();
+            await page.keyboard.press('Control+a');
+            await page.keyboard.press('Control+b');
+            await expect(page.locator('#personality_textarea')).toHaveValue('**kind**');
+            await page.keyboard.press('Control+b');
+            await expect(page.locator('#personality_textarea')).toHaveValue('kind');
+            await setKeys(false);
+            await page.keyboard.press('Control+b');
+            await expect(page.locator('#personality_textarea')).toHaveValue('kind');
+            await page.locator('.field_edit_cancel[data-for="personality_textarea"]').click();
+        } finally {
+            await setKeys(was);
+        }
+    });
 });

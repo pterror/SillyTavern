@@ -49,7 +49,7 @@ export const macros = {
  * @param {string} name
  * @returns {string | undefined}
  */
-export function macroCategory(name) {
+function macroCategory(name) {
     return MacroRegistry.getPrimaryMacro(name)?.category;
 }
 

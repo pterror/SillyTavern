@@ -9,12 +9,11 @@ test.describe('live editor library bundle', () => {
             const lib = await import('/live-editor-lib.js');
             const { EditorState } = lib.state;
             const { EditorView } = lib.view;
-            const { markdown } = lib.langMarkdown;
             const { history } = lib.commands;
             const parent = document.createElement('div');
             document.body.append(parent);
             const view = new EditorView({
-                state: EditorState.create({ doc: '# hi *there*', extensions: [markdown(), history()] }),
+                state: EditorState.create({ doc: '# hi *there*', extensions: [history()] }),
                 parent,
             });
             const text = view.state.doc.toString();
@@ -26,8 +25,8 @@ test.describe('live editor library bundle', () => {
         expect(result.text).toBe('# hi *there*');
         expect(result.rendered).toBe('# hi *there*');
         expect(result.modules).toEqual([
-            'autocomplete', 'commands', 'formatKey', 'formatSteps', 'grammarLanguage', 'keyHints', 'keybinds', 'langMarkdown',
-            'language', 'lezerHighlight', 'lezerMarkdown', 'lookChanged', 'lookDecorations', 'markdownFormat', 'markdownPaste',
+            'autocomplete', 'commands', 'formatKey', 'formatSteps', 'grammarLanguage', 'keyHints', 'keybinds',
+            'lookChanged', 'lookDecorations', 'markdownFormat', 'markdownPaste',
             'modifierHeld', 'overtype', 'search', 'state', 'suggestions', 'textEditor', 'toolbar', 'view',
         ]);
     });

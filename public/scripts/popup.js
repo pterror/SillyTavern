@@ -3,7 +3,6 @@ import { shouldSendOnEnter } from './RossAscends-mods.js';
 import { t } from './i18n.js';
 import { toastPositionClasses } from './power-user.js';
 import { clamp, removeFromArray, runAfterAnimation, uuidv4 } from './utils.js';
-import { getFocusedField } from './live-editor/registry.js';
 
 /** @readonly */
 /** @enum {Number} */
@@ -636,7 +635,7 @@ export class Popup {
                     if (evt.altKey || evt.shiftKey)
                         return;
 
-                    const active = getFocusedField() ?? document.activeElement;
+                    const active = document.activeElement;
 
                     // Check if we are the currently active popup
                     if (this.dlg != active?.closest('.popup'))

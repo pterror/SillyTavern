@@ -88,16 +88,16 @@ test.describe('stacked drawers', () => {
         await expectOccludes(page, '.autoComplete-wrap, .autoComplete-detailsWrap', '#sheld');
     });
 
-    test('an editor\'s macro suggestions and paste picker cut the chat under them', async ({ page }) => {
+    test('an editor\'s macro suggestions cut the chat under them', async ({ page }) => {
         await page.evaluate(async () => {
-            const { mountLiveEditor } = await import('/scripts/live-editor/registry.js');
+            const { loadChatEditor } = await import('/scripts/chat-text/editors.js');
+            const { PLAIN_TEXT } = await import('/scripts/chat-text/surface.js');
+            const { chatEditor } = await loadChatEditor();
             const host = document.createElement('div');
             host.id = 'stackTestEditorHost';
-            host.style.cssText = 'position:fixed;top:120px;left:420px;width:400px;pointer-events:none';
-            const textarea = document.createElement('textarea');
-            host.append(textarea);
+            host.style.cssText = 'position:fixed;top:120px;left:420px;width:400px';
             document.body.append(host);
-            const editor = await mountLiveEditor(textarea, { formatting: false, macros: { values: { get: () => null, wantMacros: async () => false, refresh: async () => false } } });
+            const editor = chatEditor({ parent: host, setup: PLAIN_TEXT, macroValue: () => null, speaker: '', initial: '', edited: () => {}, save: async () => {} });
             editor.view.focus();
             window['__stackTestEditor'] = editor;
         });
@@ -107,16 +107,8 @@ test.describe('stacked drawers', () => {
 
         await page.keyboard.press('Escape');
         await expect(page.locator('#stackTestEditorHost .cm-tooltip')).toHaveCount(0);
-        await page.locator('#stackTestEditorHost .cm-content').evaluate(content => {
-            const transfer = new DataTransfer();
-            transfer.setData('text/html', '<p>Hello <b>bold</b>.</p>');
-            transfer.setData('text/plain', 'Hello bold.');
-            content.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
-        });
-        await expect(page.locator('#stackTestEditorHost .live-paste-picker')).toBeVisible();
-        await expectOccludes(page, '.cm-tooltip', '#sheld');
         await page.evaluate(() => {
-            window['__stackTestEditor'].destroy();
+            window['__stackTestEditor'].stop();
             document.getElementById('stackTestEditorHost').remove();
         });
     });

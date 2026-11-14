@@ -1,12 +1,8 @@
 export * as state from '@codemirror/state';
 export * as view from '@codemirror/view';
-export * as language from '@codemirror/language';
 export * as commands from '@codemirror/commands';
 export * as search from '@codemirror/search';
 export * as autocomplete from '@codemirror/autocomplete';
-export * as langMarkdown from '@codemirror/lang-markdown';
-export * as lezerMarkdown from '@lezer/markdown';
-export * as lezerHighlight from '@lezer/highlight';
 export { textEditor } from '@pterror/interact-editor/text-editor';
 export { lookChanged, lookDecorations } from '@pterror/interact-editor/decorations';
 export { grammarLanguage } from '@pterror/interact-editor/grammar-language';

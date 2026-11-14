@@ -13,8 +13,6 @@ let tooltip = null;
 let hovered = null;
 /** @type {Element | null} */
 let pointed = null;
-/** @type {{ owner: object, el: Element } | null} */
-let beside = null;
 /** @type {Element | null} */
 let shownFor = null;
 let hoverTimer = 0;
@@ -85,7 +83,7 @@ function place() {
 }
 
 function update() {
-    const el = hovered ?? beside?.el ?? null;
+    const el = hovered;
     if (el === shownFor) return;
     shownFor = el;
     cancelAnimationFrame(frame);
@@ -103,17 +101,6 @@ function update() {
     dom.replaceChildren(...tooltipContent(el));
     if (dom.matches(':popover-open')) dom.hidePopover();
     place();
-}
-
-/**
- * @param {object} owner
- * @param {Element | null} el
- */
-export function setMacroBesideCursor(owner, el) {
-    if (el) beside = { owner, el };
-    else if (beside?.owner === owner) beside = null;
-    else return;
-    update();
 }
 
 /** @param {Element | null} el */

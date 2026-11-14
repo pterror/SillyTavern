@@ -18,11 +18,11 @@ import {
     formatKey,
     formatSteps,
 } from '../../live-editor-lib.js';
-import { liveSearch, showPresets } from '../live-editor/search.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
 import { macroPills } from './macros.js';
 import { savedText } from './saved-text.js';
+import { liveSearch, showPresets } from './search.js';
 import { macroSuggestions, mentionSuggestions } from './suggest.js';
 import { drawnText, grammarOf, lookOf, redrawEditor, TEXT_CLASS } from './surface.js';
 import { escapePastPendingSuggestions } from './escape.js';
@@ -241,7 +241,7 @@ export const editorPage = () => page;
  * @property {string} [className] classes of the element holding the editor and its toolbar
  * @property {string} [label] what the field is, for assistive technology
  * @property {string} [placeholder]
- * @property {() => import('../live-editor/search.js').PresetContext} [presetContext]
+ * @property {() => import('./search.js').PresetContext} [presetContext]
  */
 
 /**

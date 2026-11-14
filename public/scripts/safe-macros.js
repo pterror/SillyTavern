@@ -39,7 +39,7 @@ function macroName(inner) {
  * @param {string} text
  * @returns {{ start: number, end: number }[]}
  */
-export function topLevelMacroSpans(text) {
+function topLevelMacroSpans(text) {
     /** @type {{ start: number, end: number }[]} */
     const spans = [];
     let depth = 0;

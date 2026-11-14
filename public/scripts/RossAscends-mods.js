@@ -2,7 +2,6 @@ import { handleFieldEditKey } from './character-field-editor.js';
 import { currentPageMacroFacts } from './macro-values.js';
 import { askOnChatOpen, chatOpenPart } from './chat-open-parts.js';
 import { cardTokenTexts } from './card-token-texts.js';
-import { getFocusedField } from './live-editor/registry.js';
 import { chatBoxText, focusChatBox, setChatBoxPlaceholder } from './chat-box.js';
 import { t } from './i18n.js';
 import { DOMPurify, Bowser } from '../lib.js';
@@ -731,7 +730,8 @@ export function initRossMods() {
 
 
     function isInputElementInFocus() {
-        return getFocusedField() !== null || $(':focus').prop('contenteditable') == 'true';
+        const active = document.activeElement;
+        return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active instanceof HTMLElement && active.isContentEditable);
     }
 
     function isModifiedKeyboardEvent(event) {
@@ -760,7 +760,7 @@ export function initRossMods() {
             return;
         }
 
-        if (getFocusedField() == hotkeyTargets.dialogue_popup_input && !isMobile()) {
+        if (document.activeElement == hotkeyTargets.dialogue_popup_input && !isMobile()) {
             if (!event.shiftKey && !event.ctrlKey && event.key == 'Enter') {
                 event.preventDefault();
                 $('#dialogue_popup_ok').trigger('click');

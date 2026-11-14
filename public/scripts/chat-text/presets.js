@@ -1,8 +1,11 @@
-import { chatMarkdownParser } from './grammar.js';
+import { grammarOf } from './surface.js';
 import { t } from '../i18n.js';
 
 /** @typedef {import('./search.js').BuiltinPreset} BuiltinPreset */
 /** @typedef {import('./search.js').PresetContext} PresetContext */
+
+/** How presets read a text: markdown, with HTML tags as written */
+const GRAMMAR = { encodeTags: true };
 
 /**
  * @param {string} text
@@ -23,7 +26,7 @@ function applyEdits(text, edits) {
  * @returns {string}
  */
 export function removeItalics(text) {
-    const tree = chatMarkdownParser().parse(text);
+    const tree = grammarOf(GRAMMAR).parse(text);
     /** @type {{ from: number, to: number, insert: string }[]} */
     const edits = [];
     tree.iterate({
@@ -62,7 +65,7 @@ const UNTOUCHED_NODES = new Set(['InlineCode', 'FencedCode', 'CodeBlock', 'URL',
  * @returns {string}
  */
 export function typographyToAscii(text) {
-    const tree = chatMarkdownParser().parse(text);
+    const tree = grammarOf(GRAMMAR).parse(text);
     /** @type {{ from: number, to: number }[]} */
     const skip = [];
     tree.iterate({

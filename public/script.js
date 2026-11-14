@@ -204,7 +204,6 @@ import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
-import { getMountedTextarea } from './scripts/live-editor/registry.js';
 import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxMacros, chatBoxText, focusChatBox, forgetChatBoxChat, initChatBox, openingChatBox, takeChatBoxMacros, takeChatBoxPush, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
 import { endOwnerOf } from './scripts/chat-box-ends.js';
 import { chatBoxSetup } from './scripts/message-text.js';
@@ -5650,7 +5649,7 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
 
     delay(debounce_timeout.short).then(() => {
         const active = document.activeElement;
-        if (getMountedTextarea(active) || $(active).is('input:visible, textarea:visible') || (active instanceof HTMLElement && active.isContentEditable)) {
+        if ($(active).is('input:visible, textarea:visible') || (active instanceof HTMLElement && active.isContentEditable)) {
             return;
         }
         focusChatBox();
