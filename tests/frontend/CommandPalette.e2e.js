@@ -242,4 +242,54 @@ test.describe('commands', () => {
         await page.keyboard.press('Control+f');
         await expect(page.locator('.cm-search')).toBeVisible();
     });
+
+    test('undo, redo and select all run on the focused editor, by their keys and from the palette', async ({ page }) => {
+        await openChat(page);
+        const box = chatBox(page);
+        await box.click();
+        await page.keyboard.type('one two');
+        await expect(box).toHaveText('one two');
+        await page.keyboard.press(`${MOD}+z`);
+        await expect(box).not.toHaveText('one two');
+        await page.keyboard.press(`${MOD}+Shift+z`);
+        await expect(box).toHaveText('one two');
+        await page.keyboard.press(`${MOD}+z`);
+        await expect(box).not.toHaveText('one two');
+        await page.keyboard.press(`${MOD}+k`);
+        await page.keyboard.type('Redo');
+        await page.keyboard.press('Enter');
+        await expect(box).toHaveText('one two');
+        await page.keyboard.press(`${MOD}+k`);
+        await page.keyboard.type('Undo');
+        await page.keyboard.press('Enter');
+        await expect(box).not.toHaveText('one two');
+        await page.keyboard.press(`${MOD}+Shift+z`);
+        await expect(box).toHaveText('one two');
+        await page.keyboard.press(`${MOD}+a`);
+        await page.keyboard.type('x');
+        await expect(box).toHaveText('x');
+    });
+
+    test('Ctrl+Y redoes on a platform other than a Mac', async ({ page }) => {
+        await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'Linux x86_64' }));
+        await openChat(page);
+        const box = chatBox(page);
+        await box.click();
+        await page.keyboard.type('one two');
+        await page.keyboard.press('Control+z');
+        await expect(box).not.toHaveText('one two');
+        await page.keyboard.press('Control+y');
+        await expect(box).toHaveText('one two');
+    });
+
+    test('Ctrl+A outside an editor still selects the page text', async ({ page }) => {
+        await openChat(page);
+        await page.locator('body').click({ position: { x: 1, y: 1 } });
+        await page.keyboard.press(`${MOD}+a`);
+        const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+        expect(selected).toContain('second reply');
+        await page.keyboard.press('Shift+Slash');
+        const row = page.locator('.commandCheatsheet:popover-open [role=group] > div', { hasText: 'Select all' });
+        await expect(row).toHaveAttribute('aria-disabled', 'true');
+    });
 });

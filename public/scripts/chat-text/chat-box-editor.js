@@ -11,7 +11,7 @@ import {
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
 import { shownKeysOf } from './key-names.js';
-import { BROWSER_TEXT_AIDS, commandKeys, drawnWith, editTools, editorPage, findTool, formatTools, macroTool, pasteFor, shiftDelete, shownTools, toolbarFor } from './editor.js';
+import { BROWSER_TEXT_AIDS, commandKeys, drawnWith, editTools, editorKeymap, editorPage, findTool, formatTools, macroTool, pasteFor, shownTools, toolbarFor } from './editor.js';
 import { liveSearch } from './search.js';
 import { macroCursorTooltip, macroPills, macroValueRequests, openableMacros } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
@@ -20,12 +20,9 @@ import { escapePastPendingSuggestions } from './escape.js';
 import { editorTooltips } from './tooltips.js';
 
 const { EditorView, drawSelection, placeholder: placeholderText, keymap } = cmView;
-const { history, historyKeymap, defaultKeymap } = cmCommands;
+const { history } = cmCommands;
 const { Compartment } = cmState;
 const { completionStatus } = cmAutocomplete;
-
-/** Keys the page has for the box (Mod+Enter sends or regenerates), which CodeMirror's own keys would take first */
-const PAGE_KEYS = new Set(['Mod-Enter']);
 
 /**
  * @typedef {import('@codemirror/view').EditorView} View
@@ -83,7 +80,7 @@ export function chatBoxEditor({ parent, text, setup, macroValue, macroValues, la
             drawing.of(drawnWith(setup, pill)),
             EditorView.contentAttributes.of({ ...BROWSER_TEXT_AIDS, class: TEXT_CLASS, 'aria-multiline': 'true', 'aria-label': label }),
             history(),
-            keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
+            keymap.of(editorKeymap()),
             EditorView.lineWrapping,
             drawSelection(),
             caretInTextColor(),

@@ -33,7 +33,7 @@ import { escapePastPendingSuggestions } from './escape.js';
 import { editorTooltips } from './tooltips.js';
 
 const { EditorView, drawSelection, placeholder: placeholderText, keymap } = cmView;
-const { history, historyKeymap, defaultKeymap, deleteCharForward } = cmCommands;
+const { history, historyKeymap, defaultKeymap, deleteCharForward, undo, redo, selectAll } = cmCommands;
 const { openSearchPanel, findNext, findPrevious, selectSelectionMatches, selectNextOccurrence, gotoLine } = cmSearch;
 const { Compartment } = cmState;
 
@@ -71,11 +71,18 @@ const SEARCH_TOOLS = ['find'];
 /** @type {ReturnType<typeof modifierHeld> | undefined} one for every editor, so an editor taken out with its message holds nothing on the window */
 let shortcutsShown;
 
-/** Keys the page has for an editor (Mod+Enter accepts an edit), which CodeMirror's own keys would take first */
+/** Keys the page has for an editor (Mod+Enter accepts an edit or sends), which CodeMirror's own keys would take first */
 const PAGE_KEYS = new Set(['Mod-Enter']);
 
+/** CodeMirror's keys for the editor, less those the page binds as commands (undo, redo, select all) */
+export const editorKeymap = () => [
+    { key: 'Shift-Delete', run: shiftDelete },
+    ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '') && binding.run !== selectAll),
+    ...historyKeymap.filter(binding => binding.run !== undo && binding.run !== redo),
+];
+
 /** @type {import('@codemirror/view').Command} */
-export const shiftDelete = view => view.state.selection.ranges.every(range => range.empty) && deleteCharForward(view);
+const shiftDelete = view => view.state.selection.ranges.every(range => range.empty) && deleteCharForward(view);
 
 /**
  * Tab writes a tab character, or one at the start of each selected line; Shift+Tab takes one from each
@@ -223,6 +230,9 @@ export function editTools() {
         tool('selectMatches', 'fa-highlighter', selectSelectionMatches),
         tool('selectNextOccurrence', 'fa-i-cursor', selectNextOccurrence),
         tool('gotoLine', 'fa-hashtag', gotoLine),
+        tool('undo', 'fa-rotate-left', undo),
+        tool('redo', 'fa-rotate-right', redo),
+        tool('selectAll', 'fa-object-group', selectAll),
         tool('pasteMode', 'fa-paste', cyclePaste, hasPasteChoice),
     ];
 }
@@ -411,7 +421,7 @@ export function chatEditor({ parent, setup, macroValue, macroValues, speaker, pe
             drawing.of(drawnWith(setup, pill)),
             EditorView.contentAttributes.of({ class: TEXT_CLASS }),
             history(),
-            keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
+            keymap.of(editorKeymap()),
             EditorView.lineWrapping,
             boxSize('75dvh'),
             editorTooltips(),
