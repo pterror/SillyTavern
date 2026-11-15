@@ -15,6 +15,8 @@ Every named thing is a `thing`, the value `Named.thing` carries and the name's c
 | a world | the book's entity id | the book (`TYPE.book`) | the book's field `\u0001look`, a world file's top-level `look` |
 | a character | its entity id | the character (`TYPE.character`) | the character's field `\u0001look`; not part of its card |
 | a persona | its entity id | the persona (`TYPE.persona`) | the persona's field `\u0001look` |
+| a tag | its entity id | the tag (`TYPE.tag`) | the tag's field `\u0001look`; not part of its definition or a tag backup |
+| a group | its entity id | the group (`TYPE.group`) | the group's field `\u0001look` |
 | a bookmark | `bookmark-<id>` | a chat position | an entity of its own, `TYPE.look` keyed `bookmark:<id>` |
 
 Entity ids are unique across every entity type of a store. A bookmark is not an entity: it is a position of the chat
@@ -23,10 +25,19 @@ it is, and its look is an entity of its own under the bookmark's id. Deleting a 
 root bookmarks with the chat, deletes its look in the same commit (`bookmarkLookDeletes`); a bookmark that goes with
 its message leaves its look entity behind, which nothing can reach again, since position ids are never given twice.
 
-A character's and a persona's other writes never touch their look: a card's write and a settings save each leave the
-field out of what they compare (`withoutLook`), and neither their reads nor the card see it. An entry's and a world's
-look is part of what their whole writes write, so it passes the sanitizer there too (`lookToStore` in
+A character's, a persona's, a tag's and a group's other writes never touch their look: a card's write, a settings
+save, a tag's write (`tagRecords`) and a group's (`groupRecords`) each leave the field out of what they compare
+(`withoutLook`), and neither their reads, the card, a tag's definition nor a group object see it. An entry's and a
+world's look is part of what their whole writes write, so it passes the sanitizer there too (`lookToStore` in
 `world-info-engine.js`): an import, a card book, a script's save.
+
+A tag's formatting is its look. Upstream formats a tag by two fields, `color` (its chip) and `color2` (its text); a
+tag written with them (a create, an edit, a backup restored, settings imported) has them written into its look's rest
+layer as `background-color` and `color`, over what the look sets, and they are no fields of the tag
+(`tagLookWritten`, `src/tag-looks.js`). Colors an older server stored in fields of their own (`tag:color`,
+`tag:color2`) go under the look instead, since any look set since is newer: on the tag's next write, or all at once by
+`scripts/convert-tag-looks.mjs`, run with the server stopped. A color the sanitizer refuses is dropped with its field.
+A tag's definition carries no colors.
 
 ## The stored look
 
@@ -51,8 +62,9 @@ and the layers are declarations on the name's own span.
 
 ### The small picture
 
-A thing's small picture is its own picture (a character's avatar, a persona's image; an entry, a world and a bookmark
-have none yet) unless its look says otherwise: `picture.crop` is the part shown, as fractions of the picture's width
+A thing's small picture is its own picture (a character's avatar, a persona's image; an entry, a world, a bookmark, a
+tag and a group have none yet) unless its look says otherwise: `picture.crop` is the part shown, as fractions of the
+picture's width
 and height (each side at least `CROP_SIDE_AT_LEAST`, 0.05), and `picture.image` another image drawn instead, by id.
 The Look screen writes both on the thing's own look (`looks.cropPicture`, `looks.uploadPicture`,
 `looks.useOwnPicture`), so they are stored with the thing like the rest of its look. An image is stored once by its
@@ -144,7 +156,7 @@ word is allowed (`to right`, a color's name). The CSS-wide words (`inherit` and 
 | `font-weight` | 1 to 1000, `normal`, `bold`, `bolder`, `lighter` | |
 | `font-style` | `normal`, `italic`, `oblique` | |
 | `font-variant-caps` | the caps words | small capitals |
-| `font-family` | one font, the app's (`noto-sans`) or one of the thing's world's (its id, quoted), and generic fallbacks | a look names a font, the app writes its `@font-face`; a theme, a character, a persona, a bookmark and a user's shared look have no world, so only the app's |
+| `font-family` | one font, the app's (`noto-sans`) or one of the thing's world's (its id, quoted), and generic fallbacks | a look names a font, the app writes its `@font-face`; a theme, a character, a persona, a bookmark, a tag, a group and a user's shared look have no world, so only the app's |
 | `opacity` | 0 to 1, or 0% to 100% | |
 | `animation-name` | `none`, `shimmer`, `breathe`, `flicker`, `drift`, `float` | only the app's keyframes (`look-<name>`), so a look can't move or size the span by its own |
 | `animation-duration`, `-delay`, `-timing-function`, `-iteration-count`, `-direction`, `-fill-mode`, `-play-state` | times, timing functions, their words | |
@@ -241,17 +253,30 @@ places as what the tab draws (`pageLooks` in `src/ui-wiring.js`):
 
 | Place | Answer | Its things |
 |---|---|---|
-| `page.characters` | `/api/characters/query` asked with `draws` (rows or hashes; the hashes carry them after everything else, flag `0b1000000`) | the page's characters and its groups' members |
+| `page.characters` | `/api/characters/query` asked with `draws` (rows or hashes; the hashes carry them after everything else, flag `0b1000000`) | the page's characters, its groups and their members |
 | `page.groupCandidates` | the same, for the group editor's candidates | the same |
-| `page.chat` | `/api/chats/open` | the chat's character, or its group's members |
+| `page.chat` | `/api/chats/open` | the chat's character, or its group and the group's members |
 | `page.personas` | `/api/avatars/get` (also as a chat open's part) | every persona, with `things` by avatar |
 | `page.chats` | `/api/chats/search` (the chat picker; a later page adds) | its bookmarks |
-| `page.recent` | `/api/chats/recent` (an older page adds) | the recent chats' characters and bookmarks |
+| `page.recent` | `/api/chats/recent` (an older page adds) | the recent chats' characters, groups and bookmarks |
+| `page.tags` | every answer that carries tag definitions: `/api/tags/query`, `by-ids` (also the ones `known` leaves out), `by-names`, `changes`, `create`, `delete` (the tag merged into), a character import's (`tag_looks`) | each tag answered, kept with the ones before, since the page keeps one store of the tags it holds and draws them anywhere |
 | `page.chatLinks` | every answer that carries a chat's messages (Names in the chat, below) | the entries the messages' names link |
 
-A character's thing comes with it (`thing` on every character object and list row); a persona's from the persona
-answer's `things`; a bookmark's with the chat row that names it (`thing`, `label_thing`). A list page asked with `draws`
-is answered whole even when its token is unchanged, since its looks are part of the answer.
+A character's thing comes with it (`thing` on every character object and list row); a group's likewise (`thing` on
+every group object and list row); a tag's with its definition (`thing`, never stored: a write and a restore leave it
+out, a backup has none); a persona's from the persona answer's `things`; a bookmark's with the chat row that names it
+(`thing`, `label_thing`). A list page asked with `draws` is answered whole even when its token is unchanged, since its
+looks are part of the answer.
+
+A tag is drawn through the renderer wherever the page draws one: its chips (the filter bars, the rows, the editors, a
+merge's target), the Manage tags rows (which open its Look screen), the add-tag suggestions (`_renderItem`), the merge
+picker (select2's templates), the search pills and their picker, the folder switcher and the saved views' folders, and
+the worldbuilding character filter (`FilteredTag.named`). A group is drawn so in its list row, the heading of the open
+group (whose look button opens its Look screen, as a character's does) and the recent chats.
+
+A look written by a write of its thing's own, not by the looks area (a tag restored with upstream's colors, a world
+imported), is pushed as the looks area's edits are: a commit that writes a `\u0001look` field changes `looks.drawn` for
+every tab of the user (`src/ui-wiring.js`).
 
 ### Names in the chat
 
@@ -371,6 +396,12 @@ comes every 1,047 entries (was 1,232), and a selection holds 1,571 picked entrie
 - Removing a font from a world, and removing a font file no world lists.
 - Names drawn in a `<select>`'s options or a `title` (the world link popups, the world button's title) can't be drawn
   by the renderer; they stay plain until those controls are drawn as lists.
+- A slash command's suggestions draw a name as one span per letter, for their match highlighting, so a tag's name
+  there stays plain; so do the saved-view picker's label (kept as text) and a group's name field.
+- A tag's look styles its name's own span, inside the chip's padding: a converted chip color paints the name, not the
+  whole chip.
+- The Look screen is a popover, and the Manage tags dialog is modal, which leaves everything outside it inert: a tag's
+  Look screen opened from its row shows over the dialog but takes no input while the dialog is open.
 - A name in the unsent message.
 - The entries of a card's own book are not linked in the chat: they don't open on the worldbuilding page.
 - A message is looked through at about one read per character that isn't white space, in each world with names (a
