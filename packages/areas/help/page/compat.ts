@@ -1,6 +1,5 @@
 import { createSignal } from 'solid-js';
 import type { Client } from '@st/page/client';
-import { HOTKEYS_VIEW } from '../protocol.ts';
 
 export function helpCompat(client: Client) {
     const [shown, setShown] = createSignal(false);
@@ -21,9 +20,6 @@ export function helpCompat(client: Client) {
         close() {
             setShown(false);
             void client.send('help.close', {});
-        },
-        async hotkeysRead() {
-            if (client.version(HOTKEYS_VIEW) === 0) await client.reread(HOTKEYS_VIEW);
         },
     };
 }

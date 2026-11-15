@@ -13,10 +13,12 @@ import {
     untrack,
 } from 'solid-js';
 import type { Accessor, JSX } from 'solid-js';
+import { shownBindings } from '@st/page/commands';
+import type { Command } from '@st/page/commands';
 import { useUi } from '@st/page/context';
-import { HOTKEYS_VIEW, PANEL_VIEW, TOPICS } from '../protocol.ts';
-import type { HotkeysView, PanelView, Topic } from '../protocol.ts';
-import { Formatting, Overview, TITLES, hotkeysMatching, said } from './content.tsx';
+import { PANEL_VIEW, TOPICS } from '../protocol.ts';
+import type { PanelView, Topic } from '../protocol.ts';
+import { Formatting, Overview, TITLES, said } from './content.tsx';
 import type { T } from './content.tsx';
 
 /** The lists the old page holds: its slash commands and its macros. */
@@ -50,47 +52,70 @@ export function Help(props: Handlers & { shown: boolean }) {
 function Reader(props: Handlers) {
     const { client } = useUi();
     const panel = client.view<PanelView>(PANEL_VIEW);
-    const hotkeys = client.view<HotkeysView>(HOTKEYS_VIEW);
     const open = () => {
         const view = panel();
         return view?.open === true ? view : null;
     };
     return (
-        <Show when={open() !== null && hotkeys() !== undefined}>
-            <Panel
-                view={() => open() as Open}
-                markdown={() => hotkeys()?.markdown === true}
-                old={props.old}
-                onRaise={props.onRaise}
-                onClose={props.onClose}
-            />
+        <Show when={open() !== null}>
+            <Panel view={() => open() as Open} old={props.old} onRaise={props.onRaise} onClose={props.onClose} />
         </Show>
     );
 }
 
-export function Hotkeys() {
-    const { client } = useUi();
-    const view = client.view<HotkeysView>(HOTKEYS_VIEW);
-    return <Show when={view()}>{(shown) => <HotkeyList query="" markdown={shown().markdown} />}</Show>;
+type HotkeyGroup = { category: string; hotkeys: { label: string; bindings: readonly (readonly string[])[] }[] };
+
+/** The registry's commands, as of its last change; heard until the calling owner is cleaned up */
+function registeredCommands(): Accessor<readonly Command[]> {
+    const { commands } = useUi();
+    const [all, setAll] = createSignal(commands.all());
+    onCleanup(commands.watch(() => setAll(commands.all())));
+    return all;
 }
 
-function HotkeyList(props: { query: string; markdown: boolean }) {
-    const { t } = useUi();
+/**
+ * The commands with a binding whose label, category or keys as shown hold `query` (ignoring case), grouped by
+ * category in the order each first appears; every one with a binding for an empty query.
+ */
+function hotkeysMatching(commands: readonly Command[], query: string): HotkeyGroup[] {
+    const needle = query.trim().toLowerCase();
+    const groups = new Map<string, HotkeyGroup>();
+    for (const command of commands) {
+        const bindings = shownBindings(command);
+        if (bindings.length === 0) continue;
+        const keys = bindings.map((parts) => parts.join('+'));
+        if (needle !== '' && ![command.label, command.category, ...keys].join(' ').toLowerCase().includes(needle))
+            continue;
+        let group = groups.get(command.category);
+        if (!group) {
+            group = { category: command.category, hotkeys: [] };
+            groups.set(command.category, group);
+        }
+        group.hotkeys.push({ label: command.label, bindings });
+    }
+    return [...groups.values()];
+}
+
+function HotkeyList(props: { query: string }) {
+    const commands = registeredCommands();
     return (
         <div class="hotkeyList">
-            <For each={hotkeysMatching(t, props.query)}>
+            <For each={hotkeysMatching(commands(), props.query)}>
                 {(group) => (
                     <div class="hotkeyGroup">
                         <div class="hotkeyGroupTitle">{group.category}</div>
                         <ul>
                             <For each={group.hotkeys}>
                                 {(hotkey) => (
-                                    <li
-                                        class="hotkeyItem"
-                                        classList={{ hotkeyInactive: hotkey.markdown && !props.markdown }}
-                                    >
+                                    <li class="hotkeyItem">
                                         <span class="hotkeyKeys">
-                                            <For each={hotkey.combos}>{(combo) => <kbd>{combo}</kbd>}</For>
+                                            <For each={hotkey.bindings}>
+                                                {(parts) => (
+                                                    <span>
+                                                        <For each={parts}>{(part) => <kbd>{part}</kbd>}</For>
+                                                    </span>
+                                                )}
+                                            </For>
                                         </span>
                                         <span class="hotkeyLabel">{hotkey.label}</span>
                                     </li>
@@ -128,7 +153,7 @@ type Listed = { topic: Topic; count?: number };
 
 const EVERY_TOPIC: Listed[] = TOPICS.map((topic) => ({ topic }));
 
-function Panel(props: Handlers & { view: Accessor<Open>; markdown: Accessor<boolean> }) {
+function Panel(props: Handlers & { view: Accessor<Open> }) {
     const { client, t } = useUi();
     const [navOpen, setNavOpen] = createSignal(false);
     // The page's own: a search filters what the panel holds, asking the server nothing.
@@ -150,7 +175,7 @@ function Panel(props: Handlers & { view: Accessor<Open>; markdown: Accessor<bool
         }),
     );
 
-    const found = createMemo(() => (searching() ? search(t, query, props.markdown, props.old, show) : null));
+    const found = createMemo(() => (searching() ? search(t, query, props.old, show) : null));
     const settled = () => found()?.every((f) => f.count() !== null) === true;
     const matched = () => (found() ?? []).filter((f) => (f.count() ?? 0) > 0);
     const listed = createMemo<Listed[]>((before) => {
@@ -222,14 +247,7 @@ function Panel(props: Handlers & { view: Accessor<Open>; markdown: Accessor<bool
                         when={found()}
                         fallback={
                             <Show when={topic()} keyed>
-                                {(shown) => (
-                                    <TopicSection
-                                        topic={shown}
-                                        markdown={props.markdown()}
-                                        old={props.old}
-                                        onTopic={show}
-                                    />
-                                )}
+                                {(shown) => <TopicSection topic={shown} old={props.old} onTopic={show} />}
                             </Show>
                         }
                     >
@@ -260,7 +278,7 @@ function Panel(props: Handlers & { view: Accessor<Open>; markdown: Accessor<bool
     return null;
 }
 
-function TopicSection(props: { topic: Topic; markdown: boolean; old: OldPage; onTopic: (topic: Topic) => void }) {
+function TopicSection(props: { topic: Topic; old: OldPage; onTopic: (topic: Topic) => void }) {
     const { t } = useUi();
     const [failed, setFailed] = createSignal(false);
     let section: HTMLDivElement | undefined;
@@ -283,7 +301,7 @@ function TopicSection(props: { topic: Topic; markdown: boolean; old: OldPage; on
                     <Formatting t={t} />
                 </Match>
                 <Match when={props.topic === 'hotkeys'}>
-                    <HotkeyList query="" markdown={props.markdown} />
+                    <HotkeyList query="" />
                 </Match>
             </Switch>
         </div>
@@ -291,13 +309,7 @@ function TopicSection(props: { topic: Topic; markdown: boolean; old: OldPage; on
 }
 
 /** Every topic's part matching the query, each with how many of its lines match: null until known. */
-function search(
-    t: T,
-    query: Accessor<string>,
-    markdown: Accessor<boolean>,
-    old: OldPage,
-    onTopic: (topic: Topic) => void,
-): Found[] {
+function search(t: T, query: Accessor<string>, old: OldPage, onTopic: (topic: Topic) => void): Found[] {
     const section = (topic: Topic, count: Accessor<number | null>, body: () => JSX.Element) => (
         <div class="helpSection" data-topic={topic} hidden={(count() ?? 0) === 0}>
             <h3 class="helpSectionTitle">{said(t, TITLES[topic])}</h3>
@@ -335,13 +347,15 @@ function search(
             case 'format':
                 return document(topic, () => <Formatting t={t} />);
             case 'hotkeys': {
-                const count = () => hotkeysMatching(t, query()).reduce((sum, group) => sum + group.hotkeys.length, 0);
+                const commands = registeredCommands();
+                const count = () =>
+                    hotkeysMatching(commands(), query()).reduce((sum, group) => sum + group.hotkeys.length, 0);
                 return {
                     topic,
                     count,
                     element: section(topic, count, () => (
                         <div>
-                            <HotkeyList query={query()} markdown={markdown()} />
+                            <HotkeyList query={query()} />
                         </div>
                     )),
                 };

@@ -159,15 +159,13 @@ test.describe('Hotkeys', () => {
 
     const overlay = page => page.locator('.hotkeyOverlay');
 
-    test('the Hotkeys topic lists every handled hotkey, greying out ones that don\'t work right now', async ({ page }) => {
-        await page.evaluate(() => { window['stTest'].context().powerUserSettings.enable_md_hotkeys = false; });
+    test('the Hotkeys topic lists the registered commands by category, each with its keys', async ({ page }) => {
         await runSlash(page, '/help hotkeys');
         const content = page.locator('.helpLayer .helpContent');
-        for (const combo of ['Ctrl+Enter', 'Ctrl+Space', 'Ctrl+F', 'Hold Ctrl']) {
-            await expect(content.locator('kbd', { hasText: combo }).first(), combo).toBeVisible();
-        }
-        await expect(content.locator('.hotkeyItem', { has: page.locator('kbd', { hasText: /^Ctrl\+B$/ }) })).toHaveClass(/hotkeyInactive/);
-        await expect(content.locator('.hotkeyItem', { has: page.locator('kbd', { hasText: /^Ctrl\+Space$/ }) })).not.toHaveClass(/hotkeyInactive/);
+        const group = category => content.locator('.hotkeyGroup', { has: page.locator('.hotkeyGroupTitle', { hasText: new RegExp(`^${category}$`) }) });
+        const row = (category, label) => group(category).locator('.hotkeyItem', { has: page.locator('.hotkeyLabel', { hasText: new RegExp(`^${label}$`) }) });
+        await expect(row('Chat', 'Send message').locator('.hotkeyKeys > span').first().locator('kbd')).toHaveText(['↵']);
+        await expect(row('General', 'Command palette').locator('.hotkeyKeys > span').first().locator('kbd')).toHaveText(['Ctrl', 'K']);
     });
 
     test('holding Ctrl on its own shows the list without taking focus; letting go hides it', async ({ page }) => {

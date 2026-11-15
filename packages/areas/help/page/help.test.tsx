@@ -1,24 +1,33 @@
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import { expect, test } from 'vite-plus/test';
-import { HOTKEYS_VIEW, PANEL_VIEW } from '../protocol.ts';
-import type { HotkeysView, PanelView } from '../protocol.ts';
+import { PANEL_VIEW } from '../protocol.ts';
+import type { PanelView } from '../protocol.ts';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
 import { createCommands } from '@st/page/commands';
-import { Help, Hotkeys } from './Help.tsx';
+import type { Command } from '@st/page/commands';
+import { Help } from './Help.tsx';
 import type { Browser, OldPage } from './Help.tsx';
 import { helpCompat } from './compat.ts';
 
 const COMMANDS: Record<Browser, string[]> = { slash: ['echo', 'help', 'run'], macros: ['user', 'char'] };
 
-function stand(
-    first: PanelView = { open: false },
-    markdown = false,
-    browsersLoaded: Promise<void> = Promise.resolve(),
-) {
+const run = () => undefined;
+
+const REGISTERED: Command[] = [
+    { id: 'chat.send', label: 'Send message', category: 'Chat', keys: ['Enter'], run },
+    { id: 'palette.open', label: 'Command palette', category: 'General', keys: ['ctrl+k'], run },
+    { id: 'chat.regenerate', label: 'Regenerate the last reply', category: 'Chat', keys: ['ctrl+Enter'], run },
+    { id: 'chat.unbound', label: 'Delete the chat', category: 'Chat', run },
+    { id: 'menu.only', label: 'Copy the message', category: 'Message', run },
+    { id: 'chat.swipe', label: 'Swipe right', category: 'Chat', keys: ['ArrowRight', 'shift+ArrowRight'], run },
+];
+
+function stand(first: PanelView = { open: false }, browsersLoaded: Promise<void> = Promise.resolve()) {
     const [panel, setPanel] = createSignal<PanelView>(first);
-    const [hotkeys, setHotkeys] = createSignal<HotkeysView>({ markdown });
+    const commands = createCommands();
+    commands.register(REGISTERED);
     const sent: { type: string; payload: unknown }[] = [];
     const read: string[] = [];
     let held = false;
@@ -33,9 +42,7 @@ function stand(
         },
         view: <T,>(key: string) => {
             read.push(key);
-            return (key === PANEL_VIEW ? panel : key === HOTKEYS_VIEW ? hotkeys : () => undefined) as () =>
-                | T
-                | undefined;
+            return (key === PANEL_VIEW ? panel : () => undefined) as () => T | undefined;
         },
         receive: () => {},
         reconnected: async () => {},
@@ -77,7 +84,7 @@ function stand(
     document.body.append(host);
     const dispose = render(
         () => (
-            <UiProvider value={{ client, commands: createCommands(), t: (text) => text }}>
+            <UiProvider value={{ client, commands, t: (text) => text }}>
                 <Help
                     shown={compat.shown()}
                     old={old}
@@ -100,8 +107,8 @@ function stand(
     };
     return {
         compat,
+        commands,
         setPanel,
-        setHotkeys,
         sent,
         read,
         layers,
@@ -169,19 +176,81 @@ test('the topic shown is the one the view names; a pick and an overview link ask
     s.dispose();
 });
 
-test('the markdown hotkeys are greyed out while they are off', async () => {
-    const s = stand({ open: false }, false);
+const groups = (root: Element) =>
+    [...root.querySelectorAll('.hotkeyGroup')].map((group) => ({
+        category: text(group.querySelector('.hotkeyGroupTitle')),
+        hotkeys: [...group.querySelectorAll('.hotkeyItem')].map((item) => ({
+            keys: [...item.querySelectorAll('.hotkeyKeys > span')].map((binding) =>
+                [...binding.querySelectorAll('kbd')].map((kbd) => kbd.textContent),
+            ),
+            label: text(item.querySelector('.hotkeyLabel')),
+        })),
+    }));
+
+test('the hotkeys topic lists the registered commands that have keys, by category in the order each first appears, and follows the registry', async () => {
+    const s = stand();
     await s.compat.open('hotkeys');
     s.setPanel({ open: true, topic: 'hotkeys' });
     const root = s.panelElement() as HTMLElement;
-    const item = (combo: string) =>
-        [...root.querySelectorAll('.hotkeyItem')].find((li) =>
-            [...li.querySelectorAll('kbd')].some((k) => k.textContent === combo),
-        );
-    expect(item('Ctrl+B')?.classList.contains('hotkeyInactive')).toBe(true);
-    expect(item('Ctrl+Space')?.classList.contains('hotkeyInactive')).toBe(false);
-    s.setHotkeys({ markdown: true });
-    expect(item('Ctrl+B')?.classList.contains('hotkeyInactive')).toBe(false);
+    expect(groups(root)).toEqual([
+        {
+            category: 'Chat',
+            hotkeys: [
+                { keys: [['↵']], label: 'Send message' },
+                { keys: [['Ctrl', '↵']], label: 'Regenerate the last reply' },
+                { keys: [['→'], ['Shift', '→']], label: 'Swipe right' },
+            ],
+        },
+        { category: 'General', hotkeys: [{ keys: [['Ctrl', 'K']], label: 'Command palette' }] },
+    ]);
+
+    const stop = s.commands.register([
+        { id: 'field.save', label: 'Save the field', category: 'Editing', keys: ['ctrl+s'], run },
+    ]);
+    expect(groups(root).map((group) => group.category)).toEqual(['Chat', 'General', 'Editing']);
+    s.commands.keepBindingsIn({ load: () => ({}), save: () => undefined });
+    s.commands.overrides.set({ 'palette.open': { keys: ['ctrl+p'] } });
+    expect(groups(root)[1]).toEqual({
+        category: 'General',
+        hotkeys: [{ keys: [['Ctrl', 'P']], label: 'Command palette' }],
+    });
+    stop();
+    expect(groups(root).map((group) => group.category)).toEqual(['Chat', 'General']);
+    s.dispose();
+});
+
+test('a search finds hotkeys by label, category and keys as shown, and counts the ones it finds', async () => {
+    const s = stand();
+    await s.compat.open('');
+    const root = s.panelElement() as HTMLElement;
+    const input = root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement;
+    const labels = () => groups(root).flatMap((group) => group.hotkeys.map((hotkey) => hotkey.label));
+    const count = () => text(root.querySelector('.helpTopic[data-topic="hotkeys"] .helpTopicCount'));
+
+    type(input, 'regenerate');
+    await flush();
+    expect(labels()).toEqual(['Regenerate the last reply']);
+    expect(count()).toBe('1');
+
+    type(input, 'general');
+    await flush();
+    expect(labels()).toEqual(['Command palette']);
+
+    type(input, 'ctrl+k');
+    await flush();
+    expect(labels()).toEqual(['Command palette']);
+
+    type(input, 'delete the chat');
+    await flush();
+    expect(topics(root)).not.toContain('hotkeys');
+
+    type(input, 'swipe');
+    await flush();
+    expect(count()).toBe('1');
+    s.commands.register([{ id: 'chat.swipeLeft', label: 'Swipe left', category: 'Chat', keys: ['ArrowLeft'], run }]);
+    await flush();
+    expect(labels()).toEqual(['Swipe right', 'Swipe left']);
+    expect(count()).toBe('2');
     s.dispose();
 });
 
@@ -191,11 +260,11 @@ test('a search filters what the panel holds as it is typed, asking the server no
     const root = s.panelElement() as HTMLElement;
     const input = root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement;
     const sentBefore = s.sent.length;
-    type(input, 'autocomplete');
+    type(input, 'chat');
     await flush();
     expect(text(root.querySelector('.helpHeaderTitle'))).toBe('Search results');
     expect(topics(root)).toEqual(['hotkeys']);
-    expect(text(root.querySelector('.helpTopic[data-topic="hotkeys"] .helpTopicCount'))).toBe('4');
+    expect(text(root.querySelector('.helpTopic[data-topic="hotkeys"] .helpTopicCount'))).toBe('3');
     const section = (topic: string) => root.querySelector<HTMLElement>(`.helpSection[data-topic="${topic}"]`);
     expect(section('hotkeys')?.hidden).toBe(false);
     expect(section('macros')?.hidden).toBe(true);
@@ -243,10 +312,10 @@ test('a topic shown ends the search', async () => {
 test('while every topic is being counted, the side menu keeps the topics it listed before', async () => {
     let load = () => {};
     const loaded = new Promise<void>((resolve) => (load = resolve));
-    const s = stand({ open: false }, false, loaded);
+    const s = stand({ open: false }, loaded);
     await s.compat.open('');
     const root = s.panelElement() as HTMLElement;
-    type(root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement, 'autocomplete');
+    type(root.querySelector<HTMLInputElement>('.helpSearch') as HTMLInputElement, 'chat');
     await flush();
     expect(topics(root)).toEqual(['overview', 'slash', 'format', 'hotkeys', 'macros']);
     expect(root.querySelector('.helpTopic.active')?.getAttribute('data-topic')).toBe('overview');
@@ -285,21 +354,4 @@ test('help the server says is closed closes here too', async () => {
     expect(s.layers[0]?.closed).toBe(true);
     expect(s.sent.filter((sent) => sent.type === 'help.close')).toHaveLength(0);
     s.dispose();
-});
-
-test('the hotkeys list drawn alone shows the view it reads', () => {
-    const [hotkeys] = createSignal<HotkeysView>({ markdown: true });
-    const client = { view: () => hotkeys } as unknown as Client;
-    const host = document.createElement('div');
-    const dispose = render(
-        () => (
-            <UiProvider value={{ client, commands: createCommands(), t: (text) => text }}>
-                <Hotkeys />
-            </UiProvider>
-        ),
-        host,
-    );
-    expect(host.querySelectorAll('.hotkeyGroup').length).toBeGreaterThan(3);
-    expect(host.querySelector('.hotkeyInactive')).toBeNull();
-    dispose();
 });

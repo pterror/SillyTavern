@@ -38,7 +38,7 @@ import { Activations, activationsCompat } from '@st/activations/page';
 import type { Look as ActivationsLook, OldPage as ActivationsOldPage } from '@st/activations/page';
 import { UsageStats } from '@st/usage-stats/page';
 import type { Buttons as UsageStatsButtons, OldPage as UsageStatsOldPage } from '@st/usage-stats/page';
-import { Help, Hotkeys, helpCompat } from '@st/help/page';
+import { Help, helpCompat } from '@st/help/page';
 import { LookScreen, looksCompat } from '@st/looks/page';
 import { Worldbuilding, worldbuildingCompat } from '@st/worldbuilding/page';
 import type { OldPage as HelpOldPage } from '@st/help/page';
@@ -194,11 +194,6 @@ export function start(options: StartOptions) {
         worldbuilding,
         help: {
             open: (name: string) => help.open(name),
-            /** @returns what takes the list off again */
-            hotkeys: async (into: HTMLElement): Promise<() => void> => {
-                await help.hotkeysRead();
-                return mount(into, () => <Hotkeys />);
-            },
         },
         names: {
             element: nameElement,

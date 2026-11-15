@@ -2018,10 +2018,6 @@ input[type="range"].macro-colors-hue {
     flex: 0 0 auto;
 }
 
-.hotkeyInactive {
-    opacity: 0.45;
-}
-
 /* The command palette, the right-click menu and the cheatsheet (packages/page/src/command-surfaces.ts) */
 .commandPalette:not(:popover-open),
 .commandMenu:not(:popover-open),

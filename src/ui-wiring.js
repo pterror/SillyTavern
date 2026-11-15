@@ -14,7 +14,6 @@ import { usageStatsArea } from '@st/usage-stats/server';
 import { VIEW as USAGE_STATS_VIEW } from '@st/usage-stats/protocol';
 import { STATS_BACKUP_FILE } from './old-stats-file.js';
 import { helpArea } from '@st/help/server';
-import { HOTKEYS_VIEW } from '@st/help/protocol';
 import { looksPorts } from './looks-store.js';
 import { chatReadsBook, resolveChatLinkLooks } from './chat-links.js';
 import { sessionHeaderOf } from './request-session.js';
@@ -29,7 +28,7 @@ import { keysThatBroughtUp } from './world-info/activation-record.js';
 import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
 import { WORLD_INFO_GLOBAL_DEFAULTS, worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
-import { readSettingsFor, readUserSettings } from './settings-reads.js';
+import { readUserSettings } from './settings-reads.js';
 
 import { onUserStoreOpened, userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
@@ -247,8 +246,6 @@ const backgroundPorts = {
 };
 
 export const SETTINGS_VIEWS = ['settings'];
-
-export const HELP_SETTINGS_VIEWS = [HOTKEYS_VIEW];
 
 export const WORLD_LIST_VIEWS = ['worldbuilding.worlds', 'worldbuilding.world'];
 
@@ -738,17 +735,7 @@ const worldbuildingPorts = {
     },
 };
 
-const MARKDOWN_HOTKEYS = 'power_user.enable_md_hotkeys';
-
-/** @type {import('@st/help/server').Ports} */
-const helpPorts = {
-    async markdownHotkeys(context) {
-        const owner = context.chat ? await settingsPorts.ownerOf(context.user, context.chat) : null;
-        return readSettingsFor(directoriesOf(context.user), contextOf(owner), [MARKDOWN_HOTKEYS])[MARKDOWN_HOTKEYS] === true;
-    },
-};
-
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts), looks.area, usageStats.area, helpArea(helpPorts)], {
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts), looks.area, usageStats.area, helpArea()], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);

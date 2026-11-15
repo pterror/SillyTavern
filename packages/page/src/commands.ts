@@ -1,4 +1,5 @@
 import { bindingLookup } from '@pterror/interact-keybinds/binding-lookup';
+import { bindingParts } from '@pterror/interact-keybinds/binding-parts';
 import { bindingStore } from '@pterror/interact-keybinds/binding-store';
 import { bound } from '@pterror/interact-keybinds/bound';
 import { findConflict } from '@pterror/interact-keybinds/find-conflict';
@@ -76,6 +77,14 @@ function parsable(command: Command): Command {
 /** A key something else already took (CodeMirror accepting a suggestion), or one an input method is composing */
 function taken(event: Event): boolean {
     return event.defaultPrevented || (event instanceof KeyboardEvent && event.isComposing);
+}
+
+/** A command's bindings as people see them: one list of parts (`Ctrl`, `K`) per binding */
+export function shownBindings(command: Pick<Command, 'keys' | 'mouse'>): readonly (readonly string[])[] {
+    return bindingParts({
+        ...(command.keys ? { keys: command.keys.filter(parses(keyLookup)) } : {}),
+        ...(command.mouse ? { mouse: command.mouse.filter(parses(mouseLookup)) } : {}),
+    });
 }
 
 export type Commands = ReturnType<typeof createCommands>;

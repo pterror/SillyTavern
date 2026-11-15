@@ -1,19 +1,13 @@
 import { expect, test } from 'vite-plus/test';
-import { HOTKEYS_VIEW, PANEL_VIEW } from './protocol.ts';
+import { PANEL_VIEW } from './protocol.ts';
 import { helpArea, topicNamed } from './server.ts';
 import type { ActionContext, User, ViewContext } from '@st/server-ui';
 
 const user: User = { handle: 'u', directories: { root: '/u' } };
 const tab = (session: string): ActionContext => ({ user, session, chat: null, upload: null });
 
-function stand(markdown = false) {
-    const asked: ViewContext[] = [];
-    const area = helpArea({
-        markdownHotkeys: async (context) => {
-            asked.push(context);
-            return markdown;
-        },
-    });
+function stand() {
+    const area = helpArea();
     const run = (type: string, context: ActionContext, payload: unknown) => {
         const action = area.actions[type];
         if (!action) throw new Error(`no ${type}`);
@@ -24,7 +18,7 @@ function stand(markdown = false) {
         if (!reader) throw new Error(`no ${key}`);
         return reader(context) as Promise<unknown>;
     };
-    return { area, run, read, asked };
+    return { area, run, read };
 }
 
 test('every name /help takes opens its topic, whatever its case, and any other name the overview', () => {
@@ -58,7 +52,7 @@ test('help is closed until opened, and open in the tab that opened it only', asy
     const { run, read } = stand();
     expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: false });
     const opened = await run('help.open', tab('a'), { name: 'macro' });
-    expect(opened).toEqual({ changed: [], opensViews: [PANEL_VIEW, HOTKEYS_VIEW] });
+    expect(opened).toEqual({ changed: [], opensViews: [PANEL_VIEW] });
     expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: true, topic: 'macros' });
     expect(await read(PANEL_VIEW, tab('b'))).toEqual({ open: false });
 });
@@ -96,12 +90,4 @@ test("a tab that's gone keeps no panel", async () => {
     await run('help.open', tab('a'), { name: 'slash' });
     area.gone('a');
     expect(await read(PANEL_VIEW, tab('a'))).toEqual({ open: false });
-});
-
-test("the hotkeys view says whether the markdown hotkeys are on in the settings of the tab's chat", async () => {
-    const { area, read, asked } = stand(true);
-    const context: ViewContext = { user, session: 'a', chat: { tree: '7' } };
-    expect(await read(HOTKEYS_VIEW, context)).toEqual({ markdown: true });
-    expect(asked).toEqual([context]);
-    expect(area.followChat).toEqual([HOTKEYS_VIEW]);
 });

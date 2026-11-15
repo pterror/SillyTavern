@@ -1,11 +1,6 @@
-import { actions, HOTKEYS_VIEW, PANEL_VIEW } from './protocol.ts';
-import type { HotkeysView, PanelView, Topic } from './protocol.ts';
+import { actions, PANEL_VIEW } from './protocol.ts';
+import type { PanelView, Topic } from './protocol.ts';
 import { defineArea } from '@st/server-ui';
-import type { ViewContext } from '@st/server-ui';
-
-export type Ports = {
-    markdownHotkeys(context: ViewContext): Promise<boolean>;
-};
 
 const NAMES: Record<Topic, readonly string[]> = {
     overview: ['help'],
@@ -23,7 +18,7 @@ export function topicNamed(name: string): Topic {
     return 'overview';
 }
 
-export function helpArea(ports: Ports) {
+export function helpArea() {
     /** By session, until its tab is gone. */
     const open = new Map<string, { topic: Topic }>();
 
@@ -38,16 +33,12 @@ export function helpArea(ports: Ports) {
                 const panel = open.get(context.session);
                 return panel ? { open: true, ...panel } : { open: false };
             },
-            [HOTKEYS_VIEW]: async (context): Promise<HotkeysView> => ({
-                markdown: await ports.markdownHotkeys(context),
-            }),
         },
-        followChat: [HOTKEYS_VIEW],
         gone: (session) => void open.delete(session),
         actions: {
             'help.open': async (context, { name }) => {
                 show(context.session, topicNamed(name));
-                return { changed: [], opensViews: [PANEL_VIEW, HOTKEYS_VIEW] };
+                return { changed: [], opensViews: [PANEL_VIEW] };
             },
             'help.show': async (context, { topic }) => {
                 if (!open.has(context.session)) return notOpen;
