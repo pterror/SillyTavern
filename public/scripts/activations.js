@@ -242,14 +242,14 @@ export function initLoreMarks() {
         if (isPhone()) peekAt(this, true);
         else openNamed(this);
     });
+    const focusedMark = () => document.activeElement?.closest('.mes_text .lore-mark') ?? null;
+    const focusedName = () => document.activeElement?.closest('.mes_text .chat-name') ?? null;
     attachActions(document.getElementById('chat'), {
+        when: () => focusedMark() !== null || focusedName() !== null,
         activate: () => {
-            const at = document.activeElement;
-            const mark = at?.closest('.mes_text .lore-mark');
-            if (mark) return void openMarked(mark);
-            const name = at?.closest('.mes_text .chat-name');
-            if (name) return void openNamed(name);
-            return false;
+            const mark = focusedMark();
+            if (mark) void openMarked(mark);
+            else openNamed(focusedName());
         },
     });
     $(document).on('mouseover', '.mes_text .chat-name, .mes_text .lore-mark', function (event) {

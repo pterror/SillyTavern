@@ -11403,10 +11403,15 @@ jQuery(async function () {
         isManualInput = true;
     });
 
+    /** @returns {HTMLInputElement | null} the old page's slider counter with focus */
+    const focusedCounter = () => {
+        const counter = document.activeElement;
+        return counter instanceof HTMLInputElement && counter.matches(counterInputs) && !counter.closest('[data-field]') ? counter : null;
+    };
     attachActions(document.body, {
+        when: () => isManualInput && focusedCounter() !== null,
         confirm: () => {
-            const counter = document.activeElement;
-            if (!(counter instanceof HTMLInputElement) || !counter.matches(counterInputs) || counter.closest('[data-field]') || !isManualInput) return false;
+            const counter = focusedCounter();
             const manualInput = Number(counter.value);
             if (manualInput >= Number(counter.min) && manualInput <= Number(counter.max)) {
                 valueBeforeManualInput = manualInput;

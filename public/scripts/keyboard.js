@@ -130,19 +130,18 @@ function initializeScrollResetBehaviors(element = document) {
 const NATIVELY_ACTIVATED = 'button, a[href], input, select, summary, textarea';
 
 /**
- * Clicks the interactable that has focus or holds it; a native control is left to the browser
- * @returns {boolean} whether it clicked
+ * The interactable that has focus or holds it, unless the browser activates it itself or it is disabled
+ * @returns {HTMLElement | null}
  */
-function activateInteractable() {
+function focusedInteractable() {
     const focused = document.activeElement;
-    if (!(focused instanceof HTMLElement) || focused.matches(NATIVELY_ACTIVATED)) return false;
+    if (!(focused instanceof HTMLElement) || focused.matches(NATIVELY_ACTIVATED)) return null;
     let target = focused;
     while (target && !isKeyboardInteractable(target)) {
         target = target.parentElement;
     }
-    if (!target || target.matches(NATIVELY_ACTIVATED) || target.classList.contains(DISABLED_CONTROL_CLASS)) return false;
-    target.click();
-    return true;
+    if (!target || target.matches(NATIVELY_ACTIVATED) || target.classList.contains(DISABLED_CONTROL_CLASS)) return null;
+    return target;
 }
 
 export function initKeyboard() {
@@ -157,5 +156,8 @@ export function initKeyboard() {
     initializeScrollResetBehaviors();
 
     // On the root, so an element nearer the focus that has its own Activate comes first
-    attachActions(document.documentElement, { activate: activateInteractable });
+    attachActions(document.documentElement, {
+        when: () => focusedInteractable() !== null,
+        activate: () => focusedInteractable()?.click(),
+    });
 }
