@@ -1,7 +1,8 @@
 /**
  * SillyTavern's syntax over markdown, as `@lezer/markdown` extensions: macros, emoji shortcodes, dialogue quotes, image
  * sizes, lines kept out of markdown, reasoning markers drawn as text, HTML blocks (whole, or with markdown inside when
- * they carry a `markdown` attribute), and bare URLs and `~` strikethrough as chat text writes them. The extensions use
+ * they carry a `markdown` attribute), bare URLs, and `~~` strikethrough (a single `~` is text, as upstream's showdown
+ * reads it and as roleplay writes a sung or drawn-out word). The extensions use
  * only the parse context they are handed, so the live editor's own copy of `@lezer/markdown` takes them too.
  */
 
@@ -54,8 +55,7 @@ const BareUrls = {
 };
 
 const STRIKE_PUNCTUATION = /(?!~)[\p{P}\p{S}]/u;
-const StrikeOne = { resolve: 'Strikethrough', mark: 'StrikethroughMark' };
-const StrikeTwo = { resolve: 'Strikethrough', mark: 'StrikethroughMark' };
+const Strike = { resolve: 'Strikethrough', mark: 'StrikethroughMark' };
 
 /** @type {MarkdownConfig} */
 const Strikethrough = {
@@ -66,8 +66,7 @@ const Strikethrough = {
             if (next !== 126) return -1;
             let end = pos;
             while (cx.char(end) === 126) end++;
-            const length = end - pos;
-            if (length > 2) return -1;
+            if (end - pos !== 2) return -1;
             const before = cx.slice(pos - 1, pos);
             const after = cx.slice(end, end + 1);
             const spaceBefore = before === '' || /\s/u.test(before);
@@ -76,7 +75,7 @@ const Strikethrough = {
             const punctAfter = STRIKE_PUNCTUATION.test(after);
             const canOpen = !spaceAfter && after !== '~' && (!punctAfter || spaceBefore || punctBefore);
             const canClose = !spaceBefore && before !== '~' && (!punctBefore || spaceAfter || punctAfter);
-            return cx.addDelimiter(length === 1 ? StrikeOne : StrikeTwo, pos, end, canOpen, canClose);
+            return cx.addDelimiter(Strike, pos, end, canOpen, canClose);
         },
         after: 'Emphasis',
     }],

@@ -84,8 +84,9 @@ describe('chat text, read', () => {
         expect(drawn('"open\nclose"')).toBe('<p>"open\nclose"</p>');
     });
 
-    test('draws `~` and `~~` strikethrough and bare URLs as links opening a new tab', () => {
-        expect(drawn('a ~b~ ~~c~~')).toBe('<p>a <del>b</del> <del>c</del></p>');
+    test('draws `~~` strikethrough, a single `~` as text, and bare URLs as links opening a new tab', () => {
+        expect(drawn('a ~b~ ~~c~~')).toBe('<p>a ~b~ <del>c</del></p>');
+        expect(drawn('la la~ la~')).toBe('<p>la la~ la~</p>');
         expect(drawn('see https://x.y/z_.')).toBe('<p>see <a href="https://x.y/z_" target="_blank" rel="noopener">https://x.y/z_</a>.</p>');
     });
 
