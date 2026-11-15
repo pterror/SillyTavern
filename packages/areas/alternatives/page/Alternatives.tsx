@@ -92,7 +92,7 @@ function Dialog(props: {
     };
     seen: ReturnType<typeof createSeen>;
 }) {
-    const { client, t } = useUi();
+    const { client, commands, focusActions, t } = useUi();
     const key = keyOf(props.look.target);
     const greetingsList = 'greetings' in props.look.target;
     const mesId = props.look.mesId;
@@ -512,21 +512,44 @@ function Dialog(props: {
         handle.addEventListener('pointerup', done);
         handle.addEventListener('pointercancel', cancel);
     };
-    const keyMove = (item: Item, event: KeyboardEvent) => {
+    const handles = new WeakMap<Element, Item>();
+    const handled = () => (document.activeElement ? handles.get(document.activeElement) : undefined);
+    // `place`: where among the rows that can be reordered the focused handle's row goes, from its index and the last's
+    const keyMove = (place: (at: number, last: number) => readonly [number, 'before' | 'after']) => () => {
+        const item = handled();
+        if (!item) return false;
         const cards = items().filter((i) => canReorder(i));
-        const at = cards.findIndex((i) => i.id === item.id);
-        const to: Record<string, [number, 'before' | 'after']> = {
-            ArrowUp: [at - 1, 'before'],
-            ArrowDown: [at + 1, 'after'],
-            Home: [0, 'before'],
-            End: [cards.length - 1, 'after'],
-        };
-        const [index, side] = to[event.key] ?? [-1, 'after'];
+        const [index, side] = place(
+            cards.findIndex((i) => i.id === item.id),
+            cards.length - 1,
+        );
         const target = cards[index];
-        if (!target) return;
-        event.preventDefault();
+        if (!target) return false;
         move(item, target, side);
     };
+    onMount(() => {
+        if (!scroller) return;
+        const category = t('Alternatives');
+        const moving = (id: string, label: string, key: string, place: Parameters<typeof keyMove>[0]) => ({
+            id,
+            label,
+            category,
+            keys: [key],
+            when: () => handled() !== undefined,
+            run: keyMove(place),
+        });
+        onCleanup(
+            commands.register(
+                [
+                    moving('alternatives.moveUp', t('Move up'), 'ArrowUp', (at) => [at - 1, 'before']),
+                    moving('alternatives.moveDown', t('Move down'), 'ArrowDown', (at) => [at + 1, 'after']),
+                    moving('alternatives.moveFirst', t('Move to the top'), 'Home', () => [0, 'before']),
+                    moving('alternatives.moveLast', t('Move to the bottom'), 'End', (_, last) => [last, 'after']),
+                ],
+                { target: scroller },
+            ),
+        );
+    });
 
     const title = () =>
         greetingsList ? t('Greetings') : props.look.title !== '' ? props.look.title : t('Alternatives');
@@ -600,11 +623,7 @@ function Dialog(props: {
                                 aria-label={t('Select by number')}
                                 value={selected() === null ? '' : selected()! + 1}
                                 onInput={(event) => select(event.currentTarget.value)}
-                                onKeyDown={(event) => {
-                                    if (event.key !== 'Enter') return;
-                                    event.preventDefault();
-                                    goSelected();
-                                }}
+                                ref={(field) => onCleanup(focusActions.attach(field, { confirm: goSelected }))}
                             />
                         </label>
                         <button
@@ -685,7 +704,10 @@ function Dialog(props: {
                                                 title={t('Drag to reorder')}
                                                 aria-label={t('Reorder')}
                                                 onPointerDown={(event) => dragFrom(item, event)}
-                                                onKeyDown={(event) => keyMove(item, event)}
+                                                ref={(handle) => {
+                                                    handles.set(handle, item);
+                                                    onCleanup(() => handles.delete(handle));
+                                                }}
                                             />
                                         </Show>
                                         <span class="alternative-number">#{item.index + 1}</span>
@@ -849,7 +871,7 @@ function AddBox(props: {
     onInput: () => void;
     onShowSame: () => void;
 }) {
-    const { t } = useUi();
+    const { focusActions, t } = useUi();
     const [text, setText] = createSignal('');
     const [busy, setBusy] = createSignal(false);
     const submit = async () => {
@@ -879,16 +901,15 @@ function AddBox(props: {
                     setText(event.currentTarget.value);
                     props.onInput();
                 }}
-                onKeyDown={(event) => {
-                    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-                        event.preventDefault();
-                        void submit();
-                    } else if (event.key === 'Escape' && text() !== '') {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setText('');
-                    }
-                }}
+                ref={(field) =>
+                    onCleanup(
+                        focusActions.attach(field, {
+                            confirm: (event) =>
+                                event instanceof KeyboardEvent && event.ctrlKey ? void submit() : false,
+                            cancel: () => (text() === '' ? false : void setText('')),
+                        }),
+                    )
+                }
             />
             <button type="submit" class="menu_button" disabled={busy() || text().trim() === ''}>
                 {t('Add')}
