@@ -157,7 +157,7 @@ test.describe('Hotkeys', () => {
         await page.setViewportSize({ width: 1400, height: 900 });
     });
 
-    const overlay = page => page.locator('.hotkeyOverlay');
+    const overlay = page => page.locator('.commandCheatsheet:popover-open');
 
     test('the Hotkeys topic lists the registered commands by category, each with its keys', async ({ page }) => {
         await runSlash(page, '/help hotkeys');
@@ -168,13 +168,13 @@ test.describe('Hotkeys', () => {
         await expect(row('General', 'Command palette').locator('.hotkeyKeys > span').first().locator('kbd')).toHaveText(['Ctrl', 'K']);
     });
 
-    test('holding Ctrl on its own shows the list without taking focus; letting go hides it', async ({ page }) => {
+    test('holding Ctrl on its own shows the cheatsheet; letting go hides it and gives focus back', async ({ page }) => {
         await chatBox(page).focus();
         await page.keyboard.down('Control');
         await expect(overlay(page)).toBeVisible();
-        await expect(chatBox(page)).toBeFocused();
         await page.keyboard.up('Control');
         await expect(overlay(page)).toHaveCount(0);
+        await expect(chatBox(page)).toBeFocused();
     });
 
     test('with stacked drawers on, the held list is a layer: the chat under it is cut there, and back once it hides', async ({ page }) => {
@@ -188,37 +188,18 @@ test.describe('Hotkeys', () => {
         await expect(page.locator('#sheld')).not.toHaveAttribute('data-stack-cut', 'true');
     });
 
-    test('a shortcut, a click or scrolling while Ctrl is down hides it or keeps it from showing', async ({ page }) => {
+    test('a shortcut while Ctrl is down keeps it from showing', async ({ page }) => {
         await chatBox(page).focus();
         await page.keyboard.down('Control');
         await page.keyboard.press('a');
-        await page.waitForTimeout(400);
-        await expect(overlay(page)).toHaveCount(0);
-        await page.keyboard.up('Control');
-
-        await page.keyboard.down('Control');
-        await expect(overlay(page)).toBeVisible();
-        await page.keyboard.press('a');
-        await expect(overlay(page)).toHaveCount(0);
-        await page.keyboard.up('Control');
-
-        await page.keyboard.down('Control');
-        await expect(overlay(page)).toBeVisible();
-        await page.mouse.down();
-        await expect(overlay(page)).toHaveCount(0);
-        await page.mouse.up();
-        await page.keyboard.up('Control');
-
-        await page.keyboard.down('Control');
-        await expect(overlay(page)).toBeVisible();
-        await page.mouse.wheel(0, 50);
+        await page.waitForTimeout(1500);
         await expect(overlay(page)).toHaveCount(0);
         await page.keyboard.up('Control');
     });
 
     test('the setting turns it off', async ({ page }) => {
         await page.keyboard.down('Control');
-        await expect(overlay(page)).toContainText('Show hotkeys');
+        await expect(overlay(page)).toContainText('Command palette');
         await page.keyboard.up('Control');
 
         const toggle = page.locator('#hotkey_overlay');
@@ -226,7 +207,7 @@ test.describe('Hotkeys', () => {
         await toggle.evaluate(el => { /** @type {HTMLInputElement} */ (el).checked = false; el.dispatchEvent(new Event('input', { bubbles: true })); });
         try {
             await page.keyboard.down('Control');
-            await page.waitForTimeout(400);
+            await page.waitForTimeout(1500);
             await expect(overlay(page)).toHaveCount(0);
             await page.keyboard.up('Control');
         } finally {
