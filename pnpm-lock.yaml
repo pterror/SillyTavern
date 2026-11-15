@@ -118,17 +118,17 @@ importers:
         specifier: ^2.11.8
         version: 2.11.8
       '@pterror/interact-editor':
-        specifier: github:pterror/interact#1179e67ac41866ca26e13f0d9a87b581e2775e5e&path:/packages/editor
-        version: https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list)
+        specifier: github:pterror/interact#3026ce75a1316de2791e9820e36ceb2af0dff9b5&path:/packages/editor
+        version: https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list)
       '@pterror/interact-keybinds':
-        specifier: github:pterror/interact#1179e67ac41866ca26e13f0d9a87b581e2775e5e&path:/packages/keybinds
-        version: https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/keybinds(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list)
+        specifier: github:pterror/interact#3026ce75a1316de2791e9820e36ceb2af0dff9b5&path:/packages/keybinds
+        version: https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/keybinds(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list)
       '@pterror/interact-list':
-        specifier: github:pterror/interact#1179e67ac41866ca26e13f0d9a87b581e2775e5e&path:/packages/list
-        version: https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list
+        specifier: github:pterror/interact#3026ce75a1316de2791e9820e36ceb2af0dff9b5&path:/packages/list
+        version: https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list
       '@pterror/interact-markdown':
-        specifier: github:pterror/interact#1179e67ac41866ca26e13f0d9a87b581e2775e5e&path:/packages/markdown
-        version: https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/markdown(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@lezer/html@1.3.13)(@lezer/markdown@1.7.2)(@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list))
+        specifier: github:pterror/interact#3026ce75a1316de2791e9820e36ceb2af0dff9b5&path:/packages/markdown
+        version: https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/markdown(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@lezer/html@1.3.13)(@lezer/markdown@1.7.2)(@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list))
       '@reflink/reflink':
         specifier: ^0.1.19
         version: 0.1.19
@@ -684,8 +684,8 @@ importers:
   packages/page:
     dependencies:
       '@pterror/interact-list':
-        specifier: github:pterror/interact#1179e67ac41866ca26e13f0d9a87b581e2775e5e&path:/packages/list
-        version: https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list
+        specifier: github:pterror/interact#3026ce75a1316de2791e9820e36ceb2af0dff9b5&path:/packages/list
+        version: https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list
       '@st/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -1743,8 +1743,8 @@ packages:
   '@popperjs/core@2.11.8':
     resolution: {integrity: sha512-P1st0aksCrn9sGZhp8GMYwBnQsbvAWsZAX44oXNNvLHGqAOcoVxmjZiohstwQ7SqKnbR47akdNi+uleWD8+g6A==}
 
-  '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/editor':
-    resolution: {gitHosted: true, integrity: sha512-apsvKjxU3BVyUotg+fJBN8S+lFadALV45YgIilAS+3BTWDBlrF22+1aVD4JFLfVBJX/jqtk8abs/S3VH3TI7nw==, path: /packages/editor, tarball: https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e}
+  '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/editor':
+    resolution: {gitHosted: true, integrity: sha512-SgdMGLiYn0ysui2N0AI+OhK8ZgAlFzHTlHpVOPYstZQTISTejqYfAYu0z2rAEGlv3FsEJmHLzoCuQHnP4dQGqg==, path: /packages/editor, tarball: https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5}
     version: 0.1.0
     peerDependencies:
       '@codemirror/autocomplete': ^6.20.3
@@ -1765,18 +1765,18 @@ packages:
       '@pterror/interact-list':
         optional: true
 
-  '@pterror/interact-keybinds@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/keybinds':
-    resolution: {gitHosted: true, integrity: sha512-apsvKjxU3BVyUotg+fJBN8S+lFadALV45YgIilAS+3BTWDBlrF22+1aVD4JFLfVBJX/jqtk8abs/S3VH3TI7nw==, path: /packages/keybinds, tarball: https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e}
+  '@pterror/interact-keybinds@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/keybinds':
+    resolution: {gitHosted: true, integrity: sha512-SgdMGLiYn0ysui2N0AI+OhK8ZgAlFzHTlHpVOPYstZQTISTejqYfAYu0z2rAEGlv3FsEJmHLzoCuQHnP4dQGqg==, path: /packages/keybinds, tarball: https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5}
     version: 0.1.0
     peerDependencies:
       '@pterror/interact-list': workspace:^
 
-  '@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list':
-    resolution: {gitHosted: true, integrity: sha512-apsvKjxU3BVyUotg+fJBN8S+lFadALV45YgIilAS+3BTWDBlrF22+1aVD4JFLfVBJX/jqtk8abs/S3VH3TI7nw==, path: /packages/list, tarball: https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e}
+  '@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list':
+    resolution: {gitHosted: true, integrity: sha512-SgdMGLiYn0ysui2N0AI+OhK8ZgAlFzHTlHpVOPYstZQTISTejqYfAYu0z2rAEGlv3FsEJmHLzoCuQHnP4dQGqg==, path: /packages/list, tarball: https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5}
     version: 0.1.0
 
-  '@pterror/interact-markdown@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/markdown':
-    resolution: {gitHosted: true, integrity: sha512-apsvKjxU3BVyUotg+fJBN8S+lFadALV45YgIilAS+3BTWDBlrF22+1aVD4JFLfVBJX/jqtk8abs/S3VH3TI7nw==, path: /packages/markdown, tarball: https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e}
+  '@pterror/interact-markdown@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/markdown':
+    resolution: {gitHosted: true, integrity: sha512-SgdMGLiYn0ysui2N0AI+OhK8ZgAlFzHTlHpVOPYstZQTISTejqYfAYu0z2rAEGlv3FsEJmHLzoCuQHnP4dQGqg==, path: /packages/markdown, tarball: https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5}
     version: 0.1.0
     peerDependencies:
       '@codemirror/language': ^6.12.4
@@ -5945,7 +5945,7 @@ snapshots:
 
   '@popperjs/core@2.11.8': {}
 
-  '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list)':
+  '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list)':
     dependencies:
       '@lezer/common': 1.5.3
     optionalDependencies:
@@ -5953,20 +5953,20 @@ snapshots:
       '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.6
       '@codemirror/view': 6.43.13
-      '@pterror/interact-list': https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list
+      '@pterror/interact-list': https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list
 
-  '@pterror/interact-keybinds@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/keybinds(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list)':
+  '@pterror/interact-keybinds@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/keybinds(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list)':
     dependencies:
-      '@pterror/interact-list': https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list
+      '@pterror/interact-list': https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list
 
-  '@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list': {}
+  '@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list': {}
 
-  '@pterror/interact-markdown@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/markdown(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@lezer/html@1.3.13)(@lezer/markdown@1.7.2)(@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list))':
+  '@pterror/interact-markdown@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/markdown(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@lezer/html@1.3.13)(@lezer/markdown@1.7.2)(@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list))':
     dependencies:
       '@lezer/common': 1.5.3
       '@lezer/html': 1.3.13
       '@lezer/markdown': 1.7.2
-      '@pterror/interact-editor': https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/1179e67ac41866ca26e13f0d9a87b581e2775e5e#path:/packages/list)
+      '@pterror/interact-editor': https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/3026ce75a1316de2791e9820e36ceb2af0dff9b5#path:/packages/list)
     optionalDependencies:
       '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.6

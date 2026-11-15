@@ -12,7 +12,7 @@
         "./popover": "./src/layers/popover.ts"
     },
     "dependencies": {
-        "@pterror/interact-list": "github:pterror/interact#1179e67ac41866ca26e13f0d9a87b581e2775e5e&path:/packages/list",
+        "@pterror/interact-list": "github:pterror/interact#3026ce75a1316de2791e9820e36ceb2af0dff9b5&path:/packages/list",
         "@st/protocol": "workspace:*",
         "solid-js": "1.9.17"
     },
