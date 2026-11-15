@@ -99,6 +99,26 @@ test.describe('a move in the chat is made at once', () => {
         expect(alternatives).toEqual(['first reply edited', 'second reply']);
     });
 
+    test('a Send pressed while a slow swipe is answered sends the text as it was when pressed', async ({ page }) => {
+        test.setTimeout(90000);
+        await twoAlternatives(page, mock.url);
+        const held = await holdAnswers(page, '**/api/chats/message/select');
+        await chatBox(page).click();
+        await page.keyboard.press('ArrowLeft');
+        await expect.poll(() => held.asked).toBe(true);
+        await page.keyboard.type('pressed text');
+        const generate = page.waitForRequest('**/api/generation/generate');
+        await page.locator('#send_but').click();
+        await expect(page.locator('#send_but')).toHaveClass(/send_queued/);
+        await chatBox(page).click();
+        await page.keyboard.type('typed after');
+        held.answer('continue');
+
+        expect((await generate).postDataJSON().user_message?.mes).toBe('pressed text');
+        await expect(page.locator('#chat .last_mes .mes_text')).toContainText('Mock reply', { timeout: 30000 });
+        expect(await boxText(page)).toBe('typed after');
+    });
+
     test('a swipe the server refuses is undone, with a notice, and what was typed stays', async ({ page }) => {
         test.setTimeout(90000);
         const { avatar, second } = await twoAlternatives(page, mock.url);

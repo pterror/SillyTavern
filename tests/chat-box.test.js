@@ -412,7 +412,7 @@ describe('the chat box\'s drafts', () => {
         box.arriveChatBox(ada, { owner: { message: '2' }, text: 'Hi Kit.' });
         await settle();
         end = { message: '2' };
-        expect(box.takeChatBoxText()).toEqual({ text: 'Hi Kit.', sent: { message: '2', text: 'Hi Kit.', changes: [] } });
+        expect(box.takeChatBoxText()).toEqual({ text: 'Hi Kit.', sent: { message: '2', text: 'Hi Kit.', changes: [] }, from: { chat: ada, owner: { message: '2' } } });
         expect(box.chatBoxText()).toBe('');
         shown.type('next');
         await settle();
@@ -574,6 +574,27 @@ describe('the chat box\'s drafts', () => {
         expect(box.chatBoxText()).toBe('its draft typed while it opens');
         expect(leaving()).toMatchObject({ group_id: 'opened', owner: { root: true }, changes: [insert(10, 'typed while it opens')] });
         copies().remove(ada, { message: '40' }, 'tab-a');
+    });
+
+    test('text taken for a send that isn\'t made goes back: before what was written since, or as a copy once the box moved on', async () => {
+        box.arriveChatBox(ada, { owner: { message: '50' }, text: '' });
+        await settle();
+        shown.type('pressed');
+        await settle();
+        const pressed = box.takeChatBoxText();
+        expect(box.chatBoxText()).toBe('');
+        shown.type(' and after');
+        await settle();
+        box.giveBackChatBoxText(pressed);
+        await settle();
+        expect(box.chatBoxText()).toBe('pressed and after');
+        const again = box.takeChatBoxText();
+        box.moveChatBox({ chat: ada, owner: { message: '51' } }).arrive({ owner: { message: '51' }, text: '' });
+        box.giveBackChatBoxText(again);
+        await settle();
+        expect(box.chatBoxText()).toBe('');
+        expect(copies().read(ada, { message: '50' }, 'tab-a')).toMatchObject({ text: 'pressed and after', changes: [insert(0, 'pressed and after')] });
+        copies().remove(ada, { message: '50' }, 'tab-a');
     });
 
     test('a move to where the box is keeps its text and carries it', async () => {

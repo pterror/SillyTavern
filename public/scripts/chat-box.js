@@ -247,15 +247,40 @@ export function chatBoxText() {
 /**
  * Takes the box's text for an action that sends it, leaving the box empty. Text typed since is the box's own; the
  * chat ending past what the text responded to, which a stored send makes it, moves it there.
- * @returns {{ text: string, sent: (DraftOwner & { text: string, changes: BoxChange[] }) | null }} the text, and the draft
- *   it was with the changes it was written with: what the send takes out of the draft
+ * @returns {TakenText}
  */
 export function takeChatBoxText() {
     follow(null);
     const taken = text.text();
     const sent = here?.owner ? { ...here.owner, text: taken, changes: unsaved().changes } : null;
+    const from = here?.owner ? { chat: here.chat, owner: here.owner } : null;
     if (taken !== '') writeChatBox('');
-    return { text: taken, sent };
+    return { text: taken, sent, from };
+}
+
+/**
+ * @typedef {object} TakenText
+ * @property {string} text
+ * @property {(DraftOwner & { text: string, changes: BoxChange[] }) | null} sent the draft it was with and the changes it
+ *   was written with: what the send takes out of the draft
+ * @property {{ chat: ChatOf, owner: DraftOwner } | null} from the end it was taken at
+ */
+
+/**
+ * Text taken for a send that isn't made (`takeChatBoxText`) goes back: into the box, before what was written since,
+ * while the box is where it was taken; else as this tab's copy for the end it was taken at, which the next open of a
+ * chat carries
+ * @param {TakenText} taken
+ */
+export function giveBackChatBoxText(taken) {
+    if (taken.text === '') return;
+    const { from, sent } = taken;
+    if (!from || !sent || isHere(from.chat, from.owner)) {
+        writeChatBox(taken.text + text.text());
+        return;
+    }
+    copies.setApart(from.chat, from.owner, tab());
+    copies.write(from.chat, from.owner, tab(), { text: taken.text, changes: sent.changes });
 }
 
 /**

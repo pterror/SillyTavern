@@ -207,7 +207,7 @@ import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { embedMessageFile, hideChatMessageRange, hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
-import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxMacros, chatBoxMoveRefused, chatBoxText, focusChatBox, forgetChatBoxChat, initChatBox, moveChatBox, takeChatBoxMacros, takeChatBoxPush, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
+import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxMacros, chatBoxMoveRefused, chatBoxText, focusChatBox, forgetChatBoxChat, giveBackChatBoxText, initChatBox, moveChatBox, takeChatBoxMacros, takeChatBoxPush, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
 import { endOwnerOf } from './scripts/chat-box-ends.js';
 import { chatBoxSetup } from './scripts/message-text.js';
 import { initChatEditors, loadChatEditor } from './scripts/chat-text/editors.js';
@@ -1951,7 +1951,10 @@ export const reloadCurrentChat = reloadChatMutex.update.bind(reloadChatMutex);
 export const userInputGenerateMutex = new SimpleMutex(sendTextareaMessage);
 
 const QUEUED_SEND_POLL_MS = 50;
-/** @type {{ chat: string, timer: ReturnType<typeof setInterval> } | null} */
+/**
+ * @type {{ chat: string, pressed: import('./scripts/chat-box.js').TakenText, timer: ReturnType<typeof setInterval> } | null}
+ *   a send pressed while a swipe or a reply was in the way: the box's text as it was when pressed, sent once they are done
+ */
 let queuedSend = null;
 
 /**
@@ -1969,11 +1972,13 @@ export async function requestTextareaSend(source) {
     }
     queuedSend = {
         chat: JSON.stringify(getCurrentChatContext()),
+        pressed: takeChatBoxText(),
         timer: setInterval(() => {
             const idle = !userInputGenerateMutex.isBusy && !isGenerating() && swipeState === SWIPE_STATE.NONE && !isExecutingCommandsFromChatInput;
-            if (!idle) return;
+            if (!idle || !queuedSend) return;
+            const { pressed } = queuedSend;
             clearQueuedSend();
-            userInputGenerateMutex.update();
+            userInputGenerateMutex.update(pressed);
         }, QUEUED_SEND_POLL_MS),
     };
     $('#send_but').addClass('send_queued').attr('title', t`Send queued - click to cancel`);
@@ -1987,11 +1992,14 @@ function clearQueuedSend() {
 }
 
 /**
+ * The queued send isn't made: its text goes back (`giveBackChatBoxText`)
  * @param {string} [reason]
  */
 function cancelQueuedSend(reason) {
     if (!queuedSend) return;
+    const { pressed } = queuedSend;
     clearQueuedSend();
+    giveBackChatBoxText(pressed);
     if (reason) toastr.info(reason);
 }
 
@@ -2020,27 +2028,41 @@ async function reloadCurrentChatUnsafe() {
     refreshSwipeButtons();
 }
 
-async function sendTextareaMessage() {
+/**
+ * @param {import('./scripts/chat-box.js').TakenText} [pressed] the box's text as it was when Send was pressed, taken
+ *   then; the box's text now when not given
+ */
+async function sendTextareaMessage(pressed) {
+    const notSent = () => {
+        if (pressed) giveBackChatBoxText(pressed);
+    };
     if (swipeState == SWIPE_STATE.EDITING) {
         toastr.warning(t`Confirm the edit to start a generation.`, t`You cannot send a message during a swipe-edit.`);
+        notSent();
         return;
     }
-    if (swipeState !== SWIPE_STATE.NONE) return; // don't proceed if mid-swipe.
-    if (is_send_press) return;
+    if (swipeState !== SWIPE_STATE.NONE || is_send_press) {
+        notSent();
+        return;
+    }
 
     const lastIndex = chat.length - 1;
     if (lastIndex >= 0 && lastIndex === Number(this_edit_mes_id) && isComposedSlot(chat[lastIndex])) {
         toastr.warning(t`Press Done to keep the new alternative, or cancel it, first.`, t`Not sent`);
+        notSent();
         return;
     }
-    if (isExecutingCommandsFromChatInput) return;
+    if (isExecutingCommandsFromChatInput) {
+        notSent();
+        return;
+    }
 
     hideSwipeButtons(); //Swipe buttons must be hidden now, otherwise concurrent generations are possible.
 
     let generateType = 'normal';
     // "Continue on send" is activated when the user hits "send" (or presses enter) on an empty chat box, and the last
     // message was sent from a character (not the user or the system).
-    const textareaText = chatBoxText();
+    const textareaText = pressed ? pressed.text : chatBoxText();
     const lastMessage = chat[chat.length - 1];
     if (power_user.continue_on_send &&
         !hasPendingFileAttachment() &&
@@ -2054,7 +2076,7 @@ async function sendTextareaMessage() {
     }
 
     const noChat = getSelectionState().type === 'none';
-    const taken = takeChatBoxText();
+    const taken = pressed ?? takeChatBoxText();
     const typed = { text: taken.text, sent: noChat ? null : taken.sent };
     if (textareaText && noChat && name2 !== neutralCharacterName) {
         await newAssistantChat({ temporary: false });
