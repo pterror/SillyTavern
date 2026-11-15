@@ -99,7 +99,7 @@ export function EntryText(props: {
     onOpen: (entry: string) => void;
     onSelect: (selected: Selected) => void;
 }) {
-    const { t } = useUi();
+    const { focusActions, t } = useUi();
     const [editing, setEditing] = createSignal(false);
     const readSelection = (within: HTMLElement): boolean => {
         const selection = window.getSelection();
@@ -127,9 +127,14 @@ export function EntryText(props: {
                         if (selection && !selection.isCollapsed) return;
                         if (!(event.target as Element).closest('.wb-link')) setEditing(true);
                     }}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Enter' && event.target === event.currentTarget) setEditing(true);
-                    }}
+                    ref={(element) =>
+                        onCleanup(
+                            focusActions.attach(element, {
+                                when: () => document.activeElement === element,
+                                activate: () => void setEditing(true),
+                            }),
+                        )
+                    }
                 >
                     <Show when={props.text.trim() !== ''} fallback={<p class="wb-ghost">{t('Content')}</p>}>
                         <For each={paragraphsOf(props.text, props.links)}>
@@ -203,6 +208,7 @@ function Editor(props: {
     onSelect: (selected: Selected) => void;
     onDone: () => void;
 }) {
+    const { focusActions } = useUi();
     let host: HTMLDivElement | undefined;
     let view: EditorView | undefined;
     // The text as the server has it at `base.version`, which what is typed is written over. Saves go one at a time:
@@ -303,17 +309,13 @@ function Editor(props: {
                             if (event.shiftKey) selected();
                             return false;
                         },
-                        keydown: (event) => {
-                            if (event.key !== 'Escape') return false;
-                            event.stopPropagation();
-                            view?.contentDOM.blur();
-                            return true;
-                        },
                     }),
                 ],
             }),
         });
         view.dispatch({ effects: linksSet.of(props.links) });
+        const editor = view;
+        onCleanup(focusActions.attach(editor.dom, { cancel: () => editor.contentDOM.blur() }));
         view.focus();
     });
     createEffect(

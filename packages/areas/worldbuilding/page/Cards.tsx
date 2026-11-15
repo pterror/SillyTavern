@@ -1,4 +1,5 @@
-import { For, Match, Show, Switch, createSignal } from 'solid-js';
+import { For, Match, Show, Switch, createSignal, onCleanup } from 'solid-js';
+import type { Command } from '@st/page/commands';
 import { useUi } from '@st/page/context';
 import { LOOP_CHECK_VISITS_PER_WRITE } from '../protocol.ts';
 import type { EntryCell, Named, PlaceOfDeletedEntryCell, RegionCell } from '../protocol.ts';
@@ -31,6 +32,28 @@ export type CardActions = {
     pick?: Picking;
 };
 
+// Moving a card one place back or on among the cards of its region, which it can't be when they aren't grouped.
+type Mover = { applies: () => boolean; move: (back: boolean) => void };
+
+const movers = new WeakMap<Element, Mover>();
+const focusedMover = () => (document.activeElement ? movers.get(document.activeElement) : undefined);
+
+// Alt+arrows on a card's button, registered once for all cards: each button gives its own Mover.
+export function cardMoveCommands(t: (text: string) => string): Command[] {
+    const moving = (id: string, label: string, keys: string[], back: boolean): Command => ({
+        id,
+        label,
+        category: t('Worldbuilding'),
+        keys,
+        when: () => focusedMover()?.applies() === true,
+        run: () => focusedMover()?.move(back),
+    });
+    return [
+        moving('worldbuilding.moveBack', t('Move card back'), ['alt+ArrowLeft', 'alt+ArrowUp'], true),
+        moving('worldbuilding.moveOn', t('Move card forward'), ['alt+ArrowRight', 'alt+ArrowDown'], false),
+    ];
+}
+
 // A card's menu, its drag and Alt+arrows, which move it among the cards of its region.
 function arranging(props: { entry: string; label: Named; region: Membership; actions: CardActions }) {
     const wb = useWb();
@@ -51,24 +74,26 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
             ...(reorders === null ? {} : { reorders }),
         });
     };
-    const reorder = (event: KeyboardEvent, entry: string, region: Membership, grouping: Grouping | null) => {
+    const placed = () => {
+        const grouping = props.actions.grouping();
         const grid = root?.parentElement?.closest('.wb-grid');
-        if (!event.altKey || !grouping || !region || !root || !grid) return;
-        const back = event.key === 'ArrowLeft' || event.key === 'ArrowUp';
-        if (!back && event.key !== 'ArrowRight' && event.key !== 'ArrowDown') return;
-        event.preventDefault();
+        return grouping && props.region && root && grid ? { grouping, region: props.region, grid, card: root } : null;
+    };
+    const reorder = (button: HTMLElement, back: boolean) => {
+        const at = placed();
+        if (!at) return;
+        const { grouping, region, grid, card } = at;
         const cells = [...grid.querySelectorAll<HTMLElement>(':scope > [data-entry]')];
-        const at = cells.findIndex((cell) => cell.contains(root ?? null));
-        const entryAt = (index: number) => cells[index]?.dataset['entry'] ?? null;
+        const index = cells.findIndex((cell) => cell.contains(card));
+        const entryAt = (to: number) => cells[to]?.dataset['entry'] ?? null;
         const slot = back
-            ? { after: entryAt(at - 2), before: entryAt(at - 1) }
-            : { after: entryAt(at + 1), before: entryAt(at + 2) };
+            ? { after: entryAt(index - 2), before: entryAt(index - 1) }
+            : { after: entryAt(index + 1), before: entryAt(index + 2) };
         if ((back ? slot.before : slot.after) === null) return;
-        const focused = event.currentTarget as HTMLElement;
         void wb
             .act('worldbuilding.moveRelation', {
                 book: grouping.book,
-                entry,
+                entry: props.entry,
                 kind: grouping.kind,
                 target: region.entry,
                 newTarget: region.entry,
@@ -77,13 +102,14 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
             })
             .then(() => {
                 const moved = grid.querySelector<HTMLElement>(
-                    `:scope > [data-entry="${entry}"] :is(.wb-card-open, .wb-region-head)`,
+                    `:scope > [data-entry="${props.entry}"] :is(.wb-card-open, .wb-region-head)`,
                 );
-                (moved ?? focused).focus();
+                (moved ?? button).focus();
             });
     };
-    const key = (event: KeyboardEvent) => {
-        reorder(event, props.entry, props.region, props.actions.grouping());
+    const keyed = (button: HTMLElement) => {
+        movers.set(button, { applies: () => placed() !== null, move: (back) => reorder(button, back) });
+        onCleanup(() => movers.delete(button));
     };
     const open = (event: MouseEvent) => {
         if (wb.drag.clickIsDrop() || props.actions.pick?.click(props.entry, event) === true) return;
@@ -111,7 +137,7 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
             )}
         </Show>
     );
-    return { menu, Menu, press, key, open, enter, leave, ref: (element: HTMLElement) => (root = element) };
+    return { menu, Menu, press, keyed, open, enter, leave, ref: (element: HTMLElement) => (root = element) };
 }
 
 // A card's checkbox, shown while it is pointed at or anything is selected.
@@ -170,7 +196,7 @@ export function Card(props: { cell: EntryCell; region: Membership; actions: Card
                 type="button"
                 class="wb-card-open"
                 onPointerDown={arrange.press}
-                onKeyDown={arrange.key}
+                ref={arrange.keyed}
                 onClick={arrange.open}
             >
                 <Picture url={props.cell.picture} class="wb-card-pic" />
@@ -286,7 +312,7 @@ export function Region(props: { cell: EntryCell; region: Membership; actions: Ca
                     type="button"
                     class="wb-region-head"
                     onPointerDown={arrange.press}
-                    onKeyDown={arrange.key}
+                    ref={arrange.keyed}
                     onClick={arrange.open}
                 >
                     <Picture url={props.cell.picture} class="wb-region-pic" />

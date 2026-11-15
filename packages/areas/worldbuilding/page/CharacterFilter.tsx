@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
 import { CHARACTERS_FOUND_VIEW } from '../protocol.ts';
@@ -107,13 +107,26 @@ export function CharacterFilterSentence(props: {
 type Row = { item: FilterItem; key: string };
 
 function CharacterPicker(props: { leaveOut: string[]; onPick: (item: FilterItem) => void }) {
-    const { client, t } = useUi();
+    const { client, focusActions, t } = useUi();
     const wb = useWb();
     const found = shownView<CharactersFoundView>(client, CHARACTERS_FOUND_VIEW);
     const [query, setQuery] = createSignal('');
     const [at, setAt] = createSignal(0);
     let field: HTMLInputElement | undefined;
-    onMount(() => field?.focus());
+    onMount(() => {
+        if (!field) return;
+        field.focus();
+        onCleanup(
+            focusActions.attach(field, {
+                next: () => void setAt(Math.min(rows().length - 1, at() + 1)),
+                previous: () => void setAt(Math.max(0, at() - 1)),
+                confirm: () => {
+                    const chosen = rows()[at()];
+                    if (chosen) props.onPick(chosen.item);
+                },
+            }),
+        );
+    });
     const shown = () => {
         const view = found();
         return view && view.query !== null && query().trim() !== '' && view.query === query() ? view : null;
@@ -141,16 +154,6 @@ function CharacterPicker(props: { leaveOut: string[]; onPick: (item: FilterItem)
                     aria-label={heading}
                     value={query()}
                     onInput={(event) => typed(event.currentTarget.value)}
-                    onKeyDown={(event) => {
-                        const all = rows();
-                        if (event.key === 'ArrowDown') setAt(Math.min(all.length - 1, at() + 1));
-                        else if (event.key === 'ArrowUp') setAt(Math.max(0, at() - 1));
-                        else if (event.key === 'Enter') {
-                            const chosen = all[at()];
-                            if (chosen) props.onPick(chosen.item);
-                        } else return;
-                        event.preventDefault();
-                    }}
                 />
             </label>
             <Show when={rows().length > 0}>

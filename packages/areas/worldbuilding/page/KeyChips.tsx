@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
@@ -184,7 +184,7 @@ function KeyField(props: {
     menu?: () => JSX.Element;
     onDone: (value: string | null) => void;
 }) {
-    const { client, t } = useUi();
+    const { client, focusActions, t } = useUi();
     const wb = useWb();
     const suggested = shownView<KeySuggestionsView>(client, KEY_SUGGESTIONS_VIEW);
     const [value, setValue] = createSignal(props.initial);
@@ -203,13 +203,27 @@ function KeyField(props: {
         if (hidden() || !view || view.book !== props.book || view.typed !== typed().word) return [];
         return view.suggestions.filter((one) => !props.taken.includes(one.text));
     };
-    onMount(() => {
-        field?.focus();
-        field?.select();
-    });
     const picked = (text: string) => {
         finish(`${typed().before}${text}`);
     };
+    onMount(() => {
+        if (!field) return;
+        const shown = field;
+        shown.focus();
+        shown.select();
+        onCleanup(
+            focusActions.attach(shown, {
+                next: () => (rows().length > 0 ? void setAt(Math.min(rows().length - 1, at() + 1)) : false),
+                previous: () => (rows().length > 0 ? void setAt(Math.max(-1, at() - 1)) : false),
+                confirm: () => {
+                    const chosen = rows()[at()];
+                    if (chosen) picked(chosen.text);
+                    else finish(shown.value);
+                },
+                cancel: () => finish(null),
+            }),
+        );
+    });
     return (
         <>
             <input
@@ -238,20 +252,6 @@ function KeyField(props: {
                         'end',
                     );
                     setValue(input.value);
-                }}
-                on:keydown={(event) => {
-                    const all = rows();
-                    if (event.key === 'ArrowDown' && all.length > 0) setAt(Math.min(all.length - 1, at() + 1));
-                    else if (event.key === 'ArrowUp' && all.length > 0) setAt(Math.max(-1, at() - 1));
-                    else if (event.key === 'Enter') {
-                        const chosen = all[at()];
-                        if (chosen) picked(chosen.text);
-                        else finish((event.currentTarget as HTMLInputElement).value);
-                    } else if (event.key === 'Escape') {
-                        event.stopPropagation();
-                        finish(null);
-                    } else return;
-                    event.preventDefault();
                 }}
                 onBlur={(event) => {
                     if (props.several === true) finish(event.currentTarget.value);

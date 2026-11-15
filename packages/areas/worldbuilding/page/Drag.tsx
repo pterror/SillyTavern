@@ -1,4 +1,4 @@
-import { Show, createSignal, onCleanup } from 'solid-js';
+import { Show, createSignal, onCleanup, onMount } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { inTopLayer } from '@st/page/popover';
@@ -86,6 +86,7 @@ export type DragControl = {
 };
 
 export function dragControl(act: (type: string, payload: unknown) => Promise<ActionResult>): DragControl {
+    const { commands, t } = useUi();
     const [held, setHeld] = createSignal<Held | null>(null);
     let pressed: { dragged: Dragged; x: number; y: number; grabX: number; grabY: number } | null = null;
     // The card's click that follows a drop's release isn't an open.
@@ -172,8 +173,8 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
         pressed = null;
         window.removeEventListener('pointermove', moved, true);
         window.removeEventListener('pointerup', released, true);
-        window.removeEventListener('keydown', key, true);
-        window.removeEventListener('keyup', key, true);
+        window.removeEventListener('keydown', alt, true);
+        window.removeEventListener('keyup', alt, true);
     };
 
     const moved = (event: PointerEvent) => {
@@ -204,19 +205,32 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
         });
     };
 
-    const key = (event: KeyboardEvent) => {
+    const alt = (event: KeyboardEvent) => {
         const holding = held();
-        if (event.key === 'Escape') {
-            event.stopPropagation();
-            event.preventDefault();
-            end();
-            return;
-        }
         if (event.key === 'Alt' && holding) {
             event.preventDefault();
             show({ ...holding, alt: event.type === 'keydown' });
         }
     };
+    // From the press on, wherever focus is: before a field's own Escape and the old page's drawers.
+    onMount(() =>
+        onCleanup(
+            commands.register(
+                [
+                    {
+                        id: 'worldbuilding.cancelDrag',
+                        label: t('Cancel the drag'),
+                        category: t('Worldbuilding'),
+                        keys: ['Escape'],
+                        typing: true,
+                        when: () => pressed !== null,
+                        run: end,
+                    },
+                ],
+                { capture: true, everywhere: true },
+            ),
+        ),
+    );
 
     const released = (event: PointerEvent) => {
         const holding = held();
@@ -282,8 +296,8 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
             };
             window.addEventListener('pointermove', moved, true);
             window.addEventListener('pointerup', released, true);
-            window.addEventListener('keydown', key, true);
-            window.addEventListener('keyup', key, true);
+            window.addEventListener('keydown', alt, true);
+            window.addEventListener('keyup', alt, true);
         },
     };
 }

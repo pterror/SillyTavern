@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { FOUND_VIEW } from '../protocol.ts';
 import type { FoundEntry, FoundView } from '../protocol.ts';
@@ -22,13 +22,26 @@ export function TargetPicker(props: {
     class?: string;
     onPick: (entry: string) => void;
 }) {
-    const { client, t } = useUi();
+    const { client, focusActions, t } = useUi();
     const wb = useWb();
     const found = shownView<FoundView>(client, FOUND_VIEW);
     const [query, setQuery] = createSignal('');
     const [at, setAt] = createSignal(0);
     let field: HTMLInputElement | undefined;
-    onMount(() => field?.focus());
+    onMount(() => {
+        if (!field) return;
+        field.focus();
+        onCleanup(
+            focusActions.attach(field, {
+                next: () => void setAt(Math.min(rows().length - 1, at() + 1)),
+                previous: () => void setAt(Math.max(0, at() - 1)),
+                confirm: () => {
+                    const chosen = rows()[at()];
+                    if (chosen) props.onPick(chosen.label.thing);
+                },
+            }),
+        );
+    });
     const rows = (): FoundEntry[] => {
         const shown = found();
         if (!shown || shown.book !== props.book || query().trim() === '' || shown.query !== query()) return [];
@@ -49,16 +62,6 @@ export function TargetPicker(props: {
                     aria-label={props.heading}
                     value={query()}
                     onInput={(event) => typed(event.currentTarget.value)}
-                    onKeyDown={(event) => {
-                        const shown = rows();
-                        if (event.key === 'ArrowDown') setAt(Math.min(shown.length - 1, at() + 1));
-                        else if (event.key === 'ArrowUp') setAt(Math.max(0, at() - 1));
-                        else if (event.key === 'Enter') {
-                            const chosen = shown[at()];
-                            if (chosen) props.onPick(chosen.label.thing);
-                        } else return;
-                        event.preventDefault();
-                    }}
                 />
             </label>
             <Show when={rows().length > 0}>

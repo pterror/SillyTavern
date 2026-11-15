@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createSignal, onMount } from 'solid-js';
+import { For, Match, Show, Switch, createSignal, onCleanup, onMount } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { TRIGGERS } from '../protocol.ts';
@@ -318,6 +318,7 @@ function Token(props: {
 }
 
 function TokenField(props: { value: string; label: string; wide: boolean; onDone: (typed: string | null) => void }) {
+    const { focusActions } = useUi();
     let field: HTMLInputElement | undefined;
     let finished = false;
     const finish = (typed: string | null) => {
@@ -325,7 +326,12 @@ function TokenField(props: { value: string; label: string; wide: boolean; onDone
         finished = true;
         props.onDone(typed);
     };
-    onMount(() => field?.select());
+    onMount(() => {
+        if (!field) return;
+        const shown = field;
+        shown.select();
+        onCleanup(focusActions.attach(shown, { confirm: () => finish(shown.value), cancel: () => finish(null) }));
+    });
     return (
         <input
             ref={(element) => (field = element)}
@@ -333,12 +339,6 @@ function TokenField(props: { value: string; label: string; wide: boolean; onDone
             classList={{ 'wb-tok-wide': props.wide }}
             aria-label={props.label}
             value={props.value}
-            on:keydown={(event) => {
-                if (event.key === 'Enter') finish((event.currentTarget as HTMLInputElement).value);
-                if (event.key !== 'Escape') return;
-                event.stopPropagation();
-                finish(null);
-            }}
             onBlur={(event) => finish(event.currentTarget.value)}
         />
     );

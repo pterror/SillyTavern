@@ -28,6 +28,7 @@ import type {
     ViewsView,
     WorldView,
 } from '../protocol.ts';
+import { cardMoveCommands } from './Cards.tsx';
 import type { CardActions } from './Cards.tsx';
 import { editEntry, isConflict } from './conflict.tsx';
 import type { Target } from './compat.ts';
@@ -76,7 +77,8 @@ export function Worldbuilding(props: Props & { everShown: boolean }) {
 }
 
 function Page(props: Props) {
-    const { client, t } = useUi();
+    const { client, commands, t } = useUi();
+    onMount(() => onCleanup(commands.register(cardMoveCommands(t))));
     const world = shownView<WorldView>(client, WORLD_VIEW);
     const overview = shownView<OverviewView>(client, OVERVIEW_VIEW);
     const kinds = shownView<RelationKindsView>(client, RELATION_KINDS_VIEW);
@@ -173,11 +175,13 @@ function Page(props: Props) {
     };
     // The world's entries are drawn as cards or rows, which can be selected.
     const listed = () => props.shown && Boolean(shownWorld()) && !shownEntry() && !shownAxes();
+    const [root, setRoot] = createSignal<HTMLDivElement>();
     const pick = picking(
         wb,
         () => shownWorld()?.id ?? '',
         shownSelection,
         () => pane(),
+        root,
         listed,
     );
     const rows = (): RowsContext | null => {
@@ -295,7 +299,7 @@ function Page(props: Props) {
 
     return (
         <WbProvider value={wb}>
-            <div class="wb" classList={{ 'wb-entry-shown': Boolean(shownEntry()) }}>
+            <div class="wb" classList={{ 'wb-entry-shown': Boolean(shownEntry()) }} ref={setRoot}>
                 <div class="wb-head">
                     <Switcher
                         world={

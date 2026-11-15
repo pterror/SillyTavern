@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, on, onMount } from 'solid-js';
+import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { FOUND_VIEW, LAST_CHANGE_VIEW, LOOP_CHECK_VISITS_PER_WRITE } from '../protocol.ts';
 import type { FoundView, LastChangeView, OpenEntryView, RelationKind } from '../protocol.ts';
@@ -58,7 +58,7 @@ function NewRelation(props: {
     opener: () => HTMLElement | undefined;
     onClose: () => void;
 }) {
-    const { client, t } = useUi();
+    const { client, focusActions, t } = useUi();
     const wb = useWb();
     const found = shownView<FoundView>(client, FOUND_VIEW);
     const lastChange = shownView<LastChangeView>(client, LAST_CHANGE_VIEW);
@@ -129,26 +129,42 @@ function NewRelation(props: {
                         class="text_pole margin0 wb-relpop-field"
                         placeholder={t('New relation…')}
                         aria-label={t('New relation')}
-                        onKeyDown={(event) => {
-                            const name = event.currentTarget.value.trim();
-                            if (event.key !== 'Enter' || name === '') return;
-                            event.currentTarget.value = '';
-                            setMadeKind(true);
-                            void wb.act('worldbuilding.createRelationKind', { book: props.entry.book, name });
-                        }}
+                        ref={(field) =>
+                            onCleanup(
+                                focusActions.attach(field, {
+                                    confirm: () => {
+                                        const name = field.value.trim();
+                                        if (name === '') return false;
+                                        field.value = '';
+                                        setMadeKind(true);
+                                        void wb.act('worldbuilding.createRelationKind', {
+                                            book: props.entry.book,
+                                            name,
+                                        });
+                                    },
+                                }),
+                            )
+                        }
                     />
                 </span>
                 <input
-                    ref={(element) => (target = element)}
+                    ref={(element) => {
+                        target = element;
+                        onCleanup(
+                            focusActions.attach(element, {
+                                confirm: () => {
+                                    const first = results()[0];
+                                    if (!first) return false;
+                                    relate(first.label.thing);
+                                },
+                            }),
+                        );
+                    }}
                     class="text_pole margin0 wb-relpop-field wb-relpop-wide"
                     placeholder={t('Search entries')}
                     aria-label={t('Search entries')}
                     value={query()}
                     onInput={(event) => typed(event.currentTarget.value)}
-                    onKeyDown={(event) => {
-                        const first = results()[0];
-                        if (event.key === 'Enter' && first) relate(first.label.thing);
-                    }}
                 />
             </div>
             <Show when={results().length > 0}>

@@ -128,17 +128,26 @@ function Sheet(props: {
     onOpen: (card: HoverCard) => void;
     onClose: () => void;
 }) {
-    const { t } = useUi();
+    const { commands, t } = useUi();
     let pulledFrom: number | null = null;
-    onMount(() => {
-        const escape = (event: KeyboardEvent) => {
-            if (event.key !== 'Escape') return;
-            event.stopPropagation();
-            props.onClose();
-        };
-        document.addEventListener('keydown', escape, true);
-        onCleanup(() => document.removeEventListener('keydown', escape, true));
-    });
+    // Wherever focus is, before a field's own Escape and the old page's drawers.
+    onMount(() =>
+        onCleanup(
+            commands.register(
+                [
+                    {
+                        id: 'worldbuilding.closeCard',
+                        label: t('Close the card'),
+                        category: t('Worldbuilding'),
+                        keys: ['Escape'],
+                        typing: true,
+                        run: () => props.onClose(),
+                    },
+                ],
+                { capture: true, everywhere: true },
+            ),
+        ),
+    );
     return (
         <div ref={props.ref} class="wb-chat-sheet-at">
             <div class="wb-chat-scrim" onClick={() => props.onClose()} />

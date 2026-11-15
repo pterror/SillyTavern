@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createSignal } from 'solid-js';
+import { For, Match, Show, Switch, createSignal, onCleanup } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
@@ -359,6 +359,7 @@ function NumberCell(props: {
     suffix?: string;
     set: (value: number) => Partial<Placement>;
 }) {
+    const { focusActions } = useUi();
     const wb = useWb();
     const [editing, setEditing] = createSignal(false);
     return (
@@ -376,19 +377,21 @@ function NumberCell(props: {
                     type="number"
                     aria-label={props.label}
                     value={props.value ?? ''}
-                    ref={(element) => queueMicrotask(() => element.select())}
-                    onBlur={() => setEditing(false)}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Escape') {
-                            event.stopPropagation();
-                            setEditing(false);
-                        }
-                        if (event.key !== 'Enter') return;
-                        const value = Number(event.currentTarget.value);
-                        setEditing(false);
-                        if (Number.isFinite(value) && event.currentTarget.value.trim() !== '')
-                            setPlacement(wb, props.book, props.entry, props.version, props.set(value));
+                    ref={(element) => {
+                        queueMicrotask(() => element.select());
+                        onCleanup(
+                            focusActions.attach(element, {
+                                cancel: () => void setEditing(false),
+                                confirm: () => {
+                                    const value = Number(element.value);
+                                    setEditing(false);
+                                    if (Number.isFinite(value) && element.value.trim() !== '')
+                                        setPlacement(wb, props.book, props.entry, props.version, props.set(value));
+                                },
+                            }),
+                        );
                     }}
+                    onBlur={() => setEditing(false)}
                 />
             </Show>
         </span>

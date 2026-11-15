@@ -88,7 +88,8 @@ const type = (field: HTMLInputElement, text: string) => {
     field.value = text;
     field.dispatchEvent(new Event('input'));
 };
-const press = (field: HTMLElement, key: string) => field.dispatchEvent(new KeyboardEvent('keydown', { key }));
+const press = (field: HTMLElement, key: string) =>
+    field.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true }));
 
 test('names are drawn in the entry’s look under “Also called”, triggers plain under “Triggers”, and a key shared with others says how many', () => {
     const { host } = stand(ENTRY);

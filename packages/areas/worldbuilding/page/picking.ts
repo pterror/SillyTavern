@@ -1,4 +1,5 @@
 import { createSignal, onCleanup, onMount } from 'solid-js';
+import { useUi } from '@st/page/context';
 import { PICKED_AT_MOST } from '../protocol.ts';
 import type { SelectionView } from '../protocol.ts';
 import type { Wb } from './context.ts';
@@ -28,14 +29,17 @@ const editable = (target: EventTarget | null): boolean =>
     ) !== null;
 
 // Picks entries, rows or cards alike, in the order they are drawn (each drawn entry is a `[data-pick]` element in
-// `list`): each gesture is one action. While `active`, Ctrl/Cmd+A selects all the matching entries and Escape clears.
+// `list`): each gesture is one action. While `active`, Ctrl/Cmd+A selects all the matching entries, and Escape with
+// focus in `page` (not in a field) clears: its Cancel, after a menu's or a field's in it and before the drawer's.
 export function picking(
     wb: Wb,
     book: () => string,
     selection: () => Selected | null,
     list: () => HTMLElement | undefined,
+    page: () => HTMLElement | undefined,
     active: () => boolean,
 ): Picking {
+    const { commands, focusActions, t } = useUi();
     let anchor: string | null = null;
     let run: { from: string; to: string; selected: boolean } | null = null;
     const [selecting, setSelecting] = createSignal(false);
@@ -70,23 +74,35 @@ export function picking(
         mark();
         send(between(from, to), selected);
     };
-    const keys = (event: KeyboardEvent) => {
-        if (!active() || editable(event.target) || document.querySelector('dialog[open]')) return;
-        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'a') {
-            event.preventDefault();
-            void wb.act('worldbuilding.selectAllMatching', { book: book() });
-        } else if (event.key === 'Escape' && !event.defaultPrevented && (any() || selecting())) {
-            setSelecting(false);
-            if (any()) void wb.act('worldbuilding.selectNone', { book: book() });
-        }
-    };
+    // A checkbox or a button input isn't a field here, though keybinds counts every input as one.
+    const outsideFields = () => active() && !editable(document.activeElement);
     onMount(() => {
         window.addEventListener('pointerup', release);
-        window.addEventListener('keydown', keys);
-        onCleanup(() => {
-            window.removeEventListener('pointerup', release);
-            window.removeEventListener('keydown', keys);
-        });
+        onCleanup(() => window.removeEventListener('pointerup', release));
+        onCleanup(
+            commands.register([
+                {
+                    id: 'worldbuilding.selectAll',
+                    label: t('Select all matching entries'),
+                    category: t('Worldbuilding'),
+                    keys: ['$mod+a'],
+                    typing: true,
+                    when: outsideFields,
+                    run: () => void wb.act('worldbuilding.selectAllMatching', { book: book() }),
+                },
+            ]),
+        );
+        const shown = page();
+        if (!shown) return;
+        onCleanup(
+            focusActions.attach(shown, {
+                when: () => outsideFields() && (any() || selecting()),
+                cancel: () => {
+                    setSelecting(false);
+                    if (any()) void wb.act('worldbuilding.selectNone', { book: book() });
+                },
+            }),
+        );
     });
     return {
         isSelected,
