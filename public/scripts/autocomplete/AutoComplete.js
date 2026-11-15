@@ -1,3 +1,5 @@
+import { t } from '../i18n.js';
+import { attachActions, registerCommands } from '../new-ui-page.js';
 import { power_user } from '../power-user.js';
 import { debounce, escapeRegex } from '../utils.js';
 import { AutoCompleteOption } from './AutoCompleteOption.js';
@@ -28,6 +30,39 @@ export const AUTOCOMPLETE_STATE = {
     MIN_LENGTH: 1,
     ALWAYS: 2,
 };
+
+/** @type {WeakMap<Element, AutoComplete>} each field's suggestions */
+const instances = new WeakMap();
+
+const focusedInstance = () => (document.activeElement ? instances.get(document.activeElement) : undefined);
+
+registerCommands(() => [
+    {
+        id: 'suggestions.acceptByTab',
+        label: t`Accept the suggestion`,
+        category: t`Suggestions`,
+        keys: ['Tab'],
+        typing: true,
+        when: () => focusedInstance()?.accepts(AUTOCOMPLETE_SELECT_KEY.TAB) === true,
+        run: () => {
+            const ac = focusedInstance();
+            if (ac?.selectedItem.isSelectable) void ac.select();
+        },
+    },
+    {
+        id: 'suggestions.show',
+        label: t`Show suggestions, or the suggestion's details`,
+        category: t`Suggestions`,
+        keys: ['ctrl+Space', 'alt+Space'],
+        typing: true,
+        when: () => focusedInstance() !== undefined,
+        run: () => {
+            const ac = focusedInstance();
+            if (ac.isActive && ac.isReplaceable) ac.toggleDetails();
+            else void ac.show(false, true);
+        },
+    },
+], { everywhere: true });
 
 export class AutoComplete {
     /**@type {HTMLTextAreaElement|HTMLInputElement}*/ textarea;
@@ -120,7 +155,33 @@ export class AutoComplete {
             this.selectionStart = this.textarea.selectionStart;
             if (this.text != this.textarea.value) this.show(true, this.wasForced);
         });
-        textarea.addEventListener('keydown', (evt) => this.handleKeyDown(evt));
+        textarea.addEventListener('selectionchange', () => {
+            if (this.selectionStart === this.textarea.selectionStart) return;
+            this.selectionStart = this.textarea.selectionStart;
+            this.show(this.isReplaceable);
+        });
+        attachActions(textarea, {
+            next: () => this.moveSelection(1),
+            previous: () => this.moveSelection(-1),
+            confirm: (evt) => {
+                if (!this.isActive) return false;
+                const ctrl = evt instanceof KeyboardEvent && evt.ctrlKey;
+                if (!ctrl && this.accepts(AUTOCOMPLETE_SELECT_KEY.ENTER) && this.selectedItem.name !== this.name && this.selectedItem.isSelectable) {
+                    void this.select();
+                    return;
+                }
+                // Enter goes on to what the field does with it (send, run), the list closed
+                this.hide();
+                return false;
+            },
+            cancel: () => {
+                if (!this.isActive) return false;
+                this.isForceHidden = true;
+                this.wasForced = false;
+                this.hide();
+            },
+        });
+        instances.set(textarea, this);
         textarea.addEventListener('click', () => {
             this.selectionStart = this.textarea.selectionStart;
             if (this.isActive) this.show();
@@ -814,116 +875,23 @@ export class AutoComplete {
     }
 
     /**
-     * Handle keyboard events.
-     * @param {KeyboardEvent} evt The event.
+     * Moves the selection through the list by `step` items, wrapping around
+     * @param {number} step
+     * @returns {boolean} whether the list is shown to move through
      */
-    async handleKeyDown(evt) {
-        // autocomplete is shown and cursor at end of current command name (or inside name and typed or forced)
-        if (this.isActive && this.isReplaceable) {
-            // actions in the list
-            switch (evt.key) {
-                case 'ArrowUp': {
-                    // select previous item
-                    if (evt.ctrlKey || evt.altKey || evt.shiftKey) return;
-                    evt.preventDefault();
-                    evt.stopPropagation();
-                    const idx = this.result.indexOf(this.selectedItem);
-                    let newIdx;
-                    if (idx == 0) newIdx = this.result.length - 1;
-                    else newIdx = idx - 1;
-                    this.selectItemAtIndex(newIdx);
-                    return;
-                }
-                case 'ArrowDown': {
-                    // select next item
-                    if (evt.ctrlKey || evt.altKey || evt.shiftKey) return;
-                    evt.preventDefault();
-                    evt.stopPropagation();
-                    const idx = this.result.indexOf(this.selectedItem);
-                    const newIdx = (idx + 1) % this.result.length;
-                    this.selectItemAtIndex(newIdx);
-                    return;
-                }
-                case 'Enter': {
-                    // pick the selected item to autocomplete
-                    if ((power_user.stscript.autocomplete.select & AUTOCOMPLETE_SELECT_KEY.ENTER) != AUTOCOMPLETE_SELECT_KEY.ENTER) break;
-                    if (evt.ctrlKey || evt.altKey || evt.shiftKey || this.selectedItem.value == '') break;
-                    if (this.selectedItem.name == this.name) break;
-                    if (!this.selectedItem.isSelectable) break;
-                    evt.preventDefault();
-                    evt.stopImmediatePropagation();
-                    this.select();
-                    return;
-                }
-                case 'Tab': {
-                    // pick the selected item to autocomplete
-                    if ((power_user.stscript.autocomplete.select & AUTOCOMPLETE_SELECT_KEY.TAB) != AUTOCOMPLETE_SELECT_KEY.TAB) break;
-                    if (evt.ctrlKey || evt.altKey || evt.shiftKey || this.selectedItem.value == '') break;
-                    evt.preventDefault();
-                    evt.stopImmediatePropagation();
-                    if (!this.selectedItem.isSelectable) break;
-                    this.select();
-                    return;
-                }
-            }
-        }
-        // details are shown, cursor can be anywhere
-        if (this.isActive) {
-            switch (evt.key) {
-                case 'Escape': {
-                    // close autocomplete
-                    if (evt.ctrlKey || evt.altKey || evt.shiftKey) return;
-                    evt.preventDefault();
-                    evt.stopPropagation();
-                    this.isForceHidden = true;
-                    this.wasForced = false;
-                    this.hide();
-                    return;
-                }
-                case 'Enter': {
-                    // hide autocomplete on enter (send, execute, ...)
-                    if (!evt.shiftKey) {
-                        this.hide();
-                        return;
-                    }
-                    break;
-                }
-            }
-        }
-        // autocomplete shown or not, cursor anywhere
-        switch (evt.key) {
-            // The first is a non-breaking space, the second is a regular space.
-            case ' ':
-            case ' ': {
-                if (evt.ctrlKey || evt.altKey) {
-                    if (this.isActive && this.isReplaceable) {
-                        // ctrl-space to toggle details for selected item
-                        this.toggleDetails();
-                    } else {
-                        // ctrl-space to force show autocomplete
-                        this.show(false, true);
-                    }
-                    evt.preventDefault();
-                    evt.stopPropagation();
-                    return;
-                }
-                break;
-            }
-        }
-        if (['Control', 'Shift', 'Alt'].includes(evt.key)) {
-            // ignore keydown on modifier keys
-            return;
-        }
-        // await keyup to see if cursor position or text has changed
-        const oldText = this.textarea.value;
-        await new Promise(resolve => {
-            window.addEventListener('keyup', resolve, { once: true });
-        });
-        if (this.selectionStart != this.textarea.selectionStart) {
-            this.selectionStart = this.textarea.selectionStart;
-            this.show(this.isReplaceable || oldText != this.textarea.value);
-        } else if (this.isActive) {
-            this.text != this.textarea.value && this.show(this.isReplaceable);
-        }
+    moveSelection(step) {
+        if (!this.isActive || !this.isReplaceable) return false;
+        const idx = this.result.indexOf(this.selectedItem);
+        this.selectItemAtIndex((idx + step + this.result.length) % this.result.length);
+        return true;
+    }
+
+    /**
+     * Whether a key that accepts the selected item does now
+     * @param {number} key one of AUTOCOMPLETE_SELECT_KEY
+     * @returns {boolean}
+     */
+    accepts(key) {
+        return this.isActive && this.isReplaceable && (power_user.stscript.autocomplete.select & key) === key && this.selectedItem.value !== '';
     }
 }

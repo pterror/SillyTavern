@@ -1,3 +1,5 @@
+import { t } from '../i18n.js';
+import { registerCommands } from '../new-ui-page.js';
 import { escapeRegex } from '../utils.js';
 import { SlashCommandParser } from './SlashCommandParser.js';
 /** @typedef {import('./SlashCommand.js').SlashCommand} SlashCommand */
@@ -9,6 +11,7 @@ export class SlashCommandBrowser {
     /**@type {HTMLElement}*/ details;
     /**@type {Object.<string,HTMLElement>}*/ itemMap = {};
     /**@type {MutationObserver}*/ mo;
+    /**@type {(() => void) | undefined}*/ stopKeys;
 
     renderInto(parent) {
         if (!this.dom) {
@@ -123,27 +126,26 @@ export class SlashCommandBrowser {
         }
         parent.append(this.dom);
 
+        this.stopKeys?.();
+        const stopKeys = registerCommands(() => [{
+            id: 'help.searchSlashCommands',
+            label: t`Search the slash commands`,
+            category: t`Help`,
+            keys: ['ctrl+f'],
+            typing: true,
+            when: () => this.dom.isConnected && (!this.dom.closest('.mes') || this.dom.closest('.last_mes') !== null),
+            run: () => this.search.focus(),
+        }], { everywhere: true });
+        this.stopKeys = stopKeys;
+
+        this.mo?.disconnect();
         // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
-        this.mo = new MutationObserver(muts => {
-            if (muts.find(mut => Array.from(mut.removedNodes).find(it => it === this.dom || it.contains(this.dom)))) {
-                this.mo.disconnect();
-                window.removeEventListener('keydown', boundHandler);
-            }
+        this.mo = new MutationObserver(() => {
+            if (this.dom.isConnected) return;
+            this.mo.disconnect();
+            stopKeys();
         });
         this.mo.observe(document.body, { childList: true, subtree: true });
-        const boundHandler = this.handleKeyDown.bind(this);
-        window.addEventListener('keydown', boundHandler);
         return this.dom;
-    }
-
-    handleKeyDown(evt) {
-        if (!evt.shiftKey && !evt.altKey && evt.ctrlKey && evt.key.toLowerCase() === 'f') {
-            if (!this.dom.closest('body')) return;
-            if (this.dom.closest('.mes') && !this.dom.closest('.last_mes')) return;
-            evt.preventDefault();
-            evt.stopPropagation();
-            evt.stopImmediatePropagation();
-            this.search.focus();
-        }
     }
 }

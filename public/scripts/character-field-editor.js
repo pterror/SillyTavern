@@ -1,6 +1,7 @@
 import { refreshCharInfoTabDimming } from './char-info-tab-dimming.js';
 import { keepViewState, openEditorLayer } from './editor-layer.js';
 import { MacroValues } from './macro-values.js';
+import { registerCommands } from './new-ui-page.js';
 import { cardTextSetup } from './message-text.js';
 import { loadChatEditor } from './chat-text/editors.js';
 import { editPosition, showText, stopText } from './chat-text/surface.js';
@@ -648,7 +649,6 @@ function toggleMaximize(button) {
 }
 
 const TAB_RADIO = 'input[name="charInfoTabs_tab"]';
-const TAB_SWITCH_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' ']);
 
 /** @returns {string | null} */
 function editingTab() {
@@ -682,14 +682,21 @@ function initTabSwitchGuard() {
         flashEditControls();
     }, true);
 
-    tabs.addEventListener('keydown', (event) => {
-        if (!(event.target instanceof HTMLInputElement) || !event.target.matches(TAB_RADIO)) return;
-        if (!TAB_SWITCH_KEYS.has(event.key) || editingTab() === null) return;
-        if (event.key === ' ' && !blocks(event.target.value)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        flashEditControls();
-    }, true);
+    const { t } = deps;
+    registerCommands(() => [{
+        id: 'characterField.keepTab',
+        label: t`Stay on the tab of the field being edited`,
+        category: t`Editing`,
+        keys: ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Space'],
+        typing: true,
+        when: () => document.activeElement instanceof HTMLInputElement && document.activeElement.matches(TAB_RADIO) && editingTab() !== null,
+        run: (event) => {
+            // Space only selects the focused tab, which may be the edited one
+            const radio = /** @type {HTMLInputElement} */ (document.activeElement);
+            if (event instanceof KeyboardEvent && event.code === 'Space' && !blocks(radio.value)) return false;
+            flashEditControls();
+        },
+    }], { target: tabs, capture: true });
 
     tabs.addEventListener('change', (event) => {
         if (!(event.target instanceof HTMLInputElement) || !event.target.matches(TAB_RADIO)) return;
