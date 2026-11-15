@@ -435,3 +435,107 @@ describe('POST /api/characters/import - a card whose name sanitizes to empty no 
         expect(data.character.name).toBe('');
     });
 });
+
+describe('POST /api/characters/import - replacing a stored character (preserved_name)', () => {
+    /** @type {(image: Buffer, data: string) => Buffer} */
+    let writeCard;
+
+    beforeAll(async () => {
+        ({ write: writeCard } = await import('../src/character-card-parser.js'));
+    });
+
+    /**
+     * @param {number} red
+     * @returns {Promise<Buffer>} a 1 by 1 PNG of that red
+     */
+    async function tinyPng(red) {
+        const { deflateSync, crc32 } = await import('node:zlib');
+        const chunk = (/** @type {string} */ type, /** @type {Buffer} */ data) => {
+            const head = Buffer.alloc(4);
+            head.writeUInt32BE(data.length);
+            const body = Buffer.concat([Buffer.from(type), data]);
+            const tail = Buffer.alloc(4);
+            tail.writeUInt32BE(crc32(body));
+            return Buffer.concat([head, body, tail]);
+        };
+        const header = Buffer.alloc(13);
+        header.writeUInt32BE(1, 0);
+        header.writeUInt32BE(1, 4);
+        header.set([8, 2, 0, 0, 0], 8);
+        return Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.from([0, red, 0, 0]))), chunk('IEND', Buffer.alloc(0)),
+        ]);
+    }
+
+    /**
+     * @param {string[]} greetings the first is the default
+     * @returns {string}
+     */
+    function cardWith(greetings) {
+        return JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name: 'Ghost', data: { name: 'Ghost', first_mes: greetings[0] ?? '', alternate_greetings: greetings.slice(1) } });
+    }
+
+    /**
+     * @param {{ file: Buffer | string, type: 'png' | 'json', name: string }} upload
+     * @param {string | null} preserved
+     * @returns {Promise<any>}
+     */
+    async function importCard({ file, type, name }, preserved) {
+        const formData = new FormData();
+        formData.append('avatar', new Blob([file], { type: type === 'png' ? 'image/png' : 'application/json' }), name);
+        formData.append('file_type', type);
+        if (preserved !== null) formData.append('preserved_name', preserved);
+        const response = await fetch(`${baseUrl}/api/characters/import`, { method: 'POST', body: formData });
+        expect(response.status).toBe(200);
+        return response.json();
+    }
+
+    /** @param {string} avatar */
+    const greetingsStored = async avatar => {
+        const [card] = await user.store.lib.cards([avatar]);
+        return [card.data.first_mes, ...card.data.alternate_greetings].filter(text => text !== '');
+    };
+
+    test.each([
+        ['more', ['a', 'b', 'c', 'd', 'e']],
+        ['different', ['x', 'y', 'z']],
+        ['fewer', ['b']],
+        ['none', []],
+    ])('a card with %s greetings replaces the stored ones, and the character keeps its identity', async (_, greetings) => {
+        const first = await importCard({ file: cardWith(['a', 'b', 'c']), type: 'json', name: 'first.json' }, null);
+        const avatar = `${first.file_name}.png`;
+        const was = await user.store.lib.entity(TYPE.character, avatar);
+
+        const replaced = await importCard({ file: cardWith(greetings), type: 'json', name: 'second.json' }, avatar);
+
+        expect(replaced.file_name).toBe(first.file_name);
+        expect(await greetingsStored(avatar)).toEqual(greetings);
+        expect(replaced.character.data.alternate_greetings).toEqual(greetings.slice(1));
+        expect((await user.store.lib.entity(TYPE.character, avatar))?.id).toBe(was?.id);
+        expect(await characterCount()).toBe(1);
+    });
+
+    test('a JSON card keeps the picture of the character; a PNG card brings its own', async () => {
+        const original = writeCard(await tinyPng(10), cardWith(['a']));
+        const first = await importCard({ file: original, type: 'png', name: 'first.png' }, null);
+        const avatar = `${first.file_name}.png`;
+        const pictureOf = async () => fs.readFileSync(/** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, avatar)));
+        expect((await pictureOf()).equals(original)).toBe(true);
+
+        await importCard({ file: cardWith(['b']), type: 'json', name: 'second.json' }, avatar);
+        expect((await pictureOf()).equals(original)).toBe(true);
+        expect(await greetingsStored(avatar)).toEqual(['b']);
+
+        const next = writeCard(await tinyPng(200), cardWith(['c']));
+        await importCard({ file: next, type: 'png', name: 'third.png' }, avatar);
+        expect((await pictureOf()).equals(next)).toBe(true);
+        expect(await greetingsStored(avatar)).toEqual(['c']);
+    });
+
+    test('a JSON card for a character that is not stored gets the default picture', async () => {
+        const made = await importCard({ file: cardWith(['a']), type: 'json', name: 'new.json' }, 'Missing.png');
+        const stored = fs.readFileSync(/** @type {string} */ (await avatars.avatarPathOf(user.store.lib, directories, `${made.file_name}.png`)));
+        expect(stored.equals(fs.readFileSync(path.resolve(originalCwd, '..', 'public/img/ai4.png')))).toBe(true);
+    });
+});

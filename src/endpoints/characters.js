@@ -263,30 +263,13 @@ export async function materializeCardPng(directories, avatar) {
 }
 
 /**
- * @param {import('../users.js').UserDirectoryList} directories
+ * @param {import('express').Request} request
  * @param {string} avatar
- * @param {string} data
- * @param {Set<string>|null} freshFieldPaths
- * @returns {Promise<string>}
+ * @returns {Promise<string | undefined>} the image to write a card that brings none with: the default one for a new character; none for a stored one, which keeps its picture
  */
-async function keepStoredGreetings(directories, avatar, data, freshFieldPaths) {
-    try {
-        const incomingCard = JSON.parse(data);
-        const incomingGreetings = incomingCard?.data?.alternate_greetings;
-        const greetingsVerifiedFresh = freshFieldPaths instanceof Set && freshFieldPaths.has('data.alternate_greetings');
-        if (!greetingsVerifiedFresh && Array.isArray(incomingGreetings) && incomingGreetings.length === 0) {
-            const existingRaw = await readCardContent(directories, avatar);
-            const existingGreetings = existingRaw === undefined ? undefined : JSON.parse(existingRaw)?.data?.alternate_greetings;
-            if (Array.isArray(existingGreetings) && existingGreetings.length > 0) {
-                console.warn(`[writeCharacter] Refusing to overwrite non-empty alternate_greetings with an empty array for "${avatar}" - kept ${existingGreetings.length} existing greeting(s) (no verified-fresh signal was passed for this write).`);
-                incomingCard.data.alternate_greetings = existingGreetings;
-                return JSON.stringify(incomingCard);
-            }
-        }
-    } catch {
-        // Can't compare - don't block the write on the guard itself.
-    }
-    return data;
+async function imageOfCardWithoutOne(request, avatar) {
+    const { lib } = await userStore(request.user.directories);
+    return (await lib.ids(TYPE.character, [avatar]))[0] === null ? DEFAULT_AVATAR_PATH : undefined;
 }
 
 /**
@@ -297,7 +280,6 @@ async function keepStoredGreetings(directories, avatar, data, freshFieldPaths) {
  * @param {string|Buffer} [o.image]
  * @param {Crop} [o.crop]
  * @param {string|null} [o.contentHash]
- * @param {Set<string>|null} [o.freshFieldPaths]
  * @param {boolean} [o.fav]
  * @param {number} [o.dateAdded]
  * @param {{ from: string, pastChats: boolean }} [o.renamed]
@@ -305,16 +287,15 @@ async function keepStoredGreetings(directories, avatar, data, freshFieldPaths) {
  * @returns {Promise<void>}
  * @throws {ImageReadError}
  */
-async function writeCharacter(request, avatar, data, { image, crop, contentHash = null, freshFieldPaths = null, fav, dateAdded, renamed, greetings } = {}) {
+async function writeCharacter(request, avatar, data, { image, crop, contentHash = null, fav, dateAdded, renamed, greetings } = {}) {
     const directories = request.user.directories;
     const { lib } = await userStore(directories);
-    const card = await keepStoredGreetings(directories, avatar, data, freshFieldPaths);
     const options = { contentHash, ...(fav === undefined ? {} : { fav }), ...(dateAdded === undefined ? {} : { dateAdded }), ...(renamed === undefined ? {} : { renamed }), ...(greetings === undefined ? {} : { greetings }) };
     if (image === undefined) {
-        await lib.writeCard(directories, avatar, cardWithCrop(card, cropOf(await lib.entity(TYPE.character, avatar))), options);
+        await lib.writeCard(directories, avatar, cardWithCrop(data, cropOf(await lib.entity(TYPE.character, avatar))), options);
         return;
     }
-    const withCrop = cardWithCrop(card, crop);
+    const withCrop = cardWithCrop(data, crop);
     let bytes;
     /** @type {Array<{ name: string, data: Uint8Array }>} */
     let chunks;
@@ -501,7 +482,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'tags': '',
     });
     omitInstallLocalFields(char);
-    await writeCharacter(context.request, `${fileName}.png`, JSON.stringify(char), { image: DEFAULT_AVATAR_PATH, contentHash: context.contentHash ?? null });
+    await writeCharacter(context.request, `${fileName}.png`, JSON.stringify(char), { image: await imageOfCardWithoutOne(context.request, `${fileName}.png`), contentHash: context.contentHash ?? null });
     return fileName;
 }
 
@@ -643,7 +624,7 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
     const data = buildJsonImportData(rawText, request.user.directories, pngName);
     if (data === null) return '';
 
-    await writeCharacter(request, `${pngName}.png`, data, { image: DEFAULT_AVATAR_PATH, contentHash: contentHash ?? null });
+    await writeCharacter(request, `${pngName}.png`, data, { image: await imageOfCardWithoutOne(request, `${pngName}.png`), contentHash: contentHash ?? null });
     return pngName;
 }
 
@@ -957,7 +938,6 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
 
     const loadedFieldHashes = update._loadedFieldHashes;
     delete update._loadedFieldHashes;
-    let freshFieldPaths = null;
     if (loadedFieldHashes && typeof loadedFieldHashes === 'object') {
         const conflictingFields = [];
         for (const [v2Path, loadedHash] of Object.entries(loadedFieldHashes)) {
@@ -969,9 +949,6 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
         }
         if (conflictingFields.length > 0) {
             return { ok: false, error: 'conflict', conflictingFields };
-        }
-        if (Object.prototype.hasOwnProperty.call(loadedFieldHashes, 'data.alternate_greetings')) {
-            freshFieldPaths = new Set(['data.alternate_greetings']);
         }
     }
 
@@ -992,7 +969,7 @@ async function mergeCharacterUpdate(avatar, updateData, request, shouldSkip = nu
 
     const image = avatarUpload ? path.join(avatarUpload.destination, avatarUpload.filename) : undefined;
     const crop = avatarUpload ? tryParse(request.query.crop) : undefined;
-    await writeCharacter(request, avatar, JSON.stringify(character), { image, crop, freshFieldPaths });
+    await writeCharacter(request, avatar, JSON.stringify(character), { image, crop });
     if (favRequested) {
         await (await requestStore(request)).lib.setFav(TYPE.character, avatar, requestedFav);
     }
@@ -1206,7 +1183,7 @@ async function runGreetingOperation(directories, avatar, op) {
         return { ok: false, reason: validator.lastValidationError ?? 'validation failed', status: 500 };
     }
 
-    await writeCharacter(/** @type {any} */ ({ user: { directories } }), avatar, JSON.stringify(character), { freshFieldPaths: new Set(['data.alternate_greetings']), greetings: result.model });
+    await writeCharacter(/** @type {any} */ ({ user: { directories } }), avatar, JSON.stringify(character), { greetings: result.model });
     return answer;
 }
 

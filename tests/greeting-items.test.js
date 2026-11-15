@@ -102,3 +102,45 @@ describe('a card written with the same greeting twice', () => {
             .rejects.toThrow(/same text twice|aren't the card's/);
     });
 });
+
+describe('a card written over a stored one takes the card\'s greetings', () => {
+    /**
+     * @param {string} avatar
+     * @param {number} greeting
+     * @returns {Promise<unknown>}
+     */
+    async function draftOf(avatar, greeting) {
+        const entity = await user.store.lib.entity(0, avatar);
+        return user.store.lib.store.chatRead('draft', { tree: entity?.id, greeting });
+    }
+
+    test('a greeting whose text is unchanged keeps its id and its draft; the others get new ids and lose theirs', async () => {
+        const { TYPE } = await import('../src/library-codes.js');
+        const start = await write('replaced.png', ['x', 'y', 'z'], 0);
+        const entity = await user.store.lib.entity(TYPE.character, 'replaced.png');
+        for (const { id } of start.greetings) {
+            await user.store.lib.store.commit([{ kind: 'draftValue', tree: entity?.id, greeting: id, text: `draft ${id}` }]);
+        }
+
+        const after = await write('replaced.png', ['z', 'n', 'x'], 1);
+
+        expect(after.greetings).toEqual([{ id: 2, text: 'z' }, { id: 3, text: 'n' }, { id: 0, text: 'x' }]);
+        expect(await draftOf('replaced.png', 0)).not.toBeNull();
+        expect(await draftOf('replaced.png', 2)).not.toBeNull();
+        expect(await draftOf('replaced.png', 1)).toBeNull();
+        expect(await draftOf('replaced.png', 3)).toBeNull();
+    });
+
+    test.each([
+        ['more', ['x', 'y', 'z', 'a', 'b']],
+        ['different', ['p', 'q']],
+        ['fewer', ['y']],
+        ['none', []],
+    ])('with %s greetings, the stored ones are exactly the card\'s', async (what, greetings) => {
+        await write(`all-${what}.png`, ['x', 'y', 'z'], 0);
+        const after = await write(`all-${what}.png`, greetings, greetings.length ? 0 : null);
+        expect(after.greetings.map(g => g.text)).toEqual(greetings);
+        const [card] = await user.store.lib.cards([`all-${what}.png`]);
+        expect(greetingList.cardToGreetingsModel(card).greetings).toEqual(greetings);
+    });
+});
