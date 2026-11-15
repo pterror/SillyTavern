@@ -16,11 +16,13 @@ import { mark } from '@pterror/interact-list/mark';
 import { popover } from '@pterror/interact-list/popover';
 import { render } from '@pterror/interact-list/render';
 import type { Command, Commands } from './commands.ts';
+import type { FocusActions } from './focus-actions.ts';
 
 export type Anchor = { getBoundingClientRect(): { left: number; top: number; right: number; bottom: number } };
 
 export type SurfaceOptions = {
     commands: Commands;
+    focusActions: FocusActions;
     t: (text: string) => string;
     /** Whether holding Ctrl (Cmd on a Mac) shows the cheatsheet */
     holdShowsKeys: () => boolean;
@@ -135,15 +137,30 @@ function keySettingsIn(commands: Commands, element: HTMLElement, t: (text: strin
  * The palette, the right-click menu and the cheatsheet over the page's commands, and the commands that open the
  * palette and the cheatsheet
  */
-export function commandSurfaces({ commands, holdShowsKeys, t }: SurfaceOptions) {
+export function commandSurfaces({ commands, focusActions, holdShowsKeys, t }: SurfaceOptions) {
+    const paletteElement = surface('commandPalette');
     const shown = palette({
         commands: () =>
             commands.available().filter((command) => command.id !== 'palette.open' && command.hidden !== true),
-        element: surface('commandPalette'),
+        element: paletteElement,
         label: t('Commands'),
         placeholder: t('Type a command'),
     });
-    const menu = contextMenu({ element: surface('commandMenu'), label: t('Actions') });
+    const menuElement = surface('commandMenu');
+    const menu = contextMenu({ element: menuElement, label: t('Actions') });
+    // Escape is taken here, so what Escape does under the surface (closing a drawer) doesn't also run
+    const stopCancels = [
+        focusActions.attach(paletteElement, {
+            cancel: () => {
+                shown.open.set(false);
+            },
+        }),
+        focusActions.attach(menuElement, {
+            cancel: () => {
+                menu.close();
+            },
+        }),
+    ];
 
     const sheetElement = surface('commandCheatsheet');
     const sheetOpen = cell(false);
@@ -212,6 +229,7 @@ export function commandSurfaces({ commands, holdShowsKeys, t }: SurfaceOptions) 
         /** Takes in a change to whether holding the modifier shows the cheatsheet */
         holdChanged: makeTrigger,
         stop() {
+            for (const stopCancel of stopCancels) stopCancel();
             stopCommands();
             stopClose();
             stopTrigger();

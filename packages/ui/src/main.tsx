@@ -84,7 +84,7 @@ export function start(options: StartOptions) {
     client.view(DRAWN_VIEW);
     const commands = createCommands();
     const focusActions = createFocusActions(commands, options.t);
-    const surfaces = commandSurfaces({ commands, holdShowsKeys: options.holdShowsKeys, t: options.t });
+    const surfaces = commandSurfaces({ commands, focusActions, holdShowsKeys: options.holdShowsKeys, t: options.t });
     const ui: Ui = { client, commands, focusActions, t: options.t };
     const mount = (container: HTMLElement, surface: () => JSX.Element) =>
         render(() => <UiProvider value={ui}>{surface()}</UiProvider>, container);

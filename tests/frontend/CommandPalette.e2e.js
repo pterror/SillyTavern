@@ -57,6 +57,17 @@ test.describe('commands', () => {
         await expect(chatBox(page)).toBeFocused();
     });
 
+    test('Escape in the palette closes only the palette, not the drawer under it', async ({ page }) => {
+        await openChat(page);
+        await page.locator('#user-settings-button .drawer-toggle').click();
+        await expect(page.locator('#user-settings-block')).toHaveClass(/openDrawer/);
+        await page.keyboard.press(`${MOD}+k`);
+        await expect(page.locator('.commandPalette [role=combobox]')).toBeFocused();
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.commandPalette')).toBeHidden();
+        await expect(page.locator('#user-settings-block')).toHaveClass(/openDrawer/);
+    });
+
     test('keys from the empty chat box: Left swipes, Up edits the last message, Escape leaves the edit', async ({ page }) => {
         await openChat(page);
         await chatBox(page).click();
