@@ -6,6 +6,7 @@ import type { PanelView } from '../protocol.ts';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
 import { createCommands } from '@st/page/commands';
+import { createFocusActions } from '@st/page/focus-actions';
 import type { Command } from '@st/page/commands';
 import { Help } from './Help.tsx';
 import type { Browser, OldPage } from './Help.tsx';
@@ -84,7 +85,14 @@ function stand(first: PanelView = { open: false }, browsersLoaded: Promise<void>
     document.body.append(host);
     const dispose = render(
         () => (
-            <UiProvider value={{ client, commands, t: (text) => text }}>
+            <UiProvider
+                value={{
+                    client,
+                    commands,
+                    focusActions: createFocusActions(createCommands(), (text) => text),
+                    t: (text) => text,
+                }}
+            >
                 <Help
                     shown={compat.shown()}
                     old={old}

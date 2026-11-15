@@ -164,10 +164,9 @@ export function createCommands() {
         const changed = (event: Event) => {
             const element = event.target;
             if (!(element instanceof Element)) return;
-            const opening = event instanceof ToggleEvent && event.type === 'beforetoggle' && event.newState === 'open';
-            const closed =
-                event.type === 'close' ||
-                (event instanceof ToggleEvent && event.type === 'toggle' && event.newState === 'closed');
+            const state = 'newState' in event ? event.newState : undefined;
+            const opening = event.type === 'beforetoggle' && state === 'open';
+            const closed = event.type === 'close' || (event.type === 'toggle' && state === 'closed');
             if (opening === closed) return;
             if (opening === overlays.has(element)) return;
             if (opening) overlays.add(element);

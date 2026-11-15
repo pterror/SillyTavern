@@ -3,7 +3,7 @@ import { render } from 'solid-js/web';
 import { expect, test } from 'vite-plus/test';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
-import { createCommands } from '@st/page/commands';
+import { testCommands } from '@st/page/focus-actions';
 import type { Counts, ShownView } from '../protocol.ts';
 import { UsageStats, generationTime } from './UsageStats.tsx';
 
@@ -65,7 +65,7 @@ function mount(refuse = false) {
     createRoot(() =>
         render(
             () => (
-                <UiProvider value={{ client, commands: createCommands(), t: (text) => text }}>
+                <UiProvider value={{ client, ...testCommands(), t: (text) => text }}>
                     <UsageStats
                         buttons={{ all, character }}
                         old={{

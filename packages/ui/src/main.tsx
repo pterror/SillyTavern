@@ -9,6 +9,7 @@ import { createClient } from '@st/page/client';
 import { createCommands } from '@st/page/commands';
 import type { BindingStorage, Command } from '@st/page/commands';
 import { commandSurfaces } from '@st/page/command-surfaces';
+import { createFocusActions } from '@st/page/focus-actions';
 import type { Anchor } from '@st/page/command-surfaces';
 import { documentLookSheet } from '@st/page/looks';
 import { inlineName, nameElement } from '@st/page/name';
@@ -82,8 +83,9 @@ export function start(options: StartOptions) {
     // Brings the trigger mark's rules, which every chat draws.
     client.view(DRAWN_VIEW);
     const commands = createCommands();
+    const focusActions = createFocusActions(commands, options.t);
     const surfaces = commandSurfaces({ commands, holdShowsKeys: options.holdShowsKeys, t: options.t });
-    const ui: Ui = { client, commands, t: options.t };
+    const ui: Ui = { client, commands, focusActions, t: options.t };
     const mount = (container: HTMLElement, surface: () => JSX.Element) =>
         render(() => <UiProvider value={ui}>{surface()}</UiProvider>, container);
 
@@ -187,6 +189,7 @@ export function start(options: StartOptions) {
             },
             holdChanged: surfaces.holdChanged,
             overrides: commands.overrides,
+            attachActions: focusActions.attach,
         },
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         alternatives: alternativesCompat(setLook),

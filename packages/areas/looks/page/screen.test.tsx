@@ -2,7 +2,7 @@ import { render } from 'solid-js/web';
 import { expect, test } from 'vite-plus/test';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
-import { createCommands } from '@st/page/commands';
+import { testCommands } from '@st/page/focus-actions';
 import type { LookState } from '@st/protocol/looks';
 import type { LookView, Shown } from '../protocol.ts';
 import { changeOf, filterParts, readEffect, withoutEffect } from './effects.ts';
@@ -121,7 +121,7 @@ function stand(view: LookView) {
     document.body.append(host);
     render(
         () => (
-            <UiProvider value={{ client, commands: createCommands(), t: (text) => text }}>
+            <UiProvider value={{ client, ...testCommands(), t: (text) => text }}>
                 <LookScreen />
             </UiProvider>
         ),

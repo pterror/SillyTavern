@@ -6,7 +6,7 @@ import { FIELDS } from '../protocol.ts';
 import type { SettingsView } from '../protocol.ts';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
-import { createCommands } from '@st/page/commands';
+import { testCommands } from '@st/page/focus-actions';
 import { LevelSlider } from './LevelSlider.tsx';
 import { CcOptions, CcSamplers, CcUtility } from './cc.tsx';
 import { TgSamplers, TgTop } from './tg.tsx';
@@ -67,7 +67,7 @@ function mount(
     createRoot(() =>
         render(
             () => (
-                <UiProvider value={{ client: stood.client, commands: createCommands(), t: (text) => text }}>
+                <UiProvider value={{ client: stood.client, ...testCommands(), t: (text) => text }}>
                     {surface()}
                 </UiProvider>
             ),

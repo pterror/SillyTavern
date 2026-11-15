@@ -2,7 +2,7 @@ import { render } from 'solid-js/web';
 import { expect, test } from 'vite-plus/test';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
-import { createCommands } from '@st/page/commands';
+import { testCommands } from '@st/page/focus-actions';
 import type { OpenEntryView } from '../protocol.ts';
 import { WbProvider } from './context.ts';
 import type { Wb } from './context.ts';
@@ -69,7 +69,7 @@ function stand(entry: OpenEntryView) {
     document.body.append(host);
     render(
         () => (
-            <UiProvider value={{ client, commands: createCommands(), t: (text) => text }}>
+            <UiProvider value={{ client, ...testCommands(), t: (text) => text }}>
                 <WbProvider value={wb}>
                     <Names entry={entry} />
                     <Triggers entry={entry} />
