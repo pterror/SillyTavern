@@ -45,6 +45,7 @@ async function connectTextgen(page, type) {
     await page.locator('#main_api').selectOption('textgenerationwebui');
     await page.locator('#textgen_type').selectOption(type);
     await page.locator(`#${type}_api_url_text`).fill('http://127.0.0.1:9');
+    await page.locator(`#${type}_api_url_text`).blur();
     await page.locator('#api_button_textgenerationwebui').click();
 }
 

@@ -52,8 +52,7 @@ for (const type of ['koboldcpp', 'generic']) {
             await page.selectOption('#main_api', 'textgenerationwebui', { force: true });
             await page.locator('#textgen_type').selectOption(type);
             await page.locator(`#${type}_api_url_text`).fill(mock.url);
-            // @ts-ignore
-            await page.evaluate((type) => { const field = $(`#${type}_api_url_text`); if (field.autocomplete('instance')) field.autocomplete('close'); }, type);
+            await page.locator(`#${type}_api_url_text`).blur();
             await page.locator('#api_button_textgenerationwebui').click();
             // @ts-ignore
             await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).toBe(MODEL);

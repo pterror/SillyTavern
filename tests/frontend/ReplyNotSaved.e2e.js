@@ -93,6 +93,7 @@ async function connectLlamaCpp(page, url) {
     await page.selectOption('#main_api', 'textgenerationwebui', { force: true });
     await page.locator('#textgen_type').selectOption('llamacpp');
     await page.locator('#llamacpp_api_url_text').fill(url);
+    await page.locator('#llamacpp_api_url_text').blur();
     await page.locator('#api_button_textgenerationwebui').click();
     // @ts-ignore
     await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
