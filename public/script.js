@@ -7142,7 +7142,7 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
 
 export function select_rm_info(type, charId, previousCharId = null, displayName = null) {
     if (!type) {
-        toastr.error(t`Invalid process (no 'type')`);
+        console.error('Invalid process (no \'type\')', { charId, previousCharId });
         return;
     }
     if (type !== 'group_create' && displayName === null) {
@@ -7958,7 +7958,7 @@ export function cancelTtsPlay() {
 async function openCharacterWorldPopup() {
     const avatar = $('#set_character_world').data('avatar');
     if (menu_type != 'create' && avatar === undefined) {
-        toastr.error('Does not have an Id for this character in world select menu.');
+        console.error('Does not have an Id for this character in world select menu.');
         return;
     }
 
@@ -9101,8 +9101,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
             updateMessage(mesId, { swipe_id: newSwipeId });
 
             if (syncSwipeToMes(mesId, newSwipeId) == false) {
-                let errorMessage = t`When swiping ${direction} on message ${mesId}, syncSwipeToMes has returned false. Attempting to swipe back!`;
-                toastr.error(errorMessage);
+                console.error(`When swiping ${direction} on message ${mesId}, syncSwipeToMes has returned false. Attempting to swipe back!`);
 
                 updateMessage(mesId, { swipe_id: originalSwipeId });
                 await endSwipe(true);
@@ -9284,7 +9283,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
                 newSwipeId = Math.max(0, chat[mesId].swipes.length - 1);
             }
             if (newSwipeId > chat[mesId].swipes.length - 1) {
-                toastr.warning(`The swipe_id for message #${mesId} was ${newSwipeId}. It has been reset to ${chat[mesId].swipes.length - 1}.`);
+                console.warn(`The swipe_id for message #${mesId} was ${newSwipeId}. It has been reset to ${chat[mesId].swipes.length - 1}.`);
                 updateMessage(mesId, { swipe_id: chat[mesId].swipes.length - 1 });
                 await endSwipe();
                 return;
@@ -9295,7 +9294,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
             if (forceSwipeId == null) newSwipeId++;
 
             if (newSwipeId < 0) {
-                toastr.warning(`The swipe_id for message #${mesId} was ${newSwipeId}. It has been reset to zero.`);
+                console.warn(`The swipe_id for message #${mesId} was ${newSwipeId}. It has been reset to zero.`);
                 updateMessage(mesId, { swipe_id: 0 });
                 await endSwipe();
                 return;
@@ -10059,7 +10058,7 @@ function addDebugFunctions() {
 
     registerDebugFunction('generationTest', 'Send a generation request', 'Generates text using the currently selected API.', async () => {
         const text = prompt('Input text:', 'Hello');
-        toastr.info('Working on it...');
+        console.info('Working on it...');
         const message = await generateRaw({ prompt: text });
         alert(message);
     });

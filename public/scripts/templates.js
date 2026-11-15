@@ -70,7 +70,6 @@ export async function renderTemplateAsync(templateId, templateData = {}, sanitiz
         return result;
     } catch (err) {
         console.error('Error rendering template', templateId, templateData, err);
-        toastr.error('Check the DevTools console for more information.', 'Error rendering template');
     }
 }
 
