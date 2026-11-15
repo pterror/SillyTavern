@@ -168,13 +168,40 @@ test.describe('Hotkeys', () => {
         await expect(row('General', 'Command palette').locator('.hotkeyKeys > span').first().locator('kbd')).toHaveText(['Ctrl', 'K']);
     });
 
-    test('holding Ctrl on its own shows the cheatsheet; letting go hides it and gives focus back', async ({ page }) => {
+    test('holding Ctrl on its own shows the cheatsheet while the chat box keeps focus; letting go hides it', async ({ page }) => {
         await chatBox(page).focus();
         await page.keyboard.down('Control');
         await expect(overlay(page)).toBeVisible();
+        await expect(chatBox(page)).toBeFocused();
         await page.keyboard.up('Control');
         await expect(overlay(page)).toHaveCount(0);
         await expect(chatBox(page)).toBeFocused();
+    });
+
+    test('with the cheatsheet shown, the rest of a shortcut still runs it', async ({ page }) => {
+        await chatBox(page).focus();
+        await page.keyboard.down('Control');
+        await expect(overlay(page)).toBeVisible();
+        await page.keyboard.press('Shift+P');
+        await page.keyboard.up('Control');
+        await expect(overlay(page)).toHaveCount(0);
+        await expect(page.locator('.commandPalette [role=combobox]')).toBeFocused();
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.commandPalette')).toBeHidden();
+    });
+
+    test('Shift+? shows the cheatsheet without taking focus, and Escape closes only it', async ({ page }) => {
+        await page.locator('#user-settings-button .drawer-icon').click();
+        await expect(page.locator('#user-settings-block')).toHaveClass(/openDrawer/);
+        const focused = await page.evaluateHandle(() => document.activeElement);
+        await page.keyboard.press('Shift+Slash');
+        await expect(overlay(page)).toBeVisible();
+        expect(await page.evaluate(was => document.activeElement === was, focused)).toBe(true);
+        await page.keyboard.press('Escape');
+        await expect(overlay(page)).toHaveCount(0);
+        await expect(page.locator('#user-settings-block')).toHaveClass(/openDrawer/);
+        await page.keyboard.press('Escape');
+        await expect(page.locator('#user-settings-block')).toHaveClass(/closedDrawer/);
     });
 
     test('with stacked drawers on, the held list is a layer: the chat under it is cut there, and back once it hides', async ({ page }) => {
