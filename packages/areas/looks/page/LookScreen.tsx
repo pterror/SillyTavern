@@ -133,7 +133,7 @@ export function LookScreen() {
 }
 
 function Screen(props: { view: Open }) {
-    const { client, t } = useUi();
+    const { client, commands, focusActions, t } = useUi();
     const [state, setState] = createSignal<LookState>('rest');
     const [panel, setPanel] = createSignal<Panel | null>(null);
     const [draft, setDraft] = createSignal<Declaration[] | null>(null);
@@ -165,19 +165,45 @@ function Screen(props: { view: Open }) {
         return `.look-draft .${lookClass(props.view.thing)} { ${body} }`;
     };
 
+    let screen: HTMLDivElement | undefined;
+    const back = () => {
+        if (panel() !== null) setPanel(null);
+        else close();
+    };
+    // Escape with focus in the screen is its Cancel, after a menu's or a field's in it; with focus behind it, a
+    // command run before the old page's drawers close.
     onMount(() => {
-        const key = (event: KeyboardEvent) => {
-            if (event.key !== 'Escape' || document.querySelector('dialog[open]')) return;
-            event.stopPropagation();
-            if (panel() !== null) setPanel(null);
-            else close();
-        };
-        window.addEventListener('keydown', key, true);
-        onCleanup(() => window.removeEventListener('keydown', key, true));
+        if (!screen) return;
+        const shown = screen;
+        onCleanup(focusActions.attach(shown, { cancel: back }));
+        onCleanup(
+            commands.register(
+                [
+                    {
+                        id: 'looks.back',
+                        label: t('Back'),
+                        category: t('Look'),
+                        keys: ['Escape'],
+                        typing: true,
+                        when: () => !shown.contains(document.activeElement),
+                        run: back,
+                    },
+                ],
+                { capture: true },
+            ),
+        );
     });
 
     return (
-        <div ref={inTopLayer()} class="look-screen" role="dialog" aria-label={t('Look')}>
+        <div
+            ref={(element) => {
+                screen = element;
+                inTopLayer()(element);
+            }}
+            class="look-screen"
+            role="dialog"
+            aria-label={t('Look')}
+        >
             <style>{draftCss()}</style>
             <div class="look-hd">
                 <button type="button" class="look-back" onClick={close}>
@@ -392,7 +418,7 @@ function Stage(props: { view: Open; state: LookState }) {
 }
 
 function NoteInput(props: { view: Open }) {
-    const { client, t } = useUi();
+    const { client, focusActions, t } = useUi();
     const note = () => props.view.placement.note?.value ?? '';
     return (
         <input
@@ -408,9 +434,7 @@ function NoteInput(props: { view: Open }) {
                     note: next === '' ? null : next,
                 });
             }}
-            onKeyDown={(event) => {
-                if (event.key === 'Enter') event.currentTarget.blur();
-            }}
+            ref={(element) => onCleanup(focusActions.attach(element, { confirm: () => element.blur() }))}
         />
     );
 }
