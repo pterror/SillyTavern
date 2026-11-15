@@ -101,6 +101,28 @@ test.describe('the chat box', () => {
         await emptyBox(page);
     });
 
+    test('with formatting keys on, Ctrl+E makes the selection inline code', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        await openSeraphina(page);
+        const setKeys = on => page.evaluate(async (on) => {
+            const { power_user } = await import('/scripts/power-user.js');
+            const was = power_user.enable_md_hotkeys;
+            power_user.enable_md_hotkeys = on;
+            return was;
+        }, on);
+        const was = await setKeys(true);
+        try {
+            await chatBox(page).click();
+            await page.keyboard.type('loud');
+            await page.keyboard.press('Control+a');
+            await page.keyboard.press('Control+e');
+            expect(await boxText(page)).toBe('`loud`');
+        } finally {
+            await setKeys(was);
+            await emptyBox(page);
+        }
+    });
+
     test('a paste can be switched with the picker', async ({ page }) => {
         await testSetup.awaitST({ page });
         await openSeraphina(page);

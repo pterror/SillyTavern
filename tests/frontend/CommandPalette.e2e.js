@@ -31,7 +31,7 @@ test.describe('commands', () => {
     test('the palette opens on Ctrl+K, lists commands with their keys, filters as one types, and runs one', async ({ page }) => {
         await openChat(page);
         await chatBox(page).click();
-        await page.keyboard.press(`${MOD}+Shift+p`);
+        await page.keyboard.press(`${MOD}+k`);
         const palette = page.locator('.commandPalette');
         await expect(palette).toBeVisible();
         expect(await palette.evaluate(element => element.matches(':popover-open'))).toBe(true);

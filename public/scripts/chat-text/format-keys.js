@@ -6,7 +6,7 @@ export const FORMAT_KEYS = [
     { id: 'bold', keys: '$mod+b', label: t => t`Bold`, hotkeys: true },
     { id: 'italic', keys: '$mod+i', label: t => t`Italic`, hotkeys: true },
     { id: 'underline', keys: '$mod+u', label: t => t`Underline`, hotkeys: true },
-    { id: 'code', keys: '$mod+k', label: t => t`Code`, hotkeys: true },
+    { id: 'code', keys: '$mod+e', label: t => t`Code`, hotkeys: true },
     { id: 'strike', keys: '$mod+shift+backquote', label: t => t`Strikethrough`, hotkeys: true },
     { id: 'macros', keys: '$mod+shift+m', label: t => t`Show macros as written`, hotkeys: false },
 ];
