@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
+import { connectLlamaCpp } from './llamacpp-mock.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
     test.use({ launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROME_PATH } });
@@ -67,24 +68,6 @@ function startLlamaCpp() {
             resolve({ url: `http://127.0.0.1:${port}`, close: () => new Promise(done => server.close(() => done())) });
         });
     });
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {string} url
- */
-async function connectLlamaCpp(page, url) {
-    if (!(await page.locator('#main_api').isVisible())) {
-        await page.locator('#API-status-top').click();
-        await page.locator('#main_api').waitFor({ state: 'visible' });
-    }
-    await page.selectOption('#main_api', 'textgenerationwebui', { force: true });
-    await page.locator('#textgen_type').selectOption('llamacpp');
-    await page.locator('#llamacpp_api_url_text').fill(url);
-    await page.locator('#api_button_textgenerationwebui').click();
-    // @ts-ignore
-    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
-    await page.locator('#API-status-top').click();
 }
 
 test('opening a chat reads no itemization; the Prompt view fetches its message\'s, and the previous one on asking', async ({ page }) => {

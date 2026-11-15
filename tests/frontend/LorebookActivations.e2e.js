@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
+import { connectLlamaCpp } from './llamacpp-mock.js';
 import { makeWorld } from './worlds.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -86,26 +87,6 @@ async function openCharacter(page, avatar) {
         await selectCharacterByAvatar(avatar);
     }, avatar);
     await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {string} url
- */
-async function connectLlamaCpp(page, url) {
-    if (!(await page.locator('#main_api').isVisible())) {
-        await page.locator('#API-status-top').click();
-        await page.locator('#main_api').waitFor({ state: 'visible' });
-    }
-    await page.selectOption('#main_api', 'textgenerationwebui', { force: true });
-    await page.locator('#textgen_type').selectOption('llamacpp');
-    await page.locator('#llamacpp_api_url_text').fill(url);
-    // @ts-ignore
-    await page.evaluate(() => { const field = $('#llamacpp_api_url_text'); if (field.autocomplete('instance')) field.autocomplete('close'); });
-    await page.locator('#api_button_textgenerationwebui').click();
-    // @ts-ignore
-    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
-    await page.locator('#API-status-top').click();
 }
 
 test('a reply that a lorebook entry came up for is marked; the mark lists the entry, why, and opens it; the mark stays after a reload', async ({ page }) => {

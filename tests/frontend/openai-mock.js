@@ -16,8 +16,8 @@ export async function connectOpenAICompat(page, url, model = 'mock-chat-model') 
     await page.locator('#chat_completion_source').selectOption('custom');
     await page.locator('#custom_api_url_text').fill(url);
     await page.locator('#custom_model_id').fill(model);
-    // @ts-ignore
-    await page.evaluate(() => { for (const id of ['#custom_api_url_text', '#custom_model_id']) { const field = $(id); if (field.autocomplete('instance')) field.autocomplete('close'); } });
+    // Leaving the field cancels the server history's pending search, whose menu would open over Connect
+    await page.locator('#custom_model_id').blur();
     await page.locator('#api_button_openai').click();
     // @ts-ignore
     await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
