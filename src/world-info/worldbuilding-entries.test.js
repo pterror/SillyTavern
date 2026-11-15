@@ -8,6 +8,7 @@ import { matchDefaultsOf } from './key-matching.js';
 import { worldInfoGlobalsOf } from '../../public/scripts/world-info-globals.js';
 import { GENERATION_TYPE_TRIGGERS } from '../../public/scripts/constants.js';
 import { MENTION_CHECKS_PER_READ, MENTIONS_PER_PAGE, TEXT_LINK_READS_PER_READ, TRIGGERS } from '@st/worldbuilding/protocol';
+import { TYPE } from '../library-codes.js';
 
 const { emptyUser } = await import('../../tests/converted-user.fixture.js');
 const user = await emptyUser('st-worldbuilding-entries-test-');
@@ -225,6 +226,8 @@ test('an entry\'s character filter is stored in upstream\'s form and shown by th
     const card = (/** @type {string} */ name) => JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', name, data: { name, tags: ['npc'] } });
     await lib.writeCard(user.directories, 'Wren.png', card('Wren'));
     const { tagIds: [npc] } = await lib.tags.seedCardTags('Wren.png');
+    const [npcThing] = (await lib.ids(TYPE.tag, [npc])).map(String);
+    const npcNamed = { thing: npcThing, text: 'npc', shownAs: 'name' };
     await lib.books.write('Filtered', { entries: { 1: { uid: 1, key: ['x'], content: 'x', displayIndex: 0 } } });
     const { id: book } = /** @type {{ id: bigint }} */ (await lib.books.find('Filtered'));
     const [{ entity }] = await lib.books.storedEntries(book);
@@ -236,13 +239,13 @@ test('an entry\'s character filter is stored in upstream\'s form and shown by th
     const read = /** @type {any} */ (await ports.readEntry(uiUser, B, E, FIRST));
     assert.equal(read.characterFilter.exclude, true);
     assert.deepEqual(read.characterFilter.characters.map((/** @type {any} */ c) => [c.key, c.named?.text ?? null]), [['Gone', null], ['Wren', 'Wren']]);
-    assert.deepEqual(read.characterFilter.tags, [{ key: npc, name: 'npc' }]);
+    assert.deepEqual(read.characterFilter.tags, [{ key: npc, named: npcNamed }]);
     assert.equal(read.characterFilter.more, 0);
     assert.equal(await edit(B, E, { change: 'characterFilter', filter: { remove: { character: 'Gone' } } }), 'ok');
     assert.deepEqual(asWorld(await lib.books.entryIn(book, entity.id)).characterFilter.names, ['Wren']);
     const found = await ports.findCharacters(uiUser, { query: 'wre', limit: 20 });
     assert.deepEqual(found.characters.map(c => [c.key, c.named?.text]), [['Wren', 'Wren']]);
-    assert.deepEqual((await ports.findCharacters(uiUser, { query: 'np', limit: 20 })).tags, [{ key: npc, name: 'npc' }]);
+    assert.deepEqual((await ports.findCharacters(uiUser, { query: 'np', limit: 20 })).tags, [{ key: npc, named: npcNamed }]);
 });
 
 after(async () => {

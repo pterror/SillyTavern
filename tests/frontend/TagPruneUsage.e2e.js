@@ -55,7 +55,7 @@ async function createTag(page, name) {
     await api(page, '/api/tags/create', {
         tag: {
             id, name, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000,
-            is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now(),
+            is_hidden_on_character_card: false, create_date: Date.now(),
         },
     });
     return id;
@@ -173,7 +173,7 @@ test.describe('Tag prune keeps tags that are in use', () => {
         await openTagManagement(page);
 
         const backup = {
-            tags: [{ id: fixture.restoredTag, name: `restored-${stamp}`, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000, color: '', color2: '' }],
+            tags: [{ id: fixture.restoredTag, name: `restored-${stamp}`, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000 }],
             tag_map: { [fixture.visibleCard]: [fixture.restoredTag] },
         };
         const chooserPromise = page.waitForEvent('filechooser');

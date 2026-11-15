@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import path from 'node:path';
-import { storedTagDefinitions, tagCounts } from './tag-store-reads.js';
+import { A_THING, NO_LOOKS, storedTagDefinitions, storedTagLook, tagCounts } from './tag-store-reads.js';
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
@@ -378,10 +378,10 @@ describe('POST /api/tags/create and /api/tags/edit', () => {
         jest.spyOn(console, 'warn').mockImplementation(() => {});
         const created = await post('/api/tags/create', { tag: { id: 'n', name: 'New' } });
         expect(created.status).toBe(200);
-        expect(await created.json()).toEqual({ result: 'ok', refused: [], tag: { id: 'n', name: 'New', sort_order: 1 } });
+        expect(await created.json()).toEqual({ result: 'ok', refused: [], tag: { id: 'n', name: 'New', sort_order: 1, thing: A_THING }, looks: NO_LOOKS });
         expect(await (await post('/api/tags/create', { tag: { id: 'n', name: 'Again' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'n', reason: 'exists' }] });
         expect(await (await post('/api/tags/create', { tag: { id: 'm', name: 'Back' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'm', reason: 'deleted' }] });
-        expect((await storedTagDefinitions(user.store.lib)).find(t => t.id === 'n')).toEqual({ id: 'n', name: 'New', sort_order: 1 });
+        expect((await storedTagDefinitions(user.store.lib)).find(t => t.id === 'n')).toEqual({ id: 'n', name: 'New', sort_order: 1, thing: A_THING });
     });
 
     test('edit answers { result, refused }: empty when merged, missing, deleted', async () => {
@@ -393,7 +393,8 @@ describe('POST /api/tags/create and /api/tags/edit', () => {
         expect(await edited.json()).toEqual({ result: 'ok', refused: [] });
         expect(await (await post('/api/tags/edit', { id: 'ghost', patch: { name: 'G' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'ghost', reason: 'missing' }] });
         expect(await (await post('/api/tags/edit', { id: 'm', patch: { name: 'M' } })).json()).toEqual({ result: 'ok', refused: [{ id: 'm', reason: 'deleted' }] });
-        expect((await storedTagDefinitions(user.store.lib)).find(t => t.id === 'a')).toMatchObject({ id: 'a', name: 'name-a', color: 'red' });
+        expect((await storedTagDefinitions(user.store.lib)).find(t => t.id === 'a')).toEqual({ id: 'a', name: 'name-a', sort_order: 1, thing: A_THING });
+        expect(await storedTagLook(user.store.lib, 'a')).toEqual({ rest: [{ property: 'background-color', value: 'red' }] });
         expect((await storedTagDefinitions(user.store.lib)).find(t => t.id === 'ghost')).toBeUndefined();
     });
 });

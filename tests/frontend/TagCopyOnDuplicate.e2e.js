@@ -52,7 +52,7 @@ async function createCharacter(page, name) {
 function tagDefinition(id, name) {
     return {
         id, name, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000,
-        is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now(),
+        is_hidden_on_character_card: false, create_date: Date.now(),
     };
 }
 

@@ -871,24 +871,24 @@ async function pinSavedViewPage(id, view) {
  * @param {string} term
  * @param {string | null} cursor
  * @param {'OPEN'|'CLOSED'} folderType
- * @returns {Promise<{ rows: { id: string, name: string }[], cursor: string | null } | null>}
+ * @returns {Promise<{ rows: { id: string, name: string, thing?: string }[], cursor: string | null } | null>}
  */
 async function readFolderPage(term, cursor, folderType) {
     const page = await searchTagsByName(term, { pageSize: 50, cursor, folderType });
-    return page && { rows: page.rows.map(tag => ({ id: tag.id, name: String(tag.name) })), cursor: page.cursor };
+    return page && { rows: page.rows.map(tag => ({ id: tag.id, name: String(tag.name), thing: tag.thing })), cursor: page.cursor };
 }
 
 /**
  * @param {string} id
  * @param {'OPEN'|'CLOSED'} folderType
- * @returns {Promise<{ id: string, name: string } | null | undefined>}
+ * @returns {Promise<{ id: string, name: string, thing?: string } | null | undefined>}
  */
 async function readFolder(id, folderType) {
     const answer = await readTagsForIds([id]);
     if (!answer) return undefined;
     const tag = answer.tags.get(id);
     if (!tag || tag.folder_type !== folderType) return null;
-    return { id, name: String(tag.name) };
+    return { id, name: String(tag.name), thing: tag.thing };
 }
 
 /**
@@ -1163,13 +1163,14 @@ export function initCharacterSearch() {
         },
         searchTags: async (term) => {
             const page = await searchTagsByName(term);
-            return page ? page.rows.map(tag => ({ id: String(tag.id), name: String(tag.name) })) : null;
+            return page ? page.rows.map(tag => ({ id: String(tag.id), name: String(tag.name), thing: tag.thing })) : null;
         },
         tagNames: async (ids) => {
             const answer = await readTagsForIds(ids);
             if (!answer) return null;
             return {
                 names: new Map([...answer.tags].map(([id, tag]) => [id, String(tag.name)])),
+                things: new Map([...answer.tags].flatMap(([id, tag]) => (tag.thing ? [[id, tag.thing]] : []))),
                 gone: answer.gone,
                 shownAs: new Map([...answer.tags].map(([id, tag]) => [id, String(tag.id)])),
             };

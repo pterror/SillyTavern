@@ -47,7 +47,7 @@ function tagBody(id, sortOrder, fields = {}) {
     return {
         tag: {
             id, name: id, folder_type: 'NONE', sort_order: sortOrder,
-            is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now(), ...fields,
+            is_hidden_on_character_card: false, create_date: Date.now(), ...fields,
         },
     };
 }
@@ -151,9 +151,9 @@ test.describe('tag changes from another tab', () => {
             await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"]`)).toBeVisible();
             await page.evaluate(async (id) => { window['__tagObject'] = (await import('/scripts/tags.js')).tagsStore.getAll().find(t => t.id === id); }, id);
 
-            await api(other, '/api/tags/edit', { id, patch: { name: 'renamed elsewhere', color: '#112233', is_hidden_on_character_card: true } });
+            await api(other, '/api/tags/edit', { id, patch: { name: 'renamed elsewhere', folder_type: 'OPEN', is_hidden_on_character_card: true } });
             await expect.poll(() => heldTag(page, id), { timeout: 15000 })
-                .toMatchObject({ name: 'renamed elsewhere', color: '#112233', is_hidden_on_character_card: true });
+                .toMatchObject({ name: 'renamed elsewhere', folder_type: 'OPEN', is_hidden_on_character_card: true });
             await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"] .tag_view_name`)).toHaveText('renamed elsewhere');
             expect(await page.evaluate(async (id) => {
                 const tags = (await import('/scripts/tags.js')).tagsStore.getAll();

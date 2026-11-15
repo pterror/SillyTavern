@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { tagEntityTypeOf } from './group-id.js';
-import { FIELD, TAG_KEY_PREFIX, TYPE } from './library-codes.js';
+import { FIELD, LOOK_FIELD, TAG_KEY_PREFIX, TYPE } from './library-codes.js';
+import { TAG_COLOR_FIELDS, tagLookWritten, withoutTagColors } from './tag-looks.js';
 import { DEFAULT_TAG_NAMES, moveImportedSettingsFile, readSettingsTagsSource } from './settings-tags-source.js';
 import { legacySettingsPath, settingsDirPath } from './settings-store.js';
 import { compareNameKeys, tagDerivedColumns, valuesAfter, valuesBefore } from './tag-order.js';
@@ -29,6 +30,8 @@ export const TAG_META = Object.freeze({ settingsImported: 'settings_tags_migrate
 export const TAG_REORDER_MODES = Object.freeze(['alphabetical', 'by_entries']);
 
 /**
+ * `thing`: the tag's entity id, which its look is drawn by; no field of its own, so no write stores it. Upstream's
+ * colors are no part of it: its look holds them.
  * @param {import('./library-engine.js').StoredEntity} entity
  * @returns {Record<string, unknown>}
  */
@@ -40,8 +43,9 @@ export function tagDefinition(entity) {
         const value = () => (v.text !== undefined ? v.text : JSON.parse(/** @type {string} */ (v.json)));
         if (v.field === FIELD.name) set('name', value());
         else if (v.field === FIELD.folder_type) set('folder_type', value());
-        else if (typeof v.field === 'string' && v.field.startsWith(TAG_KEY_PREFIX)) set(v.field.slice(TAG_KEY_PREFIX.length), value());
+        else if (typeof v.field === 'string' && v.field.startsWith(TAG_KEY_PREFIX) && !TAG_COLOR_FIELDS.includes(v.field)) set(v.field.slice(TAG_KEY_PREFIX.length), value());
     }
+    set('thing', String(entity.id));
     return tag;
 }
 
@@ -264,8 +268,9 @@ export class LibraryTags extends EventEmitter {
             const assignOrder = !Object.hasOwn(tag, 'sort_order');
             if (assignOrder) tag.sort_order = await this.nextOrder();
             const seq = !assignOrder && !(await this.settled()) ? await this.nextSeq() : null;
-            await this.lib.writeTag(/** @type {any} */ (tag), seq === null ? {} : { extra: id => [queueRecord(seq, id, { value: tag.sort_order })] });
-            return { refused: [], tag };
+            const written = await this.lib.writeTag(/** @type {any} */ (tag), seq === null ? {} : { extra: id => [queueRecord(seq, id, { value: tag.sort_order })] });
+            const [stored] = await this.definitions([written]);
+            return { refused: [], tag: stored ?? tag };
         });
     }
 
@@ -443,6 +448,7 @@ export class LibraryTags extends EventEmitter {
     }
 
     /**
+     * `live`, with `known`: every live tag asked for or merged into, whether `tags` answers it or `unchanged` names it.
      * @param {unknown[]} ids
      * @param {Record<string, string>} [known]
      */
@@ -473,7 +479,7 @@ export class LibraryTags extends EventEmitter {
             unchanged.push(id);
             return false;
         });
-        return { tags: changed, gone, merged, unchanged };
+        return { tags: changed, gone, merged, unchanged, live: tags };
     }
 
     /**
@@ -1326,6 +1332,7 @@ export class LibraryTags extends EventEmitter {
                 /** @type {Record<string, unknown>} */
                 const patch = { ...source };
                 delete patch.id;
+                delete patch.thing;
                 const oldKey = typeof old?.name === 'string' ? tagNameKey(old.name) : '';
                 if (existing.key === id && oldKey !== nameKey) {
                     const [holder] = await this.store.tagByNames([name]);
@@ -1337,7 +1344,8 @@ export class LibraryTags extends EventEmitter {
                 const queued = Object.hasOwn(patch, 'sort_order') && !batch.settled;
                 const { sort_order: patchedOrder, ...rest } = patch;
                 const merged = { ...old, ...(queued ? rest : patch), id: existing.key };
-                if (JSON.stringify(merged) !== JSON.stringify(old)) definitions.updatedTagIds.push(existing.key);
+                const [entity] = await this.lib.entities([existing.id], { fields: [LOOK_FIELD, ...TAG_COLOR_FIELDS], lists: [] });
+                if (JSON.stringify(withoutTagColors(merged)) !== JSON.stringify(old) || tagLookWritten(entity, merged).changed) definitions.updatedTagIds.push(existing.key);
                 const names = [oldKey, typeof merged.name === 'string' ? tagNameKey(merged.name) : ''];
                 return { tag: merged, names, ...(queued ? { queue: patchedOrder } : {}), bump: orderOf(patch) };
             }
@@ -1599,7 +1607,12 @@ export class LibraryTags extends EventEmitter {
         let after;
         for (;;) {
             const page = await this.store.tagPage({ sort: TAG_SORTS.alphabetical, limit: BACKUP_BATCH, cap: Number.MAX_SAFE_INTEGER, ...(after ? { after } : {}) });
-            const batch = (await this.definitions(page.ids)).filter(d => d !== null);
+            const batch = (await this.definitions(page.ids)).flatMap(d => {
+                if (d === null) return [];
+                const kept = { ...d };
+                delete kept.thing;
+                return [kept];
+            });
             if (batch.length > 0) yield /** @type {Record<string, unknown>[]} */ (batch);
             if (!page.cursor) return;
             after = page.cursor;

@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, jest } from '@jest/globals';
 import path from 'node:path';
+import { NO_LOOKS } from './tag-store-reads.js';
 
 jest.setTimeout(60000);
 
@@ -206,14 +207,14 @@ describe('POST /api/tags/query', () => {
         expect(first.body.cursor).toBe(plain.body.cursor);
         expect(typeof first.body.hash).toBe('string');
 
-        expect((await query({ ...ask, ifHash: first.body.hash })).body).toEqual({ unchanged: true, hash: first.body.hash });
+        expect((await query({ ...ask, ifHash: first.body.hash })).body).toEqual({ unchanged: true, hash: first.body.hash, looks: NO_LOOKS });
 
         const renamed = first.body.rows[0];
-        await user.store.lib.tags.edit(renamed.id, { color: '#123456' });
+        await user.store.lib.tags.edit(renamed.id, { folder_type: 'CLOSED', color: '#123456' });
         const after = await query({ ...ask, ifHash: first.body.hash });
         expect(after.body.unchanged).toBeUndefined();
         expect(after.body.hash).not.toBe(first.body.hash);
-        expect(after.body.rows.find(tag => tag.id === renamed.id).color).toBe('#123456');
+        expect(after.body.rows.find(tag => tag.id === renamed.id).folder_type).toBe('CLOSED');
 
         expect((await query({ ...ask, pageSize: 6, ifHash: after.body.hash })).body.unchanged).toBeUndefined();
         expect((await query({ ...ask, ifHash: 7 })).status).toBe(400);

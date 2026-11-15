@@ -35,7 +35,7 @@ export const READS_OF_LOOKS_BESIDES_THINGS = 3 + 2 * SHARED_LOOKS_PER_READ;
 export const FONT_BYTES_AT_MOST = 4 * 1024 * 1024;
 export { IMAGE_BYTES_AT_MOST } from './look.ts';
 
-export type ThingKind = 'entry' | 'world' | 'character' | 'persona' | 'bookmark';
+export type ThingKind = 'entry' | 'world' | 'character' | 'persona' | 'bookmark' | 'tag' | 'group';
 
 // `world` null: the user's, available in every world.
 export type SharedLookRef = { id: string; world: string | null };

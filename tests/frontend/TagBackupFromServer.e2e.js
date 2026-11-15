@@ -54,7 +54,7 @@ test('the tag backup holds a character and a tag the page does not hold', async 
     const stamp = `${Date.now()}`;
     const avatar = await createUnheldCharacter(page, `TagBackupUnheld ${stamp}`);
     const tagId = `backup-unheld-${stamp}`;
-    await api(page, '/api/tags/create', { tag: { id: tagId, name: `Backup ${stamp}`, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 } });
+    await api(page, '/api/tags/create', { tag: { id: tagId, name: `Backup ${stamp}`, folder_type: 'NONE', is_hidden_on_character_card: false, create_date: 1 } });
     await api(page, '/api/tags/assign', { id: avatar, tagId });
 
     await openCharacterManagementDrawer(page);

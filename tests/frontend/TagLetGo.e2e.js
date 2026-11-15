@@ -35,7 +35,7 @@ async function api(page, path, body = {}) {
  * @param {string} id
  */
 async function createTag(page, id) {
-    await api(page, '/api/tags/create', { tag: { id, name: id, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 } });
+    await api(page, '/api/tags/create', { tag: { id, name: id, folder_type: 'NONE', is_hidden_on_character_card: false, create_date: 1 } });
 }
 
 /**

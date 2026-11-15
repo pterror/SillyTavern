@@ -1,5 +1,6 @@
 import { RANGE_FIELDS, SEARCH_FIELDS, canonicalSearchField, cleanRanges } from './character-view.js';
 import { attachActions, registerCommands } from './new-ui-page.js';
+import { nameNode } from './names.js';
 
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
@@ -239,9 +240,14 @@ function showPopover(popover, anchor, focus) {
 }
 
 /**
+ * A tag as the pills draw it: `thing` is what its look is drawn by.
+ * @typedef {{ id: string, name: string, thing?: string }} PillTag
+ */
+
+/**
  * @param {HTMLElement} anchor
- * @param {(term: string) => Promise<{ id: string, name: string }[] | null>} searchTags
- * @param {(tag: { id: string, name: string }) => void} onPick
+ * @param {(term: string) => Promise<PillTag[] | null>} searchTags
+ * @param {(tag: PillTag) => void} onPick
  */
 function openTagPicker(anchor, searchTags, onPick) {
     closePopover();
@@ -274,7 +280,7 @@ function openTagPicker(anchor, searchTags, onPick) {
             const option = document.createElement('div');
             option.className = 'view_pill_field_option';
             option.dataset.tagId = tag.id;
-            option.textContent = tag.name;
+            option.append(nameNode(tag.thing, tag.name));
             option.addEventListener('click', () => {
                 closePopover();
                 onPick(tag);
@@ -304,8 +310,8 @@ function openTagPicker(anchor, searchTags, onPick) {
  * @param {() => import('./character-view.js').CharacterView} options.getView
  * @param {(view: Partial<import('./character-view.js').CharacterView>, fromSearchBox: boolean) => void} options.setView
  * @param {typeof t} options.translate
- * @param {(term: string) => Promise<{ id: string, name: string }[] | null>} options.searchTags
- * @param {(ids: string[]) => Promise<{ names: Map<string, string>, gone: Set<string>, shownAs: Map<string, string> } | null>} options.tagNames
+ * @param {(term: string) => Promise<PillTag[] | null>} options.searchTags
+ * @param {(ids: string[]) => Promise<{ names: Map<string, string>, things: Map<string, string>, gone: Set<string>, shownAs: Map<string, string> } | null>} options.tagNames
  * @returns {() => void}
  */
 export function initViewPills({ container, input, getView, setView, translate, searchTags, tagNames }) {
@@ -324,6 +330,8 @@ export function initViewPills({ container, input, getView, setView, translate, s
     let editing = -1;
     /** @type {Map<string, string|null>} */
     const names = new Map();
+    /** @type {Map<string, string>} */
+    const things = new Map();
     /** @type {Map<string, string>} */
     const shownAs = new Map();
     /** @type {Set<string>} */
@@ -345,6 +353,8 @@ export function initViewPills({ container, input, getView, setView, translate, s
             missing.forEach(id => reading.delete(id));
             if (!answer) return;
             for (const id of missing) {
+                const thing = answer.things.get(id);
+                if (thing !== undefined) things.set(id, thing);
                 if (answer.names.has(id)) names.set(id, answer.names.get(id));
                 else if (answer.gone.has(id)) names.set(id, null);
                 const target = answer.shownAs.get(id);
@@ -354,10 +364,20 @@ export function initViewPills({ container, input, getView, setView, translate, s
         });
     }
 
-    /** @param {string} id */
+    /**
+     * @param {string} id
+     * @returns {HTMLElement | Text}
+     */
     function tagLabel(id) {
-        if (!names.has(id)) return '…';
-        return names.get(id) ?? t`(deleted tag)`;
+        if (!names.has(id)) return document.createTextNode('…');
+        const name = names.get(id);
+        return name === null ? document.createTextNode(t`(deleted tag)`) : nameNode(things.get(id), name);
+    }
+
+    /** @param {PillTag} picked */
+    function remember(picked) {
+        names.set(picked.id, picked.name);
+        if (picked.thing !== undefined) things.set(picked.id, picked.thing);
     }
 
     /**
@@ -376,9 +396,9 @@ export function initViewPills({ container, input, getView, setView, translate, s
             render();
             send();
         });
-        const value = $('<span class="search_pill_value view_pill_part" tabindex="0" role="button">').text(tagLabel(id)).attr('title', t`Pick another tag`);
+        const value = $('<span class="search_pill_value view_pill_part" tabindex="0" role="button">').append(tagLabel(id)).attr('title', t`Pick another tag`);
         value.on('click', () => openTagPicker(value.get(0), searchTags, picked => {
-            names.set(picked.id, picked.name);
+            remember(picked);
             const swap = (/** @type {string[]} */ list) => [...new Set(list.map(x => x === id ? picked.id : x))];
             tags = included ? { ...tags, include: swap(tags.include) } : { ...tags, exclude: swap(tags.exclude) };
             render();
@@ -494,7 +514,7 @@ export function initViewPills({ container, input, getView, setView, translate, s
                 }
                 if (field === '@tag') {
                     openTagPicker(add.get(0), searchTags, picked => {
-                        names.set(picked.id, picked.name);
+                        remember(picked);
                         if (!tags.include.includes(picked.id)) {
                             tags = { ...tags, include: [...tags.include, picked.id], exclude: tags.exclude.filter(x => x !== picked.id) };
                         }

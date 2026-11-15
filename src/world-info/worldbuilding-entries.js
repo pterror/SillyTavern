@@ -239,7 +239,7 @@ async function shownFilter(lib, entry) {
     return {
         exclude: filter.isExclude,
         characters: names.map((key, i) => ({ key, ...characterShown(characters[i]) })),
-        tags: tags.map(key => ({ key, name: tagNames.get(key) ?? null })),
+        tags: tags.map(key => ({ key, named: tagNames.get(key) ?? null })),
         more: filter.names.length + filter.tags.length - names.length - tags.length,
     };
 }
@@ -248,16 +248,28 @@ async function shownFilter(lib, entry) {
  * A tag merged into another is named by the one it went into.
  * @param {import('../library-engine.js').LibraryEngine} lib
  * @param {string[]} keys
- * @returns {Promise<Map<string, string>>}
+ * @returns {Promise<Map<string, import('@st/protocol/looks').Named>>}
  */
 async function tagNamesOf(lib, keys) {
     if (keys.length === 0) return new Map();
     const { tags, merged } = /** @type {{ tags: Record<string, unknown>[], merged: Record<string, string> }} */ (await lib.tags.byIds(keys));
-    const byKey = new Map(tags.flatMap(t => (typeof t.id === 'string' && typeof t.name === 'string' ? [[t.id, t.name]] : [])));
+    const byKey = new Map(tags.flatMap(t => {
+        const named = tagNamed(t);
+        return named === null ? [] : [[String(t.id), named]];
+    }));
     return new Map(keys.flatMap(key => {
         const name = byKey.get(merged[key] ?? key);
         return name === undefined ? [] : [[key, name]];
     }));
+}
+
+/**
+ * @param {Record<string, unknown>} tag a tag's definition
+ * @returns {import('@st/protocol/looks').Named | null}
+ */
+function tagNamed(tag) {
+    if (typeof tag.id !== 'string' || typeof tag.name !== 'string' || typeof tag.thing !== 'string') return null;
+    return { thing: tag.thing, text: tag.name, shownAs: 'name' };
 }
 
 /**
@@ -443,7 +455,10 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
             const tagRows = tags === 'invalid-cursor' ? [] : tags.rows;
             return {
                 characters: avatars.map((avatar, i) => ({ key: avatar.slice(0, -'.png'.length), ...characterShown(entities[i]) })),
-                tags: tagRows.flatMap(t => (typeof t.id === 'string' && typeof t.name === 'string' ? [{ key: t.id, name: t.name }] : [])),
+                tags: tagRows.flatMap(t => {
+                    const named = tagNamed(t);
+                    return named === null ? [] : [{ key: /** @type {string} */ (t.id), named }];
+                }),
             };
         },
         async readKeySuggestions(user, { book, typed, limit }) {

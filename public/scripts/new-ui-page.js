@@ -15,7 +15,7 @@ let waiting = [];
  * @param {(page: import('/ui/entry.js').NewUi) => () => void} attach
  * @returns {() => void} undoes it, or keeps it from being done
  */
-function onceStarted(attach) {
+export function onceStarted(attach) {
     if (started) return attach(started);
     const entry = { attach, detached: false };
     waiting.push(entry);

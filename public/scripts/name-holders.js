@@ -7,3 +7,5 @@ export const CHAT_LINKS_LOOKS = 'page.chatLinks';
 export const PERSONA_LOOKS = 'page.personas';
 export const CHATS_LOOKS = 'page.chats';
 export const RECENT_LOOKS = 'page.recent';
+// Every tag the page was answered, whichever place draws it: the page keeps one store of the tags it holds.
+export const TAG_LOOKS = 'page.tags';

@@ -34,7 +34,9 @@ import { dropOldTagsCache } from './tags-cache.js';
 import { mergedTagTarget, shownTagIds, tagReadDrops, takeInMergedTags } from './tag-merges.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository } from './character-repository.js';
-import { attachActions } from './new-ui-page.js';
+import { attachActions, newUi } from './new-ui-page.js';
+import { addLooks, nameNode } from './names.js';
+import { TAG_LOOKS } from './name-holders.js';
 
 export {
     filterByTagState,
@@ -236,7 +238,16 @@ function showSavedTagFilterState(tag) {
 function tagDefinitionToStore(tag) {
     const definition = { ...tag };
     delete definition.filter_state;
+    delete definition.thing;
     return definition;
+}
+
+/**
+ * Holds the looks of the tags an answer carries.
+ * @param {any} answer
+ */
+function holdTagLooks(answer) {
+    if (answer?.looks) addLooks(TAG_LOOKS, answer.looks);
 }
 
 /** @enum {number} */
@@ -303,11 +314,11 @@ export const tag_sort_mode = {
 };
 
 const ACTIONABLE_TAGS = {
-    FAV: { id: '1', sort_order: 1, name: 'Show only favorites', color: 'rgba(255, 255, 0, 0.5)', filter_state: undefined, action: filterByFav, icon: 'fa-solid fa-star', class: 'filterByFavorites' },
-    GROUP: { id: '0', sort_order: 2, name: 'Show only groups', color: 'rgba(100, 100, 100, 0.5)', filter_state: undefined, action: filterByGroups, icon: 'fa-solid fa-users', class: 'filterByGroups' },
-    FOLDER: { id: '4', sort_order: 3, name: 'Show only folders', color: 'rgba(120, 120, 120, 0.5)', filter_state: undefined, action: filterByFolder, icon: 'fa-solid fa-folder-plus', class: 'filterByFolder' },
-    VIEW: { id: '2', sort_order: 4, name: 'Manage tags', color: 'rgba(150, 100, 100, 0.5)', action: onViewTagsListClick, icon: 'fa-solid fa-gear', class: 'manageTags' },
-    HINT: { id: '3', sort_order: 5, name: 'Show Tag List', color: 'rgba(150, 100, 100, 0.5)', action: onTagListHintClick, icon: 'fa-solid fa-tags', class: 'showTagList' },
+    FAV: { id: '1', sort_order: 1, name: 'Show only favorites', filter_state: undefined, action: filterByFav, icon: 'fa-solid fa-star', class: 'filterByFavorites' },
+    GROUP: { id: '0', sort_order: 2, name: 'Show only groups', filter_state: undefined, action: filterByGroups, icon: 'fa-solid fa-users', class: 'filterByGroups' },
+    FOLDER: { id: '4', sort_order: 3, name: 'Show only folders', filter_state: undefined, action: filterByFolder, icon: 'fa-solid fa-folder-plus', class: 'filterByFolder' },
+    VIEW: { id: '2', sort_order: 4, name: 'Manage tags', action: onViewTagsListClick, icon: 'fa-solid fa-gear', class: 'manageTags' },
+    HINT: { id: '3', sort_order: 5, name: 'Show Tag List', action: onTagListHintClick, icon: 'fa-solid fa-tags', class: 'showTagList' },
     UNFILTER: { id: '5', sort_order: 6, name: 'Clear all filters', action: onClearAllFiltersClick, icon: 'fa-solid fa-filter-circle-xmark', class: 'clearAllFilters' },
 };
 
@@ -357,8 +368,7 @@ const TAG_FOLDER_DEFAULT_TYPE = 'NONE';
  * @property {string} [folder_type]
  * @property {string} [filter_state]
  * @property {number} [sort_order]
- * @property {string} [color]
- * @property {string} [color2]
+ * @property {string} [thing] its entity id, which its look is drawn by; the server's, never stored
  * @property {number} [create_date]
  * @property {boolean} [is_hidden_on_character_card]
  * @property {function} [action]
@@ -853,7 +863,7 @@ function tagFieldsChangedOnObject(tag) {
     let patch = null;
     for (const key of Object.keys(tag)) {
         const value = tag[key];
-        if (key === 'id' || key === 'filter_state' || !isStorableTagValue(value)) continue;
+        if (key === 'id' || key === 'thing' || key === 'filter_state' || !isStorableTagValue(value)) continue;
         if (sameTagValue(value, stored[key])) continue;
         patch ??= {};
         patch[key] = value;
@@ -940,7 +950,9 @@ async function createTagOnServer(tag, { freeName = false } = {}) {
             throw new Error(`Failed to create tag: ${response.statusText}`);
         }
 
-        const { refused, tag: stored } = await response.json();
+        const answer = await response.json();
+        holdTagLooks(answer);
+        const { refused, tag: stored } = answer;
         const reason = refused?.[0]?.reason;
         if (!reason && isTagObject(stored)) Object.assign(tag, stored);
         if (!reason || reason === 'exists') {
@@ -1067,6 +1079,7 @@ async function postTagQuery(body) {
         if (!response.ok) throw new Error(response.statusText);
         const answer = await response.json();
         if (answer?.unchanged !== true && !Array.isArray(answer?.rows)) throw new Error('no rows in the answer');
+        holdTagLooks(answer);
         return answer;
     } catch (error) {
         console.error('Error reading a page of tags:', error);
@@ -1091,6 +1104,7 @@ async function postTagsRead(path, body) {
         return null;
     }
     const answer = await response.json();
+    holdTagLooks(answer);
     takeInMergedTags(answer?.merged);
     return answer;
 }
@@ -1098,13 +1112,9 @@ async function postTagsRead(path, body) {
 const TAG_FIELD_REDRAWS = {
     /** @param {Tag} tag */
     name: (tag) => {
-        $(`.tag[id="${tag.id}"] .tag_name`).text(tag.name);
+        $(`.tag[id="${tag.id}"] .tag_name`).each((_, element) => drawTagName(element, tag));
         drawTagViewName($(`.tag_view_item[id="${tag.id}"] .tag_view_name`), tag);
     },
-    /** @param {Tag} tag */
-    color: (tag) => redrawTagColorField(tag, 'color', 'background-color'),
-    /** @param {Tag} tag */
-    color2: (tag) => redrawTagColorField(tag, 'color2', 'color'),
     /** @param {Tag} tag */
     folder_type: (tag) => {
         updateDrawTagFolder($(`.tag_view_item[id="${tag.id}"]`), tag);
@@ -1119,20 +1129,11 @@ const TAG_FIELD_REDRAWS = {
 };
 
 /**
+ * @param {Element} element
  * @param {Tag} tag
- * @param {'color'|'color2'} colorField
- * @param {string} cssProperty
  */
-function redrawTagColorField(tag, colorField, cssProperty) {
-    const newColor = tag[colorField] ?? '';
-    const $row = $(`.tag_view_item[id="${tag.id}"]`);
-    $row.find('.tag_view_name').css(cssProperty, newColor);
-    const $picker = $row.find(`.tag_view_color_picker[data-value="${colorField}"]`);
-    if ($picker.length) {
-        const defaultColor = $picker.find('toolcool-color-picker').attr('data-default-color');
-        $picker.find('.link_icon').toggle(!!newColor && newColor !== defaultColor);
-    }
-    applyTagColoring(tag.id, cssProperty, newColor);
+function drawTagName(element, tag) {
+    element.replaceChildren(nameNode(tag.thing, tag.name));
 }
 
 /**
@@ -1509,7 +1510,9 @@ async function deleteTagOnServer(id, mergeInto) {
             throw new Error(`Failed to delete tag: ${response.statusText}`);
         }
 
-        const { refused, mergedInto, target } = await response.json();
+        const answer = await response.json();
+        holdTagLooks(answer);
+        const { refused, mergedInto, target } = answer;
         return { refused: refused ?? [], mergedInto: mergedInto ?? null, target: target ?? null };
     } catch (error) {
         console.error(`Error deleting tag ${id}:`, error);
@@ -2266,7 +2269,8 @@ const FIND_TAG_RESULT_LIMIT = 50;
 
 /**
  * @param {{ term: string }} request
- * @param {(names: string[]) => void} resolve
+ * @param {(items: { value: string, thing?: string }[]) => void} resolve each a tag's name, with its thing when it is one;
+ *   a name typed that no tag has yet has none
  * @param {string} listSelector
  */
 function findTag(request, resolve, listSelector) {
@@ -2280,11 +2284,13 @@ function findTag(request, resolve, listSelector) {
     ]).then(([page, exact]) => {
         const rows = page?.rows
             ?? tags.filter(t => includesIgnoreCaseAndAccents(t.name, needle)).sort(compareTagsForSort);
-        const result = rows.filter(t => !skipIds.has(t.id)).map(t => tagsStore.get(t.id)?.name ?? t.name).slice(0, FIND_TAG_RESULT_LIMIT);
-        if (exact && !skipIds.has(exact.id) && !result.some(name => equalsIgnoreCaseAndAccents(name, exact.name))) {
-            result.unshift(exact.name);
+        /** @type {(tag: Tag) => { value: string, thing?: string }} */
+        const item = tag => ({ value: tag.name, thing: tag.thing });
+        const result = rows.filter(t => !skipIds.has(t.id)).map(t => item(tagsStore.get(t.id) ?? t)).slice(0, FIND_TAG_RESULT_LIMIT);
+        if (exact && !skipIds.has(exact.id) && !result.some(found => equalsIgnoreCaseAndAccents(found.value, exact.name))) {
+            result.unshift(item(exact));
         }
-        if (needle && !exact) result.unshift(needle);
+        if (needle && !exact) result.unshift({ value: needle });
         resolve(result);
     });
 }
@@ -2337,8 +2343,10 @@ function selectTag(event, ui, listSelector, { tagListOptions = {}, onTagChosen =
  * this client doesn't already have a definition for - otherwise a server-minted tag would render invisible
  * until some unrelated future refetch pulled it in.
  * @param {object[]} tagDefinitions
+ * @param {import('@st/protocol/looks').Looks} [looks] theirs, as the answer that carried them gave them
  */
-function mergeServerTagDefinitions(tagDefinitions) {
+function mergeServerTagDefinitions(tagDefinitions, looks) {
+    if (looks) addLooks(TAG_LOOKS, looks);
     if (!Array.isArray(tagDefinitions) || tagDefinitions.length === 0) return;
 
     let addedAny = false;
@@ -2736,14 +2744,25 @@ function initTagSearchSelect(select, { placeholder, dropdownParent, leaveOut }) 
                     }
                     if (answer.cursor) pageCursors.set(`${page + 1}\n${term}`, answer.cursor);
                     success({
-                        results: answer.rows.filter(x => x.id !== leaveOut).map(x => ({ id: x.id, text: x.name })),
+                        results: answer.rows.filter(x => x.id !== leaveOut).map(x => ({ id: x.id, text: x.name, thing: x.thing })),
                         pagination: { more: answer.cursor !== null },
                     });
                 });
                 return { abort: () => { aborted = true; } };
             },
         },
+        templateResult: tagSearchItem,
+        templateSelection: tagSearchItem,
     });
+}
+
+/**
+ * A select2 item: a tag's name as the name renderer draws it, a status line (no `id`) as select2 writes it.
+ * @param {{ id?: string, text: string, thing?: string }} item
+ * @returns {JQuery | string}
+ */
+function tagSearchItem(item) {
+    return item.id ? $(/** @type {HTMLElement} */ (nameNode(item.thing, item.text))) : item.text;
 }
 
 /**
@@ -2830,8 +2849,6 @@ function newTagWithoutOrder(tagName) {
         folder_type: TAG_FOLDER_DEFAULT_TYPE,
         filter_state: DEFAULT_FILTER_STATE,
         is_hidden_on_character_card: false,
-        color: '',
-        color2: '',
         create_date: Date.now(),
     };
 }
@@ -2957,7 +2974,7 @@ function printTagList(element, { tags = undefined, addTag = undefined, forEntity
 
         // Print the placeholder object with its styling and action to show the remaining tags
         /** @type {Tag} */
-        const placeholderTag = { id: id, name: '...', title: `${tagsSkipped} tags not displayed.\n\nClick to expand remaining tags.`, color: 'transparent', action: showHiddenTags, class: 'placeholder-expander' };
+        const placeholderTag = { id: id, name: '...', title: `${tagsSkipped} tags not displayed.\n\nClick to expand remaining tags.`, action: showHiddenTags, class: 'placeholder-expander' };
         // It should never be marked as a removable tag, because it's just an expander action
         /** @type {TagOptions} */
         const placeholderTagOptions = { ...tagOptions, removable: false };
@@ -2984,11 +3001,7 @@ function appendTagToList(listElement, tag, { removable = false, isFilter = false
     let tagElement = TAG_TEMPLATE.clone();
     tagElement.attr('id', tag.id);
 
-    //tagElement.css('color', 'var(--SmartThemeBodyColor)');
-    tagElement.css('background-color', tag.color);
-    tagElement.css('color', tag.color2);
-
-    tagElement.find('.tag_name').text(tag.name);
+    tagElement.find('.tag_name').each((_, element) => drawTagName(element, tag));
     const removeButton = tagElement.find('.tag_remove');
     removable ? removeButton.show() : removeButton.hide();
     if (removable && removeAction) {
@@ -3448,7 +3461,7 @@ function removeGoneTagFilters(goneIds) {
  */
 function savedFilterStandIn(storagePrefix, id) {
     const name = storagePrefix ? accountStorage.getItem(`${storagePrefix}_tagname_${id}`) : null;
-    return { id, name: name ?? id, folder_type: TAG_FOLDER_DEFAULT_TYPE, color: '', color2: '' };
+    return { id, name: name ?? id, folder_type: TAG_FOLDER_DEFAULT_TYPE };
 }
 
 /**
@@ -3583,11 +3596,11 @@ function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTag
     }
     if (tail === 'more') {
         /** @type {Tag} */
-        const pill = { id: `placeholder_${uuidv4()}`, name: '...', title: t`More tags are not displayed.` + '\n\n' + t`Click to show more.`, color: 'transparent', class: 'placeholder-expander', action: onUsedTagBarMoreClick };
+        const pill = { id: `placeholder_${uuidv4()}`, name: '...', title: t`More tags are not displayed.` + '\n\n' + t`Click to show more.`, class: 'placeholder-expander', action: onUsedTagBarMoreClick };
         appendTagToList($container, pill, { skipExistsCheck: true });
     } else if (tail === 'failed') {
         /** @type {Tag} */
-        const pill = { id: `placeholder_${uuidv4()}`, name: t`Tags could not be loaded. Try again`, color: 'transparent', class: 'placeholder-expander', action: onUsedTagBarRetryClick };
+        const pill = { id: `placeholder_${uuidv4()}`, name: t`Tags could not be loaded. Try again`, class: 'placeholder-expander', action: onUsedTagBarRetryClick };
         appendTagToList($container, pill, { skipExistsCheck: true });
     }
     tagFilterRenderCache.set(type, drawn);
@@ -3720,7 +3733,21 @@ export function createTagInput(inputSelector, listSelector, tagListOptions = {},
             select: (e, u) => selectTag(e, u, listSelector, { tagListOptions: tagListOptions, onTagChosen }),
             minLength: 0,
         })
-        .on('focus', onTagInputFocus); // <== show tag list on click
+        .on('focus', onTagInputFocus) // <== show tag list on click
+        .each((_, input) => {
+            // @ts-ignore
+            const instance = $(input).autocomplete('instance');
+            if (instance) instance._renderItem = renderTagSearchItem;
+        });
+}
+
+/**
+ * A jQuery UI autocomplete item: a tag's name as the name renderer draws it.
+ * @param {JQuery<HTMLElement>} list
+ * @param {{ label: string, thing?: string }} item
+ */
+function renderTagSearchItem(list, item) {
+    return $('<li>').append($('<div>').append(nameNode(item.thing, item.label))).appendTo(list);
 }
 
 async function onViewTagsListClick() {
@@ -4121,7 +4148,7 @@ async function onTagRestoreFileSelect(e) {
     const serverHasTags = firstPage === null || firstPage === 'invalid-cursor' || (firstPage.rows?.length ?? 0) > 0 || firstPage.more === true;
     let overwrite = false;
     if (serverHasTags) {
-        const result = await Popup.show.confirm('Tag Restore', 'You have existing tags. If the backup contains any of those tags, do you want the backup to overwrite their settings (Name, color, folder state, etc)?',
+        const result = await Popup.show.confirm('Tag Restore', 'You have existing tags. If the backup contains any of those tags, do you want the backup to overwrite their settings (Name, folder state, etc)?',
             { okButton: 'Overwrite', cancelButton: 'Keep Existing' });
         overwrite = result === POPUP_RESULT.AFFIRMATIVE;
     }
@@ -4287,40 +4314,14 @@ function appendViewTagToList(list, tag, count) {
     drawTagViewName(template.find('.tag_view_name'), tag);
     template.find('.tag_view_name').addClass('tag');
 
-    template.find('.tag_view_name').css('background-color', tag.color);
-    template.find('.tag_view_name').css('color', tag.color2);
-
     const tagAsFolderId = tag.id + '-tag-folder';
-    const colorPickerId = tag.id + '-tag-color';
-    const colorPicker2Id = tag.id + '-tag-color2';
 
     if (!power_user.bogus_folders) {
         template.find('.tag_as_folder').hide();
     }
 
-    const primaryColorPicker = $('<toolcool-color-picker></toolcool-color-picker>')
-        .addClass('tag-color')
-        .attr({ id: colorPickerId, color: tag.color || 'rgba(0, 0, 0, 0.5)', 'data-default-color': 'rgba(0, 0, 0, 0.5)' });
-
-    const secondaryColorPicker = $('<toolcool-color-picker></toolcool-color-picker>')
-        .addClass('tag-color2')
-        .attr({ id: colorPicker2Id, color: tag.color2 || power_user.main_text_color, 'data-default-color': power_user.main_text_color });
-
-    template.find('.tag_view_color_picker[data-value="color"]').append(primaryColorPicker)
-        .append($('<div class="fas fa-link fa-xs link_icon right_menu_button" title="Link to theme color"></div>'));
-    template.find('.tag_view_color_picker[data-value="color2"]').append(secondaryColorPicker)
-        .append($('<div class="fas fa-link fa-xs link_icon right_menu_button" title="Link to theme color"></div>'));
-
     template.find('.tag_as_folder').attr('id', tagAsFolderId);
-
-    primaryColorPicker.on('change', (evt) => onTagColorize(evt, 'color', 'background-color'));
-    secondaryColorPicker.on('change', (evt) => onTagColorize(evt, 'color2', 'color'));
-    template.find('.tag_view_color_picker .link_icon').on('click', (evt) => {
-        const colorPicker = $(evt.target).closest('.tag_view_color_picker').find('toolcool-color-picker');
-        const defaultColor = colorPicker.attr('data-default-color');
-        // @ts-ignore
-        colorPicker[0].color = defaultColor;
-    });
+    template.find('.tag_view_look').toggle(Boolean(tag.thing)).on('click', () => onTagLookClick(tag.id));
 
     const hideToggle = template.find('.eye-toggle');
     drawTagHideToggle(hideToggle, tag);
@@ -4329,17 +4330,18 @@ function appendViewTagToList(list, tag, count) {
 
     list.append(template);
 
-    // A first Escape on a color picker is kept from closing the dialog; another within five seconds is not
-    let lastHit = 0;
-    const keepDialog = () => {
-        if (Date.now() - lastHit < 5000) return false;
-        lastHit = Date.now();
-    };
-    for (const picker of [primaryColorPicker[0], secondaryColorPicker[0]]) attachActions(picker, { cancel: keepDialog });
     const nameElement = template.find('.tag_view_name')[0];
     attachActions(nameElement, { confirm: () => nameElement.blur() });
 
     updateDrawTagFolder(template, tag);
+}
+
+/** @param {string} id */
+async function onTagLookClick(id) {
+    const thing = tagsStore.get(id)?.thing;
+    if (!thing) return;
+    const refused = await newUi().looks.open(thing);
+    if (refused) toastr.error(refused);
 }
 
 /** @param {string} id */
@@ -4495,7 +4497,7 @@ function drawTagViewName(nameElement, tag) {
     const draft = readTagNameDraft(tag.id);
     const unsaved = draft !== null && draft !== tag.name;
     const shown = unsaved ? draft : tag.name;
-    if (nameElement.text() !== shown) nameElement.text(shown);
+    if (nameElement.text() !== shown) nameElement.each((_, element) => element.replaceChildren(nameNode(tag.thing, shown)));
     nameElement.toggleClass('tag_view_name_unsaved', unsaved);
     if (unsaved) {
         nameElement.attr('title', t`This name is not saved yet. Click it and press Enter to save it.`);
@@ -4534,71 +4536,6 @@ async function commitTagRename(nameElement) {
 
     applyCharacterTagsToMessageDivs();
     await showOwnTagInViewList(id);
-}
-
-/**
- * Handles the colorization of a tag when the user interacts with the color picker
- *
- * @param {*} evt - The custom colorize event object
- * @param {'color'|'color2'} colorField - Which field on the tag object this picker controls
- * @param {string} cssProperty - The CSS property to apply the color to
- */
-function onTagColorize(evt, colorField, cssProperty) {
-    const isDefaultColor = isSameCssColor(String($(evt.target).data('default-color') ?? ''), evt.detail.rgba);
-    $(evt.target).closest('.tag_view_color_picker').find('.link_icon').toggle(!isDefaultColor);
-
-    const id = $(evt.target).closest('.tag_view_item').attr('id');
-    let newColor = evt.detail.rgba;
-    if (isDefaultColor) newColor = '';
-
-    const waiting = tagFieldEditsInFlight.get(`${id}\n${colorField}`);
-    const currentColor = waiting ? waiting.wanted : (tagsStore.get(id)?.[colorField] ?? '');
-    if (isSameCssColor(currentColor, newColor)) return;
-
-    $(evt.target).closest('.tag_view_item').find('.tag_view_name').css(cssProperty, newColor);
-    storeTagColor(id, colorField, newColor);
-}
-
-/**
- * @param {string} id
- * @param {'color'|'color2'} colorField
- * @param {string} newColor
- */
-async function storeTagColor(id, colorField, newColor) {
-    const outcome = await storeTagField(id, colorField, newColor);
-    if (outcome !== 'refused' && outcome !== 'failed') return;
-
-    const tag = tagsStore.get(id);
-    if (!tag) return;
-    TAG_FIELD_REDRAWS[colorField](tag);
-    const picker = $(`.tag_view_item[id="${id}"] .tag_view_color_picker[data-value="${colorField}"] toolcool-color-picker`);
-    if (picker.length) {
-        // @ts-ignore
-        picker[0].color = tag[colorField] || picker.attr('data-default-color');
-    }
-    if (outcome === 'failed') tellTagEditFailed(id, t`Its colour was not changed.`);
-}
-
-/**
- * @param {string} a
- * @param {string} b
- * @returns {boolean}
- */
-function isSameCssColor(a, b) {
-    if (a === b) return true;
-    if (!a || !b) return false;
-    const context = document.createElement('canvas').getContext('2d');
-    const canonical = (color) => {
-        context.fillStyle = '#000000';
-        context.fillStyle = color;
-        return context.fillStyle;
-    };
-    return canonical(a) === canonical(b);
-}
-
-function applyTagColoring(tagId, cssProperty, newColor) {
-    $(`.tag[id="${tagId}"]`).css(cssProperty, newColor);
-    $(`.bogus_folder_select[tagid="${tagId}"] .avatar`).css(cssProperty, newColor);
 }
 
 function onTagListHintClick() {

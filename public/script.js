@@ -9440,7 +9440,7 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
 
             let tagsAdded = false;
             if (result.serverHandledTags) {
-                mergeServerTagDefinitions(result.tagDefinitions);
+                mergeServerTagDefinitions(result.tagDefinitions, result.tagLooks);
                 tagsAdded = Array.isArray(result.character?.tag_ids) && result.character.tag_ids.length > 0;
             } else if (power_user.tag_import_setting !== tag_import_setting.NONE) {
                 tagsAdded = await importTags(result.character, { suppressSuccessToast: true });
@@ -9611,6 +9611,7 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
                 droppedGreetings: Array.isArray(data.dropped_greetings) ? data.dropped_greetings.length : 0,
                 serverHandledTags: effectiveTagSetting === tag_import_setting.ALL || effectiveTagSetting === tag_import_setting.ONLY_EXISTING,
                 tagDefinitions: Array.isArray(data.tagDefinitions) ? data.tagDefinitions : [],
+                tagLooks: data.tag_looks,
             };
         }
     } catch (error) {
@@ -10572,13 +10573,15 @@ jQuery(async function () {
 
     const nameHeading = document.querySelector('#rm_button_selected_ch h2');
     const currentThing = () => {
+        const selection = getSelectionState();
+        if (selection.type === 'group') return groupsStore.get(selection.groupId)?.thing;
         const avatar = getCurrentCharacter()?.avatar;
         return avatar ? charactersStore.get(avatar)?.thing : undefined;
     };
     const showRenameButton = () => {
-        const shown = getSelectionState().type === 'character' && Boolean(nameHeading?.textContent);
-        $('#character_rename_inline').toggle(shown);
-        $('#character_look_inline').toggle(shown && Boolean(currentThing()));
+        const named = Boolean(nameHeading?.textContent);
+        $('#character_rename_inline').toggle(named && getSelectionState().type === 'character');
+        $('#character_look_inline').toggle(named && Boolean(currentThing()));
     };
     // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
     if (nameHeading) new MutationObserver(showRenameButton).observe(nameHeading, { childList: true, characterData: true, subtree: true });

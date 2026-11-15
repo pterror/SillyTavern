@@ -52,7 +52,7 @@ async function createUnheldCharacter(page, name) {
  * @param {string} name
  */
 async function createTag(page, id, name) {
-    await api(page, '/api/tags/create', { tag: { id, name, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 } });
+    await api(page, '/api/tags/create', { tag: { id, name, folder_type: 'NONE', is_hidden_on_character_card: false, create_date: 1 } });
 }
 
 async function takeInEntityTagChanges(page) {

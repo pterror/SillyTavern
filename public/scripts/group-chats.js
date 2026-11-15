@@ -753,7 +753,8 @@ export function getGroupBlock(group) {
     const template = $('#group_list_template .group_select').clone();
     template.data('id', group.id);
     template.attr('data-grid', group.id);
-    template.find('.ch_name').text(group.name).attr('title', group.name);
+    drawName(template.find('.ch_name'), group.thing, group.name);
+    template.find('.ch_name').attr('title', group.name);
     template.find('.group_fav_icon').css('display', 'none');
     const isFav = normalizeFav(group.fav);
     template.addClass(isFav ? 'is_fav' : '');
@@ -1438,7 +1439,7 @@ async function onGroupNameInput() {
     if (openGroupId) {
         const name = $(this).val();
         const change = groupsStore.update(openGroupId, { name });
-        $('#rm_button_selected_ch').children('h2').text(change?.entity?.name);
+        drawName($('#rm_button_selected_ch').children('h2'), change?.entity?.thing, String(change?.entity?.name ?? ''));
         await saveGroupField(openGroupId, { name }, false, true);
     }
 }
@@ -1795,7 +1796,7 @@ function select_group_chats(groupId, skipAnimation) {
     // top bar
     if (group) {
         $('#rm_group_automode_label').show();
-        $('#rm_button_selected_ch').children('h2').text(groupName);
+        drawName($('#rm_button_selected_ch').children('h2'), group.thing, groupName);
     } else {
         $('#rm_group_automode_label').hide();
     }

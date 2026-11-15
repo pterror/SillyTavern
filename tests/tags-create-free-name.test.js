@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
+import { A_THING, NO_LOOKS, storedTagLook } from './tag-store-reads.js';
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
@@ -96,14 +97,20 @@ describe('POST /api/tags/create with freeName', () => {
     test('the answer carries the place in the manual order the server gave the tag', async () => {
         expect((await post('/api/tags/create', { tag: { id: 'x', name: 'X', sort_order: 41 } })).status).toBe(200);
 
-        const { body } = await post('/api/tags/create', { tag: { id: 'a', name: 'New Tag', color: '#112233' }, freeName: true });
-        expect(body.tag).toEqual({ id: 'a', name: 'New Tag', color: '#112233', sort_order: 42 });
+        const { body } = await post('/api/tags/create', { tag: { id: 'a', name: 'New Tag', folder_type: 'OPEN' }, freeName: true });
+        expect(body.tag).toEqual({ id: 'a', name: 'New Tag', folder_type: 'OPEN', sort_order: 42, thing: A_THING });
+    });
+
+    test('upstream\'s colors a created tag carries are its look, not fields of the tag', async () => {
+        const { body } = await post('/api/tags/create', { tag: { id: 'a', name: 'A', color: '#112233', color2: 'white' } });
+        expect(body.tag).toEqual({ id: 'a', name: 'A', sort_order: 1, thing: A_THING });
+        expect(await storedTagLook(user.store.lib, 'a')).toEqual({ rest: [{ property: 'background-color', value: '#112233' }, { property: 'color', value: 'white' }] });
     });
 
     test('without freeName the name is stored as given, taken or not', async () => {
-        expect((await post('/api/tags/create', { tag: { id: 'x', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'x', name: 'New Tag', sort_order: 1 } });
-        expect((await post('/api/tags/create', { tag: { id: 'y', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'y', name: 'New Tag', sort_order: 2 } });
-        expect((await post('/api/tags/create', { tag: { id: 'z', name: 'New Tag' }, freeName: false })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'z', name: 'New Tag', sort_order: 3 } });
+        expect((await post('/api/tags/create', { tag: { id: 'x', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'x', name: 'New Tag', sort_order: 1, thing: A_THING }, looks: NO_LOOKS });
+        expect((await post('/api/tags/create', { tag: { id: 'y', name: 'New Tag' } })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'y', name: 'New Tag', sort_order: 2, thing: A_THING }, looks: NO_LOOKS });
+        expect((await post('/api/tags/create', { tag: { id: 'z', name: 'New Tag' }, freeName: false })).body).toEqual({ result: 'ok', refused: [], tag: { id: 'z', name: 'New Tag', sort_order: 3, thing: A_THING }, looks: NO_LOOKS });
         expect(await storedName('z')).toBe('New Tag');
     });
 

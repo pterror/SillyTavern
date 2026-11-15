@@ -1266,6 +1266,8 @@ const KIND_WORDS: Record<Open['kind'], string> = {
     character: 'Character',
     persona: 'Persona',
     bookmark: 'Bookmark',
+    tag: 'Tag',
+    group: 'Group',
 };
 
 function Renders(props: { view: Open; markOpen: boolean; onMark: () => void }) {

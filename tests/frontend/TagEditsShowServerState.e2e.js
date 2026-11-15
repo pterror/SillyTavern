@@ -28,18 +28,18 @@ async function api(page, path, body = {}) {
 
 /**
  * @param {import('@playwright/test').Browser} browser
- * @param {{ id: string, name?: string, color?: string }[]} tags
+ * @param {{ id: string, name?: string }[]} tags
  */
 async function createTags(browser, tags) {
     const setupContext = await browser.newContext();
     try {
         const setup = await setupContext.newPage();
         await loadApp(setup);
-        for (const { id, name = id, color = '' } of tags) {
+        for (const { id, name = id } of tags) {
             await api(setup, '/api/tags/create', {
                 tag: {
                     id, name, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000,
-                    is_hidden_on_character_card: false, create_date: Date.now(), color, color2: '',
+                    is_hidden_on_character_card: false, create_date: Date.now(),
                 },
             });
         }
@@ -233,30 +233,6 @@ test.describe('Tag edits show what the server stored', () => {
         await expect.poll(() => storedTag(page, id).then(tag => tag.name)).toBe(`${id}-typed`);
         await expect.poll(() => pageTag(page, id).then(tag => tag.name)).toBe(`${id}-typed`);
         await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"] .tag_view_name`)).not.toHaveClass(/tag_view_name_unsaved/);
-    });
-
-    test('a colour that could not be stored puts the row and its picker back and says so', async ({ browser, page }) => {
-        const id = `edit-colour-${Date.now()}`;
-        await createTags(browser, [{ id, color: 'rgba(10, 20, 30, 1)' }]);
-        await loadApp(page);
-        await openTagManagement(page);
-
-        const row = page.locator(`#tag_view_list .tag_view_item[id="${id}"]`);
-        const picker = row.locator('toolcool-color-picker.tag-color');
-        await expect.poll(() => picker.evaluate(el => el['rgba'])).toBe('rgba(10, 20, 30, 1)');
-
-        await page.route('**/api/tags/edit', route => route.fulfill(FAIL));
-        await picker.evaluate(el => { el['color'] = 'rgba(200, 10, 10, 1)'; });
-        await expect(page.locator('.toast-error', { hasText: 'Its colour was not changed' })).toBeVisible();
-        await expect.poll(() => picker.evaluate(el => el['rgba'])).toBe('rgba(10, 20, 30, 1)');
-        await expect(row.locator('.tag_view_name')).toHaveCSS('background-color', 'rgb(10, 20, 30)');
-        expect((await pageTag(page, id)).color).toBe('rgba(10, 20, 30, 1)');
-        await page.unroute('**/api/tags/edit');
-        expect((await storedTag(page, id)).color).toBe('rgba(10, 20, 30, 1)');
-
-        await picker.evaluate(el => { el['color'] = 'rgba(0, 100, 0, 1)'; });
-        await expect.poll(() => storedTag(page, id).then(tag => tag.color)).toBe('rgba(0, 100, 0, 1)');
-        await expect.poll(() => pageTag(page, id).then(tag => tag.color)).toBe('rgba(0, 100, 0, 1)');
     });
 
     test('a folder type that could not be stored leaves the tag as it was and says so', async ({ browser, page }) => {

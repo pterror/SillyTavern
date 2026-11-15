@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '@jest/globals';
 import path from 'node:path';
-import { storedTagDefinitions } from './tag-store-reads.js';
+import { storedTagDefinitions, storedTagLook } from './tag-store-reads.js';
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
@@ -40,7 +40,9 @@ describe('the default settings template on a fresh install', () => {
 
         const definitions = await storedTagDefinitions(user.store.lib);
         expect(definitions.map(tag => tag.id)).toEqual([ST_DEFAULT_ID]);
-        expect(definitions[0]).toMatchObject({ id: ST_DEFAULT_ID, name: 'ST Default', color: 'rgba(108, 32, 32, 1)' });
+        expect(definitions[0]).toMatchObject({ id: ST_DEFAULT_ID, name: 'ST Default' });
+        expect(definitions[0]).not.toHaveProperty('color');
+        expect(await storedTagLook(user.store.lib, ST_DEFAULT_ID)).toEqual({ rest: [{ property: 'background-color', value: 'rgba(108, 32, 32, 1)' }] });
         expect((await user.store.lib.tags.tagIdsFor(['default_Seraphina.png']))['default_Seraphina.png']).toEqual([ST_DEFAULT_ID]);
     });
 });

@@ -4,6 +4,7 @@ import { LIST_EXTRA_PATHS, cardListValues } from './card-list-values.js';
 import { calculateDataSize } from './character-shallow.js';
 import { parseCreateDateToEpochMs } from './util.js';
 import { tagDerivedColumns } from './tag-order.js';
+import { TAG_COLOR_KEYS, tagLookWritten } from './tag-looks.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords, withoutLook, withoutStatements } from './entity-values.js';
@@ -41,7 +42,9 @@ export const GROUP_LIST = Object.freeze({ members: 3, disabled_members: 4 });
 
 const GROUP_KEY_PREFIX = 'group:';
 
-const GROUP_READ_KEYS = new Set(['id', 'fav', 'tag_ids', 'date_added', 'create_date', 'date_last_chat', 'chat_size', 'chat_id', 'chats']);
+const GROUP_READ_KEYS = new Set(['id', 'thing', 'fav', 'tag_ids', 'date_added', 'create_date', 'date_last_chat', 'chat_size', 'chat_id', 'chats']);
+
+const TAG_READ_KEYS = new Set(['id', 'thing', ...TAG_COLOR_KEYS]);
 
 /**
  * @param {string} avatar
@@ -258,7 +261,7 @@ function groupRecords(id, stored, group) {
     const records = [];
     const fav = normalizeFav(group.fav);
     if (stored ? stored.fav !== fav : fav) records.push({ kind: 'fav', entity: id, fav });
-    records.push(...valueRecords(id, withoutStatements(stored), groupValues(group)));
+    records.push(...valueRecords(id, withoutLook(withoutStatements(stored)), groupValues(group)));
     return records;
 }
 
@@ -784,7 +787,7 @@ export class LibraryEngine {
         const entities = await this.entities(await this.ids(TYPE.group, keys));
         const present = /** @type {StoredEntity[]} */ (entities.filter(e => e !== null));
         const tagKeys = new Map((await this.tagKeys(present)).map((t, i) => [present[i].id, t]));
-        const groups = entities.map(e => (e ? { ...groupObject(e), id: e.key, fav: e.fav, tag_ids: tagKeys.get(e.id) ?? [] } : null));
+        const groups = entities.map(e => (e ? { ...groupObject(e), id: e.key, thing: String(e.id), fav: e.fav, tag_ids: tagKeys.get(e.id) ?? [] } : null));
         await this.withMemberThumbnails(/** @type {Record<string, any>[]} */ (groups.filter(Boolean)));
         return groups;
     }
@@ -1078,28 +1081,32 @@ export class LibraryEngine {
     }
 
     /**
+     * Upstream's colors (`color`, `color2`) are written into the tag's look, not as fields of their own.
      * @param {{ id: string, [key: string]: unknown }} tag
-     * @returns {Promise<{ id: bigint, records: object[] }>}
+     * @returns {Promise<{ id: bigint, records: object[], refused: number }>} `refused`: the declarations of its colors
+     * the look's sanitizer didn't let in
      */
     async tagRecords(tag) {
         const stored = await this.entity(TYPE.tag, tag.id);
         const id = stored ? stored.id : this.nextId++;
+        const { look, changed, refused } = tagLookWritten(stored, tag);
         /** @type {Map<number | string, { text?: string, json?: string }>} */
         const values = new Map();
         for (const [k, v] of Object.entries(tag)) {
-            if (k === 'id' || v === undefined) continue;
+            if (TAG_READ_KEYS.has(k) || v === undefined) continue;
             const field = k === 'name' ? FIELD.name : k === 'folder_type' ? FIELD.folder_type : `${TAG_KEY_PREFIX}${k}`;
             values.set(field, typeof v === 'string' && typeof field === 'number' ? { text: v } : { json: JSON.stringify(v) });
         }
         values.set(FIELD.defined, { json: '' });
-        const records = valueRecords(id, stored, { values, lists: new Map() });
+        const records = valueRecords(id, withoutLook(stored), { values, lists: new Map() });
+        if (changed) records.push({ kind: 'jsonValue', entity: id, field: LOOK_FIELD, json: JSON.stringify(look) });
         const marker = records.findIndex(r => /** @type {any} */ (r).field === FIELD.defined);
         const order = tagDerivedColumns(tag).sortOrder;
         if ((stored?.tagOrder ?? null) !== order) {
             records.splice(marker === -1 ? records.length : marker, 0, { kind: 'tagOrder', tag: id, ...(order === null ? {} : { order }) });
         }
         if (!stored) records.push({ kind: 'entityCreate', entity: id, type: TYPE.tag, key: tag.id, added: Date.now() });
-        return { id, records };
+        return { id, records, refused };
     }
 
     /**

@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, beforeEach, afterEach, jest } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
-import { storedTagDefinitions } from './tag-store-reads.js';
+import { A_THING, storedTagDefinitions } from './tag-store-reads.js';
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
@@ -96,9 +96,9 @@ describe('migrateSettingsTagsIfNeeded', () => {
         await migrate();
 
         const defs = await definitionsById();
-        expect(defs.t3).toEqual({ id: 't3', name: 'Mid', sort_order: 5 });
-        expect(defs.t2).toEqual({ id: 't2', name: 'alpha', sort_order: 6 });
-        expect(defs.t1).toEqual({ id: 't1', name: 'Zeta', sort_order: 7 });
+        expect(defs.t3).toEqual({ id: 't3', name: 'Mid', sort_order: 5, thing: A_THING });
+        expect(defs.t2).toEqual({ id: 't2', name: 'alpha', sort_order: 6, thing: A_THING });
+        expect(defs.t1).toEqual({ id: 't1', name: 'Zeta', sort_order: 7, thing: A_THING });
         expect([...await tagIdsOf('Bob.png')].sort()).toEqual(['t1', 't2']);
         expect(await tagIdsOf('group1')).toEqual(['t3']);
 
@@ -145,7 +145,7 @@ describe('migrateSettingsTagsIfNeeded', () => {
         await migrate();
 
         const defs = await definitionsById();
-        expect(defs.x1).toEqual({ id: 'x1', name: 'Kept', sort_order: 1 });
+        expect(defs.x1).toEqual({ id: 'x1', name: 'Kept', sort_order: 1, thing: A_THING });
         expect(defs.n1).toMatchObject({ name: 'New' });
         expect(Object.keys(defs).sort()).toEqual(['n1', 'x1']);
         expect(await tagIdsOf('Bob.png')).toEqual(['n1']);

@@ -9,6 +9,7 @@ import { alternativesArea } from '@st/alternatives/server';
 import { activationsArea } from '@st/activations/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
 import { looksArea } from '@st/looks/server';
+import { DRAWN_VIEW } from '@st/looks/protocol';
 import { lookImageUrl } from '@st/looks/look';
 import { usageStatsArea } from '@st/usage-stats/server';
 import { VIEW as USAGE_STATS_VIEW } from '@st/usage-stats/protocol';
@@ -32,6 +33,7 @@ import { readUserSettings } from './settings-reads.js';
 
 import { onUserStoreOpened, userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
+import { LOOK_FIELD } from './library-codes.js';
 import { clientRelativePath, humanizedDateTime, isPathUnderParent } from './util.js';
 import { createFolder, deleteFolder, readFolders, retargetCovers, updateFolder } from './background-folders.js';
 import { backgroundOf, changeBackgroundFolders, imageThumbnails, imagesOf, removeImage, renameImage, userImageKey, writeBackground, writeUserImage } from './image-entities.js';
@@ -578,6 +580,17 @@ onUserStoreOpened(({ events, root, handle }) => {
     events.on('commit', (/** @type {any[]} */ records) => {
         if (!records.some(r => r?.kind === 'bookChoose' || (r?.kind === 'stateChange' && r.key === CHAT_WORLD_KEY))) return;
         ui.changed(user, ['worldbuilding.world']).catch(error => console.error('Pushing which worlds a chat reads failed.', error));
+    });
+    // A look written by a write of its thing's own (a tag restored with upstream's colors, a world imported) reaches
+    // every tab as the looks area's edits do.
+    let looksQueued = false;
+    events.on('commit', (/** @type {any[]} */ records) => {
+        if (looksQueued || !records.some(r => r?.field === LOOK_FIELD)) return;
+        looksQueued = true;
+        setImmediate(() => {
+            looksQueued = false;
+            ui.changed(user, [DRAWN_VIEW]).catch(error => console.error('Pushing the looks drawn failed.', error));
+        });
     });
     let statsQueued = false;
     events.on('commit', () => {

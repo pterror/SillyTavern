@@ -18,7 +18,7 @@ const MARK_FIELD = 'mark';
 const USER_SHARED_FIELD = 'shared:';
 const BOOKMARK_THING = 'bookmark-';
 
-const KINDS = new Map([[TYPE.entry, 'entry'], [TYPE.book, 'world'], [TYPE.character, 'character'], [TYPE.persona, 'persona']]);
+const KINDS = new Map([[TYPE.entry, 'entry'], [TYPE.book, 'world'], [TYPE.character, 'character'], [TYPE.persona, 'persona'], [TYPE.tag, 'tag'], [TYPE.group, 'group']]);
 const HISTORY_KEPT = new Set([TYPE.entry, TYPE.persona]);
 
 /**
@@ -410,6 +410,10 @@ export function looksPorts({ libOf }) {
                 const name = jsonOf(entity, 'name');
                 const [image] = await lib.entities(await lib.ids(TYPE.personaImage, [entity.key]));
                 return { named: named(typeof name === 'string' ? name : ''), picture: pictureOf(image) };
+            }
+            if (entity.type === TYPE.tag || entity.type === TYPE.group) {
+                const name = jsonOf(entity, FIELD.name);
+                return { named: named(typeof name === 'string' ? name : ''), picture: null };
             }
             return null;
         },

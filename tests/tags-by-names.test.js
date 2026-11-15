@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
+import { A_THING, NO_LOOKS } from './tag-store-reads.js';
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
@@ -129,6 +130,6 @@ describe('POST /api/tags/create', () => {
     test('answers the stored definition, with the place in the manual order the server gave it', async () => {
         await create('a', 'A');
         const { body } = await post('/api/tags/create', { tag: { id: 'b', name: 'B' } });
-        expect(body).toEqual({ result: 'ok', refused: [], tag: { id: 'b', name: 'B', sort_order: 2 } });
+        expect(body).toEqual({ result: 'ok', refused: [], tag: { id: 'b', name: 'B', sort_order: 2, thing: A_THING }, looks: NO_LOOKS });
     });
 });

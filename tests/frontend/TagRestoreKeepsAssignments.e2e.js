@@ -52,7 +52,7 @@ async function createCharacter(page, name) {
 function tagDefinition(id, name) {
     return {
         id, name, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000,
-        is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now(),
+        is_hidden_on_character_card: false, create_date: Date.now(),
     };
 }
 
@@ -127,7 +127,7 @@ async function restoreBackup(page, backup, { overwrite = false } = {}) {
     await page.locator('dialog.popup', { hasText: 'You have existing tags' }).locator(overwrite ? '.popup-button-ok' : '.popup-button-cancel').click();
     await restored;
     for (const tag of backup.tags) {
-        await expect.poll(async () => (await pageTagsNamed(page, tag.name)).some(shown => !overwrite || shown.color === tag.color), { timeout: 15000 }).toBe(true);
+        await expect.poll(async () => (await pageTagsNamed(page, tag.name)).some(shown => !overwrite || shown.marker === tag.marker), { timeout: 15000 }).toBe(true);
     }
 }
 
@@ -143,12 +143,12 @@ async function serverTag(page, id) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} name
- * @returns {Promise<{ id: string, color: string }[]>}
+ * @returns {Promise<{ id: string, marker?: string }[]>}
  */
 async function pageTagsNamed(page, name) {
     return page.evaluate(async name => (await import('/scripts/tags.js')).tagsStore.getAll()
         .filter(tag => tag.name === name)
-        .map(tag => ({ id: tag.id, color: tag.color })), name);
+        .map(tag => ({ id: tag.id, marker: tag.marker })), name);
 }
 
 /**
@@ -265,11 +265,11 @@ test.describe('Tag restore stores the backup\'s tag definitions', () => {
         const wholeListSaves = [];
         page.on('request', request => { if (request.url().endsWith('/api/tags/save')) wholeListSaves.push(request.url()); });
         await openTagManagement(page);
-        await restoreBackup(page, { tags: [{ ...tagDefinition(id, name), color: 'rgba(17, 34, 51, 1)' }], tag_map: { [card]: [id] } });
+        await restoreBackup(page, { tags: [{ ...tagDefinition(id, name), marker: 'first' }], tag_map: { [card]: [id] } });
 
-        expect((await serverTag(page, id)).color).toBe('rgba(17, 34, 51, 1)');
+        expect((await serverTag(page, id)).marker).toBe('first');
         expect(await serverTagsOf(page, card)).toEqual([id]);
-        expect(await pageTagsNamed(page, name)).toEqual([{ id, color: 'rgba(17, 34, 51, 1)' }]);
+        expect(await pageTagsNamed(page, name)).toEqual([{ id, marker: 'first' }]);
         await expect.poll(() => residentTagsOf(page, card), { timeout: 15000 }).toEqual([id]);
         await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"]`)).toBeVisible();
 
@@ -279,9 +279,9 @@ test.describe('Tag restore stores the backup\'s tag definitions', () => {
         const read = await page.evaluate(async (id) => {
             const { readTagsForIds } = await import('/scripts/tags.js');
             const tag = (await readTagsForIds([id]))?.tags.get(id);
-            return tag ? { id: tag.id, name: tag.name, color: tag.color } : null;
+            return tag ? { id: tag.id, name: tag.name, marker: tag.marker } : null;
         }, id);
-        expect(read).toEqual({ id, name, color: 'rgba(17, 34, 51, 1)' });
+        expect(read).toEqual({ id, name, marker: 'first' });
         expect(await residentTagsOf(page, card)).toEqual([id]);
         expect(wholeListSaves).toEqual([]);
     });
@@ -299,17 +299,17 @@ test.describe('Tag restore stores the backup\'s tag definitions', () => {
         const backupId = `tag-restore-backup-copy-${stamp}`;
 
         await loadApp(page);
-        expect(await pageTagsNamed(page, `same-name-${stamp}`)).toEqual([{ id: fixture.existing, color: '' }]);
+        expect(await pageTagsNamed(page, `same-name-${stamp}`)).toEqual([{ id: fixture.existing }]);
         await openTagManagement(page);
         await restoreBackup(page, {
-            tags: [{ ...tagDefinition(backupId, `same-name-${stamp}`), color: 'rgba(68, 85, 102, 1)' }],
+            tags: [{ ...tagDefinition(backupId, `same-name-${stamp}`), marker: 'second' }],
             tag_map: { [fixture.untagged]: [backupId] },
         }, { overwrite: true });
 
         expect(await serverTag(page, backupId)).toBeUndefined();
-        expect((await serverTag(page, fixture.existing)).color).toBe('rgba(68, 85, 102, 1)');
+        expect((await serverTag(page, fixture.existing)).marker).toBe('second');
         expect(await serverTagsOf(page, fixture.tagged)).toEqual([fixture.existing]);
         expect(await serverTagsOf(page, fixture.untagged)).toEqual([fixture.existing]);
-        expect(await pageTagsNamed(page, `same-name-${stamp}`)).toEqual([{ id: fixture.existing, color: 'rgba(68, 85, 102, 1)' }]);
+        expect(await pageTagsNamed(page, `same-name-${stamp}`)).toEqual([{ id: fixture.existing, marker: 'second' }]);
     });
 });

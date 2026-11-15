@@ -252,11 +252,12 @@ export function groupTagIdsFingerprint(group) {
 
 /**
  * @param {object} group
- * @returns {object}
+ * @returns {object} its fields but its identity (`id`, `thing`), favorite and tags, which digests of their own cover
  */
 export function groupContentFingerprint(group) {
     if (!group || typeof group !== 'object') return {};
-    const { id, fav, tag_ids, ...content } = group;
+    const content = { ...group };
+    for (const key of ['id', 'thing', 'fav', 'tag_ids']) delete content[key];
     return content;
 }
 

@@ -97,17 +97,6 @@
     flex: 1;
 }
 
-.tag_view_color_picker {
-    position: relative;
-}
-
-.tag_view_color_picker .link_icon {
-    position: absolute;
-    top: 50%;
-    right: 0px;
-    opacity: 0.5;
-}
-
 .tag_delete {
     padding: 2px 4px;
     color: var(--SmartThemeBodyColor) !important;
@@ -158,6 +147,23 @@
     align-items: center;
 }
 
+.tag.filterByFavorites {
+    background-color: rgba(255, 255, 0, 0.5);
+}
+
+.tag.filterByGroups {
+    background-color: rgba(100, 100, 100, 0.5);
+}
+
+.tag.filterByFolder {
+    background-color: rgba(120, 120, 120, 0.5);
+}
+
+.tag.manageTags,
+.tag.showTagList {
+    background-color: rgba(150, 100, 100, 0.5);
+}
+
 .tag.actionable.clearAllFilters {
     border: 0;
     background: none;
@@ -166,6 +172,7 @@
 .tag.placeholder-expander {
     cursor: alias;
     border: 0;
+    background-color: transparent;
 }
 
 .tagListHint {

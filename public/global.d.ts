@@ -20,6 +20,8 @@ declare global {
 
     interface Group {
         id: string;
+        /** Its entity id, which its look is drawn by; the server's, never saved. */
+        thing?: string;
         name: string;
         members: string[];
         disabled_members: string[];

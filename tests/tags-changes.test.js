@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
-import { storedTagDefinitions } from './tag-store-reads.js';
+import { NO_LOOKS, storedTagDefinitions, storedTagLook } from './tag-store-reads.js';
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
@@ -86,30 +86,30 @@ describe('the cursor', () => {
     test('the manifest gives the log\'s end, and asking from it answers nothing changed', async () => {
         await create('a');
         const seq = await cursor();
-        expect(await changes(seq)).toEqual({ seq, reset: false, tags: [], removed: [], hasMore: false });
+        expect(await changes(seq)).toEqual({ seq, reset: false, tags: [], removed: [], hasMore: false, looks: NO_LOOKS });
     });
 
     test.each([undefined, null, -1, 1.5, '3'])('a sinceSeq of %p is answered with reset and the log\'s end', async (sinceSeq) => {
         await create('a');
         const seq = await cursor();
-        expect(await changes(sinceSeq)).toEqual({ seq, reset: true, tags: [], removed: [], hasMore: false });
+        expect(await changes(sinceSeq)).toEqual({ seq, reset: true, tags: [], removed: [], hasMore: false, looks: NO_LOOKS });
     });
 
     test('a cursor past the log\'s end is answered with reset', async () => {
         await create('a');
         const seq = await cursor();
-        expect(await changes(seq + 5)).toEqual({ seq, reset: true, tags: [], removed: [], hasMore: false });
+        expect(await changes(seq + 5)).toEqual({ seq, reset: true, tags: [], removed: [], hasMore: false, looks: NO_LOOKS });
     });
 });
 
 describe('what each write logs', () => {
     test('a created tag is listed with its stored definition, and its store is reported', async () => {
         const seq = await cursor();
-        await create('a', { color: '#112233' });
+        await create('a', { folder_type: 'OPEN' });
         const page = await changes(seq);
         expect(page.reset).toBe(false);
         expect(page.removed).toEqual([]);
-        expect(page.tags).toEqual([expect.objectContaining({ id: 'a', name: 'a', color: '#112233' })]);
+        expect(page.tags).toEqual([expect.objectContaining({ id: 'a', name: 'a', folder_type: 'OPEN' })]);
         expect(page.seq).toBe(await cursor());
     });
 
@@ -210,14 +210,15 @@ describe('what each write logs', () => {
         await create('kept', { color: 'red' });
         const seq = await cursor();
         const { status } = await post('/api/tags/restore', {
-            tags: [{ id: 'kept', name: 'kept', color: 'blue' }, { id: 'new', name: 'new' }],
+            tags: [{ id: 'kept', name: 'kept again', color: 'blue' }, { id: 'new', name: 'new' }],
             tagMap: {},
             overwrite: true,
         });
         expect(status).toBe(200);
         const page = await changes(seq);
         expect(ids(page)).toEqual(['kept', 'new']);
-        expect(page.tags.find(tag => tag.id === 'kept').color).toBe('blue');
+        expect(page.tags.find(tag => tag.id === 'kept').name).toBe('kept again');
+        expect(await storedTagLook(user.store.lib, 'kept')).toEqual({ rest: [{ property: 'background-color', value: 'blue' }] });
     });
 
     test('assigning a tag logs nothing: the log is of definitions', async () => {

@@ -240,10 +240,11 @@ describe('no false hit: a changed group field changes the server digest, and the
         'fav', 'chat_id', 'chats', 'auto_mode_delay', 'generation_mode_join_prefix', 'generation_mode_join_suffix',
     ];
 
-    test('FIELDS covers every field of a created group except id', async () => {
+    test('FIELDS covers every field of a created group except its identity', async () => {
         const created = await createGroup({});
         const [batched] = await postJson('/api/groups/batch', { ids: [created.id] });
-        expect(Object.keys(batched).filter(k => k !== 'id' && k !== 'tag_ids' && k !== 'member_thumbnails' && k !== 'avatar_thumbnail').sort()).toEqual([...FIELDS].sort());
+        expect(batched.thing).toMatch(/^\d+$/);
+        expect(Object.keys(batched).filter(k => k !== 'id' && k !== 'thing' && k !== 'tag_ids' && k !== 'member_thumbnails' && k !== 'avatar_thumbnail').sort()).toEqual([...FIELDS].sort());
         expect(batched.member_thumbnails).toEqual({ 'a.png': null, 'b.png': null });
         expect(batched.avatar_thumbnail).toBeNull();
     });

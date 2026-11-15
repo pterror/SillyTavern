@@ -71,7 +71,7 @@ describe('the six default tags', () => {
         expect(rows.map(row => row.data.name)).toEqual(SIX_IN_ORDER);
         expect(rows.map(row => row.sort_order)).toEqual([1, 2, 3, 4, 5, 6]);
         for (const row of rows) {
-            expect(Object.keys(row.data).sort()).toEqual(['create_date', 'id', 'name', 'sort_order']);
+            expect(Object.keys(row.data).sort()).toEqual(['create_date', 'id', 'name', 'sort_order', 'thing']);
             expect(row.data.id).toBe(row.id);
             expect(row.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
             expect(typeof row.data.create_date).toBe('number');

@@ -42,7 +42,7 @@ async function createTag(browser, id) {
         await api(setup, '/api/tags/create', {
             tag: {
                 id, name: id, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: 1000,
-                is_hidden_on_character_card: false, create_date: Date.now(), color: '', color2: '',
+                is_hidden_on_character_card: false, create_date: Date.now(),
             },
         });
     } finally {

@@ -1,3 +1,5 @@
+import { expect } from '@jest/globals';
+
 /**
  * @param {import('../src/library-engine.js').LibraryEngine} lib
  * @returns {Promise<any[]>}
@@ -36,3 +38,23 @@ export async function storedTagUsageRows(lib) {
     if (ids.length === 0) return {};
     return (await tagCounts(lib, ids)).counts;
 }
+
+/**
+ * @param {import('../src/library-engine.js').LibraryEngine} lib
+ * @param {string} key
+ * @returns {Promise<any>} the tag's look as stored, undefined when it has none
+ */
+export async function storedTagLook(lib, key) {
+    const { LOOK_FIELD, TYPE } = await import('../src/library-codes.js');
+    const [id] = await lib.ids(TYPE.tag, [key]);
+    if (id === null) return undefined;
+    const [entity] = await lib.entities([id], { fields: [LOOK_FIELD], lists: [] });
+    const json = entity?.values.find(v => v.field === LOOK_FIELD)?.json;
+    return json === undefined ? undefined : JSON.parse(json);
+}
+
+// What a tag answer carries for a request no tab made: no looks.
+export const NO_LOOKS = Object.freeze({ styles: {}, things: {} });
+
+// A tag's `thing`: its entity id.
+export const A_THING = expect.stringMatching(/^\d+$/);

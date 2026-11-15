@@ -1,19 +1,29 @@
-import { newUi } from './new-ui-page.js';
+import { newUi, onceStarted } from './new-ui-page.js';
+
+const NOTHING_TO_UNDO = () => {};
 
 /**
+ * Held once the page has started, when an answer comes before it.
  * @param {string} holder
  * @param {import('@st/protocol/looks').Looks} looks
  */
 export function holdLooks(holder, looks) {
-    newUi().names.hold(holder, looks);
+    onceStarted(page => {
+        page.names.hold(holder, looks);
+        return NOTHING_TO_UNDO;
+    });
 }
 
 /**
+ * Added once the page has started, when an answer comes before it.
  * @param {string} holder
  * @param {import('@st/protocol/looks').Looks} looks
  */
 export function addLooks(holder, looks) {
-    newUi().names.add(holder, looks);
+    onceStarted(page => {
+        page.names.add(holder, looks);
+        return NOTHING_TO_UNDO;
+    });
 }
 
 /**
@@ -21,7 +31,7 @@ export function addLooks(holder, looks) {
  * @param {string | null | undefined} thing
  * @param {string} text
  * @param {{ picture?: string | null, selected?: boolean }} [options]
- * @returns {Node}
+ * @returns {HTMLElement | Text}
  */
 export function nameNode(thing, text, options = {}) {
     if (typeof thing !== 'string' || thing === '') return document.createTextNode(text);

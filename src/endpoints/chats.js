@@ -873,7 +873,7 @@ async function openChatAnswer(request, response, body) {
     let group = null;
     const wholeGroup = () => (group ??= body.group_id ? groupObjects(request, [String(body.group_id)]).then(([found]) => found ?? null) : Promise.resolve(null));
     const members = body.group_id ? (await wholeGroup())?.members : null;
-    const speakers = Array.isArray(members) ? await chat.store.lib.ids(TYPE.character, members.filter(m => typeof m === 'string')) : [chat.tree];
+    const speakers = Array.isArray(members) ? [chat.tree, ...await chat.store.lib.ids(TYPE.character, members.filter(m => typeof m === 'string'))] : [chat.tree];
     const common = {
         ui_views,
         looks: await pageLooks(request, CHAT_LOOKS, speakers),
@@ -1771,7 +1771,7 @@ router.post('/recent', async function (request, response) {
             node_id: r.at,
             file_name: `${id}.jsonl`,
             label: r.name ?? null,
-            ...(owner.avatar !== undefined && r.tree !== undefined ? { thing: String(r.tree) } : {}),
+            ...(r.tree !== undefined ? { thing: String(r.tree) } : {}),
             ...(typeof r.bookmark === 'string' ? { label_thing: `bookmark-${r.bookmark}` } : {}),
             ...owner,
             file_size: 0,

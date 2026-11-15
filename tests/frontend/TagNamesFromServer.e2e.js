@@ -40,7 +40,7 @@ async function cutOffTagChanges(page) {
 async function createUnheldTags(page, list) {
     for (let i = 0; i < list.length; i += 25) {
         await Promise.all(list.slice(i, i + 25).map(({ id, name }) => api(page, '/api/tags/create', {
-            tag: { id, name, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 },
+            tag: { id, name, folder_type: 'NONE', is_hidden_on_character_card: false, create_date: 1 },
         })));
     }
     const held = await page.evaluate(async ids => (await import('/scripts/tags.js')).tagsStore.getAll().filter(tag => ids.includes(tag.id)).length, list.map(x => x.id));

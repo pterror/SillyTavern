@@ -4,8 +4,18 @@ import { requestStore } from '../user-stores.js';
 import { TAG_REORDER_MODES, TAG_SORTS } from '../library-engine-tags.js';
 import { writeBackpressured } from '../util.js';
 import { pageAnswer, parsePageRequest } from '../catalog-page.js';
+import { pageLooks } from '../ui-wiring.js';
+import { TAG_LOOKS } from '../../public/scripts/name-holders.js';
 
 export const router = express.Router();
+
+/**
+ * The looks of the tags an answer carries. The page holds every tag it was answered in one place, so they are kept with
+ * the ones before.
+ * @param {import('express').Request} request
+ * @param {(Record<string, unknown> | null | undefined)[]} tags
+ */
+export const tagLooks = (request, tags) => pageLooks(request, TAG_LOOKS, tags.map(tag => /** @type {string | undefined} */ (tag?.thing)), { adding: true });
 
 router.post('/create', async (request, response) => {
     try {
@@ -26,7 +36,7 @@ router.post('/create', async (request, response) => {
             return response.status(400).send({ error: 'tag with a non-empty id is required' });
         }
 
-        response.send({ result: 'ok', refused: result.refused, tag: result.tag });
+        response.send({ result: 'ok', refused: result.refused, tag: result.tag, ...(result.tag ? { looks: await tagLooks(request, [result.tag]) } : {}) });
     } catch (err) {
         console.error('Could not create tag definition', err);
         response.status(500).send({ error: 'Could not create tag definition' });
@@ -153,7 +163,7 @@ router.post('/delete', async (request, response) => {
 
         const result = await (await requestStore(request)).lib.tags.delete(id, mergeInto);
 
-        response.send({ result: 'ok', refused: result.refused, mergedInto: result.mergedInto, target: result.target });
+        response.send({ result: 'ok', refused: result.refused, mergedInto: result.mergedInto, target: result.target, ...(result.target ? { looks: await tagLooks(request, [result.target]) } : {}) });
     } catch (err) {
         console.error('Could not delete tag definition', err);
         response.status(500).send({ error: 'Could not delete tag definition' });
@@ -263,13 +273,14 @@ router.post('/query', async (request, response) => {
         if (result === 'invalid-cursor') {
             return response.status(400).send({ error: true, reason: 'invalid-cursor' });
         }
+        const { rows } = result;
         if (body.restCount === true && !ids && result.cursor && !result.more && result.rows.length === pageSize) {
             const rest = await lib.tags.query({ ...params, counts: false, pageSize: QUERY_REST_COUNT_MAX, cursor: result.cursor });
             if (rest !== 'invalid-cursor') {
                 result = { ...result, rest: { count: rest.rows.length, more: rest.cursor !== null } };
             }
         }
-        response.send(pageAnswer(result, ifHash));
+        response.send({ ...pageAnswer(result, ifHash), looks: await tagLooks(request, rows) });
     } catch (err) {
         console.error('Could not query tag definitions', err);
         response.status(500).send({ error: true });
@@ -288,7 +299,8 @@ router.post('/by-ids', async (request, response) => {
         if (known !== undefined && (known === null || typeof known !== 'object' || Array.isArray(known))) {
             return response.status(400).send({ error: 'known must be an object of id to hash' });
         }
-        response.send(await (await requestStore(request)).lib.tags.byIds(ids, known));
+        const { live, ...answer } = await (await requestStore(request)).lib.tags.byIds(ids, known);
+        response.send({ ...answer, looks: await tagLooks(request, live ?? answer.tags) });
     } catch (err) {
         console.error('Could not read tag definitions by id', err);
         response.sendStatus(500);
@@ -307,7 +319,7 @@ router.post('/by-names', async (request, response) => {
             return response.status(400).send({ error: `at most ${BY_NAMES_MAX_NAMES} distinct names per request` });
         }
         const found = await (await requestStore(request)).lib.tags.findByNames(names);
-        response.send({ tags: found });
+        response.send({ tags: found, looks: await tagLooks(request, found.map(f => f.tag)) });
     } catch (err) {
         console.error('Could not look up tags by name', err);
         response.sendStatus(500);
@@ -331,7 +343,7 @@ const TAG_CHANGES_PAGE_SIZE = 500;
 router.post('/changes', async (request, response) => {
     try {
         const page = await (await requestStore(request)).lib.tags.changes(request.body?.sinceSeq, { limit: TAG_CHANGES_PAGE_SIZE });
-        response.send(page);
+        response.send({ ...page, looks: await tagLooks(request, page.tags) });
     } catch (err) {
         console.error('Could not read tag changes', err);
         response.sendStatus(500);

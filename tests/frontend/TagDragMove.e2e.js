@@ -57,7 +57,7 @@ async function createTag(page, id, sortOrder) {
     await api(page, '/api/tags/create', {
         tag: {
             id, name: id, folder_type: 'NONE', filter_state: 'UNDEFINED', sort_order: sortOrder,
-            is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now(),
+            is_hidden_on_character_card: false, create_date: Date.now(),
         },
     });
 }

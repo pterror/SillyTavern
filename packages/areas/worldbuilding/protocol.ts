@@ -329,9 +329,9 @@ export type OpenEntryView = EntryAt & {
 };
 
 // Upstream's filter names a character by its avatar file's name without the extension (`key`) and a tag by its key;
-// `named`/`name` is null for one this user has no character or tag for.
+// `named` is null for one this user has no character or tag for.
 export type FilteredCharacter = { key: string; named: Named | null; picture: string | null };
-export type FilteredTag = { key: string; name: string | null };
+export type FilteredTag = { key: string; named: Named | null };
 export type CharacterFilterShown = {
     exclude: boolean;
     characters: FilteredCharacter[];
@@ -340,7 +340,7 @@ export type CharacterFilterShown = {
 };
 
 export type CharactersFoundView =
-    | { query: string; characters: FilteredCharacter[]; tags: { key: string; name: string }[] }
+    | { query: string; characters: FilteredCharacter[]; tags: { key: string; named: Named }[] }
     | { query: null };
 
 export type FilterItem = { character: string } | { tag: string };

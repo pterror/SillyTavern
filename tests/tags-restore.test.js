@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
 import path from 'node:path';
-import { storedTagDefinitions } from './tag-store-reads.js';
+import { A_THING, storedTagDefinitions, storedTagLook } from './tag-store-reads.js';
 
 /** @type {Awaited<ReturnType<typeof import('./converted-user.fixture.js').emptyUser>>} */
 let user;
@@ -103,6 +103,9 @@ async function tagsFor(ids) {
 async function storedTag(id) {
     return (await post('/api/tags/by-ids', { ids: [id] })).body.tags.find(tag => tag.id === id);
 }
+
+/** @param {string} id */
+const lookOf = id => storedTagLook(user.store.lib, id);
 
 /** @returns {Promise<string[]>} */
 async function storedTagIds() {
@@ -217,7 +220,8 @@ describe('/api/tags/restore: definitions', () => {
         const result = await restore({ tags: [tag], tag_map: { 'Bob.png': ['new'] } });
 
         expect(result).toEqual({ ...NOTHING_LEFT_OUT, createdTagIds: ['new'] });
-        expect(await storedTag('new')).toEqual(tag);
+        expect(await storedTag('new')).toEqual({ id: 'new', name: 'New', folder_type: 'OPEN', sort_order: 5, thing: A_THING });
+        expect(await lookOf('new')).toEqual({ rest: [{ property: 'background-color', value: '#123456' }] });
         expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': ['new'] });
     });
 
@@ -236,7 +240,8 @@ describe('/api/tags/restore: definitions', () => {
         const result = await restore({ tags: [{ id: 'a', name: 'Renamed', color: 'blue', sort_order: 9 }] });
 
         expect(result).toEqual({ ...NOTHING_LEFT_OUT, keptTags: [{ id: 'a', name: 'Renamed', existingId: 'a' }] });
-        expect(await storedTag('a')).toEqual({ id: 'a', name: 'Alpha', color: 'red', sort_order: 1 });
+        expect(await storedTag('a')).toEqual({ id: 'a', name: 'Alpha', sort_order: 1, thing: A_THING });
+        expect(await lookOf('a')).toEqual({ rest: [{ property: 'background-color', value: 'red' }] });
     });
 
     test('Keep Existing: a tag with the same name and another id is left, and takes the backup tag\'s assignments', async () => {
@@ -247,7 +252,7 @@ describe('/api/tags/restore: definitions', () => {
 
         expect(result).toEqual({ ...NOTHING_LEFT_OUT, keptTags: [{ id: 'other', name: 'fántasy', existingId: 'a' }] });
         expect(await storedTagIds()).toEqual(['a']);
-        expect((await storedTag('a')).color).toBe('red');
+        expect(await lookOf('a')).toEqual({ rest: [{ property: 'background-color', value: 'red' }] });
         expect(await tagsFor(['Bob.png'])).toEqual({ 'Bob.png': ['a'] });
     });
 
@@ -257,7 +262,8 @@ describe('/api/tags/restore: definitions', () => {
         const result = await restore({ tags: [{ id: 'a', name: 'Renamed', color: 'blue', sort_order: 1 }], overwrite: true });
 
         expect(result).toEqual({ ...NOTHING_LEFT_OUT, updatedTagIds: ['a'] });
-        expect(await storedTag('a')).toEqual({ id: 'a', name: 'Renamed', color: 'blue', color2: 'white', sort_order: 1 });
+        expect(await storedTag('a')).toEqual({ id: 'a', name: 'Renamed', sort_order: 1, thing: A_THING });
+        expect(await lookOf('a')).toEqual({ rest: [{ property: 'color', value: 'white' }, { property: 'background-color', value: 'blue' }] });
     });
 
     test('Overwrite: a tag with the same name and another id keeps its id, takes the backup\'s fields and its assignments', async () => {
@@ -274,7 +280,8 @@ describe('/api/tags/restore: definitions', () => {
 
         expect(result).toEqual({ ...NOTHING_LEFT_OUT, updatedTagIds: ['a'] });
         expect(await storedTagIds()).toEqual(['a']);
-        expect(await storedTag('a')).toEqual({ id: 'a', name: 'FANTASY', color: 'blue', sort_order: 1 });
+        expect(await storedTag('a')).toEqual({ id: 'a', name: 'FANTASY', sort_order: 1, thing: A_THING });
+        expect(await lookOf('a')).toEqual({ rest: [{ property: 'background-color', value: 'blue' }] });
         expect(await tagsFor(['Bob.png', 'Carol.png'])).toEqual({ 'Bob.png': ['a'], 'Carol.png': ['a'] });
     });
 
@@ -284,7 +291,8 @@ describe('/api/tags/restore: definitions', () => {
         const result = await restore({ tags: [{ id: 'a', name: 'beta', color: 'blue', sort_order: 1 }], overwrite: true });
 
         expect(result).toEqual({ ...NOTHING_LEFT_OUT, updatedTagIds: ['a'], namesTaken: [{ id: 'a', name: 'beta' }] });
-        expect(await storedTag('a')).toEqual({ id: 'a', name: 'Alpha', color: 'blue', sort_order: 1 });
+        expect(await storedTag('a')).toEqual({ id: 'a', name: 'Alpha', sort_order: 1, thing: A_THING });
+        expect(await lookOf('a')).toEqual({ rest: [{ property: 'background-color', value: 'blue' }] });
     });
 
     test('Overwrite: a tag the backup holds unchanged is not written', async () => {
@@ -313,7 +321,8 @@ describe('/api/tags/restore: definitions', () => {
         expect(result.createdTagIds).not.toContain('merged');
         expect({ ...result, createdTagIds: [] }).toEqual(NOTHING_LEFT_OUT);
         const [goneId, mergedId] = result.createdTagIds;
-        expect(await storedTag(goneId)).toEqual({ id: goneId, name: 'Gone', color: 'red', sort_order: 2 });
+        expect(await storedTag(goneId)).toEqual({ id: goneId, name: 'Gone', sort_order: 2, thing: A_THING });
+        expect(await lookOf(goneId)).toEqual({ rest: [{ property: 'background-color', value: 'red' }] });
         expect((await storedTag(mergedId)).name).toBe('Merged');
         expect((await tagsFor(['Bob.png']))['Bob.png'].sort()).toEqual([goneId, mergedId].sort());
     });

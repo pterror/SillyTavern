@@ -408,7 +408,7 @@ describe('the library on the engine', () => {
             const [stored] = await library.groups([group.id]);
             const want = withoutChats(/** @type {any} */ (next));
             const shown = Object.fromEntries(want.members.slice(0, 4).map((/** @type {string} */ m) => [m, null]));
-            expect(stored).toEqual({ ...want, fav: !!want.fav, tag_ids: [], member_thumbnails: shown, avatar_thumbnail: null });
+            expect(stored).toEqual({ ...want, thing: expect.stringMatching(/^\d+$/), fav: !!want.fav, tag_ids: [], member_thumbnails: shown, avatar_thumbnail: null });
         }
     });
 

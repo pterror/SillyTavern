@@ -14,7 +14,7 @@ test('a cut-short tag name shows whole on hover; a short one has no title', asyn
         delete headers['Content-Type'];
         const avatar = (await (await fetch('/api/characters/create', { method: 'POST', headers, body: form })).text()).trim();
         for (const [id, name] of [[`${short}-id`, short], [`${short}-long`, long]]) {
-            await post('/api/tags/create', { tag: { id, name, folder_type: 'NONE', is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 } });
+            await post('/api/tags/create', { tag: { id, name, folder_type: 'NONE', is_hidden_on_character_card: false, create_date: 1 } });
             await post('/api/tags/assign', { id: avatar, tagId: id });
         }
         const { entitiesFilter } = await import('./scripts/character-list.js');

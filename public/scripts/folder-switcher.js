@@ -1,9 +1,10 @@
 import { attachActions } from './new-ui-page.js';
+import { nameNode } from './names.js';
 
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
 /**
- * @typedef {{ id: string, name: string }} ClosedFolder
+ * @typedef {{ id: string, name: string, thing?: string }} ClosedFolder `thing`: its tag's, which its look is drawn by
  * @typedef {object} FolderSwitcherDeps
  * @property {() => string | null} getCase
  * @property {(folderCase: string) => void} setCase
@@ -75,10 +76,11 @@ export async function refreshFolderSwitcher() {
     draw();
 }
 
+/** @returns {{ name: string, thing?: string }} */
 function shownLabel() {
     const shown = deps?.getCase() ?? 'none';
-    if (shown === 'none') return t`No folder`;
-    return firstPage?.find(folder => folder.id === shown)?.name ?? shownOutsideFirstPage?.name ?? t`Folder`;
+    if (shown === 'none') return { name: t`No folder` };
+    return firstPage?.find(folder => folder.id === shown) ?? (shownOutsideFirstPage?.id === shown ? shownOutsideFirstPage : null) ?? { name: t`Folder` };
 }
 
 function draw() {
@@ -91,7 +93,7 @@ function draw() {
     }
     strip.hidden = false;
     strip.classList.remove('folded');
-    strip.replaceChildren(caseChip('none', t`No folder`, shown === 'none'), ...firstPage.map(folder => caseChip(folder.id, folder.name, shown === folder.id)));
+    strip.replaceChildren(caseChip({ id: 'none', name: t`No folder` }, shown === 'none'), ...firstPage.map(folder => caseChip(folder, shown === folder.id)));
     const overflows = strip.scrollWidth > strip.clientWidth + 1 || firstPageHasMore
         || (shown !== 'none' && !firstPage.some(folder => folder.id === shown));
     if (!overflows) return;
@@ -101,12 +103,13 @@ function draw() {
     button.tabIndex = 0;
     button.setAttribute('role', 'button');
     button.setAttribute('aria-haspopup', 'listbox');
-    button.title = t`Folder shown: ${shownLabel()}. Click to show another.`;
-    const icon = document.createElement('i');
-    icon.className = shown === 'none' ? 'fa-solid fa-folder-minus' : 'fa-solid fa-folder-closed';
     const label = document.createElement('span');
     label.className = 'folder_case_label';
-    label.textContent = shownLabel();
+    const shownAs = shownLabel();
+    label.append(nameNode(shownAs.thing, shownAs.name));
+    button.title = t`Folder shown: ${shownAs.name}. Click to show another.`;
+    const icon = document.createElement('i');
+    icon.className = shown === 'none' ? 'fa-solid fa-folder-minus' : 'fa-solid fa-folder-closed';
     const caret = document.createElement('i');
     caret.className = 'fa-solid fa-caret-down';
     button.append(icon, label, caret);
@@ -115,11 +118,10 @@ function draw() {
 }
 
 /**
- * @param {string} id
- * @param {string} name
+ * @param {ClosedFolder} folder
  * @param {boolean} current
  */
-function caseChip(id, name, current) {
+function caseChip({ id, name, thing }, current) {
     const chip = document.createElement('div');
     chip.className = 'folder_case';
     chip.dataset.folderCase = id;
@@ -130,7 +132,7 @@ function caseChip(id, name, current) {
     const icon = document.createElement('i');
     icon.className = id === 'none' ? 'fa-solid fa-folder-minus' : 'fa-solid fa-folder-closed';
     const label = document.createElement('span');
-    label.textContent = name;
+    label.append(nameNode(thing, name));
     chip.append(icon, label);
     chip.title = id === 'none' ? t`Characters and groups in no closed folder` : t`What the closed folder "${name}" holds`;
     chip.addEventListener('click', () => choose(id));
@@ -189,8 +191,8 @@ async function openPopover(anchor) {
             list.append(failed);
             return;
         }
-        if (!more && !term) list.append(popoverRow('none', t`No folder`));
-        for (const folder of page.rows) list.append(popoverRow(folder.id, folder.name));
+        if (!more && !term) list.append(popoverRow({ id: 'none', name: t`No folder` }));
+        for (const folder of page.rows) list.append(popoverRow(folder));
         if (!more && page.rows.length === 0 && term) {
             const empty = document.createElement('div');
             empty.className = 'view_picker_empty';
@@ -224,11 +226,8 @@ async function openPopover(anchor) {
     await load(false);
 }
 
-/**
- * @param {string} id
- * @param {string} name
- */
-function popoverRow(id, name) {
+/** @param {ClosedFolder} folder */
+function popoverRow({ id, name, thing }) {
     const row = document.createElement('div');
     row.className = 'view_picker_row';
     row.dataset.folderCase = id;
@@ -238,7 +237,7 @@ function popoverRow(id, name) {
     row.classList.toggle('current', current);
     const label = document.createElement('span');
     label.className = 'view_picker_row_name';
-    label.textContent = name;
+    label.append(nameNode(thing, name));
     label.tabIndex = 0;
     label.addEventListener('click', () => choose(id));
     attachActions(label, { activate: () => choose(id) });

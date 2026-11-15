@@ -57,7 +57,7 @@ async function createTags(page, ids, firstSortOrder) {
             await Promise.all(ids.slice(i, i + 25).map(async (id, j) => {
                 const tag = {
                     id, name: id, folder_type: 'NONE', sort_order: firstSortOrder + i + j,
-                    is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now(),
+                    is_hidden_on_character_card: false, create_date: Date.now(),
                 };
                 const response = await fetch('/api/tags/create', { method: 'POST', headers, body: JSON.stringify({ tag }) });
                 if (!response.ok) throw new Error(`create ${id} -> ${response.status}`);

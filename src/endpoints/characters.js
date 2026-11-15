@@ -50,6 +50,7 @@ import { chatNamesOf, compatChatIdOf, compatChatIds, droppedOf, moveToChatNamed 
 import { draftFrames } from '../chat-drafts.js';
 import { requestSession, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
 import { ALTERNATIVES_VIEWS, pageLooks, ui, uiUser } from '../ui-wiring.js';
+import { tagLooks } from './tags.js';
 import { CANDIDATE_LOOKS, LIST_LOOKS } from '../../public/scripts/name-holders.js';
 
 import { groupDigests, groupObjects } from './groups.js';
@@ -1879,7 +1880,7 @@ async function runQuery(request, body, { compat = true } = {}) {
 
     const groupKeys = keys.filter(k => k.group).map(k => k.key);
     const groups = new Map((compat && groupKeys.length ? await groupObjects(request, groupKeys) : []).filter(g => g !== null).map(g => [(g).id, g]));
-    const looks = draws ? await listLooks(request, draws, lib, keys, ids, [...groups.values()], body.drawsMore === true) : undefined;
+    const looks = draws ? await listLooks(request, draws, lib, ids, [...groups.values()], body.drawsMore === true) : undefined;
 
     if (wantHashes) {
         const hashRows = /** @type {any[]} */ (result.hashRows).map((r, i) => {
@@ -1908,7 +1909,8 @@ async function runQuery(request, body, { compat = true } = {}) {
     if (wantRows) {
         const rows = /** @type {any[]} */ (result.rows).map((r, i) => {
             const group = r.type === 'group' ? groups.get(r.id) : undefined;
-            const item = r.type === 'group' ? { ...r.item, chat_id: group?.chat_id ?? chatOf(i), chats: group?.chats ?? [] } : { ...r.item, chat: chatOf(i), ...(ids[i] === null ? {} : { thing: String(ids[i]) }) };
+            const thing = ids[i] === null ? {} : { thing: String(ids[i]) };
+            const item = r.type === 'group' ? { ...r.item, chat_id: group?.chat_id ?? chatOf(i), chats: group?.chats ?? [], ...thing } : { ...r.item, chat: chatOf(i), ...thing };
             return { type: r.type, item };
         });
         payload.rows = includeGroups ? rows : rows.map(r => r.item);
@@ -1919,19 +1921,18 @@ async function runQuery(request, body, { compat = true } = {}) {
 }
 
 /**
- * The looks of a list page's names: its characters' and its groups' members'.
+ * The looks of a list page's names: its characters', its groups' and their members'.
  * @param {import('express').Request} request
  * @param {string} holder
  * @param {import('../library-engine.js').LibraryEngine} lib
- * @param {{ key: string, group: boolean }[]} keys
- * @param {(bigint | null)[]} ids
+ * @param {(bigint | null)[]} ids the page's characters' and groups'
  * @param {any[]} groups
  * @param {boolean} more the rest of a page whose start was answered already
  */
-async function listLooks(request, holder, lib, keys, ids, groups, more) {
+async function listLooks(request, holder, lib, ids, groups, more) {
     const members = [...new Set(groups.flatMap(g => (Array.isArray(g?.members) ? g.members.filter(m => typeof m === 'string') : [])))];
     const memberIds = members.length ? await lib.ids(TYPE.character, members) : [];
-    return pageLooks(request, holder, [...keys.flatMap((k, i) => (k.group ? [] : [ids[i]])), ...memberIds], { adding: more });
+    return pageLooks(request, holder, [...ids, ...memberIds], { adding: more });
 }
 
 async function handleQuery(request, response) {
@@ -2587,7 +2588,7 @@ router.post('/import', requireSessionHeader, async function (request, response) 
         const [character] = await characterObjects(request, [`${fileName}.png`], { shallow: false });
         const extraBooks = await importChubRelatedLorebooks(request.user.directories, `${fileName}.png`, character);
 
-        response.send({ file_name: fileName, character, tagDefinitions, ...(extraBooks.length ? { extra_books: extraBooks } : {}), ...(imported.dropped.length ? { dropped_greetings: imported.dropped.map(greetingExcerpt) } : {}) });
+        response.send({ file_name: fileName, character, tagDefinitions, tag_looks: await tagLooks(request, tagDefinitions), ...(extraBooks.length ? { extra_books: extraBooks } : {}), ...(imported.dropped.length ? { dropped_greetings: imported.dropped.map(greetingExcerpt) } : {}) });
     } catch (err) {
         const error = importFailure(importName, err);
         console.error(error);

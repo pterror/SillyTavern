@@ -437,3 +437,39 @@ test('the theme settings list the user\'s own shared looks, renamed and deleted 
     assert.deepEqual((await act('looks.deleteShared', { shared })).changed, ['looks.look', 'looks.drawn', 'looks.theme']);
     assert.equal((await looks.area.views['looks.theme'](context)).shared.some(s => s.id === shared.id), false);
 });
+
+test('a tag\'s and a group\'s look are stored on them by their entity id, kept by their other writes, and named on the Look screen', async () => {
+    await lib.tags.create({ id: 'rogue', name: 'Rogue' });
+    await lib.writeGroup({ id: 'party', name: 'Party', members: [] });
+    const [tag] = await lib.tags.definitions(await lib.ids(TYPE.tag, ['rogue']));
+    const [group] = await lib.groups(['party']);
+    const things = { tag: String(tag?.thing), group: String(group?.thing) };
+    assert.deepEqual(things, { tag: String((await lib.ids(TYPE.tag, ['rogue']))[0]), group: String((await lib.ids(TYPE.group, ['party']))[0]) });
+    const teal = [{ property: 'color', value: 'teal' }];
+    const own = async (/** @type {string} */ thing) => {
+        const [stored] = await lib.entities([BigInt(thing)], { fields: [LOOK_FIELD], lists: [] });
+        return stored?.values[0] === undefined ? undefined : JSON.parse(stored.values[0].json);
+    };
+    for (const [kind, thing] of Object.entries(things)) {
+        assert.deepEqual((await set({ thing }, 'rest', teal)).changed, ['looks.look', 'looks.drawn']);
+        await act('looks.open', { thing });
+        const view = /** @type {any} */ (await looks.area.views['looks.look'](context));
+        assert.equal(view.kind, kind);
+        assert.equal(view.named.text, kind === 'tag' ? 'Rogue' : 'Party');
+        assert.deepEqual(view.own, { rest: teal });
+        assert.ok((await drawn([thing]))[thing].layers.rest.some(d => d.property === 'color' && d.value === 'teal'));
+    }
+    await act('looks.close', {});
+
+    await lib.tags.edit('rogue', { name: 'Rogue II', folder_type: 'OPEN' });
+    await lib.writeTag({ id: 'rogue', name: 'Rogue III' });
+    await lib.updateGroup('party', g => Object.assign(g, { name: 'Party II' }));
+    await lib.writeGroup({ id: 'party', name: 'Party III', members: [], thing: '1' });
+    assert.deepEqual(await own(things.tag), { rest: teal });
+    assert.deepEqual(await own(things.group), { rest: teal });
+    assert.equal((await lib.groups(['party']))[0]?.thing, things.group);
+
+    await lib.tags.edit('rogue', { color: 'red', color2: 'navy' });
+    assert.deepEqual(await own(things.tag), { rest: [{ property: 'background-color', value: 'red' }, { property: 'color', value: 'navy' }] });
+    assert.deepEqual((await lib.tags.byIds(['rogue'])).tags, [{ id: 'rogue', name: 'Rogue III', thing: things.tag }]);
+});

@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
+import type { Named } from '@st/page/name';
 import { CHARACTERS_FOUND_VIEW } from '../protocol.ts';
 import type { CharacterFilterShown, CharactersFoundView, FilterItem } from '../protocol.ts';
 import { Picture } from './Label.tsx';
@@ -68,11 +69,13 @@ export function CharacterFilterSentence(props: {
             <For each={props.filter.tags}>
                 {(tag) => (
                     <span class="tag wb-key wb-filter-item">
-                        <span class="wb-key-trigger">{fill(t('Tag: ${0}'), tag.name ?? tag.key)}</span>
+                        <span class="wb-key-trigger">
+                            <TagName named={tag.named} fallback={tag.key} />
+                        </span>
                         <button
                             type="button"
                             class="wb-filter-remove"
-                            aria-label={fill(t('Remove ${0}'), tag.name ?? tag.key)}
+                            aria-label={fill(t('Remove ${0}'), tag.named?.text ?? tag.key)}
                             onClick={() => props.onChange({ remove: { tag: tag.key } })}
                         >
                             ×
@@ -101,6 +104,21 @@ export function CharacterFilterSentence(props: {
                 />
             </Show>
         </p>
+    );
+}
+
+// "Tag: " and the tag's name as the name renderer draws it, or its key when this user has no such tag.
+function TagName(props: { named: Named | null; fallback: string }) {
+    const { t } = useUi();
+    const [before, after] = t('Tag: ${0}').split('${0}');
+    return (
+        <>
+            {before}
+            <Show when={props.named} fallback={props.fallback}>
+                {(named) => <Name named={named()} />}
+            </Show>
+            {after}
+        </>
     );
 }
 
@@ -176,7 +194,7 @@ function CharacterPicker(props: { leaveOut: string[]; onPick: (item: FilterItem)
                                         when={'character' in row.item}
                                         fallback={
                                             <span class="wb-pick-name">
-                                                {fill(t('Tag: ${0}'), tag()?.name ?? row.key)}
+                                                <TagName named={tag()?.named ?? null} fallback={row.key} />
                                             </span>
                                         }
                                     >

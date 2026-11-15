@@ -1,5 +1,6 @@
 import { contentHashOf } from './hash-utils.js';
 import { attachActions } from './new-ui-page.js';
+import { nameNode } from './names.js';
 
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
@@ -13,8 +14,12 @@ const PAGE_SIZE = 50;
 
 /**
  * @typedef {object} FolderReads
- * @property {(term: string, cursor: string | null) => Promise<{ rows: { id: string, name: string }[], cursor: string | null } | null>} list
- * @property {(id: string) => Promise<{ id: string, name: string } | null | undefined>} get
+ * @property {(term: string, cursor: string | null) => Promise<{ rows: OpenFolder[], cursor: string | null } | null>} list
+ * @property {(id: string) => Promise<OpenFolder | null | undefined>} get
+ */
+
+/**
+ * @typedef {{ id: string, name: string, thing?: string }} OpenFolder `thing`: its tag's, which its look is drawn by
  */
 
 /** @type {{ getView: () => import('./character-view.js').CharacterView, setView: (view: import('./character-view.js').CharacterView) => void, sameView: (a: any, b: any) => boolean, headers: () => Record<string, string>, storage: { getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }, folders: FolderReads, pinView: (id: string, view: import('./character-view.js').CharacterView | null) => void } | null} */
@@ -35,7 +40,7 @@ function folderView(folder) {
     return { id: `${FOLDER_VIEW_PREFIX}${folder.id}`, name: folder.name, view: fullView({ tags: { include: [folder.id] } }) };
 }
 
-/** @type {{ id: string, name: string }[]} */
+/** @type {OpenFolder[]} */
 let loadedFolders = [];
 let foldersCursor = /** @type {string|null} */ (null);
 
@@ -503,7 +508,7 @@ function drawPopover() {
 }
 
 /**
- * @param {{ id: string, name: string }} folder
+ * @param {OpenFolder} folder
  */
 function makeFolderRow(folder) {
     const saved = folderView(folder);
@@ -515,7 +520,7 @@ function makeFolderRow(folder) {
     icon.className = 'fa-solid fa-folder-open';
     const name = document.createElement('span');
     name.className = 'view_picker_row_name';
-    name.textContent = folder.name;
+    name.append(nameNode(folder.thing, folder.name));
     name.tabIndex = 0;
     name.setAttribute('role', 'button');
     name.addEventListener('click', () => switchTo(saved));

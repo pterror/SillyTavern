@@ -70,7 +70,7 @@ test.describe('the tags the page holds', () => {
             await loadApp(setup);
             for (let i = 0; i < ids.length; i += 25) {
                 await Promise.all(ids.slice(i, i + 25).map((id, j) => api(setup, '/api/tags/create', {
-                    tag: { id, name: id, folder_type: 'NONE', sort_order: 9000000 + i + j, is_hidden_on_character_card: false, color: '', color2: '', create_date: 1 },
+                    tag: { id, name: id, folder_type: 'NONE', sort_order: 9000000 + i + j, is_hidden_on_character_card: false, create_date: 1 },
                 })));
             }
             avatar = await createCharacter(setup, `TagBootHeld-${stamp}`);

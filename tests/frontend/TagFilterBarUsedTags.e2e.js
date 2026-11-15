@@ -57,7 +57,7 @@ async function createTags(page, ids, firstSortOrder) {
             await Promise.all(ids.slice(i, i + 25).map(async (id, j) => {
                 const tag = {
                     id, name: id, folder_type: 'NONE', sort_order: firstSortOrder + i + j,
-                    is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now(),
+                    is_hidden_on_character_card: false, create_date: Date.now(),
                 };
                 const response = await fetch('/api/tags/create', { method: 'POST', headers, body: JSON.stringify({ tag }) });
                 if (!response.ok) throw new Error(`create ${id} -> ${response.status}`);
@@ -179,7 +179,7 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
             return second;
         });
         expect(other).toBeTruthy();
-        expect(await (await reread).json()).toEqual({ unchanged: true, hash: expect.any(String) });
+        expect(await (await reread).json()).toEqual({ unchanged: true, hash: expect.any(String), looks: expect.any(Object) });
     });
 
     test('more used tags than the bar draws at first are reachable, in the server\'s order', async ({ browser, page }) => {
@@ -277,7 +277,7 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
             await createTags(other, ids, first);
             await other.evaluate(async ({ folder, sort_order }) => {
                 const headers = window['stTest'].context().getRequestHeaders();
-                const tag = { id: folder, name: folder, folder_type: 'OPEN', sort_order, is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now() };
+                const tag = { id: folder, name: folder, folder_type: 'OPEN', sort_order, is_hidden_on_character_card: false, create_date: Date.now() };
                 const response = await fetch('/api/tags/create', { method: 'POST', headers, body: JSON.stringify({ tag }) });
                 if (!response.ok) throw new Error(`create -> ${response.status}`);
             }, { folder, sort_order: first + 100 });

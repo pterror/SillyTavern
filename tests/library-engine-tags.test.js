@@ -18,11 +18,55 @@ let directories;
 /** @type {import('../src/library-engine.js').LibraryEngine} */
 let library;
 
+/**
+ * A value with `keys` taken off each tag definition in it (an object with a string `id`).
+ * @param {string[]} keys
+ */
+const withoutDefinitionKeys = keys => {
+    const strip = (/** @type {any} */ value) => {
+        if (Array.isArray(value)) return value.map(strip);
+        if (value instanceof Map) return new Map([...value].map(([k, v]) => [k, strip(v)]));
+        if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) return value;
+        const definition = typeof value.id === 'string';
+        return Object.fromEntries(Object.entries(value).filter(([k]) => !(definition && keys.includes(k))).map(([k, v]) => [k, strip(v)]));
+    };
+    return strip;
+};
+
+/**
+ * `target` with each of `methods` answering through `strip`; each batch of an async iterable goes through it.
+ * @param {any} target
+ * @param {string[]} methods
+ * @param {(value: any) => any} strip
+ */
+function answeringWithout(target, methods, strip) {
+    return new Proxy(target, {
+        get(object, key, receiver) {
+            const value = Reflect.get(object, key, receiver);
+            if (typeof key !== 'string' || !methods.includes(key) || typeof value !== 'function') return value;
+            const batches = (/** @type {any} */ answer) => (async function* () {
+                for await (const batch of answer) yield strip(batch);
+            })();
+            const isBatches = (/** @type {any} */ answer) => answer && typeof answer[Symbol.asyncIterator] === 'function';
+            return (/** @type {any[]} */ ...args) => {
+                const answer = value.apply(object, args);
+                if (isBatches(answer)) return batches(answer);
+                return Promise.resolve(answer).then(resolved => (isBatches(resolved) ? batches(resolved) : strip(resolved)));
+            };
+        },
+    });
+}
+
+// The engine's definitions name their entity (`thing`), and it keeps upstream's colors in a tag's look; the old store
+// did neither, so each side is compared without what only it has.
+const OLD_DEFINITION_READS = ['createTagDefinition', 'deleteTagDefinition', 'getTagDefinitionsByIds', 'queryTags', 'findTagsByNames', 'getTagChangesSince', 'streamTagDefinitionBatches'];
+const ENGINE_DEFINITION_READS = ['create', 'delete', 'byIds', 'query', 'findByNames', 'changes'];
+
 beforeAll(async () => {
     const { setConfigFilePath } = await import('../src/util.js');
     setConfigFilePath(path.join(process.cwd(), '..', 'default', 'config.yaml'));
     oracle = await oldStoreOracle('library-engine-tags', 'character-metadata-db.js', () => directories);
-    metadataDb = oracle.store;
+    metadataDb = answeringWithout(oracle.store, OLD_DEFINITION_READS, withoutDefinitionKeys(['color', 'color2']));
     lib = await import('../src/library-engine.js');
     engine = (await import('../engine/load.js')).loadEngine().binding;
 });
@@ -41,6 +85,7 @@ beforeEach(async () => {
         fs.mkdirSync(dir, { recursive: true });
     }
     library = await lib.LibraryEngine.open(engine, path.join(tempDir, 'store'));
+    library.tags = answeringWithout(library.tags, ENGINE_DEFINITION_READS, withoutDefinitionKeys(['thing']));
 });
 
 afterEach(async () => {
@@ -587,6 +632,7 @@ describe('the reorder pass on the engine', () => {
         await library.tags.lane(() => library.tags.passStep());
         await library.close();
         library = await lib.LibraryEngine.open(engine, path.join(directories.root, 'store'));
+        library.tags = answeringWithout(library.tags, ENGINE_DEFINITION_READS, withoutDefinitionKeys(['thing']));
         expect((await library.store.tagPass()).n).toBe(8);
         await library.tags.startPass();
         await compareManual();
