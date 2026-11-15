@@ -233,7 +233,8 @@ export function registerPageCommands() {
             category: editing,
             keys: ['ctrl+Enter'],
             typing: true,
-            when: () => $('.mes_edit_done:visible, .mes_reasoning_edit_done:visible').length > 0,
+            when: () => $('.mes_edit_done:visible, .mes_reasoning_edit_done:visible').length > 0
+                && (!typingInField() || document.activeElement?.closest('.mes_editor, .reasoning_editor, #chat_box') !== null),
             run: () => {
                 const done = $('.mes_edit_done:visible');
                 focusChatBox();
