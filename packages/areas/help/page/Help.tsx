@@ -65,11 +65,12 @@ function Reader(props: Handlers) {
 
 type HotkeyGroup = { category: string; hotkeys: { label: string; bindings: readonly (readonly string[])[] }[] };
 
-/** The registry's commands, as of its last change; heard until the calling owner is cleaned up */
+/** The registry's commands not hidden, as of its last change; heard until the calling owner is cleaned up */
 function registeredCommands(): Accessor<readonly Command[]> {
     const { commands } = useUi();
-    const [all, setAll] = createSignal(commands.all());
-    onCleanup(commands.watch(() => setAll(commands.all())));
+    const listed = () => commands.all().filter((command) => command.hidden !== true);
+    const [all, setAll] = createSignal(listed());
+    onCleanup(commands.watch(() => setAll(listed())));
     return all;
 }
 

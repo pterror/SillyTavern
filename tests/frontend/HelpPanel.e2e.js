@@ -227,6 +227,7 @@ test.describe('Hotkeys', () => {
     test('the setting turns it off', async ({ page }) => {
         await page.keyboard.down('Control');
         await expect(overlay(page)).toContainText('Command palette');
+        await expect(overlay(page)).not.toContainText('at the pointer');
         await page.keyboard.up('Control');
 
         const toggle = page.locator('#hotkey_overlay');

@@ -88,7 +88,8 @@ function cheatsheetOver(commands: Commands, element: HTMLElement, open: ReturnTy
  */
 export function commandSurfaces({ commands, holdShowsKeys, t }: SurfaceOptions) {
     const shown = palette({
-        commands: () => commands.available().filter((command) => command.id !== 'palette.open'),
+        commands: () =>
+            commands.available().filter((command) => command.id !== 'palette.open' && command.hidden !== true),
         element: surface('commandPalette'),
         label: t('Commands'),
         placeholder: t('Type a command'),
@@ -137,6 +138,7 @@ export function commandSurfaces({ commands, holdShowsKeys, t }: SurfaceOptions) 
         [
             {
                 category: t('General'),
+                hidden: true,
                 id: 'keys.hide',
                 keys: ['Escape'],
                 label: t('Close keyboard shortcuts'),

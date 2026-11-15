@@ -23,6 +23,7 @@ const REGISTERED: Command[] = [
     { id: 'chat.unbound', label: 'Delete the chat', category: 'Chat', run },
     { id: 'menu.only', label: 'Copy the message', category: 'Message', run },
     { id: 'chat.swipe', label: 'Swipe right', category: 'Chat', keys: ['ArrowRight', 'shift+ArrowRight'], run },
+    { id: 'tabs.keep', label: 'Stay on the tab', category: 'Editing', keys: ['ArrowLeft'], hidden: true, run },
 ];
 
 function stand(first: PanelView = { open: false }, browsersLoaded: Promise<void> = Promise.resolve()) {
@@ -195,7 +196,7 @@ const groups = (root: Element) =>
         })),
     }));
 
-test('the hotkeys topic lists the registered commands that have keys, by category in the order each first appears, and follows the registry', async () => {
+test("the hotkeys topic lists the registered commands that have keys and aren't hidden, by category in the order each first appears, and follows the registry", async () => {
     const s = stand();
     await s.compat.open('hotkeys');
     s.setPanel({ open: true, topic: 'hotkeys' });

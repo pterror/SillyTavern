@@ -23,6 +23,11 @@ export type Command = {
     when?: () => boolean;
     /** Whether its keys also run while text is typed into a field */
     typing?: boolean;
+    /**
+     * Bound, but left out of the palette, the cheatsheet, the help's list and the key settings: a guard or another
+     * way to reach something listed (Escape where focus isn't), not an action of its own
+     */
+    hidden?: boolean;
 };
 
 export type Placement = {
@@ -266,20 +271,17 @@ export function createCommands() {
         watch: (listener: () => void) => store.watch(listener),
     };
 
-    /** The schema keybinds' settings and cheatsheet take: each command's label, category and default bindings */
-    function commandSchema(): Record<
-        string,
-        { label: string; category: string; keys?: readonly string[]; mouse?: readonly string[] }
-    > {
+    type Entry = { label: string; category: string; keys?: readonly string[]; mouse?: readonly string[] };
+
+    /** Each command's label, category and default bindings, once per id (the first registered) */
+    function entries(withHidden: boolean): Record<string, Entry> {
         const seen = new Set<string>();
-        const schema: Record<
-            string,
-            { label: string; category: string; keys?: readonly string[]; mouse?: readonly string[] }
-        > = {};
+        const schema: Record<string, Entry> = {};
         for (const { commands } of registrations) {
             for (const command of commands) {
                 if (seen.has(command.id)) continue;
                 seen.add(command.id);
+                if (command.hidden === true && !withHidden) continue;
                 schema[command.id] = {
                     label: command.label,
                     category: command.category,
@@ -291,13 +293,18 @@ export function createCommands() {
         return schema;
     }
 
+    /** The schema keybinds' settings and cheatsheet take: each command not hidden */
+    function commandSchema(): Record<string, Entry> {
+        return entries(false);
+    }
+
     /**
      * Every binding more than one command has, by keybinds' conflict check over the bindings in effect. Commands that
      * share a key and never apply at once (Escape for a field and for a drawer) are listed too: which runs is the order
-     * they were registered in and their `when`.
+     * they were registered in and their `when`. Hidden commands are bound, so they are counted.
      */
     function bindingConflicts(): readonly Conflict[] {
-        const bindings = bound(commandSchema(), store.get());
+        const bindings = bound(entries(true), store.get());
         const found = new Map<string, Set<string>>();
         for (const [id, entry] of Object.entries(bindings)) {
             for (const [field, lookup] of [

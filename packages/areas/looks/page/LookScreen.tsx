@@ -181,6 +181,7 @@ function Screen(props: { view: Open }) {
                 [
                     {
                         id: 'looks.back',
+                        hidden: true,
                         label: t('Back'),
                         category: t('Look'),
                         keys: ['Escape'],

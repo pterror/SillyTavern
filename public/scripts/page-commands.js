@@ -400,6 +400,7 @@ export function registerPageCommands(actions) {
             label: t`Message actions at the pointer`,
             category: t`Message`,
             mouse: ['RightClick'],
+            hidden: true,
             run: event => openMessageMenuAtPointer(event, actions),
         },
         ...messageCommands(focusedMessage, actions),

@@ -37,6 +37,7 @@ test.describe('commands', () => {
         expect(await palette.evaluate(element => element.matches(':popover-open'))).toBe(true);
         await expect(palette.locator('[role=combobox]')).toBeFocused();
         await expect(palette.locator('[role=option]', { hasText: 'Scroll to the bottom' })).toContainText('Shift');
+        await expect(palette.locator('[role=option]', { hasText: 'at the pointer' })).toHaveCount(0);
         await page.keyboard.type('edit last');
         await expect(palette.locator('[role=option]').first()).toContainText('Edit last message');
         await page.keyboard.press('Enter');

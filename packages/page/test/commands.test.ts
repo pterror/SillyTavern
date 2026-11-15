@@ -95,3 +95,37 @@ test('bindings two commands share are reported', () => {
     );
     expect(commands.conflicts()).toEqual([{ binding: 'keys:escape', ids: ['chat.stop', 'drawer.close'] }]);
 });
+
+test('a hidden command runs from its key, and is left out of the schema but not out of the conflicts', () => {
+    const commands = createCommands();
+    const ran: string[] = [];
+    taken.push(
+        commands.register([
+            { id: 'chat.stop', label: 'Stop', category: 'Chat', keys: ['Escape'], run: () => void ran.push('stop') },
+            {
+                id: 'sheet.close',
+                label: 'Close',
+                category: 'General',
+                keys: ['Escape'],
+                hidden: true,
+                run: () => void ran.push('close'),
+            },
+        ]),
+    );
+    expect(Object.keys(commands.schema())).toEqual(['chat.stop']);
+    expect(commands.conflicts()).toEqual([{ binding: 'keys:escape', ids: ['chat.stop', 'sheet.close'] }]);
+    taken.push(
+        commands.register([
+            {
+                id: 'tabs.keep',
+                label: 'Keep',
+                category: 'Editing',
+                keys: ['Home'],
+                hidden: true,
+                run: () => void ran.push('keep'),
+            },
+        ]),
+    );
+    press('Home');
+    expect(ran).toEqual(['keep']);
+});

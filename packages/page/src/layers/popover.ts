@@ -74,6 +74,7 @@ export function float(element: () => HTMLElement | undefined, options: FloatOpti
             [
                 {
                     id: 'popover.close',
+                    hidden: true,
                     label: t('Close the menu'),
                     category: t('Panels'),
                     keys: ['Escape'],

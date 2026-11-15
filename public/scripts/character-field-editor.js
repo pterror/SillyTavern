@@ -689,6 +689,7 @@ function initTabSwitchGuard() {
         category: t`Editing`,
         keys: ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Space'],
         typing: true,
+        hidden: true,
         when: () => document.activeElement instanceof HTMLInputElement && document.activeElement.matches(TAB_RADIO) && editingTab() !== null,
         run: (event) => {
             // Space only selects the focused tab, which may be the edited one
