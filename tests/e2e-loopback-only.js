@@ -1,10 +1,12 @@
+import dns from 'node:dns';
 import fs from 'node:fs';
 import net from 'node:net';
 import tls from 'node:tls';
 
 /**
  * The e2e harness reaches loopback only: no test may reach a real service. Loaded into each e2e server (`--import`,
- * `e2e-st-server.js`), it refuses the server's outgoing requests to anything else and writes each one to the file
+ * `e2e-st-server.js`), it refuses the server's outgoing requests to anything else, before any name is looked up or
+ * connection made (fetch, name lookups, and TCP and TLS connections), and writes each one to the file
  * `ST_E2E_REFUSED_LOG` names, which fails the test that made it (`frontend/fixtures.js`). The page's own requests are
  * kept in there too. The default API, AI Horde, which every new account and every page's status check asks, is
  * answered as it is when it can't be reached, and isn't counted: a test that wants replies connects a local mock.
@@ -64,6 +66,30 @@ if (log) {
         }
         return null;
     };
+
+    /**
+     * @param {string} hostname
+     * @returns {NodeJS.ErrnoException | null} why a lookup of it is refused; null when it may be looked up
+     */
+    const lookupRefusal = hostname => {
+        if (isLoopbackHost(hostname)) return null;
+        if (hostname === 'aihorde.net') return Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: 'ENOTFOUND' });
+        return refused(hostname);
+    };
+    const lookup = dns.lookup;
+    dns.lookup = /** @type {typeof dns.lookup} */ (/** @type {unknown} */ (function (/** @type {string} */ hostname, /** @type {any[]} */ ...rest) {
+        const refusal = lookupRefusal(hostname);
+        if (!refusal) return lookup.call(dns, hostname, ...rest);
+        const callback = rest.at(-1);
+        if (typeof callback === 'function') process.nextTick(() => callback(refusal));
+        return undefined;
+    }));
+    const lookupPromise = dns.promises.lookup;
+    dns.promises.lookup = /** @type {typeof dns.promises.lookup} */ (/** @type {unknown} */ (async function (/** @type {string} */ hostname, /** @type {any[]} */ ...rest) {
+        const refusal = lookupRefusal(hostname);
+        if (refusal) throw refusal;
+        return lookupPromise.call(dns.promises, hostname, ...rest);
+    }));
 
     for (const module of [net, tls]) {
         const connect = module.connect;

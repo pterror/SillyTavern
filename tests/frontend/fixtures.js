@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
 import { refusedLogOf, startServer } from '../e2e-st-server.js';
@@ -23,8 +24,23 @@ function awaitTestContextOnNavigation(page) {
 /** @type {WeakSet<import('@playwright/test').BrowserContext>} */
 const installedContexts = new WeakSet();
 
-/** @type {string[]} what a page of this worker's test asked for past loopback, which the browser's dead proxy refused */
+/** @type {string[]} what a page of this worker's test asked for past loopback, which the browser's proxy refused */
 const refusedByPages = [];
+
+/**
+ * The proxy the browser sends everything but loopback to: it ends each connection unanswered
+ * @returns {Promise<{ port: number, close: () => Promise<void> }>}
+ */
+function refusingProxy() {
+    const server = net.createServer(socket => socket.destroy());
+    return new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+            const { port } = /** @type {net.AddressInfo} */ (server.address());
+            resolve({ port, close: () => new Promise(done => server.close(() => done(undefined))) });
+        });
+    });
+}
 
 /** @param {import('@playwright/test').BrowserContext} context */
 async function installInContext(context) {
@@ -51,6 +67,12 @@ function installInBrowser(browser) {
     };
     return browser;
 }
+
+/**
+ * @typedef {object} PastLoopback what the test's page and server asked for past loopback, all of it refused; a test
+ *   ends failed when any is left untaken
+ * @property {() => string[]} take what was asked since the last take
+ */
 
 export const test = base.extend({
     freshAccount: [false, { scope: 'worker', option: true }],
@@ -86,21 +108,32 @@ export const test = base.extend({
     }, { scope: 'worker', auto: true, timeout: 180000 }],
 
     launchOptions: [async ({ launchOptions }, use) => {
-        // Everything but loopback goes to this proxy, where nothing answers
-        await use({ ...launchOptions, proxy: { server: 'http://127.0.0.254:59999', bypass: 'localhost,127.0.0.1,[::1]' } });
+        const proxy = await refusingProxy();
+        try {
+            await use({
+                ...launchOptions,
+                proxy: { server: `http://127.0.0.1:${proxy.port}`, bypass: 'localhost,127.0.0.1,[::1]' },
+                args: [...(launchOptions.args ?? []), '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1, EXCLUDE [::1]'],
+            });
+        } finally {
+            await proxy.close();
+        }
     }, { scope: 'worker' }],
 
-    loopbackOnly: [async ({ stServer }, use) => {
+    pastLoopback: [async ({ stServer }, use) => {
         const log = refusedLogOf(stServer.dataRoot);
         const sizeOf = () => (fs.existsSync(log) ? fs.statSync(log).size : 0);
-        const from = sizeOf();
+        let from = sizeOf();
         refusedByPages.length = 0;
-        await use(undefined);
-        const byServer = sizeOf() > from ? fs.readFileSync(log).subarray(from).toString().split('\n').filter(Boolean) : [];
-        const byPages = refusedByPages.splice(0);
-        if (byServer.length || byPages.length) {
-            throw new Error(`The test reached past loopback, which the e2e harness refuses (\`e2e-loopback-only.js\`): ${[...byPages.map(url => `the page asked for ${url}`), ...byServer.map(url => `the server asked for ${url}`)].join('; ')}`);
-        }
+        const take = () => {
+            const size = sizeOf();
+            const byServer = size > from ? fs.readFileSync(log).subarray(from, size).toString().split('\n').filter(Boolean) : [];
+            from = size;
+            return [...refusedByPages.splice(0).map(url => `the page asked for ${url}`), ...byServer.map(target => `the server asked for ${target}`)];
+        };
+        await use({ take });
+        const left = take();
+        if (left.length) throw new Error(`The test reached past loopback, which the e2e harness refuses (\`e2e-loopback-only.js\`): ${left.join('; ')}`);
     }, { auto: true }],
 
     failureMarker: [async ({ stServer }, use, testInfo) => {
