@@ -8254,7 +8254,7 @@ function renderGreetingPager() {
     const { greetings, index } = greetingPagerState;
     setFieldValue('greeting_field', greetings[index] ?? '');
     autosizeTextareas(document.getElementById('greeting_field'));
-    $('.greeting-pager-input').val(index + 1).css('--greeting-pager-digits', String(String(greetings.length).length));
+    $('.greeting-pager-input').attr('max', greetings.length).val(index + 1).css('--greeting-pager-digits', String(String(greetings.length).length));
     $('.greeting-pager-total').text(`/${greetings.length}`);
     $('.greeting-pager-delete').toggleClass('disabled', greetings.length === 1 && greetings[0] === '');
     refreshUseInChat();
@@ -10382,7 +10382,7 @@ jQuery(async function () {
 
     function jumpGreetingPager() {
         const requested = parseInt(String($('.greeting-pager-input').val()), 10);
-        if (Number.isNaN(requested)) {
+        if (Number.isNaN(requested) || requested - 1 === greetingPagerState.index) {
             renderGreetingPager();
             return;
         }
@@ -10392,6 +10392,15 @@ jQuery(async function () {
     for (const pagerInput of $('.greeting-pager-input')) attachActions(pagerInput, { confirm: jumpGreetingPager });
 
     $('.greeting-pager-input').on('blur', function () {
+        jumpGreetingPager();
+    });
+
+    // A number input commits a step (arrow keys, spinner, wheel) with `change` at once, typed digits only on Enter or blur
+    $('.greeting-pager-input').on('change', function () {
+        if (blockWhileFieldEditing()) {
+            renderGreetingPager();
+            return;
+        }
         jumpGreetingPager();
     });
 
