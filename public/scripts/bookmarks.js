@@ -12,6 +12,7 @@ import {
     isProvisionalNodeId,
     takeChatOpenAnswer,
     chatOpenAsk,
+    chatOpenRefused,
     adoptStored,
     openingForRequest,
     messageIdOf,
@@ -202,12 +203,16 @@ async function requestBookmark(mesId, { label, nodeId = null, unique = false, al
         body.open = true;
         Object.assign(body, chatOpenAsk(owner));
     }
-    const response = await fetch('/api/chats/bookmark', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
-    if (!response.ok) return null;
+    const response = await fetch('/api/chats/bookmark', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) }).catch(() => null);
+    if (!response?.ok) {
+        if (open) chatOpenRefused(owner);
+        return null;
+    }
     const answer = await response.json();
     adoptStored(answer.stored);
     if (selected_group && Array.isArray(answer.chats)) groupsStore.update(selected_group, { chats: answer.chats });
     if (answer.opened) takeChatOpenAnswer(owner, answer.opened);
+    else if (open) chatOpenRefused(owner);
     return answer;
 }
 

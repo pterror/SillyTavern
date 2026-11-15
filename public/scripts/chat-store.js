@@ -12,7 +12,7 @@ import { setStoredAdopter } from './stored-report.js';
 import { askToDrop, confirmOf, hasDrops, warnDropped } from './edit-drops.js';
 import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 import { countedTextHash } from './counted-text.js';
-import { arriveChatBox, chatBoxFollowCut, chatBoxLeft, leavingChatBox } from './chat-box.js';
+import { chatBoxFollowCut, chatBoxLeft, moveChatBox } from './chat-box.js';
 import { takeChatLinks } from './chat-links.js';
 
 /**
@@ -523,27 +523,33 @@ export async function ensureOpeningRow(mesId = 0) {
 }
 
 /**
+ * Asks the server to remember the card greeting `text` as the chat's opening, which the page shows already: the chat
+ * box moves to it as it is asked (`moveChatBox`)
  * @param {string} text
+ * @returns {Promise<boolean>} false when the server didn't take it
  */
 export async function rememberCardOpening(text) {
     const character = getCurrentCharacter();
-    if ((selected_group != null && selected_group !== '') || character?.avatar == null || character.avatar === '' || typeof text !== 'string' || text.length === 0) return;
+    if ((selected_group != null && selected_group !== '') || character?.avatar == null || character.avatar === '' || typeof text !== 'string' || text.length === 0) return true;
     const index = cardToGreetingsModel(character).greetings.indexOf(text);
-    if (index < 0) return;
+    if (index < 0) return true;
+    const move = moveChatBox({ chat: { avatar_url: character.avatar } });
     try {
         const response = await fetch('/api/chats/openings/choose', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: character.avatar, text, index, leaving: leavingChatBox() }),
+            body: JSON.stringify({ avatar_url: character.avatar, text, index, leaving: move.leaving }),
         });
         if (!response.ok) throw new Error(`/api/chats/openings/choose responded ${response.status}`);
         const answer = await response.json().catch(() => null);
         chatBoxLeft(answer?.left);
         await takeOpenings(character.avatar, answer);
-        arriveChatBox({ avatar_url: character.avatar }, answer?.draft);
+        move.arrive(answer?.draft);
+        return true;
     } catch (error) {
+        move.undo();
         console.warn('[greetings] Could not remember the chosen greeting:', error);
-        toastr.warning(t`The chat couldn't remember the greeting you switched to, so reopening it will show the default greeting.`, t`Greeting not remembered`);
+        return false;
     }
 }
 
@@ -830,7 +836,9 @@ export async function chatOpEdit(mesId) {
         const inGroup = selected_group != null && selected_group !== '';
         const asCard = provisionalNodeId(msg.name, msg.mes);
         if (!inGroup && typeof msg.mes === 'string' && (msg.swipe_info ?? []).some(info => info.node_id === asCard)) {
-            await rememberCardOpening(msg.mes);
+            if (!await rememberCardOpening(msg.mes)) {
+                toastr.warning(t`The chat couldn't remember the greeting you switched to, so reopening it will show the default greeting.`, t`Greeting not remembered`);
+            }
             return true;
         }
         return isStoredNodeId(await ensureOpeningRow(mesId));

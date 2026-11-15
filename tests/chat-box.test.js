@@ -499,4 +499,96 @@ describe('the chat box\'s drafts', () => {
         expect(box.openingChatBox()).toEqual([expect.objectContaining({ group_id: 'g', owner: { message: '8' }, text: 'no storage', changes: [insert(0, 'no storage')], tab: 'tab-a' })]);
         globalThis.localStorage = /** @type {any} */ (storage);
     });
+
+    test('a move empties the box at once and carries its text; what is typed after is laid over the draft its answer brings', async () => {
+        box.arriveChatBox(ada, { owner: { message: '20' }, text: '' });
+        await settle();
+        shown.type('for 20');
+        await settle();
+        const move = box.moveChatBox({ chat: ada, owner: { message: '21' } });
+        expect(move.leaving).toEqual([expect.objectContaining({ owner: { message: '20' }, text: 'for 20' })]);
+        expect(box.chatBoxText()).toBe('');
+        shown.type('typed while it moves');
+        await settle();
+        expect(copies().read(ada, { message: '21' }, 'tab-a')?.text).toBe('typed while it moves');
+        move.arrive({ owner: { message: '21' }, text: 'draft of 21. ' });
+        await settle();
+        expect(box.chatBoxText()).toBe('draft of 21. typed while it moves');
+        expect(leaving()).toMatchObject({ owner: { message: '21' }, text: 'draft of 21. typed while it moves', changes: [insert(13, 'typed while it moves')] });
+        expect(copies().read(ada, { message: '20' }, 'tab-a')?.text).toBe('for 20');
+        copies().remove(ada, { message: '20' }, 'tab-a');
+    });
+
+    test('the answer of a move a later one took the place of changes nothing', async () => {
+        const first = box.moveChatBox({ chat: ada, owner: { message: '22' } });
+        const second = box.moveChatBox({ chat: ada, owner: { message: '23' } });
+        first.arrive({ owner: { message: '22' }, text: 'not this' });
+        first.undo();
+        await settle();
+        expect(box.chatBoxText()).toBe('');
+        second.arrive({ owner: { message: '24' }, text: '' });
+        shown.type('at 24');
+        await settle();
+        expect(leaving()).toMatchObject({ owner: { message: '24' }, text: 'at 24' });
+        expect(copies().read(ada, { message: '23' }, 'tab-a')).toBeNull();
+    });
+
+    test('a refused move puts the box back where it was, with what was typed since', async () => {
+        box.arriveChatBox(ada, { owner: { message: '30' }, text: 'kept for 30' });
+        await settle();
+        shown.type(', mine');
+        await settle();
+        const move = box.moveChatBox({ chat: ada, owner: { message: '31' } });
+        expect(box.chatBoxText()).toBe('');
+        shown.type(' then this');
+        await settle();
+        move.undo();
+        await settle();
+        expect(box.chatBoxText()).toBe('kept for 30, mine then this');
+        expect(leaving()).toMatchObject({ owner: { message: '30' }, text: 'kept for 30, mine then this' });
+        let text = 'kept for 30';
+        for (const change of [...leaving().changes].reverse()) text = text.slice(0, change.from) + change.insert + text.slice(change.to);
+        expect(text).toBe('kept for 30, mine then this');
+        expect(copies().read(ada, { message: '31' }, 'tab-a')).toBeNull();
+        move.arrive({ owner: { message: '31' }, text: 'too late' });
+        await settle();
+        expect(box.chatBoxText()).toBe('kept for 30, mine then this');
+        box.writeChatBox('');
+        await settle();
+    });
+
+    test('a move to a chat being opened carries every copy; what is typed while it opens is the end its answer names', async () => {
+        box.arriveChatBox(ada, { owner: { message: '40' }, text: '' });
+        await settle();
+        shown.type('left in 40');
+        await settle();
+        const opened = { group_id: 'opened' };
+        const move = box.moveChatBox({ chat: opened, owner: null, opening: true });
+        expect(move.leaving).toContainEqual(expect.objectContaining({ avatar_url: 'Ada.png', owner: { message: '40' }, text: 'left in 40' }));
+        expect(box.chatBoxText()).toBe('');
+        shown.type('typed while it opens');
+        await settle();
+        expect(box.leavingChatBox()).toBeUndefined();
+        box.arriveChatBox(opened, { owner: { root: true }, text: 'its draft ' });
+        await settle();
+        expect(box.chatBoxText()).toBe('its draft typed while it opens');
+        expect(leaving()).toMatchObject({ group_id: 'opened', owner: { root: true }, changes: [insert(10, 'typed while it opens')] });
+        copies().remove(ada, { message: '40' }, 'tab-a');
+    });
+
+    test('a move to where the box is keeps its text and carries it', async () => {
+        const stay = { group_id: 'stay' };
+        box.arriveChatBox(stay, { owner: { root: true }, text: 'kept' });
+        await settle();
+        shown.type(' here');
+        await settle();
+        const move = box.moveChatBox({ chat: stay, owner: { root: true } });
+        expect(move.leaving).toEqual([expect.objectContaining({ owner: { root: true }, text: 'kept here' })]);
+        expect(box.chatBoxText()).toBe('kept here');
+        shown.type('!');
+        move.arrive({ owner: { root: true }, text: 'kept here' });
+        await settle();
+        expect(box.chatBoxText()).toBe('kept here!');
+        expect(leaving()?.changes).toEqual([insert(9, '!')]);
+    });
 });

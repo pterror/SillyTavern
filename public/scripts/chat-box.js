@@ -11,11 +11,15 @@ import { tabToken } from './tab-session.js';
  * The chat box. Its text is a view of the draft of the message the chat ends on, as the server has it: an action that
  * uses it takes it when the action is taken (`chatBoxText`, `takeChatBoxText`), and whatever puts text in it writes it
  * (`writeChatBox`). The text goes to the server only when the person leaves that end: in the request that moves them
- * (`leavingChatBox`, `openingChatBox`), or when the page is hidden. A save carries its text and the changes from the
- * draft it was written over, which the server merges into its draft. Every draft the server writes is pushed to every
- * tab (`takeChatBoxPush`), and shown with what was typed since laid over it, as the editor's text port does. Until the
+ * (`moveChatBox`), or when the page is hidden. A save carries its text and the changes from the draft it was written
+ * over, which the server merges into its draft. Every draft the server writes is pushed to every tab
+ * (`takeChatBoxPush`), and shown with what was typed since laid over it, as the editor's text port does. Until the
  * server confirms a text, the browser keeps a copy of it, this tab's own, written on every edit (`chat-box-copies.js`),
  * so a crash or a lost request loses nothing.
+ *
+ * A move to another end is made at once, as the person makes it: the box's text goes with the end it was written at,
+ * and the box is the new end's from then on. The answer to the request that moves them confirms the move, with the new
+ * end's draft, which what was typed since is laid over; it never replaces the box. A refusal undoes the move.
  */
 
 /**
@@ -47,9 +51,34 @@ const copies = boxCopies(guardedStorage(() => globalThis.localStorage));
 const PAGE = Math.random().toString(36).slice(2);
 
 /**
- * @type {{ chat: ChatOf, owner: DraftOwner, base: string, values?: MacroValues } | null} the end the box's text responds
- *   to, its draft as this page last heard it, and the values of the macros the server sent with it
+ * @typedef {object} ChatBoxMove a move of the box to another end, made when the person moves (`moveChatBox`)
+ * @property {LeftDraft[] | undefined} leaving what the request that moves them carries
+ * @property {(draft: Draft | undefined) => void} arrive its answer came, with the new end's draft; nothing when a later
+ *   move or undo has taken its place
+ * @property {() => void} undo the move was refused: the box is back where it was, with what was typed since; nothing
+ *   when a later move has taken its place
  */
+
+/**
+ * @typedef {object} Here the end the box's text responds to, its draft as this page last heard it, and the values of the
+ *   macros the server sent with it
+ * @property {ChatOf} chat
+ * @property {DraftOwner | null} owner null while only the answer to a move can name it
+ * @property {string} base
+ * @property {MacroValues} [values]
+ * @property {Moving} [moving] the move that brought the box here, until its answer or refusal
+ */
+
+/**
+ * @typedef {object} Moving
+ * @property {ChatBoxMove} move
+ * @property {string | undefined} since the latest edit of the text the move took away: the edits after it were made
+ *   here, and are laid over the draft the answer brings
+ * @property {string} carried the box's text the move took away, given back on a refusal
+ * @property {Here | null} from where the box was
+ */
+
+/** @type {Here | null} */
 let here = null;
 
 /**
@@ -83,7 +112,7 @@ function unsaved() {
 }
 
 const keepCopy = () => {
-    if (!here) return;
+    if (!here?.owner) return;
     const written = text.text();
     const { base, changes } = unsaved();
     if (written === base) {
@@ -149,7 +178,7 @@ export function chatBoxFollowCut(draft) {
  */
 function follow(known) {
     const chat = page?.chat();
-    if (!page || !here || !chat || !sameChat(chat, here.chat)) return;
+    if (!page || !here || here.moving || !chat || !sameChat(chat, here.chat)) return;
     const owner = known?.owner ?? page.endOwner();
     const was = here;
     if (sameOwner(owner, was.owner)) return;
@@ -224,7 +253,7 @@ export function chatBoxText() {
 export function takeChatBoxText() {
     follow(null);
     const taken = text.text();
-    const sent = here ? { ...here.owner, text: taken, changes: unsaved().changes } : null;
+    const sent = here?.owner ? { ...here.owner, text: taken, changes: unsaved().changes } : null;
     if (taken !== '') writeChatBox('');
     return { text: taken, sent };
 }
@@ -249,7 +278,7 @@ export function writeChatBox(written) {
  * @returns {LeftDraft[] | undefined}
  */
 export function leavingChatBox() {
-    if (!here) return undefined;
+    if (!here?.owner) return undefined;
     const written = text.text();
     const { base, changes } = unsaved();
     if (written === base) return undefined;
@@ -289,14 +318,15 @@ export function chatBoxLeft(left) {
 
 /**
  * A draft the server wrote, from any tab or device: shown when the box is at it, with the edits it doesn't hold laid
- * over it. It holds this page's edits up to the one it names, when it came from a save of this page's.
+ * over it. It holds this page's edits up to the one it names, when it came from a save of this page's. While the box
+ * moves, the answer to the move brings the draft it shows.
  * @param {{ tree?: { avatar?: string, group?: string }, owner?: DraftOwner, text?: unknown, tab?: unknown, change?: unknown }} frame
  */
 export function takeChatBoxPush(frame) {
     const tree = frame.tree;
-    if (!tree || !frame.owner || typeof frame.text !== 'string' || !here) return;
+    if (!tree || !frame.owner || typeof frame.text !== 'string' || !here || here.moving) return;
     const chat = /** @type {ChatOf} */ (typeof tree.group === 'string' ? { group_id: tree.group } : { avatar_url: tree.avatar });
-    const greeting = 'greeting' in frame.owner && 'greeting' in here.owner;
+    const greeting = here.owner !== null && 'greeting' in frame.owner && 'greeting' in here.owner;
     if (!(greeting ? sameOwner(here.owner, frame.owner) : isHere(chat, frame.owner))) return;
     const own = frame.tab === tab() && typeof frame.change === 'string' && frame.change.startsWith(`${PAGE}/`);
     here.base = frame.text;
@@ -305,28 +335,113 @@ export function takeChatBoxPush(frame) {
 }
 
 /**
- * The person is at another end, or another chat: the box shows that end's draft. Text written before any chat was
- * open stays, to be kept for the end it's sent after. A copy this tab kept for that end, which the request that moved
- * here didn't get kept, is set apart, so the box's own copy never writes over it; the next open of a chat carries it.
+ * The person moves to another end, or another chat, as they make the move: the request that moves them carries the
+ * box's text (`leaving`, with every copy the browser kept when it opens a chat), and the box is the new end's at once,
+ * empty until the answer brings its draft. Text in the box with no end to go with (written before any chat was open,
+ * or while a move whose end only its answer names is still on its way) stays, as the new end's. A copy this tab kept
+ * for the new end, which no request got kept, is set apart, so the box's own copy never writes over it; the next open
+ * of a chat carries it. A move to where the box is changes nothing but carries its text.
+ * @param {object} to
+ * @param {ChatOf | null} [to.chat] the chat moved to; the chat open now when not given
+ * @param {DraftOwner | null} [to.owner] the end moved to; null when only the answer can name it (the end of a chat being
+ *   opened, or of a path the page doesn't have yet); the end the open chat has now when not given
+ * @param {boolean} [to.opening] the request opens a chat
+ * @returns {ChatBoxMove}
+ */
+export function moveChatBox({ chat = page?.chat() ?? null, owner, opening = false }) {
+    const leaving = opening ? openingChatBox() : leavingChatBox();
+    const from = here;
+    const target = owner === undefined ? page?.endOwner() ?? null : owner;
+    /** @type {ChatBoxMove} */
+    const move = {
+        leaving,
+        arrive: draft => arrived(move, draft),
+        undo: () => undone(move),
+    };
+    if (!chat) return move;
+    const stays = Boolean(from?.owner && target && sameChat(from.chat, chat) && sameOwner(from.owner, target));
+    const carries = Boolean(from?.owner) && !stays;
+    /** @type {Moving} */
+    const moving = { move, since: carries || stays ? text.latest() : from?.moving?.since, carried: carries ? text.text() : '', from };
+    if (stays && from) {
+        here = { ...from, moving };
+        return move;
+    }
+    here = { chat, owner: target, base: '', ...(!carries && from?.values ? { values: from.values } : {}), moving };
+    if (target) copies.setApart(chat, target, tab());
+    if (carries) text.replace('');
+    editor?.redraw();
+    return move;
+}
+
+/**
+ * @param {ChatBoxMove} move
+ * @param {Draft | undefined} draft
+ */
+function arrived(move, draft) {
+    if (here?.moving?.move !== move) return;
+    const { since, from } = here.moving;
+    const owner = draft?.owner ?? here.owner ?? page?.endOwner() ?? null;
+    if (!owner) return;
+    if (here.owner && !sameOwner(here.owner, owner)) copies.remove(here.chat, here.owner, tab());
+    if (!here.owner || !sameOwner(here.owner, owner)) copies.setApart(here.chat, owner, tab());
+    const kept = from && sameChat(from.chat, here.chat) && sameOwner(from.owner, owner) ? from.values : undefined;
+    const values = draft?.macro_values ? { ...kept, ...draft.macro_values } : kept;
+    const base = draft?.text ?? here.base;
+    here = { chat: here.chat, owner, base, ...(values ? { values } : {}) };
+    if (text.text() === '') {
+        writeChatBox(base);
+        rebase(base);
+    } else if (editor) {
+        text.heard(base, since);
+    } else {
+        rebase(base);
+    }
+    editor?.redraw();
+    queueMicrotask(keepCopy);
+}
+
+/**
+ * @param {ChatBoxMove} move
+ */
+function undone(move) {
+    if (here?.moving?.move !== move) return;
+    const { carried, from } = here.moving;
+    const restored = carried + text.text();
+    if (here.owner && !(from?.owner && sameChat(from.chat, here.chat) && sameOwner(from.owner, here.owner))) copies.remove(here.chat, here.owner, tab());
+    here = from;
+    if (here) rebase(here.base);
+    if (text.text() !== restored) writeChatBox(restored);
+    editor?.redraw();
+    queueMicrotask(keepCopy);
+}
+
+/**
+ * The answer to a request that moved the box to `chat` came, with the end's draft: the move it made is confirmed
+ * (`ChatBoxMove.arrive`). With no move on its way there, the box moves to that end now, its text kept as a copy for
+ * the end it was written at.
  * @param {ChatOf} chat
- * @param {Draft | undefined} draft the end's draft, as the answer that moved them carries it
+ * @param {Draft | undefined} draft the end's draft, as the answer carries it
  */
 export function arriveChatBox(chat, draft) {
+    if (here?.moving && sameChat(here.chat, chat)) {
+        here.moving.move.arrive(draft);
+        return;
+    }
     if (!draft) return;
     if (here && isHere(chat, draft.owner)) {
         if (draft.macro_values) takeChatBoxMacros(draft.macro_values);
         return;
     }
-    const first = here === null;
-    here = { chat, owner: draft.owner, base: draft.text, ...(draft.macro_values ? { values: draft.macro_values } : {}) };
-    editor?.redraw();
-    copies.setApart(chat, draft.owner, tab());
-    if (first && text.text() !== '' && draft.text === '') {
-        rebase('');
-        keepCopy();
-        return;
-    }
-    text.replace(draft.text);
+    moveChatBox({ chat, owner: draft.owner }).arrive(draft);
+}
+
+/**
+ * A request that moved the box to `chat` was refused: the move it made is undone (`ChatBoxMove.undo`)
+ * @param {ChatOf} chat
+ */
+export function chatBoxMoveRefused(chat) {
+    if (here?.moving && sameChat(here.chat, chat)) here.moving.move.undo();
 }
 
 /**

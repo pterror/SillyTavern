@@ -76,6 +76,7 @@ import {
     requestChatOpen,
     takeChatOpenAnswer,
     chatOpenAsk,
+    chatOpenRefused,
     _snapshotMessages,
 } from '../script.js';
 import { getCharacters, printCharactersDebounced, queryWithSortFallback } from './character-list.js';
@@ -93,7 +94,7 @@ import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { drawName, holdLooks, nameNode } from './names.js';
 import { CANDIDATE_LOOKS } from './name-holders.js';
-import { arriveChatBox, chatBoxLeft, openingChatBox } from './chat-box.js';
+import { chatBoxLeft, openingChatBox } from './chat-box.js';
 
 export {
     selected_group,
@@ -503,7 +504,6 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
         await printMessages();
     }
     _snapshotMessages();
-    arriveChatBox({ group_id: groupId }, answer.draft);
 
     updateChatMetadata(metadata, true);
 
@@ -2077,6 +2077,7 @@ export async function createNewGroupChat(groupId, { replace = null } = {}) {
         body: JSON.stringify({ group_id: group.id, ...(replace ? { replace } : {}), ...chatOpenAsk({ group_id: group.id }) }),
     });
     if (!response.ok) {
+        chatOpenRefused({ group_id: group.id });
         toastr.error(t`The new chat was not created. Check the server console for details.`, t`Group chat could not be created`);
         console.error('Group chat could not be created', response);
         return;
