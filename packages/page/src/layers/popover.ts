@@ -1,6 +1,7 @@
 import { createEffect, onCleanup, onMount } from 'solid-js';
 import { dismiss } from '@pterror/interact-list/dismiss';
 import { popover } from '@pterror/interact-list/popover';
+import { useUi } from '../context.ts';
 
 export type Box = { left: number; top: number; right: number; bottom: number };
 export type Anchor = { getBoundingClientRect(): Box };
@@ -38,8 +39,11 @@ function placedAt(anchor: Box, element: HTMLElement, align: Align): Box {
 }
 
 // Shows `element()` as a popover against `anchor()` while the calling component is mounted, and calls `close` on a
-// press outside it or on Escape. Escape goes no further: the old page closes its drawers on Escape.
+// press outside it or on Escape. Escape with focus inside it is its Cancel, after that of a field in it; with focus
+// elsewhere (the field it was opened from) it is a command run before the field's own and the old page's drawers.
+// Either takes the key, so dismiss's own Escape, which closes on a key nothing took, doesn't run as well.
 export function float(element: () => HTMLElement | undefined, options: FloatOptions) {
+    const { commands, focusActions, t } = useUi();
     onMount(() => {
         const shown = element();
         if (!shown) return;
@@ -65,14 +69,24 @@ export function float(element: () => HTMLElement | undefined, options: FloatOpti
                 if (!open) options.close();
             },
         });
-        const key = (event: KeyboardEvent) => {
-            if (event.key !== 'Escape') return;
-            event.stopPropagation();
-            options.close();
-        };
-        window.addEventListener('keydown', key, true);
+        const detach = focusActions.attach(shown, { cancel: () => options.close() });
+        const unregister = commands.register(
+            [
+                {
+                    id: 'popover.close',
+                    label: t('Close the menu'),
+                    category: t('Panels'),
+                    keys: ['Escape'],
+                    typing: true,
+                    when: () => !shown.contains(document.activeElement),
+                    run: () => options.close(),
+                },
+            ],
+            { capture: true, everywhere: true },
+        );
         onCleanup(() => {
-            window.removeEventListener('keydown', key, true);
+            unregister();
+            detach();
             stopDismissing();
             stopShowing();
         });
