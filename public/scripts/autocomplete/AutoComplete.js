@@ -165,8 +165,8 @@ export class AutoComplete {
             previous: () => this.moveSelection(-1),
             confirm: (evt) => {
                 if (!this.isActive) return false;
-                const ctrl = evt instanceof KeyboardEvent && evt.ctrlKey;
-                if (!ctrl && this.accepts(AUTOCOMPLETE_SELECT_KEY.ENTER) && this.selectedItem.name !== this.name && this.selectedItem.isSelectable) {
+                const mod = evt instanceof KeyboardEvent && (evt.ctrlKey || evt.metaKey);
+                if (!mod && this.accepts(AUTOCOMPLETE_SELECT_KEY.ENTER) && this.selectedItem.name !== this.name && this.selectedItem.isSelectable) {
                     void this.select();
                     return;
                 }

@@ -637,9 +637,9 @@ export class Popup {
                 if (!resultControl) return false;
                 const field = active.closest('textarea, input[type="text"]');
                 if (field && !shouldSendOnEnter()) return false;
-                // Enter in a multi-line input is a new line; Ctrl+Enter still completes
-                const ctrl = evt instanceof KeyboardEvent && evt.ctrlKey;
-                if (field && !ctrl && this.mainInput.rows > 1) return false;
+                // Enter in a multi-line input is a new line; Mod+Enter still completes
+                const mod = evt instanceof KeyboardEvent && (evt.ctrlKey || evt.metaKey);
+                if (field && !mod && this.mainInput.rows > 1) return false;
                 void this.complete(Number(active.getAttribute('data-result') ?? this.defaultResult));
             },
         });

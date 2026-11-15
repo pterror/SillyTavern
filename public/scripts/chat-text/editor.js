@@ -70,7 +70,7 @@ const SEARCH_TOOLS = ['find'];
 /** @type {ReturnType<typeof modifierHeld> | undefined} one for every editor, so an editor taken out with its message holds nothing on the window */
 let shortcutsShown;
 
-/** Keys the page has for an editor (Ctrl+Enter accepts an edit), which CodeMirror's own keys would take first */
+/** Keys the page has for an editor (Mod+Enter accepts an edit), which CodeMirror's own keys would take first */
 const PAGE_KEYS = new Set(['Mod-Enter']);
 
 /** @type {import('@codemirror/view').Command} */

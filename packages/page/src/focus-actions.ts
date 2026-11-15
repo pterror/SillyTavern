@@ -53,7 +53,7 @@ export function createFocusActions(commands: Commands, t: (text: string) => stri
 
     commands.register(
         [
-            command('confirm', t('Confirm'), ['Enter', 'ctrl+Enter'], true),
+            command('confirm', t('Confirm'), ['Enter', '$mod+Enter'], true),
             command('cancel', t('Cancel'), ['Escape'], true),
             command('next', t('Next item'), ['ArrowDown'], true),
             command('previous', t('Previous item'), ['ArrowUp'], true),

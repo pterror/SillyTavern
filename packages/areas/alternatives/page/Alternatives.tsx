@@ -905,7 +905,9 @@ function AddBox(props: {
                     onCleanup(
                         focusActions.attach(field, {
                             confirm: (event) =>
-                                event instanceof KeyboardEvent && event.ctrlKey ? void submit() : false,
+                                event instanceof KeyboardEvent && (event.ctrlKey || event.metaKey)
+                                    ? void submit()
+                                    : false,
                             cancel: () => (text() === '' ? false : void setText('')),
                         }),
                     )

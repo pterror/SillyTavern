@@ -23,7 +23,7 @@ const { history, historyKeymap, defaultKeymap } = cmCommands;
 const { Compartment } = cmState;
 const { completionStatus } = cmAutocomplete;
 
-/** Keys the page has for the box (Ctrl+Enter sends or regenerates), which CodeMirror's own keys would take first */
+/** Keys the page has for the box (Mod+Enter sends or regenerates), which CodeMirror's own keys would take first */
 const PAGE_KEYS = new Set(['Mod-Enter']);
 
 /**
