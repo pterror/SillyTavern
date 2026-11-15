@@ -123,8 +123,12 @@ async function restoreBackup(page, backup, { overwrite = false } = {}) {
     await page.locator('#tag_view_list .tag_view_restore').click();
     const chooser = await chooserPromise;
     await chooser.setFiles({ name: 'tags_backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
+    const restored = page.waitForResponse(response => response.url().endsWith('/api/tags/restore'));
     await page.locator('dialog.popup', { hasText: 'You have existing tags' }).locator(overwrite ? '.popup-button-ok' : '.popup-button-cancel').click();
-    await expect(page.locator('.toast', { hasText: /Tags restored/ }).first()).toBeVisible({ timeout: 15000 });
+    await restored;
+    for (const tag of backup.tags) {
+        await expect.poll(async () => (await pageTagsNamed(page, tag.name)).some(shown => !overwrite || shown.color === tag.color), { timeout: 15000 }).toBe(true);
+    }
 }
 
 /**

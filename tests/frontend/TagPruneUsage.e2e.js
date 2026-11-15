@@ -128,8 +128,10 @@ async function pruneAndAccept(page) {
     let offered = '';
     if (await confirmPopup.isVisible()) {
         offered = await confirmPopup.innerText();
+        const pruned = page.waitForResponse(response => response.url().endsWith('/api/tags/prune'));
         await confirmPopup.locator('.popup-button-ok').click();
-        await expect(page.locator('.toast', { hasText: /pruned/i }).first()).toBeVisible({ timeout: 10000 });
+        await pruned;
+        await expect(confirmPopup).toBeHidden();
     }
     await expect.poll(() => requests.size, { timeout: 30000 }).toBe(0);
     return offered;
@@ -179,8 +181,10 @@ test.describe('Tag prune keeps tags that are in use', () => {
         const chooser = await chooserPromise;
         await chooser.setFiles({ name: 'tags_backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
         const overwritePopup = page.locator('dialog.popup', { hasText: 'You have existing tags' });
+        const restored = page.waitForResponse(response => response.url().endsWith('/api/tags/restore'));
         await overwritePopup.locator('.popup-button-cancel').click();
-        await expect(page.locator('.toast', { hasText: /Tags restored/ }).first()).toBeVisible({ timeout: 15000 });
+        await restored;
+        await expect.poll(() => page.evaluate(async id => (await import('/scripts/tags.js')).tagsStore.has(id), fixture.restoredTag), { timeout: 15000 }).toBe(true);
 
         await pruneAndAccept(page);
 
