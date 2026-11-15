@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
-import { startServer } from '../e2e-st-server.js';
+import { refusedLogOf, startServer } from '../e2e-st-server.js';
+import { leavesMachine } from '../e2e-loopback-only.js';
 import { FAILED_MARKER, WORKER_DONE_MARKER } from '../e2e-run-root.js';
 import { installTestContext } from './test-context.js';
 
@@ -22,10 +23,16 @@ function awaitTestContextOnNavigation(page) {
 /** @type {WeakSet<import('@playwright/test').BrowserContext>} */
 const installedContexts = new WeakSet();
 
+/** @type {string[]} what a page of this worker's test asked for past loopback, which the browser's dead proxy refused */
+const refusedByPages = [];
+
 /** @param {import('@playwright/test').BrowserContext} context */
 async function installInContext(context) {
     if (installedContexts.has(context)) return;
     installedContexts.add(context);
+    context.on('request', request => {
+        if (leavesMachine(new URL(request.url()))) refusedByPages.push(request.url());
+    });
     await context.addInitScript(installTestContext);
     context.pages().forEach(awaitTestContextOnNavigation);
     context.on('page', awaitTestContextOnNavigation);
@@ -77,6 +84,24 @@ export const test = base.extend({
         }
         fs.writeFileSync(path.join(dataRoot, WORKER_DONE_MARKER), '');
     }, { scope: 'worker', auto: true, timeout: 180000 }],
+
+    launchOptions: [async ({ launchOptions }, use) => {
+        // Everything but loopback goes to this proxy, where nothing answers
+        await use({ ...launchOptions, proxy: { server: 'http://127.0.0.254:59999', bypass: 'localhost,127.0.0.1,[::1]' } });
+    }, { scope: 'worker' }],
+
+    loopbackOnly: [async ({ stServer }, use) => {
+        const log = refusedLogOf(stServer.dataRoot);
+        const sizeOf = () => (fs.existsSync(log) ? fs.statSync(log).size : 0);
+        const from = sizeOf();
+        refusedByPages.length = 0;
+        await use(undefined);
+        const byServer = sizeOf() > from ? fs.readFileSync(log).subarray(from).toString().split('\n').filter(Boolean) : [];
+        const byPages = refusedByPages.splice(0);
+        if (byServer.length || byPages.length) {
+            throw new Error(`The test reached past loopback, which the e2e harness refuses (\`e2e-loopback-only.js\`): ${[...byPages.map(url => `the page asked for ${url}`), ...byServer.map(url => `the server asked for ${url}`)].join('; ')}`);
+        }
+    }, { auto: true }],
 
     failureMarker: [async ({ stServer }, use, testInfo) => {
         await use(undefined);
