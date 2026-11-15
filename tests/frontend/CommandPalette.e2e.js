@@ -229,4 +229,17 @@ test.describe('commands', () => {
         await expect(page.locator(MACRO_FIELDS)).toHaveAttribute('title', /pressing ⌥\+Esc\./);
         await expect(page.locator(HOLD_OVERLAY)).toHaveText('Show hotkeys while holding ⌘');
     });
+
+    test('the editor actions are commands: find and replace is listed with its key, and runs only while an editor has focus', async ({ page }) => {
+        await openChat(page);
+        await page.locator('body').click({ position: { x: 1, y: 1 } });
+        await page.keyboard.press('Shift+Slash');
+        const row = page.locator('.commandCheatsheet:popover-open [role=group] > div', { hasText: 'Find and replace' });
+        await expect(row).toContainText('Ctrl');
+        await expect(row).toHaveAttribute('aria-disabled', 'true');
+        await page.keyboard.press('Escape');
+        await chatBox(page).click();
+        await page.keyboard.press('Control+f');
+        await expect(page.locator('.cm-search')).toBeVisible();
+    });
 });

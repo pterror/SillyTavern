@@ -10,7 +10,8 @@ import {
 } from '../../live-editor-lib.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
-import { BROWSER_TEXT_AIDS, commandKeys, drawnWith, editorPage, findTool, formatTools, macroTool, pasteFor, shiftDelete, shownTools, toolbarFor } from './editor.js';
+import { shownKeysOf } from './key-names.js';
+import { BROWSER_TEXT_AIDS, commandKeys, drawnWith, editTools, editorPage, findTool, formatTools, macroTool, pasteFor, shiftDelete, shownTools, toolbarFor } from './editor.js';
 import { liveSearch } from './search.js';
 import { macroCursorTooltip, macroPills, macroValueRequests, openableMacros } from './macros.js';
 import { macroSuggestions, mentionSuggestions, slashSuggestions } from './suggest.js';
@@ -87,7 +88,7 @@ export function chatBoxEditor({ parent, text, setup, macroValue, macroValues, la
             drawSelection(),
             caretInTextColor(),
             overtype(),
-            liveSearch(),
+            liveSearch({ keysOf: shownKeysOf }),
             pasteFor(setup),
             suggestions([slashSuggestions(slashParser, slashWanted), macroSuggestions(macroValue, page.t), mentionSuggestions(name => page.person(name, ''))]),
             boxSize(maxHeight),
@@ -106,7 +107,7 @@ export function chatBoxEditor({ parent, text, setup, macroValue, macroValues, la
         view.dispatch({ effects: lookChanged.of(undefined) });
         return true;
     };
-    const byId = new Map([...formatTools(), macroTool(toggleMacros, () => asWritten), findTool()].map(tool => [tool.id, tool]));
+    const byId = new Map([...formatTools(), macroTool(toggleMacros, () => asWritten), findTool(), ...editTools()].map(tool => [tool.id, tool]));
     const stopKeys = commandKeys(view, byId);
     const bar = toolbarFor(view, shownTools(byId));
     parent.prepend(bar.element);

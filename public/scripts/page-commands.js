@@ -20,7 +20,7 @@ import { editLastMessage, shouldSendOnEnter, swipeLast } from './RossAscends-mod
 import { chatBoxFocused, chatBoxSuggesting, chatBoxText, focusChatBox } from './chat-box.js';
 import { fieldEditOpen, handleFieldEditKey } from './character-field-editor.js';
 import { loadedChatEditor } from './chat-text/editors.js';
-import { FORMAT_KEYS, formatCommandId } from './chat-text/format-keys.js';
+import { EDITOR_KEYS, FORMAT_KEYS, formatCommandId } from './chat-text/format-keys.js';
 import { formatTextarea } from './input-md-formatting.js';
 import { t } from './i18n.js';
 import { newUi } from './new-ui-page.js';
@@ -225,6 +225,29 @@ function formatCommands() {
 }
 
 /**
+ * The editor's other actions (find, select, how a paste is kept), run on the editor that has focus
+ * @returns {Command[]}
+ */
+function editorCommands() {
+    const category = t`Formatting`;
+    return EDITOR_KEYS.map(key => ({
+        id: key.command,
+        label: key.label(t),
+        category,
+        keys: key.keys,
+        typing: true,
+        when: () => {
+            const focused = loadedChatEditor()?.focusedTool(key.id) ?? null;
+            return focused !== null && focused.tool.applies?.(focused.view.state) !== false;
+        },
+        run: () => {
+            const focused = loadedChatEditor()?.focusedTool(key.id);
+            return focused ? focused.tool.run(focused.view) : false;
+        },
+    }));
+}
+
+/**
  * Registers the page's commands: the chat's, the message's, a character field's and formatting
  * @param {MessageActions} actions
  */
@@ -233,7 +256,7 @@ export function registerPageCommands(actions) {
     const chatCategory = t`Chat`;
     const editing = t`Editing`;
     const panels = t`Panels`;
-    commands.register(formatCommands(), { capture: true });
+    commands.register([...formatCommands(), ...editorCommands()], { capture: true });
     // Before the chat box's own keys, which take Enter and the arrows; Escape is left to them first
     commands.register([
         {

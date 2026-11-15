@@ -18,6 +18,7 @@ const { search, searchKeymap, getSearchQuery } = cmSearch;
  * @typedef {object} SearchOptions
  * @property {BuiltinPreset[]} [builtins]
  * @property {() => PresetContext} [context]
+ * @property {(commandId: string) => string | undefined} [keysOf] a command's keys as people see them
  */
 
 const searchOptions = Facet.define({
@@ -241,7 +242,8 @@ function presetsPanel(view) {
             button(t`Save the current search as a preset`, async () => {
                 const query = getSearchQuery(view.state);
                 if (!query.search) {
-                    say(t`Open find and replace (Ctrl+F) and type what to find first.`);
+                    const keys = view.state.facet(searchOptions).keysOf?.('editor.find');
+                    say(keys ? t`Open find and replace (${keys}) and type what to find first.` : t`Open find and replace and type what to find first.`);
                     return;
                 }
                 const name = nameInput.value.trim();
@@ -317,7 +319,8 @@ export function liveSearch(options = {}) {
     return [
         searchOptions.of(options),
         search({ top: false }),
-        keymap.of(searchKeymap),
+        // The page binds the other keys (editor.find and the rest); closing the panel stays with it
+        keymap.of(searchKeymap.filter(binding => binding.key === 'Escape')),
         presetsOpen,
     ];
 }

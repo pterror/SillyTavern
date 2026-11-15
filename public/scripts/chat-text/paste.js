@@ -1,6 +1,6 @@
 import { commands as cmCommands, markdownPaste, state as cmState, view as cmView } from '../../live-editor-lib.js';
 
-const { StateEffect, StateField, Prec, Transaction, EditorState } = cmState;
+const { StateEffect, StateField, Prec, Transaction, EditorState, Facet } = cmState;
 const { EditorView, showTooltip, keymap } = cmView;
 const { invertedEffects } = cmCommands;
 
@@ -74,6 +74,14 @@ export function switchPaste(view, mode) {
 }
 
 /**
+ * @param {import('@codemirror/state').EditorState} state
+ * @returns {boolean} whether there is a paste to change
+ */
+export function hasPasteChoice(state) {
+    return Boolean(state.field(choiceField, false));
+}
+
+/**
  * @param {Pick<EditorView, 'state' | 'dispatch'>} view
  * @returns {boolean} whether there was a paste to change
  */
@@ -94,6 +102,12 @@ export function dismissPaste(view) {
     view.dispatch({ effects: setChoice.of(choice.menu ? { ...choice, menu: false } : null), annotations: Transaction.addToHistory.of(false) });
     return true;
 }
+
+/** The picker's key for changing the way, as `aria-keyshortcuts` writes it, which the page's commands decide */
+const pasteShortcut = Facet.define({
+    /** @param {readonly (() => string | undefined)[]} values */
+    combine: values => values[0] ?? (() => undefined),
+});
 
 /** @type {import('@codemirror/state').StateField<Choice | null>} */
 const choiceField = StateField.define({
@@ -128,7 +142,8 @@ function pickerDom(view, choice) {
     toggle.title = choice.title;
     toggle.setAttribute('aria-haspopup', 'menu');
     toggle.setAttribute('aria-expanded', String(choice.menu));
-    toggle.setAttribute('aria-keyshortcuts', 'Control+Alt+V');
+    const shortcut = view.state.facet(pasteShortcut)();
+    if (shortcut) toggle.setAttribute('aria-keyshortcuts', shortcut);
     const paste = document.createElement('i');
     paste.className = 'fa-solid fa-paste';
     const caret = document.createElement('i');
@@ -192,19 +207,21 @@ function addressOverSelection(t, offer) {
 
 /**
  * Pasted HTML as markdown, and for a moment after any paste a way to put it in another: as plain text, as markdown, or
- * as HTML (Ctrl+Alt+V cycles them, Escape dismisses the picker). An address pasted over selected text makes a link.
+ * as HTML (a key the page binds cycles them, Escape dismisses the picker). An address pasted over selected text makes a link.
  * @param {object} options
  * @param {(markdown: string) => string} options.shows what a markdown text shows, as the editor draws it
+ * @param {() => string | undefined} [options.shortcut] the picker's key for changing the way, as `aria-keyshortcuts` writes it
  * @param {(html: string) => string} options.clean pasted HTML, safe to keep in the text
  * @param {import('../macro-pill.js').Translate} options.t
  * @returns {import('@codemirror/state').Extension}
  */
-export function pastePicker({ shows, clean, t }) {
+export function pastePicker({ shows, clean, t, shortcut }) {
     /** @type {Choice | null} */
     let pending = null;
     const labels = { plain: t`Text only`, markdown: t`Keep formatting`, html: t`Keep as HTML` };
     return [
         choiceField,
+        ...(shortcut ? [pasteShortcut.of(shortcut)] : []),
         addressOverSelection(t, choice => { pending = choice; }),
         markdownPaste({
             shows,
@@ -229,9 +246,6 @@ export function pastePicker({ shows, clean, t }) {
             }
             return inverted;
         }),
-        Prec.highest(keymap.of([
-            { key: 'Escape', run: dismissPaste },
-            { key: 'Mod-Alt-v', run: cyclePaste, preventDefault: true },
-        ])),
+        Prec.highest(keymap.of([{ key: 'Escape', run: dismissPaste }])),
     ];
 }

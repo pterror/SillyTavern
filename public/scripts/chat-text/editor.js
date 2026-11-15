@@ -18,12 +18,13 @@ import {
     formatSteps,
 } from '../../live-editor-lib.js';
 import { DOMPurify } from '../../lib.js';
-import { FORMAT_KEYS, formatCommandId } from './format-keys.js';
+import { EDITOR_KEYS, FORMAT_KEYS, commandIdOfTool } from './format-keys.js';
+import { ariaShortcut, shownKeysOf } from './key-names.js';
 import { newUi, newUiStarted } from '../new-ui-page.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
 import { macroCursorTooltip, macroPills, macroValueRequests, openableMacros } from './macros.js';
-import { pastePicker } from './paste.js';
+import { cyclePaste, hasPasteChoice, pastePicker } from './paste.js';
 import { savedText } from './saved-text.js';
 import { liveSearch, showPresets } from './search.js';
 import { macroSuggestions, mentionSuggestions } from './suggest.js';
@@ -33,7 +34,7 @@ import { editorTooltips } from './tooltips.js';
 
 const { EditorView, drawSelection, placeholder: placeholderText, keymap } = cmView;
 const { history, historyKeymap, defaultKeymap, deleteCharForward } = cmCommands;
-const { openSearchPanel } = cmSearch;
+const { openSearchPanel, findNext, findPrevious, selectSelectionMatches, selectNextOccurrence, gotoLine } = cmSearch;
 const { Compartment } = cmState;
 
 /**
@@ -203,7 +204,27 @@ export function macroTool(toggle, on) {
 
 /** @returns {Tool} the tool that opens find and replace */
 export function findTool() {
-    return { id: 'find', label: page.t`Find and replace`, icon: icon('fa-magnifying-glass'), run: openSearchPanel };
+    return { id: 'find', label: labelOfEditorKey('find'), icon: icon('fa-magnifying-glass'), run: openSearchPanel };
+}
+
+/** @param {string} id @returns {string} the name of an editor action the page has a key for */
+const labelOfEditorKey = id => EDITOR_KEYS.find(key => key.id === id)?.label(page.t) ?? id;
+
+/**
+ * The editor's other actions (searching, selecting, how a paste is kept), as tools
+ * @returns {Tool[]}
+ */
+export function editTools() {
+    /** @type {(id: string, name: string, run: import('@codemirror/view').Command, applies?: (state: import('@codemirror/state').EditorState) => boolean) => Tool} */
+    const tool = (id, name, run, applies) => ({ id, label: labelOfEditorKey(id), icon: icon(name), run, ...(applies ? { applies } : {}) });
+    return [
+        tool('findNext', 'fa-angle-down', findNext),
+        tool('findPrevious', 'fa-angle-up', findPrevious),
+        tool('selectMatches', 'fa-highlighter', selectSelectionMatches),
+        tool('selectNextOccurrence', 'fa-i-cursor', selectNextOccurrence),
+        tool('gotoLine', 'fa-hashtag', gotoLine),
+        tool('pasteMode', 'fa-paste', cyclePaste, hasPasteChoice),
+    ];
 }
 
 /** @type {WeakMap<View, ReadonlyMap<string, Tool>>} each editor's tools, for the page's commands to run on it */
@@ -265,7 +286,7 @@ export function toolbarFor(view, tools) {
     /** @param {string} id */
     const keyOf = id => {
         if (!newUiStarted()) return undefined;
-        const binding = newUi().commands.all().find(command => command.id === formatCommandId(id))?.keys?.[0];
+        const binding = newUi().commands.all().find(command => command.id === commandIdOfTool(id))?.keys?.[0];
         return binding ? formatSteps(binding, step => formatKey(step)) : undefined;
     };
     const bar = toolbar({ view, tools });
@@ -301,6 +322,7 @@ export function pasteFor(setup) {
         shows: markdown => drawnText(markdown, setup).textContent ?? '',
         clean: html => DOMPurify.sanitize(html, { WHOLE_DOCUMENT: false }),
         t: page.t,
+        shortcut: () => ariaShortcut('editor.pasteMode'),
     });
 }
 
@@ -372,6 +394,7 @@ export function chatEditor({ parent, setup, macroValue, macroValues, speaker, pe
         ...formatTools(),
         macroTool(toggleMacros, () => asWritten),
         findTool(),
+        ...editTools(),
         { id: 'presets', label: page.t`Find and replace presets`, icon: icon('fa-wand-magic-sparkles'), run: v => (showPresets(v), true) },
     ];
     const byId = new Map(tools.map(tool => [tool.id, tool]));
@@ -398,7 +421,7 @@ export function chatEditor({ parent, setup, macroValue, macroValues, speaker, pe
             escapePastPendingSuggestions(),
             drawSelection(),
             caretInTextColor(),
-            liveSearch({ context: presetContext ?? (() => ({ characterName: speaker })) }),
+            liveSearch({ context: presetContext ?? (() => ({ characterName: speaker })), keysOf: shownKeysOf }),
             overtype(),
             pasteFor(setup),
             suggestions([macroSuggestions(macroValue, page.t), mentionSuggestions(person)]),
