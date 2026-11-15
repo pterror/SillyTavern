@@ -549,9 +549,6 @@ async function createPersona(avatarId) {
     const personaDescription = await Popup.show.input(t`Enter a description for this persona:`, t`You can always add or change it later.`, '', { rows: 4 });
 
     await initPersona(avatarId, personaName, personaDescription, '');
-    if (power_user.persona_show_notifications) {
-        toastr.success(t`You can now pick ${personaName} as a persona in the Persona Management menu.`, t`Persona Created`);
-    }
 }
 
 async function createDummyPersona() {
@@ -1998,8 +1995,6 @@ async function onPersonasRestoreInput(e) {
     if (warnings.length) {
         toastr.success(t`Personas restored with warnings. Check console for details.`, t`Persona Management`);
         console.warn(`PERSONA RESTORE REPORT\n====================\n${warnings.join('\n')}`);
-    } else {
-        toastr.success(t`Personas restored successfully.`, t`Persona Management`);
     }
 
     await getUserAvatars();

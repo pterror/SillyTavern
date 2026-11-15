@@ -101,7 +101,6 @@ class BackupsBrowser {
             return;
         }
 
-        toastr.success(`Chat imported: ${result.join(', ')}`);
         await displayPastChats(result);
     }
 
@@ -123,7 +122,6 @@ class BackupsBrowser {
             return false;
         }
 
-        toastr.success(t`Backup deleted successfully.`);
         return true;
     }
 

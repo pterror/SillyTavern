@@ -1255,7 +1255,6 @@ class BulkEditOverlay {
             for (const avatar of removedRows) removeCharacterListRow(avatar);
 
             reportBulkProblems(t`Bulk Delete`, result);
-            if (result.done > 0) toastr.success(t`${result.done} character(s) deleted.`, t`Bulk Delete`);
             forgetDeletedCharactersInBrowser().catch(error => console.warn('Could not forget deleted characters in the browser:', error));
         });
 

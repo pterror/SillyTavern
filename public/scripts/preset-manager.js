@@ -1206,11 +1206,7 @@ export async function initPresetManager() {
         if (apiId === 'openai') {
             // This is a horrible mess, but prevents the renamed preset from being corrupted.
             $('#update_oai_preset').trigger('click');
-            return;
         }
-
-        const successToast = !presetManager.isAdvancedFormatting() ? t`Preset renamed` : t`Template renamed`;
-        toastr.success(successToast);
     });
 
     $(document).on('click', '[data-preset-manager-export]', async function () {
@@ -1255,8 +1251,6 @@ export async function initPresetManager() {
         data.name = name;
 
         await presetManager.savePreset(name, data);
-        const successToast = !presetManager.isAdvancedFormatting() ? t`Preset imported` : t`Template imported`;
-        toastr.success(successToast);
         e.target.value = null;
     });
 
@@ -1277,10 +1271,7 @@ export async function initPresetManager() {
 
         const result = await presetManager.deletePreset();
 
-        if (result) {
-            const successToast = !presetManager.isAdvancedFormatting() ? t`Preset deleted` : t`Template deleted`;
-            toastr.success(successToast);
-        } else {
+        if (!result) {
             const warningToast = !presetManager.isAdvancedFormatting() ? t`Preset was not deleted from server` : t`Template was not deleted from server`;
             toastr.warning(warningToast);
         }
@@ -1328,8 +1319,6 @@ export async function initPresetManager() {
             await presetManager.savePreset(name, data.preset);
             const option = presetManager.findPreset(name);
             presetManager.selectPreset(option);
-            const successToast = !presetManager.isAdvancedFormatting() ? t`Default preset restored` : t`Default template restored`;
-            toastr.success(successToast);
         } else {
             const confirmText = !presetManager.isAdvancedFormatting()
                 ? t`Resetting a <b>custom preset</b> will restore to the last saved state.`
@@ -1341,8 +1330,6 @@ export async function initPresetManager() {
 
             const option = presetManager.findPreset(name);
             presetManager.selectPreset(option);
-            const successToast = !presetManager.isAdvancedFormatting() ? t`Preset restored` : t`Template restored`;
-            toastr.success(successToast);
         }
     });
 

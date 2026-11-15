@@ -1599,8 +1599,6 @@ async function onDeletePresetClick() {
 
     if (!response.ok) {
         toastr.warning(t`Preset was not deleted from server`);
-    } else {
-        toastr.success(t`Preset deleted`);
     }
 
     saveSettingsDebounced('oai_settings');
@@ -2433,7 +2431,6 @@ $('#delete_proxy').on('click', async function () {
 
         saveSettingsDebounced('oai_settings');
         $('#openai_proxy_preset').val(selected_proxy.name);
-        toastr.success(t`Proxy Deleted`);
     } else {
         toastr.error(t`Could not find proxy with name '${presetName}'`);
     }
@@ -2500,8 +2497,6 @@ async function onVertexAIValidateServiceAccount() {
         await writeSecret(SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT, jsonContent, keyLabel);
 
         updateVertexAIServiceAccountStatus(true, `Project: ${serviceAccount.project_id}, Email: ${serviceAccount.client_email}`);
-
-        toastr.success(t`Service Account JSON is valid and saved securely`);
     } catch (error) {
         console.error('JSON validation error:', error);
         toastr.error(t`Invalid JSON format`);
@@ -2515,7 +2510,6 @@ async function onVertexAIClearServiceAccount() {
     await writeSecret(SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT, '');
 
     updateVertexAIServiceAccountStatus(false);
-    toastr.info(t`Service Account JSON cleared`);
 }
 
 function onVertexAIServiceAccountJsonChange() {

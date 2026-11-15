@@ -385,7 +385,6 @@ async function deleteUser(handle, callback) {
             throw new Error('Failed to delete user');
         }
 
-        toastr.success('User deleted successfully', 'User Deleted');
         callback();
     } catch (error) {
         console.error('Error deleting user:', error);
@@ -422,7 +421,6 @@ async function resetSettings(handle, callback) {
             throw new Error('Failed to reset settings');
         }
 
-        toastr.success('Settings reset successfully', 'Settings Reset');
         callback();
     } catch (error) {
         console.error('Error resetting settings:', error);
@@ -458,7 +456,6 @@ async function changeName(handle, name, callback) {
             throw new Error('Failed to change name');
         }
 
-        toastr.success('Name changed successfully', 'Name Changed');
         callback();
     } catch (error) {
         console.error('Error changing name:', error);
@@ -573,7 +570,6 @@ async function makeSnapshot(callback) {
             throw new Error('Failed to make snapshot');
         }
 
-        toastr.success('Snapshot created successfully', 'Snapshot Created');
         callback();
     } catch (error) {
         console.error('Error making snapshot:', error);
@@ -664,7 +660,6 @@ async function resetEverything(callback) {
             throw new Error('Failed to reset everything');
         }
 
-        toastr.success('Everything reset successfully', 'Reset Everything');
         callback();
     } catch (error) {
         console.error('Error resetting everything:', error);

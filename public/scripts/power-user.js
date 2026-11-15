@@ -2546,7 +2546,6 @@ async function deleteTheme() {
         if (power_user.theme) {
             applyTheme(power_user.theme);
         }
-        toastr.success('Theme deleted.');
     }
 }
 

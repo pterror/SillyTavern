@@ -3860,7 +3860,6 @@ async function moveTagOnServer(id, placement, mode) {
     if (!manual && power_user.tag_sort_mode !== tag_sort_mode.MANUAL) {
         power_user.tag_sort_mode = tag_sort_mode.MANUAL;
         $('#tag_sort_mode_select').val(tag_sort_mode.MANUAL);
-        toastr.info('Switched to Manual sorting mode.');
         saveSettingsDebounced('power_user.tag_sort_mode');
     }
 
@@ -4156,8 +4155,6 @@ async function onTagRestoreFileSelect(e) {
             onclick: () => Popup.show.text('Tag Restore Warnings', `<samp class="justifyLeft">${DOMPurify.sanitize(warnings.join('\n'))}<samp>`, { allowVerticalScrolling: true }),
         });
         console.warn(`TAG RESTORE REPORT\n====================\n${warnings.join('\n')}`);
-    } else if (result) {
-        toastr.success('Tags restored successfully.', 'Tag Restore');
     }
 
     await rereadResidentEntityTagIds();
@@ -4220,7 +4217,6 @@ async function onTagsPruneClick() {
     }
 
     let remaining = unusedCount;
-    let failed = false;
     const prunedIds = new Set();
     try {
         while (remaining > 0) {
@@ -4239,7 +4235,6 @@ async function onTagsPruneClick() {
     } catch (error) {
         console.error('Error pruning unused tags:', error);
         toastr.error(t`Pruning unused tags failed partway. Some unused tags may remain.`);
-        failed = true;
     }
 
     if (prunedIds.size) {
@@ -4262,10 +4257,6 @@ async function onTagsPruneClick() {
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
     refreshViewTagList();
-
-    if (!failed) {
-        toastr.success(t`Unused tags pruned successfully.`);
-    }
 }
 
 async function onTagCreateClick() {
@@ -4281,8 +4272,6 @@ async function onTagCreateClick() {
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
-
-    toastr.success('Tag created', 'Create Tag');
 }
 
 /**

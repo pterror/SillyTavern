@@ -7140,30 +7140,10 @@ export function selectRightMenuWithAnimation(selectedMenuId) {
     onCharacterEditorMaybeShown();
 }
 
-export function select_rm_info(type, charId, previousCharId = null, displayName = null) {
+export function select_rm_info(type, charId, previousCharId = null) {
     if (!type) {
         console.error('Invalid process (no \'type\')', { charId, previousCharId });
         return;
-    }
-    if (type !== 'group_create' && displayName === null) {
-        displayName = String(charId).replace('.png', '');
-    }
-
-    if (type === 'char_delete') {
-        toastr.warning(t`Character Deleted: ${displayName}`);
-    }
-    if (type === 'char_create') {
-        toastr.success(t`Character Created: ${displayName}`);
-    }
-    if (type === 'group_create') {
-        toastr.success(t`Group Created`);
-    }
-    if (type === 'group_delete') {
-        toastr.warning(t`Group Deleted`);
-    }
-
-    if (type === 'char_import') {
-        toastr.success(t`Character Imported: ${displayName}`);
     }
 
     selectRightMenuWithAnimation('rm_characters_block');
@@ -11192,10 +11172,6 @@ jQuery(async function () {
             const importFn = selected_group ? importGroupChat : importCharacterChat;
             const result = await importFn(formData, { refresh: false });
             importedFileNames.push(...result);
-        }
-
-        if (importedFileNames.length > 0) {
-            toastr.success(t`Successfully imported ${importedFileNames.length} chat(s).`);
         }
 
         await displayPastChats(importedFileNames);

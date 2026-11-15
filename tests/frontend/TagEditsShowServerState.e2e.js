@@ -161,14 +161,13 @@ test.describe('Tag edits show what the server stored', () => {
         await page.route('**/api/tags/create', route => route.fulfill(FAIL));
         await page.locator('#tag_view_list .tag_view_create').click();
         await expect(page.locator('.toast-error', { hasText: 'Tags could not be created' })).toBeVisible();
-        await expect(page.locator('.toast-success', { hasText: 'Tag created' })).toHaveCount(0);
         expect(await rows.count()).toBe(rowsBefore);
         expect(await page.evaluate(async () => (await import('/scripts/tags.js')).tagsStore.getAll().length)).toBe(tagsBefore);
         await page.unroute('**/api/tags/create');
 
         const creates = recordRequests(page, '/api/tags/create');
         await page.locator('#tag_view_list .tag_view_create').click();
-        await expect(page.locator('.toast-success', { hasText: 'Tag created' })).toBeVisible();
+        await expect(rows).toHaveCount(rowsBefore + 1);
         expect(creates).toHaveLength(1);
         const { id, name } = JSON.parse(creates[0]).tag;
         await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"] .tag_view_name`)).toHaveText(name);

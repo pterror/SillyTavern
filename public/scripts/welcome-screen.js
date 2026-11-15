@@ -586,7 +586,6 @@ async function renameRecentCharacterChat(avatarId, fileName) {
         });
         await updateRemoteChatName(avatarId, newName);
         await refreshWelcomeScreen();
-        toastr.success(t`Chat renamed.`);
     } catch (error) {
         console.error('Error renaming recent character chat:', error);
         toastr.error(t`Failed to rename recent chat. See console for details.`);
@@ -616,7 +615,6 @@ async function renameRecentGroupChat(groupId, fileName) {
             loader: false,
         });
         await refreshWelcomeScreen();
-        toastr.success(t`Group chat renamed.`);
     } catch (error) {
         console.error('Error renaming recent group chat:', error);
         toastr.error(t`Failed to rename recent group chat. See console for details.`);
@@ -640,7 +638,6 @@ async function deleteRecentCharacterChat(avatarId, fileName) {
         }
         await deleteCharacterChatByName(avatarId, fileName);
         await refreshWelcomeScreen();
-        toastr.success(t`Chat deleted.`);
     } catch (error) {
         console.error('Error deleting recent character chat:', error);
         toastr.error(t`Failed to delete recent chat. See console for details.`);
@@ -668,7 +665,6 @@ async function deleteRecentGroupChat(groupId, fileName) {
         }
         await deleteGroupChatByName(groupId, fileName);
         await refreshWelcomeScreen();
-        toastr.success(t`Group chat deleted.`);
     } catch (error) {
         console.error('Error deleting recent group chat:', error);
         toastr.error(t`Failed to delete recent group chat. See console for details.`);
