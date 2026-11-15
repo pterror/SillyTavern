@@ -77,6 +77,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     isProvisionalNodeId: jest.fn((nodeId) => typeof nodeId === 'string' && nodeId.startsWith('card:')),
     takeChatOpenAnswer: jest.fn((_owner, answer) => answer),
     chatOpenAsk: jest.fn(() => ({})),
+    chatOpenRefused: jest.fn(),
     adoptStored: jest.fn(),
     openingForRequest: jest.fn(() => null),
     messageIdOf: jest.fn(),
