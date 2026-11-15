@@ -1,4 +1,4 @@
-import { For, Show, createRenderEffect, createSignal } from 'solid-js';
+import { For, Show, createRenderEffect, createSignal, onCleanup } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { FIELDS, VIEW, samplerSelectOf, zenOf } from '../protocol.ts';
 import type { Field, Level, Range, SamplerSelect, SettingsView } from '../protocol.ts';
@@ -340,7 +340,7 @@ export function Radio(props: { field: FieldState; index: number; name: string })
 }
 
 function ZenSlider(props: { field: FieldState; unlocked: boolean }) {
-    const { t } = useUi();
+    const { focusActions, t } = useUi();
     const field = () => props.field;
     const zen = () => zenOf(field().field.id);
     const values = () => (props.unlocked ? zen().unlockedValues : undefined) ?? zen().values;
@@ -412,12 +412,7 @@ function ZenSlider(props: { field: FieldState; unlocked: boolean }) {
                         'margin-left': `${-fraction() * 50}px`,
                         color: valueAt(position()) === zen().off ? 'rgba(128,128,128,0.5)' : '',
                     }}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                            event.preventDefault();
-                            event.currentTarget.blur();
-                        }
-                    }}
+                    ref={(handle) => onCleanup(focusActions.attach(handle, { confirm: () => handle.blur() }))}
                     onBlur={(event) => {
                         if (values() !== undefined) return;
                         const typed = Number.parseFloat(event.currentTarget.textContent);

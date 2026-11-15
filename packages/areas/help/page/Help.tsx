@@ -154,7 +154,7 @@ type Listed = { topic: Topic; count?: number };
 const EVERY_TOPIC: Listed[] = TOPICS.map((topic) => ({ topic }));
 
 function Panel(props: Handlers & { view: Accessor<Open> }) {
-    const { client, t } = useUi();
+    const { client, focusActions, t } = useUi();
     const [navOpen, setNavOpen] = createSignal(false);
     // The page's own: a search filters what the panel holds, asking the server nothing.
     const [typed, setTyped] = createSignal('');
@@ -192,11 +192,8 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
         }
         show(next);
     };
-    const onKey = (event: KeyboardEvent, act: () => void) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        act();
-    };
+    const activates = (act: () => void) => (element: HTMLElement) =>
+        onCleanup(focusActions.attach(element, { activate: act }));
 
     const TopicItem = (item: { topic: Topic; count?: number }) => (
         <li
@@ -206,7 +203,7 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
             tabIndex={0}
             role="button"
             onClick={() => pick(item.topic)}
-            onKeyDown={(event) => onKey(event, () => pick(item.topic))}
+            ref={activates(() => pick(item.topic))}
         >
             {said(t, TITLES[item.topic])}
             <Show when={item.count !== undefined}>
@@ -224,7 +221,7 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
                     tabIndex={0}
                     title={t('Help topics')}
                     onClick={() => setNavOpen((now) => !now)}
-                    onKeyDown={(event) => onKey(event, () => setNavOpen((now) => !now))}
+                    ref={activates(() => setNavOpen((now) => !now))}
                 />
                 <span class="helpHeaderTitle">{searching() ? t('Search results') : said(t, TITLES[topic()])}</span>
             </div>
