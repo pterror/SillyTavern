@@ -74,6 +74,16 @@ function parsable(command: Command): Command {
     };
 }
 
+/**
+ * Whether a modal dialog is open and `target` is outside it. The page outside a modal is inert, so what is bound there
+ * doesn't run, wherever focus has fallen (keybinds' overlay rule asks only where the key event happened).
+ */
+function outsideModal(target: EventTarget): boolean {
+    if (typeof document === 'undefined') return false;
+    const modals = [...document.querySelectorAll('dialog:modal')];
+    return modals.length > 0 && !modals.some((modal) => target instanceof Node && modal.contains(target));
+}
+
 /** A key something else already took (CodeMirror accepting a suggestion), or one an input method is composing */
 function taken(event: Event): boolean {
     return event.defaultPrevented || (event instanceof KeyboardEvent && event.isComposing);
@@ -128,7 +138,7 @@ export function createCommands() {
                     ...(command.keys ? { keys: command.keys } : {}),
                     ...(command.mouse ? { mouse: command.mouse } : {}),
                     run: (event: Event) => (taken(event) ? false : command.run(event)),
-                    ...(command.when ? { when: command.when } : {}),
+                    when: () => !outsideModal(target) && command.when?.() !== false,
                     ...(command.typing === true ? { typing: true } : {}),
                 })),
                 { target, capture },
