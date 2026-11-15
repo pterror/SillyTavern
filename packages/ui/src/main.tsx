@@ -176,6 +176,8 @@ export function start(options: StartOptions) {
         commands: {
             register: commands.register,
             all: commands.all,
+            shownKeys: commands.shownKeys,
+            watch: commands.watch,
             available: commands.available,
             conflicts: commands.conflicts,
             keepBindingsIn: (storage: BindingStorage) => {

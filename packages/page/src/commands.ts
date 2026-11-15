@@ -336,10 +336,17 @@ export function createCommands() {
         };
     }
 
+    /** A command's first binding as people see it on this platform (`Ctrl+Space`), or none if it has none */
+    function shownKeys(id: string): string | undefined {
+        const command = allCommands().find((each) => each.id === id);
+        return command === undefined ? undefined : shownBindings(command)[0]?.join('+');
+    }
+
     return {
         register: registerCommands,
         pause,
         all: allCommands,
+        shownKeys,
         available: availableCommands,
         watch: watchCommands,
         keepBindingsIn,

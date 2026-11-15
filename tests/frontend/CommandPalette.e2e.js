@@ -209,10 +209,15 @@ test.describe('commands', () => {
         return (await row.textContent()) ?? '';
     }
 
-    test('suggestions are asked for on Ctrl+Space', async ({ page }) => {
+    const MACRO_FIELDS = 'label[for=stscript_autocomplete_showInAllMacroFields]';
+    const HOLD_OVERLAY = 'label[for=hotkey_overlay]';
+
+    test('suggestions are asked for on Ctrl+Space, as the settings say too', async ({ page }) => {
         const keys = await suggestionKeys(page);
         expect(keys).toContain('Ctrl');
         expect(keys).toContain('Space');
+        await expect(page.locator(MACRO_FIELDS)).toHaveAttribute('title', /pressing Ctrl\+Space\./);
+        await expect(page.locator(HOLD_OVERLAY)).toHaveText('Show hotkeys while holding Ctrl');
     });
 
     test('suggestions are asked for on Option+Esc on a Mac, which Ctrl+Space would clash with', async ({ page }) => {
@@ -221,5 +226,7 @@ test.describe('commands', () => {
         expect(keys).toContain('⌥');
         expect(keys).toContain('Esc');
         expect(keys).not.toContain('⌃');
+        await expect(page.locator(MACRO_FIELDS)).toHaveAttribute('title', /pressing ⌥\+Esc\./);
+        await expect(page.locator(HOLD_OVERLAY)).toHaveText('Show hotkeys while holding ⌘');
     });
 });

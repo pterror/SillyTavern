@@ -36,6 +36,21 @@ export function setNewUi(page) {
     waiting = [];
 }
 
+/**
+ * Calls `listener` with a command's first binding as people see it on this platform (none if it has none), once the
+ * page has started and whenever bindings change
+ * @param {string} id the command's id
+ * @param {(keys: string | undefined) => void} listener
+ * @returns {() => void} stops it
+ */
+export function watchKeys(id, listener) {
+    return onceStarted(page => {
+        const tell = () => listener(page.commands.shownKeys(id));
+        tell();
+        return page.commands.watch(tell);
+    });
+}
+
 export const newUiStarted = () => started !== null;
 
 export function newUi() {

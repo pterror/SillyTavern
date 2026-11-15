@@ -66,6 +66,7 @@ import { DEFAULT_REASONING_TEMPLATE, loadReasoningTemplates } from './reasoning.
 import { bindModelTemplates } from './chat-templates.js';
 import { IMAGE_OVERSWIPE, MEDIA_DISPLAY } from './constants.js';
 import { t } from './i18n.js';
+import { initKeyText } from './key-text.js';
 import {
     persona_description_positions as _persona_description_positions,
     DEFAULT_DEPTH as PERSONA_DEFAULT_DEPTH,
@@ -3701,6 +3702,8 @@ jQuery(() => {
         toggleMDHotkeyIconDisplay();
         saveSettingsDebounced('power_user.enable_md_hotkeys');
     });
+
+    initKeyText();
 
     $('#hotkey_overlay').on('input', function () {
         power_user.hotkey_overlay = !!$(this).prop('checked');
