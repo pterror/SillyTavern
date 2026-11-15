@@ -39,6 +39,20 @@ export function nameNode(thing, text, options = {}) {
 }
 
 /**
+ * Draws an element the place draws itself, such as a tag's chip, as a thing's name: its look's layers style the element
+ * itself, so a look's background is the whole element, and the element's own CSS keeps its size. No box goes around it,
+ * so the look's picture and note aren't drawn there.
+ * @param {Element} element
+ * @param {string | null | undefined} thing nothing to draw by: the element is left as it is
+ */
+export function nameOn(element, thing) {
+    if (typeof thing !== 'string' || thing === '') return;
+    const [, name] = newUi().names.inline(thing, null);
+    element.classList.add(...name.class.split(' '));
+    for (const [attribute, value] of Object.entries(name.attributes)) element.setAttribute(attribute, value);
+}
+
+/**
  * @param {JQuery<HTMLElement> | Element} place
  * @param {string | null | undefined} thing
  * @param {string} text

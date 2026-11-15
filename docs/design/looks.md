@@ -268,10 +268,13 @@ out, a backup has none); a persona's from the persona answer's `things`; a bookm
 (`thing`, `label_thing`). A list page asked with `draws` is answered whole even when its token is unchanged, since its
 looks are part of the answer.
 
-A tag is drawn through the renderer wherever the page draws one: its chips (the filter bars, the rows, the editors, a
-merge's target), the Manage tags rows (which open its Look screen), the add-tag suggestions (`_renderItem`), the merge
+A tag is drawn through the renderer wherever the page draws one. A chip (the filter bars, the rows, the editors, a
+merge's target) and a Manage tags row's name are the name element themselves (`nameOn`, the renderer's `inline` name
+classes on the element the place draws): the look's layers style the whole chip as upstream's colors did, the chip's
+own CSS keeps its padding and shape, and no box goes around it, so no picture or note is drawn there. Elsewhere it is
+the renderer's name: the add-tag suggestions (`_renderItem`), the merge
 picker (select2's templates), the search pills and their picker, the folder switcher and the saved views' folders, and
-the worldbuilding character filter (`FilteredTag.named`). A group is drawn so in its list row, the heading of the open
+the worldbuilding character filter (`FilteredTag.named`). A Manage tags row opens the tag's Look screen. A group is drawn so in its list row, the heading of the open
 group (whose look button opens its Look screen, as a character's does) and the recent chats.
 
 A look written by a write of its thing's own, not by the looks area (a tag restored with upstream's colors, a world
@@ -333,6 +336,16 @@ point (`hover: none`), a tap shows the card from the bottom with Open.
 The words that brought an entry into a reply are marked on every message, each message from its own reply's record:
 the first reply after it on the chat's path, whose record says where its keys were found, by message and the hash of
 the text it read. The page holds every message of the path with its record, so it draws the marks with no request.
+
+### Popovers over a modal dialog
+
+While a modal dialog is open, every node outside it is inert, the top layer included. Every popover the page shows
+then (the Look screen, a menu, an old page's picker) is moved into the topmost open modal as it opens and back to its
+place as it closes (`hostPopoversInModals`, `@st/page/popover`, started with the page), so a tag's Look screen opened
+from Manage tags is used over that dialog. A modal that closes or leaves the page with a popover still in it gives the
+popover back to its place and shows it again, in the next modal down if there is one; one shown from a source is shown
+again without it. `inTopLayer` hides its element before it goes, so it is back in its place when its owner takes it
+out.
 
 ### The motions
 
@@ -398,10 +411,6 @@ comes every 1,047 entries (was 1,232), and a selection holds 1,571 picked entrie
   by the renderer; they stay plain until those controls are drawn as lists.
 - A slash command's suggestions draw a name as one span per letter, for their match highlighting, so a tag's name
   there stays plain; so do the saved-view picker's label (kept as text) and a group's name field.
-- A tag's look styles its name's own span, inside the chip's padding: a converted chip color paints the name, not the
-  whole chip.
-- The Look screen is a popover, and the Manage tags dialog is modal, which leaves everything outside it inert: a tag's
-  Look screen opened from its row shows over the dialog but takes no input while the dialog is open.
 - A name in the unsent message.
 - The entries of a card's own book are not linked in the chat: they don't open on the worldbuilding page.
 - A message is looked through at about one read per character that isn't white space, in each world with names (a

@@ -35,7 +35,7 @@ import { mergedTagTarget, shownTagIds, tagReadDrops, takeInMergedTags } from './
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository } from './character-repository.js';
 import { attachActions, newUi } from './new-ui-page.js';
-import { addLooks, nameNode } from './names.js';
+import { addLooks, nameNode, nameOn } from './names.js';
 import { TAG_LOOKS } from './name-holders.js';
 
 export {
@@ -1112,7 +1112,7 @@ async function postTagsRead(path, body) {
 const TAG_FIELD_REDRAWS = {
     /** @param {Tag} tag */
     name: (tag) => {
-        $(`.tag[id="${tag.id}"] .tag_name`).each((_, element) => drawTagName(element, tag));
+        $(`.tag[id="${tag.id}"] .tag_name`).text(tag.name);
         drawTagViewName($(`.tag_view_item[id="${tag.id}"] .tag_view_name`), tag);
     },
     /** @param {Tag} tag */
@@ -1127,14 +1127,6 @@ const TAG_FIELD_REDRAWS = {
     },
     sort_order: () => redrawAfterTagSortOrderChange(),
 };
-
-/**
- * @param {Element} element
- * @param {Tag} tag
- */
-function drawTagName(element, tag) {
-    element.replaceChildren(nameNode(tag.thing, tag.name));
-}
 
 /**
  * @param {string} id
@@ -3001,7 +2993,8 @@ function appendTagToList(listElement, tag, { removable = false, isFilter = false
     let tagElement = TAG_TEMPLATE.clone();
     tagElement.attr('id', tag.id);
 
-    tagElement.find('.tag_name').each((_, element) => drawTagName(element, tag));
+    tagElement.find('.tag_name').text(tag.name);
+    nameOn(tagElement[0], tag.thing);
     const removeButton = tagElement.find('.tag_remove');
     removable ? removeButton.show() : removeButton.hide();
     if (removable && removeAction) {
@@ -4312,7 +4305,7 @@ function appendViewTagToList(list, tag, count) {
     template.attr('id', tag.id);
     template.find('.tag_view_counter_value').text(count);
     drawTagViewName(template.find('.tag_view_name'), tag);
-    template.find('.tag_view_name').addClass('tag');
+    template.find('.tag_view_name').addClass('tag').each((_, element) => nameOn(element, tag.thing));
 
     const tagAsFolderId = tag.id + '-tag-folder';
 
@@ -4497,7 +4490,7 @@ function drawTagViewName(nameElement, tag) {
     const draft = readTagNameDraft(tag.id);
     const unsaved = draft !== null && draft !== tag.name;
     const shown = unsaved ? draft : tag.name;
-    if (nameElement.text() !== shown) nameElement.each((_, element) => element.replaceChildren(nameNode(tag.thing, shown)));
+    if (nameElement.text() !== shown) nameElement.text(shown);
     nameElement.toggleClass('tag_view_name_unsaved', unsaved);
     if (unsaved) {
         nameElement.attr('title', t`This name is not saved yet. Click it and press Enter to save it.`);

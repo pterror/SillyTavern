@@ -59,7 +59,7 @@ async function search(page, text) {
     await field.fill(text);
 }
 
-test('a tag is drawn in its look: upstream\'s colors given at its create are its look, its chip and its Manage tags row draw it, and the row opens its Look screen', async ({ page }) => {
+test('a tag is drawn in its look: upstream\'s colors given at its create are its look, its chip and its Manage tags row are its name, and the row opens its Look screen, used over the dialog', async ({ page }) => {
     test.setTimeout(180_000);
     await testSetup.awaitST({ page });
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -77,20 +77,34 @@ test('a tag is drawn in its look: upstream\'s colors given at its create are its
         await stTest.context().getCharacters();
     });
     await search(page, name);
-    const chip = page.locator(`#rm_print_characters_block .character_select[data-avatar="${avatar}"] .tags .tag[id="${tagId}"] .named`);
+    const chip = page.locator(`#rm_print_characters_block .character_select[data-avatar="${avatar}"] .tags .tag[id="${tagId}"]`);
     await expect(chip).toHaveText(`Rogue ${stamp}`);
-    await expect(chip).toHaveClass(`named named-name look-${tag.thing}`);
+    await expect(chip).toHaveClass(new RegExp(`(^| )named named-name look-${tag.thing}( |$)`));
+    await expect(chip).toHaveAttribute('data-thing', tag.thing);
+    await expect(chip.locator('.named')).toHaveCount(0);
     await expect.poll(() => styleOf(chip, 'color')).toBe('rgb(1, 2, 3)');
     await expect.poll(() => styleOf(chip, 'background-color')).toBe('rgb(10, 20, 30)');
 
     await page.locator('.rm_tag_filter .manageTags:visible').first().click();
     await page.locator('#tag_view_search').fill(`Rogue ${stamp}`);
     const row = page.locator(`#tag_view_list .tag_view_item[id="${tagId}"]`);
-    await expect(row.locator('.tag_view_name .named')).toHaveClass(`named named-name look-${tag.thing}`);
+    const rowName = row.locator('.tag_view_name');
+    await expect(rowName).toHaveClass(new RegExp(`(^| )look-${tag.thing}( |$)`));
+    await expect.poll(() => styleOf(rowName, 'background-color')).toBe('rgb(10, 20, 30)');
     await expect(row.locator('toolcool-color-picker')).toHaveCount(0);
     await row.locator('.tag_view_look').click();
     const screen = page.locator('.look-screen');
     await expect(screen.locator('.look-back')).toHaveText(`Rogue ${stamp}`);
+
+    await screen.locator('.look-sth-selected').click();
+    await expect(screen.locator('.look-sth-selected')).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Escape');
+    await expect(screen).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await row.locator('.tag_view_look').click();
+    await screen.locator('.look-back').click();
+    await expect(screen).toHaveCount(0);
+    await expect(row).toBeVisible();
 
     expect(await setRest(page, String(tag.thing), [{ property: 'color', value: 'rgb(4, 5, 6)' }])).toBeNull();
     await expect.poll(() => styleOf(chip, 'color')).toBe('rgb(4, 5, 6)');
