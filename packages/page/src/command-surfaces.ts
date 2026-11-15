@@ -9,6 +9,7 @@ import { palette } from '@pterror/interact-keybinds/palette';
 import { rebindKeys, rebindMouse } from '@pterror/interact-keybinds/rebind-inputs';
 import { settings } from '@pterror/interact-keybinds/settings';
 import type { Input } from '@pterror/interact-keybinds/settings';
+import type { Strings } from '@pterror/interact-keybinds/strings';
 import { cell } from '@pterror/interact-list/cell';
 import { dismiss } from '@pterror/interact-list/dismiss';
 import { groupMount } from '@pterror/interact-list/group-mount';
@@ -17,6 +18,7 @@ import { popover } from '@pterror/interact-list/popover';
 import { render } from '@pterror/interact-list/render';
 import type { Command, Commands } from './commands.ts';
 import type { FocusActions } from './focus-actions.ts';
+import { keyStrings } from './key-strings.ts';
 
 export type Anchor = { getBoundingClientRect(): { left: number; top: number; right: number; bottom: number } };
 
@@ -44,13 +46,18 @@ function surface(name: string): HTMLElement {
  * centred on the window while `open` holds. It never takes focus, so the page's bindings keep running while it shows
  * (a shortcut pressed with the modifier still held). A press outside or an Escape nothing took closes it.
  */
-function cheatsheetOver(commands: Commands, element: HTMLElement, open: ReturnType<typeof cell<boolean>>) {
+function cheatsheetOver(
+    commands: Commands,
+    element: HTMLElement,
+    open: ReturnType<typeof cell<boolean>>,
+    strings: Strings,
+) {
     let current = bound(commands.schema(), commands.overrides.get());
     const stopBindings = commands.watch(() => {
         current = bound(commands.schema(), commands.overrides.get());
     });
     const bindings = { get: () => current, watch: commands.watch };
-    const keys = cheatsheetKeys({ bindings, open });
+    const keys = cheatsheetKeys({ bindings, open, strings });
     const headers = categoryHeaders({ categoryOf: keys.groupOf, drawn: keys, prefix: 'commandCheatsheet' });
     const rendered = render({
         create: (key) => headers.header(key) ?? document.createElement('div'),
@@ -58,7 +65,7 @@ function cheatsheetOver(commands: Commands, element: HTMLElement, open: ReturnTy
         facets: [
             cheatsheetRow({
                 entryOf: (id) => bindings.get()[id],
-                parts: (entry) => bindingParts(entry),
+                parts: (entry) => bindingParts(entry, undefined, strings),
                 watch: bindings.watch,
             }),
             mark({
@@ -91,7 +98,7 @@ function cheatsheetOver(commands: Commands, element: HTMLElement, open: ReturnTy
  * keybinds' settings panel in an element, over the commands not hidden: rebinding, conflicts, reset. Made again when
  * the commands change, not when only their bindings do. The page's commands don't run while a binding is recorded.
  */
-function keySettingsIn(commands: Commands, element: HTMLElement, t: (text: string) => string): () => void {
+function keySettingsIn(commands: Commands, element: HTMLElement, strings: Strings): () => void {
     const recorded = (input: Input): Input => ({
         ...input,
         record: (options) => {
@@ -103,18 +110,7 @@ function keySettingsIn(commands: Commands, element: HTMLElement, t: (text: strin
             };
         },
     });
-    const inputs = [
-        recorded({
-            ...rebindKeys(),
-            label: t('Key'),
-            prompt: (release) => (release ? t('Press and release a key…') : t('Press a key…')),
-        }),
-        recorded({
-            ...rebindMouse(),
-            label: t('Mouse'),
-            prompt: (release) => (release ? t('Press and release a button…') : t('Click or scroll…')),
-        }),
-    ];
+    const inputs = [recorded(rebindKeys({ strings })), recorded(rebindMouse({ strings }))];
     let shown = '';
     let stop: () => void = () => undefined;
     const make = () => {
@@ -123,7 +119,7 @@ function keySettingsIn(commands: Commands, element: HTMLElement, t: (text: strin
         if (now === shown) return;
         shown = now;
         stop();
-        stop = settings({ element, inputs, overrides: commands.overrides, schema });
+        stop = settings({ element, inputs, overrides: commands.overrides, schema, strings });
     };
     make();
     const stopWatching = commands.watch(make);
@@ -138,16 +134,16 @@ function keySettingsIn(commands: Commands, element: HTMLElement, t: (text: strin
  * palette and the cheatsheet
  */
 export function commandSurfaces({ commands, focusActions, holdShowsKeys, t }: SurfaceOptions) {
+    const strings = keyStrings(t);
     const paletteElement = surface('commandPalette');
     const shown = palette({
         commands: () =>
             commands.available().filter((command) => command.id !== 'palette.open' && command.hidden !== true),
         element: paletteElement,
-        label: t('Commands'),
-        placeholder: t('Type a command'),
+        strings,
     });
     const menuElement = surface('commandMenu');
-    const menu = contextMenu({ element: menuElement, label: t('Actions') });
+    const menu = contextMenu({ element: menuElement, strings });
     // Escape is taken here, so what Escape does under the surface (closing a drawer) doesn't also run
     const stopCancels = [
         focusActions.attach(paletteElement, {
@@ -164,7 +160,7 @@ export function commandSurfaces({ commands, focusActions, holdShowsKeys, t }: Su
 
     const sheetElement = surface('commandCheatsheet');
     const sheetOpen = cell(false);
-    const stopSheet = cheatsheetOver(commands, sheetElement, sheetOpen);
+    const stopSheet = cheatsheetOver(commands, sheetElement, sheetOpen, strings);
     // Its trigger listens nowhere while holding the modifier isn't to show it
     const quiet = document.createElement('div');
     let stopTrigger: () => void = () => undefined;
@@ -225,7 +221,7 @@ export function commandSurfaces({ commands, focusActions, holdShowsKeys, t }: Su
             menu.openAt(anchor, list);
         },
         /** Shows the key settings in an element, until the returned function is called */
-        keySettings: (element: HTMLElement) => keySettingsIn(commands, element, t),
+        keySettings: (element: HTMLElement) => keySettingsIn(commands, element, strings),
         /** Takes in a change to whether holding the modifier shows the cheatsheet */
         holdChanged: makeTrigger,
         stop() {
