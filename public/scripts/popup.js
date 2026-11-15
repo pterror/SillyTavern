@@ -1,6 +1,7 @@
 import dialogPolyfill from '../lib/dialog-polyfill.esm.js';
 import { shouldSendOnEnter } from './RossAscends-mods.js';
 import { t } from './i18n.js';
+import { attachActions } from './new-ui-page.js';
 import { toastPositionClasses } from './power-user.js';
 import { clamp, removeFromArray, runAfterAnimation, uuidv4 } from './utils.js';
 
@@ -628,51 +629,20 @@ export class Popup {
         };
         this.dlg.addEventListener('close', closeListener.bind(this));
 
-        const keyListener = async (evt) => {
-            switch (evt.key) {
-                case 'Enter': {
-                    // CTRL+Enter counts as a closing action, but all other modifiers (ALT, SHIFT) should not trigger this
-                    if (evt.altKey || evt.shiftKey)
-                        return;
-
-                    const active = document.activeElement;
-
-                    // Check if we are the currently active popup
-                    if (this.dlg != active?.closest('.popup'))
-                        return;
-
-                    // Check if the current focus is a result control. Only should we apply the complete action
-                    const resultControl = active?.closest('.result-control');
-                    if (!resultControl)
-                        return;
-
-                    // Check if we are inside an input type text or a textarea field and send on enter is disabled
-                    const textarea = active?.closest('textarea');
-                    if (textarea instanceof HTMLTextAreaElement && !shouldSendOnEnter())
-                        return;
-                    const input = active?.closest('input[type="text"]');
-                    if (input instanceof HTMLInputElement && !shouldSendOnEnter())
-                        return;
-
-                    // If this is a multiline input popup, we should still not simply send on enter, that'd be weird.
-                    // Let's still make it possible if CTRL is toggled though
-                    if ((textarea instanceof HTMLTextAreaElement || input instanceof HTMLInputElement)
-                        && !evt.ctrlKey && this.mainInput.rows > 1) {
-                        return;
-                    }
-
-                    evt.preventDefault();
-                    evt.stopPropagation();
-                    const result = Number(active.getAttribute('data-result') ?? this.defaultResult);
-
-                    // Call complete on the popup. Make sure that we handle `onClosing` cancels correctly and don't remove the listener then.
-                    await this.complete(result);
-
-                    break;
-                }
-            }
-        };
-        this.dlg.addEventListener('keydown', keyListener.bind(this));
+        attachActions(this.dlg, {
+            confirm: (evt) => {
+                const active = document.activeElement;
+                if (this.dlg !== active?.closest('.popup')) return false;
+                const resultControl = active.closest('.result-control');
+                if (!resultControl) return false;
+                const field = active.closest('textarea, input[type="text"]');
+                if (field && !shouldSendOnEnter()) return false;
+                // Enter in a multi-line input is a new line; Ctrl+Enter still completes
+                const ctrl = evt instanceof KeyboardEvent && evt.ctrlKey;
+                if (field && !ctrl && this.mainInput.rows > 1) return false;
+                void this.complete(Number(active.getAttribute('data-result') ?? this.defaultResult));
+            },
+        });
     }
 
     /**

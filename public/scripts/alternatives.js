@@ -133,9 +133,6 @@ export function initSwipePicker() {
         openAlternatives(Number($(event.currentTarget).closest('.mes').attr('mesid')));
     }
     $(document).on('click', '.swipes-counter.swipe-picker-enabled, .mes_swipe_picker', onCounter);
-    $(document).on('keydown', '.swipes-counter.swipe-picker-enabled', function (event) {
-        if (event.key === ' ' || event.key === 'Enter') onCounter(event);
-    });
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'swipe-go',

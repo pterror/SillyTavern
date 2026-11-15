@@ -34,6 +34,7 @@ import { dropOldTagsCache } from './tags-cache.js';
 import { mergedTagTarget, shownTagIds, tagReadDrops, takeInMergedTags } from './tag-merges.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository } from './character-repository.js';
+import { attachActions } from './new-ui-page.js';
 
 export {
     filterByTagState,
@@ -4339,18 +4340,15 @@ function appendViewTagToList(list, tag, count) {
 
     list.append(template);
 
+    // A first Escape on a color picker is kept from closing the dialog; another within five seconds is not
     let lastHit = 0;
-    template.on('keydown', (evt) => {
-        if (evt.key === 'Escape') {
-            if (evt.target === primaryColorPicker[0] || evt.target === secondaryColorPicker[0]) {
-                if (Date.now() - lastHit < 5000) // If user hits it twice in five seconds
-                    return;
-                lastHit = Date.now();
-                evt.stopPropagation();
-                evt.preventDefault();
-            }
-        }
-    });
+    const keepDialog = () => {
+        if (Date.now() - lastHit < 5000) return false;
+        lastHit = Date.now();
+    };
+    for (const picker of [primaryColorPicker[0], secondaryColorPicker[0]]) attachActions(picker, { cancel: keepDialog });
+    const nameElement = template.find('.tag_view_name')[0];
+    attachActions(nameElement, { confirm: () => nameElement.blur() });
 
     updateDrawTagFolder(template, tag);
 }
@@ -4524,15 +4522,6 @@ function onTagRenameInput() {
     const typed = $(this).text();
     writeTagNameDraft(id, typed === tag.name ? null : typed);
     drawTagViewName($(this), tag);
-}
-
-/** @param {JQuery.KeyDownEvent} evt */
-function onTagRenameKeydown(evt) {
-    if (evt.key !== 'Enter' || evt.originalEvent?.isComposing) return;
-    evt.preventDefault();
-    const nameElement = /** @type {HTMLElement} */ (evt.currentTarget);
-    if (document.activeElement === nameElement) nameElement.blur();
-    else commitTagRename(nameElement);
 }
 
 /**
@@ -5753,7 +5742,6 @@ export function initTags() {
     $(document).on('click', '.tag_delete', onTagDeleteClick);
     $(document).on('click', '.tag_as_folder', onTagAsFolderClick);
     $(document).on('input', '.tag_view_name', onTagRenameInput);
-    $(document).on('keydown', '.tag_view_name', onTagRenameKeydown);
     $(document).on('focusout', '.tag_view_name', (evt) => {
         commitTagRename(evt.target);
     });

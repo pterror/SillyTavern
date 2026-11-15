@@ -1,4 +1,5 @@
 import { addLayer } from './drawer-stack.js';
+import { attachActions } from './new-ui-page.js';
 
 /**
  * @typedef {object} EditorLayer
@@ -45,18 +46,7 @@ export function openEditorLayer(content, { closeTitle, closeIcon = 'fa-minimize'
     };
     const asked = requestClose ?? close;
     closeButton.addEventListener('click', asked);
-    closeButton.addEventListener('keydown', event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            asked();
-        }
-    });
-    layer.addEventListener('keydown', event => {
-        if (event.key !== 'Escape' || event.defaultPrevented || !escapeCloses()) return;
-        event.preventDefault();
-        event.stopPropagation();
-        asked();
-    });
+    attachActions(layer, { cancel: () => (escapeCloses() ? asked() : false) });
 
     addLayer(layer, document.getElementById('movingDivs') ?? document.body);
     return { element: layer, close };

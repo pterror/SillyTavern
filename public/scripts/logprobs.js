@@ -14,6 +14,7 @@ import { decodeCurrentTokens } from './tokenizers.js';
 import { power_user } from './power-user.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
+import { attachActions } from './new-ui-page.js';
 
 const TINTS = 4;
 const MAX_MESSAGE_LOGPROBS = 100;
@@ -146,11 +147,7 @@ function renderAlternativeTokensView() {
 function addKeyboardProps(element) {
     element.attr('role', 'button');
     element.attr('tabindex', '0');
-    element.keydown(function (e) {
-        if (e.key === 'Enter' || e.key === ' ') {
-            element.click();
-        }
-    });
+    attachActions(element.get(0), { activate: () => void element.trigger('click') });
 }
 
 function renderTopLogprobs() {

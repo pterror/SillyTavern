@@ -1,6 +1,6 @@
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
-import { newUi } from './new-ui-page.js';
+import { attachActions, newUi } from './new-ui-page.js';
 import { openCharacterBook, openWorldEntry } from './world-links.js';
 import { charactersStore } from './character-store.js';
 import { chat } from '/scripts/chat-state.js';
@@ -228,20 +228,12 @@ export function initLoreMarks() {
         newUi().activations.open(String(message.node_id));
     }
     $(document).on('click', '.mes_lore', onMark);
-    $(document).on('keydown', '.mes_lore', function (event) {
-        if (event.key === ' ' || event.key === 'Enter') onMark(event);
-    });
 
     $(document).on('click', '.mes_text .lore-mark', function (event) {
         event.preventDefault();
         event.stopPropagation();
         if (isPhone()) peekAt(this, true);
         else void openMarked(this);
-    });
-    $(document).on('keydown', '.mes_text .lore-mark', function (event) {
-        if (event.key !== ' ' && event.key !== 'Enter') return;
-        event.preventDefault();
-        void openMarked(this);
     });
 
     $(document).on('click', '.mes_text .chat-name', function (event) {
@@ -250,10 +242,15 @@ export function initLoreMarks() {
         if (isPhone()) peekAt(this, true);
         else openNamed(this);
     });
-    $(document).on('keydown', '.mes_text .chat-name', function (event) {
-        if (event.key !== ' ' && event.key !== 'Enter') return;
-        event.preventDefault();
-        openNamed(this);
+    attachActions(document.getElementById('chat'), {
+        activate: () => {
+            const at = document.activeElement;
+            const mark = at?.closest('.mes_text .lore-mark');
+            if (mark) return void openMarked(mark);
+            const name = at?.closest('.mes_text .chat-name');
+            if (name) return void openNamed(name);
+            return false;
+        },
     });
     $(document).on('mouseover', '.mes_text .chat-name, .mes_text .lore-mark', function (event) {
         const inner = event.target instanceof Element ? event.target.closest('.chat-name, .lore-mark') : null;

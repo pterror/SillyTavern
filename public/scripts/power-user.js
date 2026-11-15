@@ -76,7 +76,7 @@ import { DEFAULT_MACRO_COLORS, applyMacroColors, macroColorsOf } from './macro-c
 import { storyStringWithAnchors } from './story-string-anchors.js';
 import { THEME_FIELDS } from './theme-fields.js';
 import { CONTEXT_TEMPLATE_POWER_USER_KEYS } from './preset-file-keys.js';
-import { SERVER_OWNED, newUi, newUiStarted } from './new-ui-page.js';
+import { SERVER_OWNED, attachActions, newUi, newUiStarted } from './new-ui-page.js';
 
 export const toastPositionClasses = [
     'toast-top-left',
@@ -963,15 +963,9 @@ async function CreateZenSliders(elmnt) {
                         selection.removeAllRanges();
                         selection.addRange(range);
                     })
-                    .on('keyup', function (e) {
+                    .on('input', function () {
                         valueBeforeManualInput = numVal;
-                        //console.log(valueBeforeManualInput, numVal, handleText);
                         isManualInput = true;
-                        //allow enter to trigger slider update
-                        if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handle.trigger('blur');
-                        }
                     })
                     //trigger slider changes when user clicks away
                     .on('mouseup blur', function () {
@@ -993,6 +987,13 @@ async function CreateZenSliders(elmnt) {
                         }
                         isManualInput = false;
                     });
+                attachActions(handle.get(0), {
+                    confirm: () => {
+                        valueBeforeManualInput = numVal;
+                        isManualInput = true;
+                        handle.trigger('blur');
+                    },
+                });
             }
             //zenSlider creation done, hide the original
             originalSlider.hide();

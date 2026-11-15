@@ -201,6 +201,7 @@ import { addLooks, drawName, holdLooks } from './scripts/names.js';
 import { CHATS_LOOKS, CHAT_LOOKS } from './scripts/name-holders.js';
 import { frameImage, shownThumbnail } from './scripts/shown-thumbnail.js';
 import { startNewUi, takeViews, chatClosed, newUi, newUiStarted } from './scripts/new-ui.js';
+import { attachActions, registerCommands } from './scripts/new-ui-page.js';
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
@@ -5276,16 +5277,7 @@ function beginInlineCharacterRename() {
         heading.text(current);
         if (rename && value && value !== current) await renameCharacter(value);
     };
-    input.on('keydown', (event) => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            void finish(true);
-        } else if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            void finish(false);
-        }
-    });
+    attachActions(input.get(0), { confirm: () => void finish(true), cancel: () => void finish(false) });
     input.on('blur', () => void finish(true));
     input.on('click dblclick mousedown', event => event.stopPropagation());
 }
@@ -10163,6 +10155,13 @@ jQuery(async function () {
         }
     });
 
+    attachActions(document.getElementById('dialogue_popup_input'), {
+        confirm: () => {
+            if (isMobile()) return false;
+            $('#dialogue_popup_ok').trigger('click');
+        },
+    });
+
     $('#dialogue_popup_ok').on('click', async function (_e) {
         dialogueCloseStop = false;
         $('#shadow_popup').transition({
@@ -10309,12 +10308,7 @@ jQuery(async function () {
         navigateGreetingPager(requested - 1);
     }
 
-    $('.greeting-pager-input').on('keydown', function (e) {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            jumpGreetingPager();
-        }
-    });
+    for (const pagerInput of $('.greeting-pager-input')) attachActions(pagerInput, { confirm: jumpGreetingPager });
 
     $('.greeting-pager-input').on('blur', function () {
         jumpGreetingPager();
@@ -10403,11 +10397,16 @@ jQuery(async function () {
             }
         });
 
-        window.addEventListener('keydown', (e) => {
-            if (e.key !== 'Escape' || e.isComposing || !talkativenessPopover.matches(':popover-open')) return;
-            e.stopPropagation();
-            talkativenessPopover.hidePopover();
-        }, true);
+        // In the capture phase, so the drawer it is in doesn't close with it
+        registerCommands(() => [{
+            id: 'character.closeTalkativeness',
+            label: t`Close talkativeness`,
+            category: t`Panels`,
+            keys: ['Escape'],
+            typing: true,
+            when: () => talkativenessPopover.matches(':popover-open'),
+            run: () => talkativenessPopover.hidePopover(),
+        }], { capture: true, everywhere: true });
     }
 
     const nameHeading = document.querySelector('#rm_button_selected_ch h2');
@@ -10424,8 +10423,7 @@ jQuery(async function () {
     if (nameHeading) new MutationObserver(showRenameButton).observe(nameHeading, { childList: true, characterData: true, subtree: true });
     eventSource.on(event_types.CHAT_CHANGED, showRenameButton);
     $(document).on('click', '#character_rename_inline', () => beginInlineCharacterRename());
-    $(document).on('click keydown', '#character_look_inline', async (event) => {
-        if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+    $(document).on('click', '#character_look_inline', async () => {
         const thing = currentThing();
         if (!thing) return;
         const refused = await newUi().looks.open(thing);
@@ -11395,44 +11393,29 @@ jQuery(async function () {
     var valueBeforeManualInput;
     const counterInputs = '.range-block-counter input:not([data-field] input), .neo-range-input';
 
-    $(document).on('input', counterInputs, function () {
+    $(document).on('input', counterInputs, function (e) {
         valueBeforeManualInput = $(this).val();
-        console.log(valueBeforeManualInput);
+        if (e.originalEvent?.isTrusted) isManualInput = true;
     });
 
-    $(document).on('change', counterInputs, function (e) {
-        if (!(e.target instanceof HTMLElement)) {
-            return;
-        }
-        e.target.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-    });
-
-    $(document).on('keydown', counterInputs, function (e) {
-        const masterSelector = '#' + $(this).data('for');
-        const masterElement = $(masterSelector);
-        if (e.key === 'Enter') {
-            let manualInput = Number($(this).val());
-            if (isManualInput) {
-                //disallow manual inputs outside acceptable range
-                if (manualInput >= Number($(this).attr('min')) && manualInput <= Number($(this).attr('max'))) {
-                    //if value is ok, assign to slider and update handle text and position
-                    //newSlider.val(manualInput)
-                    //handleSlideEvent.call(newSlider, null, { value: parseFloat(manualInput) }, 'manual');
-                    valueBeforeManualInput = manualInput;
-                    $(masterElement).val($(this).val()).trigger('input', { forced: true });
-                } else {
-                    //if value not ok, warn and reset to last known valid value
-                    toastr.warning(`Invalid value. Must be between ${$(this).attr('min')} and ${$(this).attr('max')}`);
-                    //newSlider.val(valueBeforeManualInput)
-                    $(this).val(valueBeforeManualInput);
-                }
-            }
-        }
-    });
-
-    $(document).on('keyup', counterInputs, function () {
+    $(document).on('change', counterInputs, function () {
         valueBeforeManualInput = $(this).val();
         isManualInput = true;
+    });
+
+    attachActions(document.body, {
+        confirm: () => {
+            const counter = document.activeElement;
+            if (!(counter instanceof HTMLInputElement) || !counter.matches(counterInputs) || counter.closest('[data-field]') || !isManualInput) return false;
+            const manualInput = Number(counter.value);
+            if (manualInput >= Number(counter.min) && manualInput <= Number(counter.max)) {
+                valueBeforeManualInput = manualInput;
+                $('#' + counter.dataset.for).val(counter.value).trigger('input', { forced: true });
+            } else {
+                toastr.warning(t`Invalid value. Must be between ${counter.min} and ${counter.max}`);
+                counter.value = String(valueBeforeManualInput);
+            }
+        },
     });
 
     //trigger slider changes when user clicks away

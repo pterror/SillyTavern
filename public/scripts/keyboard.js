@@ -1,3 +1,5 @@
+import { attachActions } from './new-ui-page.js';
+
 /* All selectors that should act as interactables / keyboard buttons by default */
 const interactableSelectors = [
     '.interactable',
@@ -124,23 +126,23 @@ function initializeScrollResetBehaviors(element = document) {
     scrollResetContainers.forEach(container => applyScrollResetBehavior(container));
 }
 
-function handleGlobalKeyDown(event) {
-    if (event.key === 'Enter') {
-        if (!(event.target instanceof HTMLElement))
-            return;
+/** Controls the browser activates by Enter or Space itself */
+const NATIVELY_ACTIVATED = 'button, a[href], input, select, summary, textarea';
 
-        if (event.altKey || event.ctrlKey || event.shiftKey)
-            return;
-
-        let target = event.target;
-        while (target && !isKeyboardInteractable(target)) {
-            target = target.parentElement;
-        }
-
-        if (target && !target.classList.contains(DISABLED_CONTROL_CLASS)) {
-            target.click();
-        }
+/**
+ * Clicks the interactable that has focus or holds it; a native control is left to the browser
+ * @returns {boolean} whether it clicked
+ */
+function activateInteractable() {
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement) || focused.matches(NATIVELY_ACTIVATED)) return false;
+    let target = focused;
+    while (target && !isKeyboardInteractable(target)) {
+        target = target.parentElement;
     }
+    if (!target || target.matches(NATIVELY_ACTIVATED) || target.classList.contains(DISABLED_CONTROL_CLASS)) return false;
+    target.click();
+    return true;
 }
 
 export function initKeyboard() {
@@ -154,5 +156,6 @@ export function initKeyboard() {
     initializeInteractables();
     initializeScrollResetBehaviors();
 
-    document.addEventListener('keydown', handleGlobalKeyDown);
+    // On the root, so an element nearer the focus that has its own Activate comes first
+    attachActions(document.documentElement, { activate: activateInteractable });
 }

@@ -1,3 +1,5 @@
+import { attachActions } from './new-ui-page.js';
+
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
 /**
@@ -109,12 +111,6 @@ function draw() {
     caret.className = 'fa-solid fa-caret-down';
     button.append(icon, label, caret);
     button.addEventListener('click', () => (popover ? closePopover() : void openPopover(button)));
-    button.addEventListener('keydown', event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            button.click();
-        }
-    });
     strip.replaceChildren(button);
 }
 
@@ -138,12 +134,7 @@ function caseChip(id, name, current) {
     chip.append(icon, label);
     chip.title = id === 'none' ? t`Characters and groups in no closed folder` : t`What the closed folder "${name}" holds`;
     chip.addEventListener('click', () => choose(id));
-    chip.addEventListener('keydown', event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            choose(id);
-        }
-    });
+    attachActions(chip, { activate: () => choose(id) });
     return chip;
 }
 
@@ -223,13 +214,11 @@ async function openPopover(anchor) {
             void load(false);
         }, 150);
     });
-    popover.addEventListener('keydown', event => {
-        if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
+    attachActions(popover, {
+        cancel: () => {
             closePopover();
             anchor.focus();
-        }
+        },
     });
     search.focus();
     await load(false);
@@ -252,9 +241,7 @@ function popoverRow(id, name) {
     label.textContent = name;
     label.tabIndex = 0;
     label.addEventListener('click', () => choose(id));
-    label.addEventListener('keydown', event => {
-        if (event.key === 'Enter') choose(id);
-    });
+    attachActions(label, { activate: () => choose(id) });
     row.append(label);
     return row;
 }

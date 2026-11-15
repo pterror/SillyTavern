@@ -1,4 +1,5 @@
 import { contentHashOf } from './hash-utils.js';
+import { attachActions } from './new-ui-page.js';
 
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
@@ -314,9 +315,7 @@ function makeRow(saved, index) {
     name.tabIndex = 0;
     name.setAttribute('role', 'button');
     name.addEventListener('click', () => switchTo(saved));
-    name.addEventListener('keydown', event => {
-        if (event.key === 'Enter') name.click();
-    });
+    attachActions(name, { activate: () => switchTo(saved) });
     row.append(name);
     if (!saved) return row;
 
@@ -380,15 +379,7 @@ function startRename(row, saved, index) {
         editing = null;
         await refreshPopover();
     };
-    input.addEventListener('keydown', event => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            void finish(true);
-        } else if (event.key === 'Escape') {
-            event.preventDefault();
-            void finish(false);
-        }
-    });
+    attachActions(input, { confirm: () => void finish(true), cancel: () => void finish(false) });
     row.append(input);
     input.focus();
     input.select();
@@ -458,15 +449,12 @@ function makeSaveRow() {
         if (target !== undefined) applyView(target);
     };
     save.addEventListener('click', () => void submit());
-    input.addEventListener('keydown', event => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            void submit();
-        } else if (event.key === 'Escape') {
-            event.preventDefault();
+    attachActions(input, {
+        confirm: () => void submit(),
+        cancel: () => {
             closePopover();
             picker?.focus();
-        }
+        },
     });
     row.append(input, save);
     return row;
@@ -531,9 +519,7 @@ function makeFolderRow(folder) {
     name.tabIndex = 0;
     name.setAttribute('role', 'button');
     name.addEventListener('click', () => switchTo(saved));
-    name.addEventListener('keydown', event => {
-        if (event.key === 'Enter') name.click();
-    });
+    attachActions(name, { activate: () => switchTo(saved) });
     row.append(icon, name);
     return row;
 }
@@ -562,12 +548,11 @@ async function openPopover() {
             void refreshPopover();
         }, 150);
     });
-    search.addEventListener('keydown', event => {
-        if (event.key === 'Escape') {
-            event.preventDefault();
+    attachActions(search, {
+        cancel: () => {
             closePopover();
             picker?.focus();
-        }
+        },
     });
     const list = document.createElement('div');
     list.className = 'view_picker_list';
@@ -638,12 +623,6 @@ export function initSavedViews({ before, getView, setView, sameView, headers, st
     name.className = 'view_picker_name';
     picker.append(icon, name);
     picker.addEventListener('click', () => (popover ? closePopover() : void openPopover()));
-    picker.addEventListener('keydown', event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            picker.click();
-        }
-    });
     before.before(picker);
     window.addEventListener('pagehide', () => refreshSavedViewState());
     drawPicker();

@@ -1,4 +1,5 @@
 import { RANGE_FIELDS, SEARCH_FIELDS, canonicalSearchField, cleanRanges } from './character-view.js';
+import { attachActions, registerCommands } from './new-ui-page.js';
 
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
@@ -160,15 +161,12 @@ function openRangeEditor(anchor, field, bound, onApply) {
     };
     apply.addEventListener('click', commit);
     for (const input of [min.input, max.input]) {
-        input.addEventListener('keydown', event => {
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                commit();
-            } else if (event.key === 'Escape') {
-                event.preventDefault();
+        attachActions(input, {
+            confirm: commit,
+            cancel: () => {
                 closePopover();
                 anchor.focus();
-            }
+            },
         });
     }
     showPopover(popover, anchor, min.input);
@@ -212,15 +210,12 @@ function openFieldPicker(anchor, onPick, { special = false } = {}) {
         }
     };
     search.addEventListener('input', renderList);
-    search.addEventListener('keydown', event => {
-        if (event.key === 'Escape') {
-            event.preventDefault();
+    attachActions(search, {
+        confirm: () => /** @type {HTMLElement|null} */ (list.firstElementChild)?.click(),
+        cancel: () => {
             closePopover();
             anchor.focus();
-        } else if (event.key === 'Enter') {
-            event.preventDefault();
-            /** @type {HTMLElement|null} */ (list.firstElementChild)?.click();
-        }
+        },
     });
     renderList();
 
@@ -291,15 +286,12 @@ function openTagPicker(anchor, searchTags, onPick) {
         clearTimeout(timer);
         timer = window.setTimeout(load, 150);
     });
-    search.addEventListener('keydown', event => {
-        if (event.key === 'Escape') {
-            event.preventDefault();
+    attachActions(search, {
+        confirm: () => /** @type {HTMLElement|null} */ (list.querySelector('.view_pill_field_option'))?.click(),
+        cancel: () => {
             closePopover();
             anchor.focus();
-        } else if (event.key === 'Enter') {
-            event.preventDefault();
-            /** @type {HTMLElement|null} */ (list.querySelector('.view_pill_field_option'))?.click();
-        }
+        },
     });
     void load();
     showPopover(popover, anchor, search);
@@ -482,9 +474,7 @@ export function initViewPills({ container, input, getView, setView, translate, s
         const add = $('<span class="search_pill view_pill_add" tabindex="0" role="button">')
             .attr('title', t`Add a filter`)
             .append($('<i class="fa-solid fa-plus">'));
-        add.on('click keydown', event => {
-            if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
+        const addFilter = () => {
             openFieldPicker(add.get(0), field => {
                 if (field === '@fav') {
                     fav = typeof fav === 'boolean' ? fav : true;
@@ -517,7 +507,9 @@ export function initViewPills({ container, input, getView, setView, translate, s
                 editing = conditions.length - 1;
                 render();
             }, { special: true });
-        });
+        };
+        add.on('click', addFilter);
+        attachActions(add.get(0), { activate: addFilter });
         container.append(add);
         container.find('.view_pill_value_input').trigger('focus');
     }
@@ -557,16 +549,15 @@ export function initViewPills({ container, input, getView, setView, translate, s
                 render();
                 send();
             };
-            box.on('keydown', event => {
-                if (event.key === 'Enter') {
-                    event.preventDefault();
+            attachActions(box.get(0), {
+                confirm: () => {
                     finish(true);
                     input.trigger('focus');
-                } else if (event.key === 'Escape') {
-                    event.preventDefault();
+                },
+                cancel: () => {
                     finish(false);
                     input.trigger('focus');
-                }
+                },
             });
             box.on('blur', () => finish(true));
             pill.append(box);
@@ -607,15 +598,20 @@ export function initViewPills({ container, input, getView, setView, translate, s
         send(true);
     });
 
-    input.on('keydown', event => {
-        if (event.key === 'Backspace' && input.val() === '' && conditions.length > 0) {
-            event.preventDefault();
+    registerCommands(() => [{
+        id: 'characterSearch.pullBackFilter',
+        label: t`Edit the last filter as text`,
+        category: t`Characters`,
+        keys: ['Backspace'],
+        typing: true,
+        when: () => document.activeElement === input.get(0) && input.val() === '' && conditions.length > 0,
+        run: () => {
             const last = conditions.pop();
             input.val(`${last.op === 'not_contains' ? '-' : ''}${last.field}:${last.value}`);
             render();
             send(true);
-        }
-    });
+        },
+    }], { target: input.get(0) });
 
     return () => {
         if (editing !== -1) return;

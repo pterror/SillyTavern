@@ -1,5 +1,6 @@
 import { drawerStackChanged } from './drawer-stack.js';
 import { MacroValues } from './macro-values.js';
+import { attachActions } from './new-ui-page.js';
 import { cardTextSetup } from './message-text.js';
 import { loadChatEditor } from './chat-text/editors.js';
 import { editPosition, showText, stopText } from './chat-text/surface.js';
@@ -156,12 +157,7 @@ function textBox(textarea) {
             bar.after(editor.view.dom.closest('.chat-editor') ?? editor.view.dom);
             editor.view.dispatch({ selection: { anchor: Math.min(at, text.length) }, scrollIntoView: true });
             editor.view.focus();
-            editor.view.dom.addEventListener('keydown', (event) => {
-                if (event.key !== 'Escape' || event.defaultPrevented) return;
-                event.preventDefault();
-                event.stopPropagation();
-                end(false);
-            });
+            attachActions(editor.view.dom, { cancel: () => end(false) });
             drawerStackChanged();
         } catch (error) {
             console.error('The editor could not be loaded', error);
