@@ -147,4 +147,41 @@ test.describe('commands', () => {
         const kept = await page.evaluate(async () => (await import('/scripts/power-user.js')).power_user.keybindings);
         expect(kept).toEqual({ 'palette.open': { keys: ['$mod+shift+k'] } });
     });
+
+    test('a command rebound in the Keys settings runs from its new key, is kept, and resets', async ({ page }) => {
+        await openChat(page);
+        const kept = () => page.evaluate(async () => (await import('/scripts/power-user.js')).power_user.keybindings);
+        const cheatsheet = page.locator('.commandCheatsheet:popover-open');
+        await page.locator('#user-settings-button .drawer-icon').click();
+        await expect(page.locator('#user-settings-block')).toHaveClass(/openDrawer/);
+        const row = page.locator('.keyBindings [role=group] > div', { has: page.locator('xpath=span[1][normalize-space()="Keyboard shortcuts"]') });
+        await expect(row.locator('[data-keybinds=keys]')).toHaveCount(1);
+
+        await row.locator('[data-keybinds=add]', { hasText: 'Key' }).click();
+        await expect(row.locator('[data-keybinds=prompt]')).toBeVisible();
+        await page.keyboard.press(`${MOD}+Shift+y`);
+        await expect(row.locator('[data-keybinds=keys]')).toHaveCount(2);
+        await expect(row).toHaveAttribute('data-changed', '');
+        expect(await kept()).toEqual({ 'keys.show': { keys: ['shift+slash', '$mod+shift+y'] } });
+
+        await page.keyboard.press(`${MOD}+Shift+y`);
+        await expect(cheatsheet).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(cheatsheet).toHaveCount(0);
+
+        // A key another command has is asked about, and doesn't run that command while it is recorded
+        await row.locator('[data-keybinds=keys]').last().click();
+        await page.keyboard.press(`${MOD}+k`);
+        await expect(row.locator('[data-keybinds=conflict]')).toContainText('Command palette');
+        await expect(page.locator('.commandPalette')).toBeHidden();
+        await row.locator('[data-keybinds=cancel]').click();
+        await expect(row.locator('[data-keybinds=conflict]')).toHaveCount(0);
+
+        await row.locator('[data-keybinds=reset]').click();
+        await expect(row.locator('[data-keybinds=keys]')).toHaveCount(1);
+        await expect(row).not.toHaveAttribute('data-changed', '');
+        expect(await kept()).toEqual({});
+        await page.keyboard.press(`${MOD}+Shift+y`);
+        await expect(cheatsheet).toHaveCount(0);
+    });
 });

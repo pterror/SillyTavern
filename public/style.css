@@ -2106,6 +2106,92 @@ input[type="range"].macro-colors-hue {
     opacity: 0.45;
 }
 
+/* The key settings, keybinds' settings panel (packages/page/src/command-surfaces.ts); its buttons are .menu_button's */
+.keyBindings {
+    display: flex;
+    flex-direction: column;
+    font-size: smaller;
+}
+
+/* Over .menu_button's size, which comes later */
+.keyBindings button[data-keybinds] {
+    width: auto;
+    margin: 0;
+    padding: 2px 4px;
+    white-space: nowrap;
+}
+
+.keyBindings > button[data-keybinds="reset-all"] {
+    align-self: flex-start;
+    margin: 5px 0;
+}
+
+.keyBindings [role="group"] {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 8px;
+}
+
+.keyBindings [role="group"] > [role="presentation"] {
+    font-weight: bold;
+    margin-bottom: 2px;
+}
+
+.keyBindings [role="group"] > div:not([role]) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
+    padding: 4px 0;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+/* The label on a line of its own; under it the bindings and the buttons wrap together */
+.keyBindings [role="group"] > div:not([role]) > span:first-child {
+    flex-basis: 100%;
+}
+
+.keyBindings [role="group"] > div[data-changed] > span:first-child {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.keyBindings [data-keybinds="bindings"] {
+    display: contents;
+}
+
+/* A binding's keys and its remove button, one control */
+.keyBindings [data-keybinds="binding"] {
+    display: flex;
+}
+
+.keyBindings [data-keybinds="binding"] > [data-keybinds="keys"] {
+    gap: 2px;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.keyBindings [data-keybinds="binding"] > [data-keybinds="remove"] {
+    border-left: none;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+
+.keyBindings kbd {
+    font-size: 0.9em;
+}
+
+.keyBindings [data-keybinds="prompt"],
+.keyBindings [data-keybinds="conflict"] {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+}
+
+.keyBindings [data-keybinds="prompt"] > span {
+    font-style: italic;
+}
+
 @media screen and (max-width: 1000px) {
     .helpMenuButton {
         display: flex;
@@ -3614,7 +3700,8 @@ select option[disabled]:not(:checked) {
 }
 
 .menu_button[disabled],
-.menu_button.disabled {
+.menu_button.disabled,
+.keyBindings button[aria-disabled="true"] {
     filter: brightness(75%) grayscale(1);
     opacity: 0.5;
     cursor: inherit;
@@ -4635,7 +4722,8 @@ grammarly-extension {
     cursor: pointer;
 }
 
-.menu_button {
+.menu_button,
+.keyBindings button {
     color: var(--SmartThemeBodyColor);
     filter: grayscale(0.5);
     background-color: var(--SmartThemeBlurTintColor);
@@ -4658,7 +4746,8 @@ grammarly-extension {
 }
 
 .menu_button:not(.disabled):not([disabled]):hover,
-.menu_button:not(.disabled):not([disabled]).active {
+.menu_button:not(.disabled):not([disabled]).active,
+.keyBindings button:not([aria-disabled="true"]):hover {
     background-color: var(--white30a);
 }
 

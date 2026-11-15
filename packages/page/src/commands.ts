@@ -113,6 +113,7 @@ export function createCommands() {
     const overlays = new Set<Element>();
     let stops: (() => void)[] = [];
     let watchingOverlays = false;
+    let pauses = 0;
 
     function tell() {
         for (const listener of listeners) listener();
@@ -143,7 +144,7 @@ export function createCommands() {
                     ...(command.keys ? { keys: command.keys } : {}),
                     ...(command.mouse ? { mouse: command.mouse } : {}),
                     run: (event: Event) => (taken(event) ? false : command.run(event)),
-                    when: () => !outsideModal(target) && command.when?.() !== false,
+                    when: () => pauses === 0 && !outsideModal(target) && command.when?.() !== false,
                     ...(command.typing === true ? { typing: true } : {}),
                 })),
                 { target, capture },
@@ -324,8 +325,20 @@ export function createCommands() {
         return [...found].map(([binding, ids]) => ({ binding, ids: [...ids] }));
     }
 
+    /** Until the returned function is called, no command runs from its bindings: a binding is being recorded */
+    function pause(): () => void {
+        pauses += 1;
+        let resumed = false;
+        return () => {
+            if (resumed) return;
+            resumed = true;
+            pauses -= 1;
+        };
+    }
+
     return {
         register: registerCommands,
+        pause,
         all: allCommands,
         available: availableCommands,
         watch: watchCommands,

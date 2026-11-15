@@ -188,6 +188,7 @@ export function start(options: StartOptions) {
                 surfaces.palette.set(true);
             },
             holdChanged: surfaces.holdChanged,
+            keySettings: surfaces.keySettings,
             overrides: commands.overrides,
             attachActions: focusActions.attach,
         },

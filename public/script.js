@@ -1382,6 +1382,9 @@ async function firstLoadInit() {
         hasPrompt: hasItemizedPrompt,
         showPrompt: showMessageItemization,
     });
+    const keyBindings = document.getElementById('key_bindings');
+    if (!keyBindings) throw new Error('The key settings container #key_bindings is missing');
+    newUi().commands.keySettings(keyBindings);
     await checkOpenRouterAuth();
     initKeyboard();
     initDynamicStyles();

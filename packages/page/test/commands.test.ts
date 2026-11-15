@@ -129,3 +129,23 @@ test('a hidden command runs from its key, and is left out of the schema but not 
     press('Home');
     expect(ran).toEqual(['keep']);
 });
+
+test('while paused no command runs from its keys, and it runs again once every pause ends', () => {
+    const commands = createCommands();
+    let ran = 0;
+    taken.push(
+        commands.register([
+            { id: 'chat.stop', label: 'Stop', category: 'Chat', keys: ['Escape'], run: () => void ran++ },
+        ]),
+    );
+    const first = commands.pause();
+    const second = commands.pause();
+    press('Escape');
+    first();
+    first();
+    press('Escape');
+    expect(ran).toBe(0);
+    second();
+    press('Escape');
+    expect(ran).toBe(1);
+});

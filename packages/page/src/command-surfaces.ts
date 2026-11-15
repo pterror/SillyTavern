@@ -6,6 +6,9 @@ import { cheatsheetRow } from '@pterror/interact-keybinds/cheatsheet-row';
 import { cheatsheetTrigger } from '@pterror/interact-keybinds/cheatsheet-trigger';
 import { contextMenu } from '@pterror/interact-keybinds/context-menu';
 import { palette } from '@pterror/interact-keybinds/palette';
+import { rebindKeys, rebindMouse } from '@pterror/interact-keybinds/rebind-inputs';
+import { settings } from '@pterror/interact-keybinds/settings';
+import type { Input } from '@pterror/interact-keybinds/settings';
 import { cell } from '@pterror/interact-list/cell';
 import { dismiss } from '@pterror/interact-list/dismiss';
 import { groupMount } from '@pterror/interact-list/group-mount';
@@ -79,6 +82,52 @@ function cheatsheetOver(commands: Commands, element: HTMLElement, open: ReturnTy
     ];
     return () => {
         for (const stop of stops) stop();
+    };
+}
+
+/**
+ * keybinds' settings panel in an element, over the commands not hidden: rebinding, conflicts, reset. Made again when
+ * the commands change, not when only their bindings do. The page's commands don't run while a binding is recorded.
+ */
+function keySettingsIn(commands: Commands, element: HTMLElement, t: (text: string) => string): () => void {
+    const recorded = (input: Input): Input => ({
+        ...input,
+        record: (options) => {
+            const resume = commands.pause();
+            const stop = input.record(options);
+            return () => {
+                stop();
+                resume();
+            };
+        },
+    });
+    const inputs = [
+        recorded({
+            ...rebindKeys(),
+            label: t('Key'),
+            prompt: (release) => (release ? t('Press and release a key…') : t('Press a key…')),
+        }),
+        recorded({
+            ...rebindMouse(),
+            label: t('Mouse'),
+            prompt: (release) => (release ? t('Press and release a button…') : t('Click or scroll…')),
+        }),
+    ];
+    let shown = '';
+    let stop: () => void = () => undefined;
+    const make = () => {
+        const schema = commands.schema();
+        const now = JSON.stringify(schema);
+        if (now === shown) return;
+        shown = now;
+        stop();
+        stop = settings({ element, inputs, overrides: commands.overrides, schema });
+    };
+    make();
+    const stopWatching = commands.watch(make);
+    return () => {
+        stopWatching();
+        stop();
     };
 }
 
@@ -158,6 +207,8 @@ export function commandSurfaces({ commands, holdShowsKeys, t }: SurfaceOptions) 
         openMenu: (anchor: Anchor, list: readonly Command[]) => {
             menu.openAt(anchor, list);
         },
+        /** Shows the key settings in an element, until the returned function is called */
+        keySettings: (element: HTMLElement) => keySettingsIn(commands, element, t),
         /** Takes in a change to whether holding the modifier shows the cheatsheet */
         holdChanged: makeTrigger,
         stop() {

@@ -4025,6 +4025,18 @@
                                 <input id="enable_auto_select_input" type="checkbox" />
                                 <small data-i18n="Auto-select Input Text">Auto-select Input Text</small>
                             </label>
+                            <div id="CustomCSS-block" class="flex-container flexFlowColumn">
+                                <h4 class="title_restorable" title="Apply a custom CSS style to all of the ST GUI." data-i18n="[title]Apply a custom CSS style to all of the ST GUI">
+                                    <span data-i18n="Custom CSS">Custom CSS</span>
+                                    <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="customCSS" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                </h4>
+                                <div id="CustomCSS-textAreaBlock" class="flex-container flexnowrap alignitemscenter">
+                                    <textarea id="customCSS" class="text_pole margin0 margin-r5 textarea_compact monospace" rows="8"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                        <div name="KeysSettings">
+                            <h4><span data-i18n="Keys">Keys</span></h4>
                             <label class="checkbox_label alignItemsCenter" for="enable_md_hotkeys" data-i18n="[title]markdown_hotkeys_desc" title="Enable hotkeys for inserting markdown format characters in certain text input boxes. See '/help hotkeys'.">
                                 <input id="enable_md_hotkeys" type="checkbox" />
                                 <small>
@@ -4036,15 +4048,7 @@
                                 <input id="hotkey_overlay" type="checkbox" />
                                 <small data-i18n="Show hotkeys while holding Ctrl">Show hotkeys while holding Ctrl</small>
                             </label>
-                            <div id="CustomCSS-block" class="flex-container flexFlowColumn">
-                                <h4 class="title_restorable" title="Apply a custom CSS style to all of the ST GUI." data-i18n="[title]Apply a custom CSS style to all of the ST GUI">
-                                    <span data-i18n="Custom CSS">Custom CSS</span>
-                                    <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="customCSS" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
-                                </h4>
-                                <div id="CustomCSS-textAreaBlock" class="flex-container flexnowrap alignitemscenter">
-                                    <textarea id="customCSS" class="text_pole margin0 margin-r5 textarea_compact monospace" rows="8"></textarea>
-                                </div>
-                            </div>
+                            <div id="key_bindings" class="keyBindings"></div>
                         </div>
                     </div>
                     <div name="UserSettingsThirdColumn" id="power-user-options-block" class="flex-container wide100p flex1">
