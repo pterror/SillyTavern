@@ -6401,8 +6401,27 @@ function bindSharedSettings(settings) {
     settings.watch(['power_user.max_context_unlocked'], () => switchMaxContextSize());
 }
 
-/** @type {{ mesId: number, editor: import('./scripts/chat-text/editor.js').ChatEditor } | null} the message being edited */
+/**
+ * @type {{ mesId: number, swipeId: number, node: string | undefined, editor: import('./scripts/chat-text/editor.js').ChatEditor } | null}
+ *   the message being edited: its place, the alternative and the node it was opened on
+ */
 let messageEditing = null;
+
+/**
+ * @returns {boolean} whether the message at the editor's place is still the one it was opened on: the same alternative,
+ *   and the same node when it was stored
+ */
+function editingWhatWasOpened() {
+    if (!messageEditing) return false;
+    const { mesId, swipeId, node } = messageEditing;
+    const now = chat[mesId];
+    if (!now || (now.swipe_id ?? 0) !== swipeId) return false;
+    return !isStoredNodeId(node) || now.node_id === node;
+}
+
+function refuseEditElsewhere() {
+    toastr.warning(t`The message this edit was opened on isn't shown here anymore, so the edit wasn't saved.`, t`Not saved`, { preventDuplicates: true });
+}
 
 /**
  * @returns {string | undefined} the text of the message being edited, as edited
@@ -6470,7 +6489,7 @@ function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
 }
 
 const messageEditAutoSaveDebounced = debounce(() => {
-    if (!messageEditing || isComposedSlot(chat[messageEditing.mesId])) return;
+    if (!messageEditing || isComposedSlot(chat[messageEditing.mesId]) || !editingWhatWasOpened()) return;
     messageEditing.editor.save().catch(error =>
         console.error('Could not save the edited message:', error));
 }, DEFAULT_SAVE_EDIT_TIMEOUT);
@@ -6495,6 +6514,7 @@ async function uploadEditorImage(file) {
  * @param {string} text
  */
 function messageEditAuto(mesId, text) {
+    if (!editingWhatWasOpened()) return;
     const { mesBlock, mes } = applyMessageEdit(mesId, text);
     showBiasText(mesBlock.find('.mes_bias')[0], String(mes.extra?.bias ?? ''));
     messageEditAutoSaveDebounced();
@@ -6624,13 +6644,18 @@ export async function messageEdit(editMessageId, place, reasoningAt) {
             if (power_user.auto_save_msg_edits === true) messageEditAuto(editMessageId, now);
         },
         save: async (now) => {
+            if (!editingWhatWasOpened()) {
+                refuseEditElsewhere();
+                return;
+            }
             applyMessageEdit(editMessageId, now);
             await chatOpEdit(editMessageId);
+            if (messageEditing?.editor === editor) messageEditing.node = chat[editMessageId]?.node_id;
         },
         className: 'mes_editor',
         label: t`Message text`,
     });
-    messageEditing = { mesId: editMessageId, editor };
+    messageEditing = { mesId: editMessageId, swipeId: editMessage.swipe_id ?? 0, node: editMessage.node_id, editor };
     editingIn(messageText[0], editor);
     drawerStackChanged();
     const from = Math.min(place?.from ?? text.length, text.length);
@@ -6709,6 +6734,10 @@ async function messageEditDone(div) {
 
     if (isReplyGenerating(Number(this_edit_mes_id))) {
         toastr.warning(t`This message is still being generated, so the edit wasn't saved. Press Done again once it is.`, t`Not saved yet`, { preventDuplicates: true });
+        return;
+    }
+    if (messageEditing && !editingWhatWasOpened()) {
+        refuseEditElsewhere();
         return;
     }
 

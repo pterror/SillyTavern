@@ -99,6 +99,44 @@ test.describe('a move in the chat is made at once', () => {
         expect(alternatives).toEqual(['first reply edited', 'second reply']);
     });
 
+    test('an edit opened on an alternative a refused swipe took back is never saved into the one shown instead', async ({ page }) => {
+        test.setTimeout(90000);
+        const { avatar } = await twoAlternatives(page, mock.url);
+        /** @type {any[]} */
+        const edits = [];
+        page.on('request', request => {
+            if (request.url().includes('/api/chats/message/edit')) edits.push(request.postDataJSON());
+        });
+        const held = await holdAnswers(page, '**/api/chats/message/select');
+        await chatBox(page).click();
+        await page.keyboard.press('ArrowLeft');
+        await expect.poll(() => held.asked).toBe(true);
+        await page.keyboard.press('ArrowUp');
+        await expect(page.locator('#chat .last_mes .mes_editor')).toHaveCount(1);
+        await page.keyboard.press('End');
+        await page.keyboard.type(' edited');
+        held.answer('refuse');
+        await swipeDone(page);
+        await page.evaluate(async () => {
+            const done = document.querySelector('#chat .last_mes .mes_edit_done');
+            if (done instanceof HTMLElement) done.click();
+        });
+        await page.waitForTimeout(500);
+
+        expect(edits).toEqual([]);
+        await page.unrouteAll({ behavior: 'ignoreErrors' });
+        await page.reload();
+        await openCharacter(page, avatar);
+        const alternatives = await page.evaluate(async () => {
+            const script = await import('/script.js');
+            // @ts-ignore
+            const chat = stTest.context().chat;
+            await script.hydrateSwipes(chat.length - 1, { all: true });
+            return chat.at(-1).swipes;
+        });
+        expect(alternatives).toEqual(['first reply', 'second reply']);
+    });
+
     test('a Send pressed while a slow swipe is answered sends the text as it was when pressed', async ({ page }) => {
         test.setTimeout(90000);
         await twoAlternatives(page, mock.url);
