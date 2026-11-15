@@ -2146,9 +2146,16 @@ input[type="range"].macro-colors-hue {
     border-top: 1px solid var(--SmartThemeBorderColor);
 }
 
-/* The label on a line of its own; under it the bindings and the buttons wrap together */
+/* The label a fixed width, the bindings and the buttons beside it */
 .keyBindings [role="group"] > div:not([role]) > span:first-child {
-    flex-basis: 100%;
+    flex: 0 0 16em;
+}
+
+/* On a screen too narrow for both, the label on a line of its own, the bindings and the buttons under it */
+@media screen and (max-width: 600px) {
+    .keyBindings [role="group"] > div:not([role]) > span:first-child {
+        flex-basis: 100%;
+    }
 }
 
 .keyBindings [role="group"] > div[data-changed] > span:first-child {
