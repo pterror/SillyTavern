@@ -79,6 +79,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
     chatOpenAsk: jest.fn(() => ({})),
     adoptStored: jest.fn(),
     openingForRequest: jest.fn(() => null),
+    messageIdOf: jest.fn(),
 }));
 
 jest.unstable_mockModule('../public/scripts/RossAscends-mods.js', () => ({

@@ -1,5 +1,5 @@
 import { DiffMatchPatch, DOMPurify, localforage } from '../lib.js';
-import { getCurrentChatId, reloadCurrentChat } from '../script.js';
+import { getCurrentChatId, messageIdOf, reloadCurrentChat } from '../script.js';
 import { chat } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { event_types, eventSource } from './events.js';
@@ -52,9 +52,17 @@ async function clearItemizedPrompts() {
 }
 
 /**
+ * @param {ChatMessage | undefined} message
+ * @returns {boolean} whether the message has a prompt breakdown to show
+ */
+export function hasItemizedPrompt(message) {
+    return message !== undefined && !message.is_user && message.extra?.[ITEMIZED_PROMPT_FLAG] === true;
+}
+
+/**
  * @param {number} mesId
  */
-async function showMessageItemization(mesId) {
+export async function showMessageItemization(mesId) {
     const nodeId = chat[mesId]?.node_id;
     if (!isStoredNodeId(nodeId)) return;
     let found;
@@ -346,7 +354,7 @@ export function initItemizedPrompts() {
         }
     });
 
-    $(document).on('pointerup', '.mes_prompt', async function () {
-        await showMessageItemization(Number($(this).closest('.mes').attr('mesId')));
+    $(document).on('pointerup', '.mes_prompt', function () {
+        void showMessageItemization(messageIdOf(this));
     });
 }

@@ -18,6 +18,7 @@ jest.unstable_mockModule('../public/lib.js', () => ({
 jest.unstable_mockModule('../public/script.js', () => ({
     getCurrentChatId: jest.fn(),
     getSelectionState: jest.fn(() => ({ type: 'none' })),
+    messageIdOf: jest.fn(),
     reloadCurrentChat: jest.fn(),
 }));
 jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({ isStoredNodeId: jest.fn(() => true) }));

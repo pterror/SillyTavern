@@ -23,6 +23,8 @@ import {
     getMediaDisplay,
     chatElement,
     updateIn,
+    editMessage,
+    messageIdOf,
 } from '../script.js';
 import { drawnText, editPosition } from './chat-text/surface.js';
 import { expandedEditor } from './text-box-editor.js';
@@ -376,11 +378,10 @@ async function viewMessageFile(messageId, fileIndex) {
 }
 
 /**
+ * Asks for a file and attaches it to the message
  * @param {number} messageId
- * @param {JQuery<HTMLElement>} messageBlock
- * @returns {Promise<void>}
  */
-function embedMessageFile(messageId, messageBlock) {
+export function embedMessageFile(messageId) {
     const message = chat[messageId];
 
     if (!message) {
@@ -408,7 +409,7 @@ function embedMessageFile(messageId, messageBlock) {
         }
 
         await populateFileAttachment(message, 'embed_file_input');
-        appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
+        appendMediaToMessage(chat[messageId], chatElement.children('.mes').filter(`[mesid="${messageId}"]`), SCROLL_BEHAVIOR.KEEP);
         await chatOpEdit(messageId).catch(error =>
             console.error('Could not save the embedded file for that message:', error));
     }
@@ -1116,16 +1117,12 @@ async function onImageSwiped(messageId, element, direction) {
 export function initChatUtilities() {
     migrateAllowGlobalStylesToDb();
 
-    $(document).on('click', '.mes_hide', async function () {
-        const messageBlock = $(this).closest('.mes');
-        const messageId = Number(messageBlock.attr('mesid'));
-        await hideChatMessageRange(messageId, messageId, false);
+    $(document).on('click', '.mes_hide', function () {
+        void hideChatMessageRange(messageIdOf(this), messageIdOf(this), false);
     });
 
-    $(document).on('click', '.mes_unhide', async function () {
-        const messageBlock = $(this).closest('.mes');
-        const messageId = Number(messageBlock.attr('mesid'));
-        await hideChatMessageRange(messageId, messageId, true);
+    $(document).on('click', '.mes_unhide', function () {
+        void hideChatMessageRange(messageIdOf(this), messageIdOf(this), true);
     });
 
     $(document).on('click', '.mes_file_delete', async function () {
@@ -1216,9 +1213,7 @@ export function initChatUtilities() {
     });
 
     $(document).on('click', '.mes_embed', function () {
-        const messageBlock = $(this).closest('.mes');
-        const messageId = Number(messageBlock.attr('mesid'));
-        embedMessageFile(messageId, messageBlock);
+        embedMessageFile(messageIdOf(this));
     });
 
     $(document).on('click', '.editor_maximize', async function (e) {
@@ -1289,7 +1284,7 @@ export function initChatUtilities() {
         const at = editPosition(/** @type {MouseEvent} */ (event.originalEvent), this, power_user.click_to_edit);
         if (at === null) return;
         const inReasoning = this.classList.contains('mes_reasoning');
-        $(this).closest('.mes').find('.mes_edit').trigger('click', [inReasoning ? { reasoning: at } : { text: at }]);
+        void editMessage(messageIdOf(this), inReasoning ? { reasoning: at } : { text: at });
     });
 
     $(document).on('click', '.open_media_overrides', openExternalMediaOverridesDialog);

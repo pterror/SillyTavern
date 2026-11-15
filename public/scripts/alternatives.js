@@ -12,7 +12,7 @@ import { editPosition } from './chat-text/surface.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
-import { applyServerGreetings, deleteSwipe, ensureSwipes, isMessageSwipeable, isSwipingAllowed, swipe, syncMesToSwipe, updateSwipeCounter } from '/script.js';
+import { applyServerGreetings, deleteSwipe, ensureSwipes, isMessageSwipeable, isSwipingAllowed, messageIdOf, swipe, syncMesToSwipe, updateSwipeCounter } from '/script.js';
 import { updateMessage } from './chat-store.js';
 import { chat } from '/scripts/chat-state.js';
 
@@ -108,10 +108,11 @@ export const alternativesOldPage = {
 };
 
 /**
+ * Opens the message's swipe history
  * @param {number} messageId
  * @param {number} [at]
  */
-function openAlternatives(messageId, at) {
+export function openAlternatives(messageId, at) {
     const message = chat[messageId];
     if (!canOpenSwipePickerForMessage(messageId)) {
         toastr.info(t`This message has no other alternatives yet.`);
@@ -130,7 +131,7 @@ export function initSwipePicker() {
     function onCounter(event) {
         event.preventDefault();
         event.stopPropagation();
-        openAlternatives(Number($(event.currentTarget).closest('.mes').attr('mesid')));
+        openAlternatives(messageIdOf(event.currentTarget));
     }
     $(document).on('click', '.swipes-counter.swipe-picker-enabled, .mes_swipe_picker', onCounter);
 

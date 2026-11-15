@@ -106,6 +106,7 @@ import {
 } from './scripts/nai-settings.js';
 
 import {
+    createNewBookmark,
     initBookmarks,
     showBookmarksButtons,
 } from './scripts/bookmarks.js';
@@ -205,7 +206,7 @@ import { attachActions, registerCommands } from './scripts/new-ui-page.js';
 import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
-import { hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
+import { embedMessageFile, hideChatMessageRange, hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
 import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxMacros, chatBoxText, focusChatBox, forgetChatBoxChat, initChatBox, openingChatBox, takeChatBoxMacros, takeChatBoxPush, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
 import { endOwnerOf } from './scripts/chat-box-ends.js';
 import { chatBoxSetup } from './scripts/message-text.js';
@@ -241,7 +242,7 @@ import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
 import { initFailedSends, keepFailedSend, recordSend, keptSendKeys, forgetStoredSends } from './scripts/failed-sends.js';
-import { initItemizedPrompts, ITEMIZED_PROMPT_FLAG, itemizedPrompts } from './scripts/itemized-prompts.js';
+import { hasItemizedPrompt, initItemizedPrompts, itemizedPrompts, showMessageItemization } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
 import { token, setToken, getRequestHeaders, setMacroFactsHeader } from './scripts/request-headers.js';
@@ -324,7 +325,7 @@ export {
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
-import { alternativesOldPage, canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/alternatives.js';
+import { alternativesOldPage, canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker, openAlternatives } from './scripts/alternatives.js';
 import { activationsOldPage, initLoreMarks, loreMarks, updateLoreMark } from './scripts/activations.js';
 import { chatLinkOverlay, takeChatLinks } from './scripts/chat-links.js';
 
@@ -1372,7 +1373,15 @@ async function firstLoadInit() {
             saveSettingsDebounced('power_user.keybindings');
         },
     });
-    registerPageCommands();
+    registerPageCommands({
+        canOpenAlternatives: canOpenSwipePickerForMessage,
+        openAlternatives,
+        bookmark: createNewBookmark,
+        setIncluded: (mesId, include) => hideChatMessageRange(mesId, mesId, include),
+        attachFile: embedMessageFile,
+        hasPrompt: hasItemizedPrompt,
+        showPrompt: showMessageItemization,
+    });
     await checkOpenRouterAuth();
     initKeyboard();
     initDynamicStyles();
@@ -2599,7 +2608,7 @@ export function addCopyToCodeBlocks(messageElement) {
  * @return {void}
  */
 export function updateMessageItemizedPromptButton(message, { messageId = chat.indexOf(message), messageElement = chatElement.find(`.mes[mesid="${messageId}"]`) }) {
-    messageElement.find('.mes_prompt').toggle(!message.is_user && message.extra?.[ITEMIZED_PROMPT_FLAG] === true);
+    messageElement.find('.mes_prompt').toggle(hasItemizedPrompt(message));
 }
 
 /**
@@ -6446,6 +6455,67 @@ function messageEditAuto(mesId, text) {
 }
 
 /**
+ * @param {Element} element a message or something in one
+ * @returns {number} the message's id in the chat, NaN outside a message
+ */
+export function messageIdOf(element) {
+    return Number($(element).closest('.mes').attr('mesid'));
+}
+
+/** @returns {boolean} whether a chat is open: a character's, a group's or the temporary one */
+function chatIsOpen() {
+    return getSelectionState().type !== 'none' || name2 === neutralCharacterName;
+}
+
+/**
+ * @param {number} mesId
+ * @returns {boolean} whether the message can be copied
+ */
+export function canCopyMessage(mesId) {
+    return chatIsOpen() && chat[mesId] !== undefined;
+}
+
+/**
+ * Copies the message's text
+ * @param {number} mesId
+ */
+export async function copyMessage(mesId) {
+    if (!canCopyMessage(mesId)) return;
+    try {
+        await copyText(chat[mesId].mes);
+        toastr.info('Copied!', '', { timeOut: 2000 });
+    } catch (err) {
+        console.error('Failed to copy: ', err);
+    }
+}
+
+/**
+ * @param {number} mesId
+ * @returns {boolean} whether the message can be opened for editing
+ */
+export function canEditMessage(mesId) {
+    return !is_delete_mode && chatIsOpen() && chat[mesId] !== undefined;
+}
+
+/** @typedef {{ text?: number, reasoning?: number }} MessageEditPlace where in the text or the reasoning an edit opens */
+
+/**
+ * Opens the message for editing, saving the edit open on another one first. The editor opens at `place`, else with
+ * what is selected in the message's text.
+ * @param {number} mesId
+ * @param {MessageEditPlace} [place]
+ */
+export async function editMessage(mesId, place) {
+    if (!canEditMessage(mesId)) return;
+    if (this_edit_mes_id >= 0) {
+        await messageEditDone(chatElement.find(`[mesid="${this_edit_mes_id}"]`).find('.mes_edit_done'));
+    }
+    const textElement = chatElement.children('.mes').filter(`[mesid="${mesId}"]`).find('.mes_text')[0];
+    const textPlace = place?.text !== undefined ? { from: place.text, to: place.text } : textElement ? readerSelection(textElement) : undefined;
+    await messageEdit(mesId, textPlace, place?.reasoning);
+}
+
+/**
  * Create the message edit UI.
  * @param {number} editMessageId The ID of the message to edit
  * @param {{ from: number, to: number }} [place] where in the text the editor opens selected: where the reader was, or
@@ -8252,14 +8322,22 @@ function refreshOpeningActions(messageElement, mesId) {
     const isOpening = mesId === 0 && !selected_group;
     button.toggle(isOpening);
     if (!isOpening) return;
-    const live = openingGreetingLink(mesId) !== null;
+    const live = canShowOpeningInCharacterInfo(mesId);
     button.toggleClass('disabled', !live).attr('aria-disabled', String(!live));
 }
 
 /**
  * @param {number} mesId
+ * @returns {boolean} whether the message is an opening that can be shown in character info: one still the greeting it was made from
  */
-async function showOpeningInCharacterInfo(mesId) {
+export function canShowOpeningInCharacterInfo(mesId) {
+    return openingGreetingLink(mesId) !== null;
+}
+
+/**
+ * @param {number} mesId
+ */
+export async function showOpeningInCharacterInfo(mesId) {
     const link = openingGreetingLink(mesId);
     if (!link || blockWhileFieldEditing()) return;
     let answer = null;
@@ -10326,7 +10404,7 @@ jQuery(async function () {
     $('.greeting-pager-use').on('click', () => void useShownGreetingInChat());
 
     $(document).on('click', '.mes_show_greeting', function () {
-        void showOpeningInCharacterInfo(Number($(this).closest('.mes').attr('mesid')));
+        void showOpeningInCharacterInfo(messageIdOf(this));
     });
 
     eventSource.on(event_types.CHAT_CHANGED, refreshUseInChat);
@@ -10737,56 +10815,16 @@ jQuery(async function () {
         setTimeout(function () { $('#shadow_select_chat_popup').css('display', 'none'); }, animation_duration);
     });
 
-    $(document).on('pointerup', '.mes_copy', async function () {
-        if (getSelectionState().type !== 'none' || name2 === neutralCharacterName) {
-            try {
-                const messageId = $(this).closest('.mes').attr('mesid');
-                const text = chat[messageId].mes;
-                await copyText(text);
-                toastr.info('Copied!', '', { timeOut: 2000 });
-            } catch (err) {
-                console.error('Failed to copy: ', err);
-            }
-        }
+    $(document).on('pointerup', '.mes_copy', function () {
+        void copyMessage(messageIdOf(this));
     });
 
     //********************
     //***Message Editor***
     // A press on Edit leaves the read text's selection alone, so the edit opens with it selected
     $(document).on('mousedown', '.mes_edit', event => event.preventDefault());
-    $(document).on('click', '.mes_edit', async function (_event, /** @type {{ text?: number, reasoning?: number } | undefined} */ clickedAt) {
-        if (is_delete_mode) {
-            return;
-        }
-        if (getSelectionState().type !== 'none' || name2 === neutralCharacterName) {
-            // Previously system messages we're allowed to be edited
-            /*const message = $(this).closest(".mes");
-
-            if (message.data("isSystem")) {
-                return;
-            }*/
-
-            if (this_edit_mes_id >= 0) {
-                let mes_edited = chatElement.find(`[mesid="${this_edit_mes_id}"]`).find('.mes_edit_done');
-                if (Number(edit_mes_id) == chat.length - 1) { //if the generating swipe (...)
-                    let run_edit = true;
-                    if (chat[edit_mes_id].swipe_id !== undefined) {
-                        if (chat[edit_mes_id].swipes.length === chat[edit_mes_id].swipe_id) {
-                            run_edit = false;
-                        }
-                    }
-                    if (run_edit) {
-                        hideSwipeButtons();
-                    }
-                }
-                await messageEditDone(mes_edited);
-            }
-            var edit_mes_id = Number($(this).closest('.mes').attr('mesid'));
-
-            const textElement = $(this).closest('.mes').find('.mes_text')[0];
-            const textPlace = clickedAt?.text !== undefined ? { from: clickedAt.text, to: clickedAt.text } : textElement ? readerSelection(textElement) : undefined;
-            await messageEdit(edit_mes_id, textPlace, clickedAt?.reasoning);
-        }
+    $(document).on('click', '.mes_edit', function (_event, /** @type {MessageEditPlace | undefined} */ clickedAt) {
+        void editMessage(messageIdOf(this), clickedAt);
     });
 
     $(document).on('click', '.extraMesButtonsHint', function (e) {

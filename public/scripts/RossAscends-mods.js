@@ -19,6 +19,9 @@ import {
     isSwipingAllowed,
     cardToGreetingsModel,
     getCurrentChatId,
+    canEditMessage,
+    editMessage,
+    messageIdOf,
 } from '../script.js';
 import { characterToEntity, groupToEntity } from './character-list.js';
 import { active_character, active_group, setActiveCharacter, setActiveGroup } from './app-selection-state.js';
@@ -139,19 +142,20 @@ export function shouldSendOnEnter() {
  */
 export function editLastMessage(own) {
     if ($('#shadow_select_chat_popup').css('display') !== 'none') return false;
+    /** @param {Element | undefined | null} message */
+    const edit = message => {
+        const id = message ? messageIdOf(message) : NaN;
+        if (!canEditMessage(id)) return false;
+        void editMessage(id);
+        return true;
+    };
     if (own) {
         if (!($('.swipe_right:last').css('display') === 'flex' || $('.last_mes').attr('is_system') === 'true')) return false;
-        const mine = document.querySelectorAll('div[is_user="true"]');
-        const edit = mine[mine.length - 1]?.querySelector('.mes_block .mes_edit') ?? null;
-        if (edit === null) return false;
-        $(edit).trigger('click');
-        return true;
+        const mine = document.querySelectorAll('#chat .mes[is_user="true"]');
+        return edit(mine[mine.length - 1]);
     }
     if (!$('.last_mes .mes_buttons').is(':visible')) return false;
-    const edit = document.querySelector('.last_mes .mes_block .mes_edit');
-    if (edit === null) return false;
-    $(edit).trigger('click');
-    return true;
+    return edit(document.querySelector('#chat .last_mes'));
 }
 
 /**

@@ -1,12 +1,19 @@
 import {
+    canCopyMessage,
+    canEditMessage,
+    canShowOpeningInCharacterInfo,
     canStopGenerating,
     chat,
+    copyMessage,
     deleteMessage,
+    editMessage,
     is_send_press,
     isSwipingAllowed,
     leaveMessageEdit,
     messageEditOpen,
+    messageIdOf,
     requestTextareaSend,
+    showOpeningInCharacterInfo,
     stopGenerating,
 } from '../script.js';
 import { editLastMessage, shouldSendOnEnter, swipeLast } from './RossAscends-mods.js';
@@ -99,58 +106,58 @@ function topPanelCloser() {
 }
 
 /**
+ * The message actions that live in modules importing script.js, which imports this one: passed in, as importing them
+ * here would make import cycles
+ * @typedef {object} MessageActions
+ * @property {(id: number) => boolean} canOpenAlternatives
+ * @property {(id: number) => void} openAlternatives
+ * @property {(id: number) => Promise<unknown>} bookmark
+ * @property {(id: number, include: boolean) => Promise<void>} setIncluded
+ * @property {(id: number) => void} attachFile
+ * @property {(message: ChatMessage | undefined) => boolean} hasPrompt
+ * @property {(id: number) => Promise<void>} showPrompt
+ */
+
+/**
  * The commands on a message, for the right-click menu (one message) and for keys and the palette (the message focus
- * is in). Each runs the message's own button, so a command does what the button does and applies where it is shown.
+ * is in). Each applies when the message's data says it does.
  * @param {() => HTMLElement | null} messageOf
+ * @param {MessageActions} actions
  * @returns {Command[]}
  */
-function messageCommands(messageOf) {
+function messageCommands(messageOf, actions) {
     const category = t`Message`;
+    /** @returns {number} the message's id, NaN when there is none */
+    const idOf = () => {
+        const message = messageOf();
+        return message ? messageIdOf(message) : NaN;
+    };
     /**
      * @param {string} id
      * @param {string} label
-     * @param {string} button the button's class
-     * @param {'click' | 'pointerup'} [event] what the button's handler listens for
+     * @param {(mesId: number) => boolean} applies
+     * @param {(mesId: number) => unknown} act
      * @returns {Command}
      */
-    const byButton = (id, label, button, event = 'click') => ({
+    const command = (id, label, applies, act) => ({
         id,
         label,
         category,
-        when: () => {
-            const found = messageOf()?.querySelector(`.${button}`);
-            return found instanceof HTMLElement && getComputedStyle(found).display !== 'none';
-        },
-        run: () => {
-            const found = messageOf()?.querySelector(`.${button}`);
-            if (!found) return false;
-            $(found).trigger(event);
-            return true;
-        },
+        when: () => applies(idOf()),
+        run: () => void act(idOf()),
     });
-    const idOf = () => Number(messageOf()?.getAttribute('mesid'));
+    const exists = (/** @type {number} */ mesId) => chat[mesId] !== undefined;
     return [
-        byButton('message.edit', t`Edit`, 'mes_edit'),
-        byButton('message.copy', t`Copy`, 'mes_copy', 'pointerup'),
-        byButton('message.alternatives', t`Swipe history`, 'mes_swipe_picker'),
-        byButton('message.bookmark', t`Bookmark`, 'mes_bookmark_add'),
-        byButton('message.hide', t`Exclude from prompts`, 'mes_hide'),
-        byButton('message.unhide', t`Include in prompts`, 'mes_unhide'),
-        byButton('message.embed', t`Attach file`, 'mes_embed'),
-        byButton('message.prompt', t`Show prompt`, 'mes_prompt', 'pointerup'),
-        byButton('message.greeting', t`Show in character info`, 'mes_show_greeting'),
-        {
-            id: 'message.delete',
-            label: t`Delete`,
-            category,
-            when: () => {
-                const id = idOf();
-                return Number.isInteger(id) && chat[id] !== undefined && !messageEditOpen();
-            },
-            run: () => {
-                void deleteMessage(idOf(), undefined, power_user.confirm_message_delete);
-            },
-        },
+        command('message.edit', t`Edit`, canEditMessage, editMessage),
+        command('message.copy', t`Copy`, canCopyMessage, copyMessage),
+        command('message.alternatives', t`Swipe history`, actions.canOpenAlternatives, actions.openAlternatives),
+        command('message.bookmark', t`Bookmark`, exists, actions.bookmark),
+        command('message.hide', t`Exclude from prompts`, mesId => exists(mesId) && !chat[mesId].is_system, mesId => actions.setIncluded(mesId, false)),
+        command('message.unhide', t`Include in prompts`, mesId => chat[mesId]?.is_system === true, mesId => actions.setIncluded(mesId, true)),
+        command('message.embed', t`Attach file`, exists, actions.attachFile),
+        command('message.prompt', t`Show prompt`, mesId => actions.hasPrompt(chat[mesId]), actions.showPrompt),
+        command('message.greeting', t`Show in character info`, canShowOpeningInCharacterInfo, showOpeningInCharacterInfo),
+        command('message.delete', t`Delete`, mesId => exists(mesId) && !messageEditOpen(), mesId => deleteMessage(mesId, undefined, power_user.confirm_message_delete)),
     ];
 }
 
@@ -161,20 +168,28 @@ function focusedMessage() {
 }
 
 /**
- * Opens the right-click menu on a message, at the pointer for a click and below the message for a key
+ * Opens the right-click menu on a message
+ * @param {HTMLElement} message
+ * @param {{ getBoundingClientRect: () => DOMRect }} anchor
+ * @param {MessageActions} actions
+ */
+function openMessageMenu(message, anchor, actions) {
+    newUi().commands.openMenu(anchor, messageCommands(() => message, actions));
+}
+
+/**
+ * Opens the right-click menu on the message under the pointer, at the pointer
  * @param {Event} event
+ * @param {MessageActions} actions
  * @returns {boolean} whether it opened, so a click elsewhere keeps the browser's menu
  */
-function openMessageMenu(event) {
-    const pointed = event instanceof MouseEvent && event.target instanceof Element ? event.target.closest('#chat .mes') : null;
-    const message = event instanceof MouseEvent ? pointed : focusedMessage();
+function openMessageMenuAtPointer(event, actions) {
+    if (!(event instanceof MouseEvent) || !(event.target instanceof Element)) return false;
+    const message = event.target.closest('#chat .mes');
     if (!(message instanceof HTMLElement)) return false;
     // A selection in the message keeps the browser's menu, for copying it
-    if (event instanceof MouseEvent && String(window.getSelection() ?? '') !== '' && message.contains(window.getSelection()?.anchorNode ?? null)) return false;
-    const anchor = event instanceof MouseEvent
-        ? { getBoundingClientRect: () => new DOMRect(event.clientX, event.clientY, 0, 0) }
-        : message;
-    newUi().commands.openMenu(anchor, messageCommands(() => message));
+    if (String(window.getSelection() ?? '') !== '' && message.contains(window.getSelection()?.anchorNode ?? null)) return false;
+    openMessageMenu(message, { getBoundingClientRect: () => new DOMRect(event.clientX, event.clientY, 0, 0) }, actions);
     return true;
 }
 
@@ -209,8 +224,11 @@ function formatCommands() {
     });
 }
 
-/** Registers the page's commands: the chat's, the message's, a character field's and formatting */
-export function registerPageCommands() {
+/**
+ * Registers the page's commands: the chat's, the message's, a character field's and formatting
+ * @param {MessageActions} actions
+ */
+export function registerPageCommands(actions) {
     const commands = newUi().commands;
     const chatCategory = t`Chat`;
     const editing = t`Editing`;
@@ -371,9 +389,19 @@ export function registerPageCommands() {
             label: t`Message actions`,
             category: t`Message`,
             keys: ['shift+F10'],
-            mouse: ['RightClick'],
-            run: openMessageMenu,
+            when: () => focusedMessage() !== null,
+            run: () => {
+                const message = focusedMessage();
+                if (message) openMessageMenu(message, message, actions);
+            },
         },
-        ...messageCommands(focusedMessage),
+        {
+            id: 'message.menuAtPointer',
+            label: t`Message actions at the pointer`,
+            category: t`Message`,
+            mouse: ['RightClick'],
+            run: event => openMessageMenuAtPointer(event, actions),
+        },
+        ...messageCommands(focusedMessage, actions),
     ]);
 }

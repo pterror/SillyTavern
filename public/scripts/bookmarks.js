@@ -14,6 +14,7 @@ import {
     chatOpenAsk,
     adoptStored,
     openingForRequest,
+    messageIdOf,
 } from '../script.js';
 import { getCharacters } from './character-list.js';
 import { chat_metadata, chat } from './chat-state.js';
@@ -283,7 +284,7 @@ async function makeBranch(mesId, { swipeId = null, open = false, alsoLabelShown 
  * @param {string?} [options.forceName] - forced name instead of prompting.
  * @returns {Promise<string?>}
  */
-async function createNewBookmark(mesId, { forceName = null } = {}) {
+export async function createNewBookmark(mesId, { forceName = null } = {}) {
     if (getSelectionState().type === 'none') {
         toastr.info('No character selected.', 'Bookmark');
         return null;
@@ -712,13 +713,9 @@ export function initBookmarks() {
     $('#option_back_to_main').on('click', backToMainChat);
     $('#option_convert_to_group').on('click', convertSoloToGroupChat);
 
-    $(document).on('click', '.mes_bookmark_add', async function (e) {
+    $(document).on('click', '.mes_bookmark_add', function (e) {
         e.stopPropagation();
-        const mesId = Number($(this).closest('.mes').attr('mesid'));
-        if (!Number.isInteger(mesId)) {
-            return;
-        }
-        await createNewBookmark(mesId);
+        void createNewBookmark(messageIdOf(this));
     });
 
     $(document).on('click', '.select_chat_block', async function () {

@@ -110,6 +110,28 @@ test.describe('commands', () => {
         await expect(message.locator('.mes_editor')).toHaveCount(1);
     });
 
+    test('the right-click menu acts on the message data and enables what its data allows', async ({ page }) => {
+        await openChat(page);
+        const message = page.locator('#chat .mes[is_user="true"]').last();
+        const id = Number(await message.getAttribute('mesid'));
+        const menu = page.locator('.commandMenu');
+        await message.locator('.mes_text').click({ button: 'right' });
+        await expect(menu.locator('[role=menuitem]', { hasText: 'Include in prompts' })).toBeDisabled();
+        await menu.locator('[role=menuitem]', { hasText: 'Exclude from prompts' }).click();
+        await expect(menu).toBeHidden();
+        await expect.poll(() => page.evaluate(at => {
+            // @ts-ignore
+            return stTest.context().chat[at].is_system;
+        }, id)).toBe(true);
+        await message.locator('.mes_text').click({ button: 'right' });
+        await expect(menu.locator('[role=menuitem]', { hasText: 'Exclude from prompts' })).toBeDisabled();
+        await menu.locator('[role=menuitem]', { hasText: 'Include in prompts' }).click();
+        await expect.poll(() => page.evaluate(at => {
+            // @ts-ignore
+            return stTest.context().chat[at].is_system;
+        }, id)).toBe(false);
+    });
+
     test('a key rebound is the command key from then on, and is kept in the person settings', async ({ page }) => {
         await openChat(page);
         await page.evaluate(async () => {
