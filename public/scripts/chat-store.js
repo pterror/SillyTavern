@@ -145,7 +145,8 @@ export function adoptStored(stored) {
         for (let i = chat.length - 1; i >= 0; i--) {
             if (_storeRefs.get(chat[i]) !== entry.ref) continue;
             if (isProvisionalNodeId(chat[i].node_id)) {
-                _adoptOpeningRow(i, entry.node_id);
+                _adoptOpeningRow(i, entry.node_id, _openingsSent.get(entry.ref));
+                _openingsSent.delete(entry.ref);
             } else {
                 if (chat[i].node_id !== entry.node_id) updateMessage(i, { node_id: entry.node_id });
                 _markMessageSaved(i, entry.node_id);
@@ -159,8 +160,9 @@ export function adoptStored(stored) {
 /**
  * @param {number} mesId
  * @param {string} realId
+ * @param {ChatMessage} [sent] the message as its opening request sent it; what the page changed since is not stored yet
  */
-function _adoptOpeningRow(mesId, realId) {
+function _adoptOpeningRow(mesId, realId, sent) {
     const current = chat[mesId];
     const provisional = current.node_id;
     const at = current.swipe_id ?? 0;
@@ -173,7 +175,8 @@ function _adoptOpeningRow(mesId, realId) {
     }
     updateMessage(mesId, updates);
     forgetStored([provisional]);
-    markStoredAs(realId, chat[mesId]);
+    const adopted = /** @type {Record<string, unknown>} */ (chat[mesId]);
+    markStoredAs(realId, sent === undefined ? adopted : { ...sent, ...Object.fromEntries(PLACE_KEYS.filter(key => key in adopted).map(key => [key, adopted[key]])) });
     if (mesId === 0 && (selected_group == null || selected_group === '')) _setCurrentTarget(getCurrentChatId() ?? '', null);
 }
 
@@ -391,6 +394,12 @@ export function updateIn(mesId, path, value) {
 /** @type {Map<string|undefined, Promise<void>>} */
 const _openingRowInFlight = new Map();
 
+/** @type {Map<string, ChatMessage>} each unstored opening an opening request sent, by its store ref, until it is adopted */
+const _openingsSent = new Map();
+
+/** A message's keys that say where it is shown rather than what it is */
+const PLACE_KEYS = ['node_id', 'swipes', 'swipe_id', 'swipe_info', 'swipe_speaker_default'];
+
 /** @typedef {SwipeInfo & {name?: string, is_user?: boolean}} SwipeInfoWithSpeaker */
 
 /**
@@ -465,6 +474,7 @@ export function openingForRequest(mesId) {
             ref = uuidv4();
             setStoreRef(shown, ref);
         }
+        _openingsSent.set(ref, JSON.parse(JSON.stringify(shown)));
         refs.push(ref);
         messages.push({
             name: shown.name ?? character?.name,
@@ -508,7 +518,10 @@ export async function ensureOpeningRow(mesId = 0) {
             adoptStored(answer?.stored);
             takeChatLinks(answer?.links);
             if (!inGroup) await takeOpenings(getCurrentCharacter()?.avatar, answer);
-        })().finally(() => _openingRowInFlight.delete(provisional));
+        })().finally(() => {
+            _openingRowInFlight.delete(provisional);
+            for (const ref of request.opening.refs) _openingsSent.delete(ref);
+        });
         _openingRowInFlight.set(provisional, pending);
     }
 
@@ -778,7 +791,7 @@ function extraOf(extra) {
 function contentOf(message) {
     /** @type {Record<string, any>} */
     const content = { ...message };
-    for (const key of ['node_id', 'swipes', 'swipe_id', 'swipe_info', 'swipe_speaker_default']) delete content[key];
+    for (const key of PLACE_KEYS) delete content[key];
     if ('extra' in content) content.extra = extraOf(content.extra);
     return JSON.parse(JSON.stringify(content));
 }
@@ -825,13 +838,17 @@ function _refuseGenerating(mesId) {
     toastr.warning(t`Message #${mesId} is still being generated, so the change to it wasn't saved.`, t`Not saved yet`, { preventDuplicates: true });
 }
 
-/** @param {number} mesId */
+/**
+ * @param {number} mesId
+ * @returns {Promise<string | null>} the node the message is saved as: a card greeting not stored in the tree saves as a
+ *   new stored opening, or as the card greeting its text is; null when nothing was saved
+ */
 export async function chatOpEdit(mesId) {
     if (isReplyGenerating(mesId)) {
         _refuseGenerating(mesId);
-        return false;
+        return null;
     }
-    const msg = _chatAt(mesId);
+    let msg = _chatAt(mesId);
     if (isProvisionalNodeId(msg?.node_id)) {
         const inGroup = selected_group != null && selected_group !== '';
         const asCard = provisionalNodeId(msg.name, msg.mes);
@@ -839,12 +856,14 @@ export async function chatOpEdit(mesId) {
             if (!await rememberCardOpening(msg.mes)) {
                 toastr.warning(t`The chat couldn't remember the greeting you switched to, so reopening it will show the default greeting.`, t`Greeting not remembered`);
             }
-            return true;
+            return asCard;
         }
-        return isStoredNodeId(await ensureOpeningRow(mesId));
+        if (!isStoredNodeId(await ensureOpeningRow(mesId))) return null;
+        // The row may have been made by a request already under way, from the text before this edit: the edit goes onto it.
+        msg = _chatAt(mesId);
     }
-    if (!isStoredNodeId(msg?.node_id)) return false;
-    if (typeof msg.mes === 'string' && msg.mes.length === 0) return false;
+    if (!isStoredNodeId(msg?.node_id)) return null;
+    if (typeof msg.mes === 'string' && msg.mes.length === 0) return null;
 
     const edit = _editOf(msg);
     if (edit !== null) {
@@ -858,7 +877,7 @@ export async function chatOpEdit(mesId) {
         _stopWaitingHere([mesId]);
     }
     _markMessageSaved(mesId, msg.node_id);
-    return true;
+    return msg.node_id;
 }
 
 /**

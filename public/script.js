@@ -6402,21 +6402,38 @@ function bindSharedSettings(settings) {
 }
 
 /**
- * @type {{ mesId: number, swipeId: number, node: string | undefined, editor: import('./scripts/chat-text/editor.js').ChatEditor } | null}
- *   the message being edited: its place, the alternative and the node it was opened on
+ * @type {{ mesId: number, swipeId: number, node: string | undefined, greeting: string | undefined, editor: import('./scripts/chat-text/editor.js').ChatEditor } | null}
+ *   the message being edited: its place, the alternative it was opened on, and its node, which is the node the editor's
+ *   last save stored it as once it has saved; `greeting` is the text of the card greeting not stored in the tree it was
+ *   opened on, until a save stores the edit as an opening
  */
 let messageEditing = null;
 
 /**
- * @returns {boolean} whether the message at the editor's place is still the one it was opened on: the same alternative,
- *   and the same node when it was stored
+ * @returns {boolean} whether the message at the editor's place is still the one it was opened on: the same node (a
+ *   stored one, or a card greeting not stored), else the same alternative
  */
 function editingWhatWasOpened() {
     if (!messageEditing) return false;
     const { mesId, swipeId, node } = messageEditing;
     const now = chat[mesId];
-    if (!now || (now.swipe_id ?? 0) !== swipeId) return false;
-    return !isStoredNodeId(node) || now.node_id === node;
+    if (!now) return false;
+    return typeof node === 'string' && node !== '' ? now.node_id === node : (now.swipe_id ?? 0) === swipeId;
+}
+
+/**
+ * Shows the card greeting an edit was made on as it is, its edit not stored as an opening
+ * @param {number} mesId
+ * @param {string} greeting the card greeting's text
+ * @param {string | undefined} node the card greeting's node
+ * @param {{ redraw: boolean }} options redraw: the message is shown, not under its editor
+ */
+function undoGreetingEdit(mesId, greeting, node, { redraw }) {
+    if (chat[mesId]?.node_id === node) {
+        applyMessageEdit(mesId, greeting);
+        if (redraw) updateMessageBlock(mesId, chat[mesId]);
+    }
+    toastr.warning(t`The edit couldn't be stored as a new opening, so the card's greeting is shown as it is.`, t`Not saved`, { preventDuplicates: true });
 }
 
 function refuseEditElsewhere() {
@@ -6648,14 +6665,24 @@ export async function messageEdit(editMessageId, place, reasoningAt) {
                 refuseEditElsewhere();
                 return;
             }
+            const { node, greeting } = /** @type {NonNullable<typeof messageEditing>} */ (messageEditing);
             applyMessageEdit(editMessageId, now);
-            await chatOpEdit(editMessageId);
-            if (messageEditing?.editor === editor) messageEditing.node = chat[editMessageId]?.node_id;
+            const savedAs = await chatOpEdit(editMessageId);
+            if (savedAs === null && greeting !== undefined) undoGreetingEdit(editMessageId, greeting, node, { redraw: false });
+            if (savedAs === null || messageEditing?.editor !== editor) return;
+            messageEditing.node = savedAs;
+            messageEditing.greeting = isProvisionalNodeId(savedAs) ? now : undefined;
         },
         className: 'mes_editor',
         label: t`Message text`,
     });
-    messageEditing = { mesId: editMessageId, swipeId: editMessage.swipe_id ?? 0, node: editMessage.node_id, editor };
+    messageEditing = {
+        mesId: editMessageId,
+        swipeId: editMessage.swipe_id ?? 0,
+        node: editMessage.node_id,
+        greeting: isProvisionalNodeId(editMessage.node_id) ? text : undefined,
+        editor,
+    };
     editingIn(messageText[0], editor);
     drawerStackChanged();
     const from = Math.min(place?.from ?? text.length, text.length);
@@ -6742,6 +6769,7 @@ async function messageEditDone(div) {
     }
 
     const composed = isComposedSlot(chat[this_edit_mes_id]);
+    const { node: openedNode, greeting } = messageEditing ?? {};
     let { mesBlock, mes } = applyMessageEdit(Number(this_edit_mes_id), editedMessageText() ?? String(chat[this_edit_mes_id]?.mes ?? ''));
     if (composed && !String(chat[this_edit_mes_id]?.mes ?? '').length) {
         await messageEditCancel(this_edit_mes_id);
@@ -6772,8 +6800,8 @@ async function messageEditDone(div) {
         if (composed && isComposedSlot(chat[editedMesId])) {
             if (await chatOpStoreComposed(editedMesId) === null) throw new Error('The new alternative was not stored.');
             refreshSwipeButtons(true);
-        } else {
-            await chatOpEdit(editedMesId);
+        } else if (await chatOpEdit(editedMesId) === null && greeting !== undefined) {
+            undoGreetingEdit(editedMesId, greeting, openedNode, { redraw: true });
         }
     } catch (error) {
         console.error('Could not save the edited message:', error);

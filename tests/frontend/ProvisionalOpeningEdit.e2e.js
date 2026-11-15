@@ -109,6 +109,136 @@ test.describe('editing a card greeting in the chat', () => {
     });
 });
 
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {number} swipeId
+ */
+async function showOpening(page, swipeId) {
+    await page.evaluate(async (swipeId) => {
+        const { swipe } = await import('/script.js');
+        const { SWIPE_DIRECTION, SWIPE_SOURCE } = await import('/scripts/constants.js');
+        // @ts-ignore
+        const current = stTest.context().chat[0].swipe_id ?? 0;
+        await swipe(null, swipeId > current ? SWIPE_DIRECTION.RIGHT : SWIPE_DIRECTION.LEFT, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: 0, forceSwipeId: swipeId });
+    }, swipeId);
+    await expect.poll(async () => (await opening(page)).mes, { timeout: 10000 }).toBe((await opening(page)).swipes[swipeId]);
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {boolean} on
+ */
+async function saveWhileTyping(page, on) {
+    await page.evaluate(async (on) => {
+        const { power_user } = await import('/scripts/power-user.js');
+        power_user.auto_save_msg_edits = on;
+    }, on);
+}
+
+/** @param {import('@playwright/test').Page} page */
+const notices = page => page.evaluate(() => document.querySelector('#toast-container')?.textContent ?? '');
+
+test.describe('saving an edit of a card greeting not stored in the chat', () => {
+    test.beforeEach(testSetup.awaitST);
+    test.afterEach(async ({ page }) => {
+        await page.unrouteAll({ behavior: 'ignoreErrors' });
+        await saveWhileTyping(page, false);
+    });
+
+    test('with saving while typing on, the edit keeps saving into the opening its first save stored', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
+        const avatar = await createCharacter(page, `TypingSaves-${s}`, g);
+        await openCharacter(page, avatar);
+        await showOpening(page, 1);
+        await saveWhileTyping(page, true);
+
+        const stored = page.waitForResponse(r => new URL(r.url()).pathname === '/api/chats/message/select', { timeout: 10000 });
+        await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
+        await page.locator('.mes_editor .cm-content').fill(`One edited ${s}`);
+        expect((await stored).ok()).toBe(true);
+        await expect.poll(async () => (await opening(page)).node_id.startsWith('card:'), { timeout: 10000 }).toBe(false);
+        const edited = page.waitForResponse(r => new URL(r.url()).pathname === '/api/chats/message/edit', { timeout: 10000 });
+        await page.locator('.mes_editor .cm-content').fill(`One edited twice ${s}`);
+        expect((await edited).ok()).toBe(true);
+        await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
+
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(`One edited twice ${s}`, { timeout: 10000 });
+        await expect.poll(() => storedOpenings(page, avatar), { timeout: 10000 }).toEqual([
+            { stored: false, mes: g[0] },
+            { stored: false, mes: g[1] },
+            { stored: true, mes: `One edited twice ${s}` },
+            { stored: false, mes: g[2] },
+        ]);
+        expect(await notices(page)).not.toContain('Not saved');
+        const now = await opening(page);
+        expect(now.mes).toBe(`One edited twice ${s}`);
+        expect(now.swipes).toEqual([g[0], g[1], `One edited twice ${s}`, g[2]]);
+
+        await page.reload();
+        await testSetup.awaitST({ page });
+        await openCharacter(page, avatar);
+        const reloaded = await opening(page);
+        expect(reloaded.node_id).toBe(now.node_id);
+        expect(reloaded.swipes).toEqual([g[0], g[1], `One edited twice ${s}`, g[2]]);
+    });
+
+    test('what is typed while the edit\'s opening is being stored is saved too', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`];
+        const avatar = await createCharacter(page, `TypedMeanwhile-${s}`, g);
+        await openCharacter(page, avatar);
+        await saveWhileTyping(page, true);
+        /** @type {() => void} */
+        let answer = () => {};
+        const answered = new Promise(resolve => { answer = () => resolve(undefined); });
+        let asked = false;
+        await page.route('**/api/chats/message/select', async route => {
+            asked = true;
+            await answered;
+            await route.continue();
+        });
+
+        await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
+        await page.locator('.mes_editor .cm-content').fill(`Zero edited ${s}`);
+        await expect.poll(() => asked, { timeout: 10000 }).toBe(true);
+        await page.locator('.mes_editor .cm-content').fill(`Zero edited more ${s}`);
+        await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
+        answer();
+
+        await expect.poll(() => storedOpenings(page, avatar), { timeout: 10000 }).toEqual([
+            { stored: false, mes: g[0] },
+            { stored: true, mes: `Zero edited more ${s}` },
+            { stored: false, mes: g[1] },
+        ]);
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([g[0], `Zero edited more ${s}`, g[1]]);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(`Zero edited more ${s}`);
+    });
+
+    test('an edit whose opening isn\'t stored shows the card greeting as it is, with a notice', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`];
+        const avatar = await createCharacter(page, `EditRefused-${s}`, g);
+        await openCharacter(page, avatar);
+        await page.route('**/api/chats/message/select', route => route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":true}' }));
+
+        await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
+        await page.locator('.mes_editor .cm-content').fill(`Zero edited ${s}`);
+        await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
+
+        await expect.poll(() => notices(page), { timeout: 10000 }).toContain('Not saved');
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[0]);
+        const now = await opening(page);
+        expect(now.mes).toBe(g[0]);
+        expect(now.swipes).toEqual(g);
+        expect(now.node_id.startsWith('card:')).toBe(true);
+        expect(await storedOpenings(page, avatar)).toEqual([
+            { stored: false, mes: g[0] },
+            { stored: false, mes: g[1] },
+        ]);
+    });
+});
+
 test.describe('hiding messages that include a card greeting with no row', () => {
     test.beforeEach(testSetup.awaitST);
 
