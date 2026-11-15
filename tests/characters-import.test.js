@@ -201,6 +201,43 @@ describe('POST /api/characters/import', () => {
     });
 });
 
+describe('POST /api/characters/import - duplicate greetings', () => {
+    test('a card repeating a greeting keeps the first of each and reports the copies dropped', async () => {
+        const response = await importJsonCharacter({
+            spec: 'chara_card_v2',
+            spec_version: '2.0',
+            data: { name: 'Ghost', first_mes: 'Hello there', alternate_greetings: ['Same', 'Same', 'Other', 'Same'] },
+        });
+        const data = await response.json();
+
+        expect(data.dropped_greetings).toEqual(['Same', 'Same']);
+        expect(data.character.data.first_mes).toBe('Hello there');
+        const [card] = await user.store.lib.cards([`${data.file_name}.png`]);
+        expect(card.data.alternate_greetings).toEqual(['Same', 'Other']);
+    });
+
+    test('the report shortens a long greeting to an excerpt', async () => {
+        const long = 'A long greeting that goes on and on and on, well past the excerpt';
+        const data = await (await importJsonCharacter({
+            spec: 'chara_card_v2',
+            spec_version: '2.0',
+            data: { name: 'Ghost', first_mes: long, alternate_greetings: [long] },
+        })).json();
+
+        expect(data.dropped_greetings).toEqual(['A long greeting that goes on and on and…']);
+    });
+
+    test('a card without repeated greetings reports nothing', async () => {
+        const data = await (await importJsonCharacter({
+            spec: 'chara_card_v2',
+            spec_version: '2.0',
+            data: { name: 'Ghost', first_mes: 'Hi', alternate_greetings: ['Hey'] },
+        })).json();
+
+        expect(data.dropped_greetings).toBeUndefined();
+    });
+});
+
 describe('POST /api/characters/import - fav/chat no longer written to the card (metadata store is authoritative)', () => {
     test('a v2-json import never writes fav/data.extensions.fav/chat into the stored card', async () => {
         const body = JSON.stringify({

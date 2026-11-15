@@ -284,15 +284,20 @@ async function imageOfCardWithoutOne(request, avatar) {
  * @param {number} [o.dateAdded]
  * @param {{ from: string, pastChats: boolean }} [o.renamed]
  * @param {import('../greeting-items.js').GreetingModel} [o.greetings]
+ * @param {string[]} [o.dropped] receives the texts of the duplicate greetings the card had, which aren't stored
  * @returns {Promise<void>}
  * @throws {ImageReadError}
  */
-async function writeCharacter(request, avatar, data, { image, crop, contentHash = null, fav, dateAdded, renamed, greetings } = {}) {
+async function writeCharacter(request, avatar, data, { image, crop, contentHash = null, fav, dateAdded, renamed, greetings, dropped } = {}) {
     const directories = request.user.directories;
     const { lib } = await userStore(directories);
     const options = { contentHash, ...(fav === undefined ? {} : { fav }), ...(dateAdded === undefined ? {} : { dateAdded }), ...(renamed === undefined ? {} : { renamed }), ...(greetings === undefined ? {} : { greetings }) };
+    const note = (/** @type {{ dropped: string[] }} */ written) => {
+        dropped?.push(...written.dropped);
+        return written;
+    };
     if (image === undefined) {
-        await lib.writeCard(directories, avatar, cardWithCrop(data, cropOf(await lib.entity(TYPE.character, avatar))), options);
+        note(await lib.writeCard(directories, avatar, cardWithCrop(data, cropOf(await lib.entity(TYPE.character, avatar))), options));
         return;
     }
     const withCrop = cardWithCrop(data, crop);
@@ -307,13 +312,13 @@ async function writeCharacter(request, avatar, data, { image, crop, contentHash 
     }
     if (typeof image === 'string' && await isPngFile(image)) {
         const hashes = { avatarIdentityHash: computeAvatarIdentityHashFromChunks(chunks), animatedHash: computeAnimatedHashFromChunks(chunks) };
-        await linkWithAvatar(lib, directories, avatar, image, () => lib.writeCard(directories, avatar, withCrop, { ...options, ...hashes }));
+        await linkWithAvatar(lib, directories, avatar, image, async () => note(await lib.writeCard(directories, avatar, withCrop, { ...options, ...hashes })));
         return;
     }
     const stored = avatarImage(bytes);
-    await writeWithAvatar(lib, directories, avatar, stored, () => lib.writeCard(directories, avatar, withCrop, {
+    await writeWithAvatar(lib, directories, avatar, stored, async () => note(await lib.writeCard(directories, avatar, withCrop, {
         ...options, avatarIdentityHash: stored.avatarIdentityHash, animatedHash: stored.animatedHash,
-    }));
+    })));
 }
 
 /**
@@ -457,7 +462,7 @@ export async function characterObjects(request, avatars, { shallow }) {
 /**
  * Import a character from a YAML file.
  * @param {string} uploadPath Path to the uploaded file
- * @param {{ request: import('express').Request, response: import('express').Response, contentHash?: string|null }} context Express request/response objects plus the uploaded file's content hash (bulk-import dedup)
+ * @param {{ request: import('express').Request, response?: import('express').Response, contentHash?: string|null, dropped?: string[] }} context Express request/response objects, the uploaded file's content hash (bulk-import dedup), and a list that receives the texts of the duplicate greetings dropped
  * @param {string|undefined} preservedFileName Preserved file name
  * @returns {Promise<string>} Internal name of the character
  */
@@ -482,7 +487,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
         'tags': '',
     });
     omitInstallLocalFields(char);
-    await writeCharacter(context.request, `${fileName}.png`, JSON.stringify(char), { image: await imageOfCardWithoutOne(context.request, `${fileName}.png`), contentHash: context.contentHash ?? null });
+    await writeCharacter(context.request, `${fileName}.png`, JSON.stringify(char), { image: await imageOfCardWithoutOne(context.request, `${fileName}.png`), contentHash: context.contentHash ?? null, dropped: context.dropped });
     return fileName;
 }
 
@@ -495,7 +500,7 @@ async function importFromYaml(uploadPath, context, preservedFileName) {
  * @param {string|undefined} preservedFileName Preserved file name
  * @returns {Promise<string>} Internal name of the character
  */
-async function importFromCharX(uploadPath, { request, contentHash }, preservedFileName) {
+async function importFromCharX(uploadPath, { request, contentHash, dropped }, preservedFileName) {
     const fileBuffer = fs.readFileSync(uploadPath);
     // Create a properly-sized ArrayBuffer (Node's buffer pool can cause oversized .buffer)
     const data = getArrayBufferSlice(fileBuffer);
@@ -530,7 +535,7 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
         }
     }
 
-    await writeCharacter(request, `${fileName}.png`, JSON.stringify(processedCard), { image: avatar, contentHash: contentHash ?? null });
+    await writeCharacter(request, `${fileName}.png`, JSON.stringify(processedCard), { image: avatar, contentHash: contentHash ?? null, dropped });
     return fileName;
 }
 
@@ -542,7 +547,7 @@ async function importFromCharX(uploadPath, { request, contentHash }, preservedFi
  * @param {string|undefined} preservedFileName
  * @returns {Promise<string>}
  */
-async function importFromByaf(uploadPath, { request, contentHash }, preservedFileName) {
+async function importFromByaf(uploadPath, { request, contentHash, dropped }, preservedFileName) {
     const data = getArrayBufferSlice(await fsPromises.readFile(uploadPath));
     await fsPromises.unlink(uploadPath);
 
@@ -551,7 +556,7 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
     omitInstallLocalFields(card);
     const fileName = preservedFileName || await mintCharacterId(request.user.directories);
 
-    await writeCharacter(request, `${fileName}.png`, JSON.stringify(card), { image: byafData.images[0].image, contentHash: contentHash ?? null });
+    await writeCharacter(request, `${fileName}.png`, JSON.stringify(card), { image: byafData.images[0].image, contentHash: contentHash ?? null, dropped });
 
     if (!preservedFileName) {
         // Upload backgrounds
@@ -612,11 +617,11 @@ async function importFromByaf(uploadPath, { request, contentHash }, preservedFil
 /**
  * Import a character from a JSON file.
  * @param {string} uploadPath Path to the uploaded file
- * @param {{ request: import('express').Request, response: import('express').Response, contentHash?: string|null }} context Express request/response objects plus the uploaded file's content hash (bulk-import dedup)
+ * @param {{ request: import('express').Request, response?: import('express').Response, contentHash?: string|null, dropped?: string[] }} context Express request/response objects, the uploaded file's content hash (bulk-import dedup), and a list that receives the texts of the duplicate greetings dropped
  * @param {string|undefined} preservedFileName Preserved file name
  * @returns {Promise<string>} Internal name of the character
  */
-async function importFromJson(uploadPath, { request, contentHash }, preservedFileName) {
+async function importFromJson(uploadPath, { request, contentHash, dropped }, preservedFileName) {
     const rawText = fs.readFileSync(uploadPath, 'utf8');
     fs.unlinkSync(uploadPath);
 
@@ -624,7 +629,7 @@ async function importFromJson(uploadPath, { request, contentHash }, preservedFil
     const data = buildJsonImportData(rawText, request.user.directories, pngName);
     if (data === null) return '';
 
-    await writeCharacter(request, `${pngName}.png`, data, { image: await imageOfCardWithoutOne(request, `${pngName}.png`), contentHash: contentHash ?? null });
+    await writeCharacter(request, `${pngName}.png`, data, { image: await imageOfCardWithoutOne(request, `${pngName}.png`), contentHash: contentHash ?? null, dropped });
     return pngName;
 }
 
@@ -701,11 +706,11 @@ export function buildJsonImportData(rawText, directories, avatarFileName = null)
 /**
  * Import a character from a PNG file.
  * @param {string} uploadPath Path to the uploaded file
- * @param {{ request: import('express').Request, response: import('express').Response, contentHash?: string|null }} context Express request/response objects plus the uploaded file's content hash (bulk-import dedup)
+ * @param {{ request: import('express').Request, response?: import('express').Response, contentHash?: string|null, dropped?: string[] }} context Express request/response objects, the uploaded file's content hash (bulk-import dedup), and a list that receives the texts of the duplicate greetings dropped
  * @param {string|undefined} preservedFileName Preserved file name
  * @returns {Promise<string>} Internal name of the character
  */
-async function importFromPng(uploadPath, { request, contentHash }, preservedFileName) {
+async function importFromPng(uploadPath, { request, contentHash, dropped }, preservedFileName) {
     const imgData = await readCharacterData(uploadPath);
     if (imgData === undefined) throw new Error('Failed to read character data');
 
@@ -714,7 +719,7 @@ async function importFromPng(uploadPath, { request, contentHash }, preservedFile
     if (data === null) return '';
 
     try {
-        await writeCharacter(request, `${pngName}.png`, data, { image: uploadPath, contentHash: contentHash ?? null });
+        await writeCharacter(request, `${pngName}.png`, data, { image: uploadPath, contentHash: contentHash ?? null, dropped });
     } finally {
         fs.unlinkSync(uploadPath);
     }
@@ -2485,6 +2490,18 @@ export function hashFileContents(filePath) {
     });
 }
 
+const EXCERPT_LENGTH = 40;
+
+/**
+ * @param {string} text
+ * @returns {string} the start of the text on one line, shortened with an ellipsis
+ */
+export function greetingExcerpt(text) {
+    const line = text.replace(/\s+/g, ' ').trim();
+    const chars = [...line];
+    return chars.length > EXCERPT_LENGTH ? `${chars.slice(0, EXCERPT_LENGTH).join('').trimEnd()}…` : line;
+}
+
 const formatImportFunctions = {
     'yaml': importFromYaml,
     'yml': importFromYaml,
@@ -2544,7 +2561,8 @@ router.post('/import', requireSessionHeader, async function (request, response) 
                     return { duplicateOf };
                 }
             }
-            return { fileName: await importFunction(uploadPath, { request, response, contentHash }, preservedFileName) };
+            const dropped = /** @type {string[]} */ ([]);
+            return { fileName: await importFunction(uploadPath, { request, response, contentHash, dropped }, preservedFileName), dropped };
         });
         if ('duplicateOf' in imported) return response.send({ duplicate: true, duplicate_of: imported.duplicateOf });
         const fileName = imported.fileName;
@@ -2569,7 +2587,7 @@ router.post('/import', requireSessionHeader, async function (request, response) 
         const [character] = await characterObjects(request, [`${fileName}.png`], { shallow: false });
         const extraBooks = await importChubRelatedLorebooks(request.user.directories, `${fileName}.png`, character);
 
-        response.send({ file_name: fileName, character, tagDefinitions, ...(extraBooks.length ? { extra_books: extraBooks } : {}) });
+        response.send({ file_name: fileName, character, tagDefinitions, ...(extraBooks.length ? { extra_books: extraBooks } : {}), ...(imported.dropped.length ? { dropped_greetings: imported.dropped.map(greetingExcerpt) } : {}) });
     } catch (err) {
         const error = importFailure(importName, err);
         console.error(error);

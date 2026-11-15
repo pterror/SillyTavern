@@ -182,15 +182,16 @@ export function goneGreetings(stored, model) {
 
 /**
  * @param {any} card a card as written, upstream's format
- * @returns {any} the card with each greeting's text once: the first copy kept, the default on it
+ * @returns {{ card: any, dropped: string[] }} the card with each greeting's text once, the first copy kept and the default on it, and the texts of the copies removed, in order
  */
-export function withUniqueGreetings(card) {
+export function collapseGreetings(card) {
     const { greetings, defaultIndex } = cardToGreetingsModel(card);
-    if (new Set(greetings).size === greetings.length) return card;
+    if (new Set(greetings).size === greetings.length) return { card, dropped: [] };
     const kept = greetings.filter((text, i) => greetings.indexOf(text) === i);
+    const dropped = greetings.filter((text, i) => greetings.indexOf(text) !== i);
     const copy = structuredClone(card);
     applyGreetingsModelToCard(copy, { greetings: kept, defaultIndex: defaultIndex === null ? null : kept.indexOf(greetings[defaultIndex]) });
-    return copy;
+    return { card: copy, dropped };
 }
 
 /**

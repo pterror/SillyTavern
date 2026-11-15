@@ -264,6 +264,22 @@ test.describe('Replace / Update greetings', () => {
     }
 });
 
+test.describe('Replace / Update greetings', () => {
+    test('a card repeating a greeting keeps the first of each and the page says so', async ({ page }) => {
+        await testSetup.awaitST({ page });
+        const avatar = await createGreeter(page, 'Greeter repeated', STARTING_GREETINGS);
+        await openGreeter(page, avatar);
+
+        await chooseReplace(page, 'Replace with File');
+        const chooser = page.waitForEvent('filechooser', { timeout: 5000 });
+        await page.locator('dialog[open] .popup-button-ok', { hasText: 'Replace with File' }).click();
+        await (await chooser).setFiles(greetingsCard(['Hello', 'Again', 'Again', 'Other', 'Again']));
+
+        await expect(page.locator('#toast-container')).toContainText('This card had 2 duplicate greetings; kept one of each.', { timeout: 15000 });
+        await expect.poll(async () => (await greetingsOf(page, avatar)).stored, { timeout: 15000 }).toEqual(['Hello', 'Again', 'Other']);
+    });
+});
+
 const ONE_PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
 test('Replace with File: a JSON card keeps the character\'s picture, a PNG card brings its own', async ({ page, stServer }) => {

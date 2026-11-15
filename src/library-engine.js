@@ -7,7 +7,7 @@ import { tagDerivedColumns } from './tag-order.js';
 import { LibraryTags } from './library-engine-tags.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords, withoutLook, withoutStatements } from './entity-values.js';
-import { GREETING_LIST, goneGreetings, greetingModelOf, greetingRecords, greetingTextsOf, hasSameGreetings, matchedGreetings, withUniqueGreetings } from './greeting-items.js';
+import { GREETING_LIST, collapseGreetings, goneGreetings, greetingModelOf, greetingRecords, greetingTextsOf, hasSameGreetings, matchedGreetings } from './greeting-items.js';
 import { SPACE, actorIds } from './actor-ids.js';
 import { LINKS, characterLinks, linkList, linkListRecords } from './character-links.js';
 import { FIELD, HASH, LOOK_FIELD, NAME_HISTORY, STATEMENT_PREFIX, TAG_KEY_PREFIX, TYPE, renameItem, renamesOf } from './library-codes.js';
@@ -504,11 +504,11 @@ export class LibraryEngine {
      * @param {{ from: string, pastChats: boolean, at?: number }} [options.renamed]
      * @param {bigint[]} [options.tags]
      * @param {import('./greeting-items.js').GreetingModel} [options.greetings] the card's greetings with their ids, in the card's order
-     * @returns {Promise<{ id: bigint, records: number, unreachedLoops: import('./world-info-engine.js').UnreachedLoop[] }>}
+     * @returns {Promise<{ id: bigint, records: number, unreachedLoops: import('./world-info-engine.js').UnreachedLoop[], dropped: string[] }>} dropped: the texts of the duplicate greetings removed from the card
      */
     writeCard(directories, avatar, cardJson, { contentHash = null, avatarIdentityHash = null, animatedHash, dateAdded = Date.now(), fav, renamed, tags = [], greetings } = {}) {
         return this.serialized(TYPE.character, avatar, async () => {
-            const card = withUniqueGreetings(JSON.parse(cardJson));
+            const { card, dropped } = collapseGreetings(JSON.parse(cardJson));
             const stored = await this.entity(TYPE.character, avatar);
             const records = [];
             const id = stored ? stored.id : await this.newId(ownerKeyOf(avatar), records);
@@ -578,7 +578,7 @@ export class LibraryEngine {
             else await commit();
             const [embeddedBook] = this.batches > 0 ? [null] : await this.ids(TYPE.ownedBook, [`${id}:${SLOT.characterBook}`]);
             const unreachedLoops = embeddedBook === null ? [] : await this.books.unreachedLoops(embeddedBook, records);
-            return { id, records: records.length, unreachedLoops };
+            return { id, records: records.length, unreachedLoops, dropped };
         });
     }
 

@@ -9346,6 +9346,8 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
 
     const avatarFileNames = [];
     let duplicateCount = 0;
+    let droppedGreetings = 0;
+    let cardsWithDroppedGreetings = 0;
 
     const ahead = useBatchImportMode ? IMPORTS_IN_FLIGHT : 1;
     /** @type {ReturnType<typeof importCharacter>[]} */
@@ -9375,6 +9377,10 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
 
             applyImportedCharacter(result.character);
             avatarFileNames.push(result.avatarFileName);
+            if (result.droppedGreetings > 0) {
+                droppedGreetings += result.droppedGreetings;
+                cardsWithDroppedGreetings++;
+            }
 
             let tagsAdded = false;
             if (result.serverHandledTags) {
@@ -9398,6 +9404,14 @@ export async function processDroppedFiles(files, data = new Map(), { sourceUrls 
 
     if (avatarFileNames.length > 0) {
         selectImportedChar(avatarFileNames[avatarFileNames.length - 1]);
+    }
+
+    if (droppedGreetings > 0) {
+        toastr.info(cardsWithDroppedGreetings > 1
+            ? t`${cardsWithDroppedGreetings} cards had duplicate greetings (${droppedGreetings} in all); kept one of each.`
+            : droppedGreetings === 1
+                ? t`This card had a duplicate greeting; kept the first.`
+                : t`This card had ${droppedGreetings} duplicate greetings; kept one of each.`, t`Import`);
     }
 
     if (duplicateCount > 0) {
@@ -9475,7 +9489,7 @@ function selectImportedChar(charId) {
  * @param {object} [options] - Options
  * @param {string} [options.preserveFileName] Whether to preserve original file name
  * @param {string} [options.sourceUrl] URL or id the file was downloaded from, named in import errors
- * @returns {Promise<{ avatarFileName: string, replaced: boolean, character: object } | { duplicate: true } | undefined>} undefined for an unsupported extension or a hard failure (already toasted); `{ duplicate: true }` for exact byte-identical dedup.
+ * @returns {Promise<{ avatarFileName: string, replaced: boolean, character: object, droppedGreetings: number } | { duplicate: true } | undefined>} undefined for an unsupported extension or a hard failure (already toasted); `{ duplicate: true }` for exact byte-identical dedup.
  */
 async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } = {}) {
     if (is_group_generating || is_send_press) {
@@ -9538,6 +9552,7 @@ async function importCharacter(file, { preserveFileName = '', sourceUrl = '' } =
 
             return {
                 avatarFileName, replaced: exists, character: data.character,
+                droppedGreetings: Array.isArray(data.dropped_greetings) ? data.dropped_greetings.length : 0,
                 serverHandledTags: effectiveTagSetting === tag_import_setting.ALL || effectiveTagSetting === tag_import_setting.ONLY_EXISTING,
                 tagDefinitions: Array.isArray(data.tagDefinitions) ? data.tagDefinitions : [],
             };
