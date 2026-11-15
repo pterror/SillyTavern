@@ -173,3 +173,132 @@ test.describe('Replace / Update', () => {
         }
     });
 });
+
+const STARTING_GREETINGS = ['Start A', 'Start B', 'Start C'];
+
+/**
+ * @param {string[]} greetings the first is the default
+ * @returns {{ name: string, mimeType: string, buffer: Buffer }}
+ */
+function greetingsCard(greetings) {
+    const card = cardV2('Greeter', 'Has greetings.');
+    card.data.first_mes = greetings[0] ?? '';
+    card.data.alternate_greetings = greetings.slice(1);
+    return { name: 'greetings.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(card)) };
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ * @param {string[]} greetings
+ * @returns {Promise<string>} the avatar
+ */
+function createGreeter(page, name, greetings) {
+    return page.evaluate(async ({ name, greetings }) => {
+        // @ts-ignore
+        const headers = stTest.context().getRequestHeaders({ omitContentType: true });
+        const form = new FormData();
+        form.set('ch_name', name);
+        form.set('first_mes', greetings[0]);
+        for (const text of greetings.slice(1)) form.append('alternate_greetings', text);
+        const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
+        if (!response.ok) throw new Error(`create failed: ${response.status}`);
+        return (await response.text()).trim();
+    }, { name, greetings });
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ */
+async function openGreeter(page, avatar) {
+    await openCharacterManagementDrawer(page);
+    await page.evaluate(async avatar => {
+        // @ts-ignore
+        await stTest.context().getCharacters();
+        const { selectCharacterByAvatar } = await import('/script.js');
+        await selectCharacterByAvatar(avatar);
+    }, avatar);
+    await expect(page.locator('#avatar_url_pole')).toHaveValue(avatar, { timeout: 10000 });
+    await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1);
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @returns {Promise<{ stored: string[], held: string[] }>} the greetings as the server stores them and as the page holds them, default first
+ */
+function greetingsOf(page, avatar) {
+    return page.evaluate(async avatar => {
+        // @ts-ignore
+        const context = stTest.context();
+        const response = await fetch('/api/characters/get', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
+        const card = await response.json();
+        const held = context.getCharacterByAvatar(avatar);
+        const list = (/** @type {any} */ c) => [c.data.first_mes, ...c.data.alternate_greetings].filter(text => text !== '');
+        return { stored: list(card), held: list(held) };
+    }, avatar);
+}
+
+test.describe('Replace / Update greetings', () => {
+    for (const [what, replacement] of /** @type {const} */ ([
+        ['more', [...STARTING_GREETINGS, 'Start D', 'Start E']],
+        ['different', ['Other A', 'Other B', 'Other C']],
+        ['fewer', ['Start B']],
+        ['none', []],
+    ])) {
+        test(`a card with ${what} greetings gives the character exactly the card's greetings`, async ({ page }) => {
+            await testSetup.awaitST({ page });
+            const avatar = await createGreeter(page, `Greeter ${what}`, STARTING_GREETINGS);
+            await openGreeter(page, avatar);
+            expect((await greetingsOf(page, avatar)).stored).toEqual(STARTING_GREETINGS);
+
+            await chooseReplace(page, 'Replace with File');
+            const chooser = page.waitForEvent('filechooser', { timeout: 5000 });
+            await page.locator('dialog[open] .popup-button-ok', { hasText: 'Replace with File' }).click();
+            await (await chooser).setFiles(greetingsCard(replacement));
+
+            await expect.poll(async () => (await greetingsOf(page, avatar)).stored, { timeout: 15000 }).toEqual(replacement);
+            expect((await greetingsOf(page, avatar)).held).toEqual(replacement);
+        });
+    }
+});
+
+const ONE_PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+
+test('Replace with File: a JSON card keeps the character\'s picture, a PNG card brings its own', async ({ page, stServer }) => {
+    await testSetup.awaitST({ page });
+    const avatar = await createGreeter(page, 'Pictured', STARTING_GREETINGS);
+    await openGreeter(page, avatar);
+    const picture = () => fs.readFileSync(path.join(charactersDir(stServer.dataRoot), avatar));
+
+    /** @param {{ name: string, mimeType: string, buffer: Buffer }} card */
+    const replaceWith = async card => {
+        await chooseReplace(page, 'Replace with File');
+        const chooser = page.waitForEvent('filechooser', { timeout: 5000 });
+        await page.locator('dialog[open] .popup-button-ok', { hasText: 'Replace with File' }).click();
+        await (await chooser).setFiles(card);
+    };
+
+    const png = { name: 'picture.png', mimeType: 'image/png', buffer: writeCardPng(ONE_PIXEL_PNG, JSON.stringify(cardV2('Pictured', 'From a PNG.'))) };
+    await replaceWith(png);
+    await expect.poll(async () => (await snapshotOf(page, avatar)).description, { timeout: 15000 }).toBe('From a PNG.');
+    expect(picture().equals(png.buffer)).toBe(true);
+
+    await replaceWith(jsonCard());
+    await expect.poll(async () => (await snapshotOf(page, avatar)).description, { timeout: 15000 }).toBe('Replaced from a JSON.');
+    expect(picture().equals(png.buffer)).toBe(true);
+});
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @returns {Promise<{ description: string }>}
+ */
+function snapshotOf(page, avatar) {
+    return page.evaluate(async avatar => {
+        // @ts-ignore
+        const response = await fetch('/api/characters/get', { method: 'POST', headers: stTest.context().getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar }) });
+        return response.json();
+    }, avatar);
+}
