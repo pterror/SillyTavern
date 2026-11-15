@@ -6,7 +6,7 @@ import type { Commands } from './commands.ts';
 
 export type FocusAction = 'confirm' | 'cancel' | 'next' | 'previous' | 'activate';
 
-/** `false` leaves the key to whatever else handles it */
+/** `false` passes the key on: to the next element out that has the action, then to whatever else handles it */
 export type Handler = (event: Event) => boolean | void;
 
 export type Actions = Partial<Record<FocusAction, Handler>> & {
@@ -15,24 +15,30 @@ export type Actions = Partial<Record<FocusAction, Handler>> & {
 };
 
 export type FocusActions = {
-    /** Gives an element (and what is inside it) its own actions; the returned function takes them off */
+    /**
+     * Gives an element (and what is inside it) its own actions, tried after the ones it was given before; the returned
+     * function takes these off
+     */
     attach: (element: Element, actions: Actions) => () => void;
-    /** An action of the element that has focus, or of the nearest element around it that has one */
+    /** The action of the element that has focus and of each element around it that has one, nearest first */
     of: (action: FocusAction) => Handler | undefined;
 };
 
 export function createFocusActions(commands: Commands, t: (text: string) => string): FocusActions {
-    const attached = new WeakMap<Element, Actions>();
+    const attached = new WeakMap<Element, Actions[]>();
 
     const of = (action: FocusAction): Handler | undefined => {
+        const handlers: Handler[] = [];
         let at: Element | null = typeof document === 'undefined' ? null : document.activeElement;
         while (at) {
-            const actions = attached.get(at);
-            const handler = actions?.[action];
-            if (handler && actions.when?.() !== false) return handler;
+            for (const actions of attached.get(at) ?? []) {
+                const handler = actions[action];
+                if (handler && actions.when?.() !== false) handlers.push(handler);
+            }
             at = at.parentElement;
         }
-        return undefined;
+        if (handlers.length === 0) return undefined;
+        return (event) => (handlers.some((handler) => handler(event) !== false) ? undefined : false);
     };
 
     const command = (action: FocusAction, label: string, keys: readonly string[], typing: boolean) => ({
@@ -47,7 +53,7 @@ export function createFocusActions(commands: Commands, t: (text: string) => stri
 
     commands.register(
         [
-            command('confirm', t('Confirm'), ['Enter'], true),
+            command('confirm', t('Confirm'), ['Enter', 'ctrl+Enter'], true),
             command('cancel', t('Cancel'), ['Escape'], true),
             command('next', t('Next item'), ['ArrowDown'], true),
             command('previous', t('Previous item'), ['ArrowUp'], true),
@@ -58,9 +64,12 @@ export function createFocusActions(commands: Commands, t: (text: string) => stri
 
     return {
         attach(element, actions) {
-            attached.set(element, actions);
+            const own = { ...actions };
+            attached.set(element, [...(attached.get(element) ?? []), own]);
             return () => {
-                if (attached.get(element) === actions) attached.delete(element);
+                const left = (attached.get(element) ?? []).filter((each) => each !== own);
+                if (left.length > 0) attached.set(element, left);
+                else attached.delete(element);
             };
         },
         of,

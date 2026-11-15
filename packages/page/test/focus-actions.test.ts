@@ -41,3 +41,21 @@ test("an element's actions apply only while its `when` holds, and an action retu
     expect(press('Escape', field).defaultPrevented).toBe(true);
     expect(press('Enter', field).defaultPrevented).toBe(false);
 });
+
+test('an action returning false passes the key on: to the next one the element has, then to the next element out', () => {
+    const { focusActions } = testCommands();
+    const list = document.createElement('div');
+    const item = document.createElement('div');
+    item.tabIndex = 0;
+    list.append(item);
+    document.body.append(list);
+    const ran: string[] = [];
+    focusActions.attach(document.body, { activate: () => void ran.push('body') });
+    focusActions.attach(list, { activate: () => false });
+    const detach = focusActions.attach(list, { activate: () => void ran.push('list') });
+    item.focus();
+    press('Enter', item);
+    detach();
+    expect(press('Enter', item).defaultPrevented).toBe(true);
+    expect(ran).toEqual(['list', 'body']);
+});
