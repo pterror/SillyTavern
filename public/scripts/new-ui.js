@@ -49,9 +49,9 @@ const helpOldPage = {
 };
 
 /**
- * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], worldbuilding: import('/ui/entry.js').StartOptions['worldbuilding'], shownCharacter: () => string | null }} options
+ * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], worldbuilding: import('/ui/entry.js').StartOptions['worldbuilding'], shownCharacter: () => string | null, holdShowsKeys: () => boolean }} options
  */
-export function startNewUi({ quietPrompt, currentChat, alternatives, activations, worldbuilding, shownCharacter }) {
+export function startNewUi({ quietPrompt, currentChat, alternatives, activations, worldbuilding, shownCharacter, holdShowsKeys }) {
     if (newUiStarted()) return newUi();
     const element = (/** @type {string} */ id) => {
         const found = document.getElementById(id);
@@ -68,6 +68,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
         t: (text, key) => translate(text, key ?? null),
         quietPrompt,
         currentChat,
+        holdShowsKeys,
         alternatives,
         activations,
         worldbuilding,

@@ -2,7 +2,6 @@ import {
     commands as cmCommands,
     grammarLanguage,
     keyHints,
-    keybinds,
     lookChanged,
     lookDecorations,
     markdownFormat,
@@ -15,9 +14,12 @@ import {
     toolbar,
     view as cmView,
     formatKey,
+    isMac,
     formatSteps,
 } from '../../live-editor-lib.js';
 import { DOMPurify } from '../../lib.js';
+import { FORMAT_KEYS, formatCommandId } from './format-keys.js';
+import { newUi, newUiStarted } from '../new-ui-page.js';
 import { boxSize } from './box-size.js';
 import { caretInTextColor } from './caret.js';
 import { macroCursorTooltip, macroPills, macroValueRequests, openableMacros } from './macros.js';
@@ -58,19 +60,6 @@ let page;
 export function initChatEditors(dependencies) {
     page = dependencies;
 }
-
-const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
-const MOD = isMac ? 'meta' : 'ctrl';
-
-/** @type {readonly Readonly<{ id: string, keys: string, when?: 'hotkeys' }>[]} each command's key */
-const KEYS = [
-    { id: 'bold', keys: `${MOD}+b`, when: 'hotkeys' },
-    { id: 'italic', keys: `${MOD}+i`, when: 'hotkeys' },
-    { id: 'underline', keys: `${MOD}+u`, when: 'hotkeys' },
-    { id: 'code', keys: `${MOD}+k`, when: 'hotkeys' },
-    { id: 'strike', keys: `${MOD}+shift+backquote`, when: 'hotkeys' },
-    { id: 'macros', keys: `${MOD}+shift+m` },
-];
 
 /** What a text box has of the browser's, which CodeMirror turns off: spelling checks, correction, capitals */
 export const BROWSER_TEXT_AIDS = { spellcheck: 'true', autocorrect: 'on', autocapitalize: 'sentences' };
@@ -178,6 +167,9 @@ async function imageSize(file) {
     }
 }
 
+/** @param {string} id @returns {string} the name of a tool the page has a key for */
+const labelOf = id => FORMAT_KEYS.find(key => key.id === id)?.label(page.t) ?? id;
+
 /**
  * The markdown formatting commands, and an image upload, as tools
  * @returns {Tool[]}
@@ -185,11 +177,11 @@ async function imageSize(file) {
 export function formatTools() {
     const { toggleStyle, hasStyle } = markdownFormat;
     return [
-        { id: 'bold', label: page.t`Bold`, icon: icon('fa-bold'), run: toggleStyle('bold'), on: state => hasStyle(state, 'bold') },
-        { id: 'italic', label: page.t`Italic`, icon: icon('fa-italic'), run: toggleStyle('italic'), on: state => hasStyle(state, 'italic') },
-        { id: 'underline', label: page.t`Underline`, icon: icon('fa-underline'), run: toggleStyle('underline'), on: state => hasStyle(state, 'underline') },
-        { id: 'strike', label: page.t`Strikethrough`, icon: icon('fa-strikethrough'), run: toggleStyle('strike'), on: state => hasStyle(state, 'strike') },
-        { id: 'code', label: page.t`Code`, icon: icon('fa-code'), run: toggleStyle('code'), on: state => hasStyle(state, 'code') },
+        { id: 'bold', label: labelOf('bold'), icon: icon('fa-bold'), run: toggleStyle('bold'), on: state => hasStyle(state, 'bold') },
+        { id: 'italic', label: labelOf('italic'), icon: icon('fa-italic'), run: toggleStyle('italic'), on: state => hasStyle(state, 'italic') },
+        { id: 'underline', label: labelOf('underline'), icon: icon('fa-underline'), run: toggleStyle('underline'), on: state => hasStyle(state, 'underline') },
+        { id: 'strike', label: labelOf('strike'), icon: icon('fa-strikethrough'), run: toggleStyle('strike'), on: state => hasStyle(state, 'strike') },
+        { id: 'code', label: labelOf('code'), icon: icon('fa-code'), run: toggleStyle('code'), on: state => hasStyle(state, 'code') },
         { id: 'heading', label: page.t`Heading`, icon: icon('fa-heading'), run: markdownFormat.heading, on: markdownFormat.inHeading },
         { id: 'link', label: page.t`Link`, icon: icon('fa-link'), run: markdownFormat.link, on: markdownFormat.inLink },
         { id: 'quote', label: page.t`Quote`, icon: icon('fa-quote-left'), run: markdownFormat.quote, on: markdownFormat.inQuote },
@@ -206,7 +198,7 @@ export function formatTools() {
  * @returns {Tool}
  */
 export function macroTool(toggle, on) {
-    return { id: 'macros', label: page.t`Show macros as written`, icon: icon('fa-file-code'), run: toggle, on };
+    return { id: 'macros', label: labelOf('macros'), icon: icon('fa-file-code'), run: toggle, on };
 }
 
 /** @returns {Tool} the tool that opens find and replace */
@@ -214,19 +206,35 @@ export function findTool() {
     return { id: 'find', label: page.t`Find and replace`, icon: icon('fa-magnifying-glass'), run: openSearchPanel };
 }
 
+/** @type {WeakMap<View, ReadonlyMap<string, Tool>>} each editor's tools, for the page's commands to run on it */
+const toolsOf = new WeakMap();
+
 /**
- * Binds each command's key on an editor, running it there
+ * Lets the page's formatting commands run on an editor while it has focus
  * @param {View} view
  * @param {ReadonlyMap<string, Tool>} byId the editor's tools by id
- * @returns {() => void} unbinds them
+ * @returns {() => void} takes the editor out again
  */
 export function commandKeys(view, byId) {
-    return keybinds(KEYS.map(key => ({
-        keys: [key.keys],
-        typing: true,
-        ...(key.when === 'hotkeys' ? { when: () => page.hotkeys() } : {}),
-        run: () => byId.get(key.id)?.run(view) ?? false,
-    })), { target: view.dom, capture: true });
+    toolsOf.set(view, byId);
+    return () => toolsOf.delete(view);
+}
+
+/** @returns {View | null} the editor that has focus */
+function focusedEditor() {
+    const at = document.activeElement?.closest('.cm-editor');
+    return at instanceof HTMLElement ? EditorView.findFromDOM(at) : null;
+}
+
+/**
+ * The tool of the editor that has focus, for the page's formatting command
+ * @param {string} id the tool's id
+ * @returns {Readonly<{ view: View, tool: Tool }> | null}
+ */
+export function focusedTool(id) {
+    const view = focusedEditor();
+    const tool = view ? toolsOf.get(view)?.get(id) : undefined;
+    return view && tool ? { view, tool } : null;
 }
 
 /**
@@ -256,8 +264,9 @@ export function toolbarFor(view, tools) {
     shortcutsShown ??= modifierHeld({ modifier: isMac ? 'Meta' : 'Control' });
     /** @param {string} id */
     const keyOf = id => {
-        const binding = KEYS.find(key => key.id === id);
-        return binding ? formatSteps(binding.keys, step => formatKey(step)) : undefined;
+        if (!newUiStarted()) return undefined;
+        const binding = newUi().commands.all().find(command => command.id === formatCommandId(id))?.keys?.[0];
+        return binding ? formatSteps(binding, step => formatKey(step)) : undefined;
     };
     const bar = toolbar({ view, tools });
     const stopHints = keyHints({ buttons: bar.buttons, keyOf, held: shortcutsShown });

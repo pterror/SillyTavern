@@ -2022,33 +2022,86 @@ input[type="range"].macro-colors-hue {
     opacity: 0.45;
 }
 
-.hotkeyOverlay {
-    inset: 0;
-    margin: auto;
+/* The command palette, the right-click menu and the cheatsheet (packages/page/src/command-surfaces.ts) */
+.commandPalette:not(:popover-open),
+.commandMenu:not(:popover-open),
+.commandCheatsheet:not(:popover-open) {
+    display: none;
+}
+
+.commandPalette {
+    width: min(90vw, 36em);
+    padding: 6px;
+}
+
+.commandPalette [role="combobox"] {
+    width: 100%;
+    margin: 0 0 6px;
+}
+
+/* A fixed height, so filtering never moves the field */
+.commandPalette [role="listbox"] {
+    height: min(60vh, 24em);
+    overflow-y: auto;
+}
+
+.commandPalette [role="option"],
+.commandMenu [role="menuitem"] {
+    display: flex;
+    justify-content: space-between;
+    gap: 2em;
+    padding: 4px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.commandPalette [role="option"][data-active],
+.commandMenu [role="menuitem"][data-active] {
+    background-color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBlurTintColor);
+}
+
+.commandMenu {
+    min-width: 12em;
+    padding: 4px;
+}
+
+.commandMenu [role="menuitem"][aria-disabled="true"] {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.commandPalette kbd,
+.commandMenu kbd,
+.commandCheatsheet kbd {
+    font-size: 0.85em;
+    opacity: 0.8;
+}
+
+.commandCheatsheet {
     width: min(90vw, 70em);
     max-height: 85vh;
     overflow: auto;
     padding: 10px 20px;
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 10px;
-    background-color: var(--SmartThemeBlurTintColor);
-    backdrop-filter: blur(calc(var(--SmartThemeBlurStrength)));
-    -webkit-backdrop-filter: blur(calc(var(--SmartThemeBlurStrength)));
-    color: var(--SmartThemeBodyColor);
-    pointer-events: none;
-}
-
-.hotkeyOverlay .hotkeyList {
     columns: 22em;
 }
 
-.hotkeyOverlay .hotkeyGroup {
+.commandCheatsheet [role="group"] {
     break-inside: avoid;
 }
 
-.hotkeyOverlayTitle {
+.commandCheatsheet [role="group"] > :first-child {
     font-weight: bold;
-    font-size: 1.2em;
+}
+
+.commandCheatsheet [role="group"] > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 1em;
+}
+
+.commandCheatsheet [aria-disabled="true"] {
+    opacity: 0.45;
 }
 
 @media screen and (max-width: 1000px) {

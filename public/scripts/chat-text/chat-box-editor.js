@@ -1,4 +1,5 @@
 import {
+    autocomplete as cmAutocomplete,
     commands as cmCommands,
     lookChanged,
     overtype,
@@ -20,13 +21,13 @@ import { editorTooltips } from './tooltips.js';
 const { EditorView, drawSelection, placeholder: placeholderText, keymap } = cmView;
 const { history, historyKeymap, defaultKeymap } = cmCommands;
 const { Compartment } = cmState;
+const { completionStatus } = cmAutocomplete;
 
 /** Keys the page has for the box (Ctrl+Enter sends or regenerates), which CodeMirror's own keys would take first */
 const PAGE_KEYS = new Set(['Mod-Enter']);
 
 /**
  * @typedef {import('@codemirror/view').EditorView} View
- * @typedef {import('@codemirror/view').KeyBinding} KeyBinding
  */
 
 /**
@@ -39,7 +40,6 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
  * @property {import('./macros.js').WantedValues} [macroValues] where the value of a macro the text has none for is
  *   asked, when it is typed or pasted
  * @property {string} label what the field is, for assistive technology
- * @property {readonly KeyBinding[]} keys the box's own commands on keys (Enter sends), taken before the editor's
  * @property {Parameters<typeof slashSuggestions>[0]} slashParser
  * @property {(text: string) => boolean} slashWanted whether slash command suggestions show for the text as typed
  * @property {string} maxHeight how tall the box grows, a CSS length
@@ -62,7 +62,7 @@ const PAGE_KEYS = new Set(['Mod-Enter']);
  * @param {ChatBoxEditorOptions} options
  * @returns {ChatBoxEditor}
  */
-export function chatBoxEditor({ parent, text, setup, macroValue, macroValues, label, keys, slashParser, slashWanted, maxHeight }) {
+export function chatBoxEditor({ parent, text, setup, macroValue, macroValues, label, slashParser, slashWanted, maxHeight }) {
     const page = editorPage();
     /** @type {View} */
     let view;
@@ -82,7 +82,7 @@ export function chatBoxEditor({ parent, text, setup, macroValue, macroValues, la
             drawing.of(drawnWith(setup, pill)),
             EditorView.contentAttributes.of({ ...BROWSER_TEXT_AIDS, class: TEXT_CLASS, 'aria-multiline': 'true', 'aria-label': label }),
             history(),
-            keymap.of([...keys, { key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
+            keymap.of([{ key: 'Shift-Delete', run: shiftDelete }, ...defaultKeymap.filter(binding => !PAGE_KEYS.has(binding.key ?? '')), ...historyKeymap]),
             EditorView.lineWrapping,
             drawSelection(),
             caretInTextColor(),
@@ -112,6 +112,8 @@ export function chatBoxEditor({ parent, text, setup, macroValue, macroValues, la
     parent.prepend(bar.element);
     return {
         view,
+        /** @returns {boolean} whether suggestions are shown, which take Enter and the arrows */
+        suggesting: () => completionStatus(view.state) === 'active',
         unsaved() {
             const composed = made.unincluded();
             /** @type {import('../chat-box-text.js').BoxChange[]} */

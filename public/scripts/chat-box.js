@@ -26,7 +26,6 @@ import { tabToken } from './tab-session.js';
  * @typedef {{ owner: DraftOwner, text: string, macro_values?: MacroValues }} Draft
  * @typedef {Partial<ChatOf> & { owner: DraftOwner, text: string, changes: BoxChange[], tab: string, change?: string }} LeftDraft
  *   a draft as a request carries it to be kept
- * @typedef {import('@codemirror/view').KeyBinding} KeyBinding
  */
 
 /**
@@ -38,7 +37,6 @@ import { tabToken } from './tab-session.js';
  *   text is drawn, its macros' values as `valuesOf` has them
  * @property {() => import('./macro-values.js').MacroScope} macroScope what the open chat's macros are filled in from
  * @property {string} label
- * @property {readonly KeyBinding[]} keys the box's commands
  * @property {Parameters<typeof import('./chat-text/suggest.js').slashSuggestions>[0]} slashParser
  * @property {(text: string) => boolean} slashWanted
  */
@@ -183,7 +181,6 @@ export async function initChatBox(dependencies) {
         macroValue,
         macroValues: asked,
         label: page.label,
-        keys: page.keys,
         slashParser: page.slashParser,
         slashWanted: page.slashWanted,
         maxHeight: '50dvh',
@@ -367,4 +364,14 @@ export function setChatBoxPlaceholder(shown) {
 
 export function focusChatBox() {
     editor?.view.focus();
+}
+
+/** @returns {boolean} whether the chat box has focus */
+export function chatBoxFocused() {
+    return editor?.view.hasFocus === true;
+}
+
+/** @returns {boolean} whether the chat box shows suggestions, which take Enter and the arrows */
+export function chatBoxSuggesting() {
+    return editor?.suggesting() === true;
 }

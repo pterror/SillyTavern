@@ -8,6 +8,9 @@ let page;
 /** @type {Promise<typeof import('./editor.js')> | undefined} */
 let loading;
 
+/** @type {typeof import('./editor.js') | undefined} */
+let loaded;
+
 /**
  * @param {import('./editor.js').EditorPage} dependencies what editors read from the page
  */
@@ -21,7 +24,13 @@ export function initChatEditors(dependencies) {
 export function loadChatEditor() {
     loading ??= import('./editor.js').then((module) => {
         if (page) module.initChatEditors(page);
+        loaded = module;
         return module;
     });
     return loading;
+}
+
+/** @returns {typeof import('./editor.js') | undefined} the editor module, once an editor has loaded it */
+export function loadedChatEditor() {
+    return loaded;
 }

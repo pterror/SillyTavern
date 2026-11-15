@@ -1,10 +1,11 @@
+import { registerPageCommands } from './scripts/page-commands.js';
 import {
     moment,
     Handlebars,
     Popper,
 } from './lib.js';
 
-import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown, takeCardCounts, chatBoxKeys } from './scripts/RossAscends-mods.js';
+import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown, takeCardCounts } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, setCharacterId, holdCharacter, keepHeldCharacters } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
@@ -224,7 +225,6 @@ import { assetUrl } from './scripts/asset-url.js';
 import { DragAndDropHandler } from './scripts/dragdrop.js';
 import { INTERACTABLE_CONTROL_CLASS, initKeyboard } from './scripts/keyboard.js';
 import { initDynamicStyles } from './scripts/dynamic-styles.js';
-import { initInputMarkdown } from './scripts/input-md-formatting.js';
 import { autosizeTextareas, initAutosizeTextareas } from './scripts/autosize-textareas.js';
 import { AbortReason } from './scripts/util/AbortReason.js';
 import { initWidgetPopovers } from './scripts/widget-popovers.js';
@@ -1362,7 +1362,16 @@ async function firstLoadInit() {
         activations: activationsOldPage,
         worldbuilding: { showPane: () => ensureDrawerOpen('WI-SP-button'), notify: worldbuildingNotice },
         shownCharacter: () => getCurrentCharacter()?.avatar ?? null,
+        holdShowsKeys: () => power_user.hotkey_overlay !== false,
     });
+    newUi().commands.keepBindingsIn({
+        load: () => (power_user.keybindings && typeof power_user.keybindings === 'object' ? power_user.keybindings : {}),
+        save: (bindings) => {
+            power_user.keybindings = bindings;
+            saveSettingsDebounced('power_user.keybindings');
+        },
+    });
+    registerPageCommands();
     await checkOpenRouterAuth();
     initKeyboard();
     initDynamicStyles();
@@ -1400,7 +1409,6 @@ async function firstLoadInit() {
         setup: chatBoxSetup,
         macroScope: openChatMacroScope,
         label: t`Message`,
-        keys: chatBoxKeys(),
         slashParser: chatBoxSlashParser,
         slashWanted: slashSuggestionsWanted,
     }).catch(error => console.error('The chat box could not be made:', error));
@@ -1410,7 +1418,6 @@ async function firstLoadInit() {
     initRossMods();
     initCfg();
     initLogprobs();
-    initInputMarkdown();
     initAutosizeTextareas();
     initServerHistory();
     initSettingsSearch();
@@ -7747,6 +7754,37 @@ function updateEditArrowClasses() {
  * Closes the message editor.
  * @param {'message'|'reasoning'|'all'} what What to close. Default is 'all'.
  */
+/** @returns {boolean} whether a message or its reasoning is being edited */
+export function messageEditOpen() {
+    return messageEditing !== null || $('.reasoning_editor').length > 0;
+}
+
+/** Leaves the message edit: saved first when edits save themselves, and the chat box takes focus */
+export function leaveMessageEdit() {
+    if (power_user.auto_save_msg_edits === true) {
+        chatElement.find(`.mes[mesid="${this_edit_mes_id}"] .mes_edit_done`).trigger('click');
+        closeMessageEditor('reasoning');
+    } else {
+        closeMessageEditor('all');
+    }
+    focusChatBox();
+}
+
+/** @returns {boolean} whether a reply is being generated and can be stopped */
+export function canStopGenerating() {
+    return this_edit_mes_id === undefined && $('#mes_stop').is(':visible');
+}
+
+/** Stops the reply being generated; a swipe left empty by it is swiped back */
+export function stopGenerating() {
+    $('#mes_stop').trigger('click');
+    if (chat.length === 0) return;
+    const lastMessage = chat[chat.length - 1];
+    if (Array.isArray(lastMessage.swipes) && lastMessage.swipe_id == lastMessage.swipes.length) {
+        $('.last_mes .swipe_left').trigger('click');
+    }
+}
+
 export function closeMessageEditor(what = 'all') {
     if (what === 'message' || what === 'all') {
         if (this_edit_mes_id >= 0) {
@@ -11240,31 +11278,6 @@ jQuery(async function () {
         if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement) {
             control.select();
             console.debug('Auto-selecting content of input control', control);
-        }
-    });
-
-    $(document).on('keydown', function (e) {
-        if (e.key === 'Escape' && !e.originalEvent.isComposing && !e.isDefaultPrevented()) {
-            const isEditVisible = messageEditing !== null || $('.reasoning_editor').length > 0;
-            if (isEditVisible && power_user.auto_save_msg_edits === false) {
-                closeMessageEditor('all');
-                focusChatBox();
-                return;
-            }
-            if (isEditVisible && power_user.auto_save_msg_edits === true) {
-                chatElement.find(`.mes[mesid="${this_edit_mes_id}"] .mes_edit_done`).trigger('click');
-                closeMessageEditor('reasoning');
-                focusChatBox();
-                return;
-            }
-            if (this_edit_mes_id === undefined && $('#mes_stop').is(':visible')) {
-                $('#mes_stop').trigger('click');
-                if (chat.length === 0) return;
-                const lastMessage = chat[chat.length - 1];
-                if (Array.isArray(lastMessage.swipes) && lastMessage.swipe_id == lastMessage.swipes.length) {
-                    $('.last_mes .swipe_left').trigger('click');
-                }
-            }
         }
     });
 

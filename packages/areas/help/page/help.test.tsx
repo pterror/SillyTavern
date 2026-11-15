@@ -5,6 +5,7 @@ import { HOTKEYS_VIEW, PANEL_VIEW } from '../protocol.ts';
 import type { HotkeysView, PanelView } from '../protocol.ts';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
+import { createCommands } from '@st/page/commands';
 import { Help, Hotkeys } from './Help.tsx';
 import type { Browser, OldPage } from './Help.tsx';
 import { helpCompat } from './compat.ts';
@@ -76,7 +77,7 @@ function stand(
     document.body.append(host);
     const dispose = render(
         () => (
-            <UiProvider value={{ client, t: (text) => text }}>
+            <UiProvider value={{ client, commands: createCommands(), t: (text) => text }}>
                 <Help
                     shown={compat.shown()}
                     old={old}
@@ -292,7 +293,7 @@ test('the hotkeys list drawn alone shows the view it reads', () => {
     const host = document.createElement('div');
     const dispose = render(
         () => (
-            <UiProvider value={{ client, t: (text) => text }}>
+            <UiProvider value={{ client, commands: createCommands(), t: (text) => text }}>
                 <Hotkeys />
             </UiProvider>
         ),

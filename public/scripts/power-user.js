@@ -73,7 +73,6 @@ import {
 } from './personas.js';
 import { DictEntityStore } from './entity-store.js';
 import { DEFAULT_MACRO_COLORS, applyMacroColors, macroColorsOf } from './macro-colors.js';
-import { initHotkeyOverlay } from './hotkey-overlay.js';
 import { storyStringWithAnchors } from './story-string-anchors.js';
 import { THEME_FIELDS } from './theme-fields.js';
 import { CONTEXT_TEMPLATE_POWER_USER_KEYS } from './preset-file-keys.js';
@@ -224,6 +223,8 @@ export const power_user = {
     enable_md_hotkeys: false,
     editor_toolbar: [],
     hotkey_overlay: true,
+    /** The person's own bindings of the page's commands, by command id */
+    keybindings: {},
     tag_import_setting: tag_import_setting.ASK,
     tag_sort_mode: tag_sort_mode.MANUAL,
     disable_group_trimming: false,
@@ -3079,7 +3080,6 @@ export function markCharacterEditorCountsStale() {
 }
 
 jQuery(() => {
-    initHotkeyOverlay(() => power_user.hotkey_overlay !== false);
     const adjustAutocompleteDebounced = debounce(() => {
         $('.ui-autocomplete-input').each(function () {
             const isOpen = $(this).autocomplete('widget')[0].style.display !== 'none';
@@ -3703,6 +3703,7 @@ jQuery(() => {
 
     $('#hotkey_overlay').on('input', function () {
         power_user.hotkey_overlay = !!$(this).prop('checked');
+        newUi().commands.holdChanged();
         saveSettingsDebounced('power_user.hotkey_overlay');
     });
 

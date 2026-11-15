@@ -6,6 +6,10 @@ export { SERVER_OWNED } from '@st/settings/page';
 export { TRIGGER_MARK_CLASS, TRIGGER_MARK_EARLIER_CLASS } from '@st/protocol/looks';
 export * from '@st/occlusion';
 import { createClient } from '@st/page/client';
+import { createCommands } from '@st/page/commands';
+import type { BindingStorage, Command } from '@st/page/commands';
+import { commandSurfaces } from '@st/page/command-surfaces';
+import type { Anchor } from '@st/page/command-surfaces';
 import { documentLookSheet } from '@st/page/looks';
 import { inlineName, nameElement } from '@st/page/name';
 import { DRAWN_VIEW } from '@st/protocol/looks';
@@ -47,6 +51,8 @@ export type StartOptions = {
     t: (text: string, key?: string) => string;
     quietPrompt: (prompt: string) => Promise<string>;
     currentChat: () => ChatOwner | null;
+    /** Whether holding Ctrl (Cmd on a Mac) shows the cheatsheet */
+    holdShowsKeys: () => boolean;
     alternatives: OldPage;
     activations: ActivationsOldPage;
     usageStats: UsageStatsOldPage;
@@ -75,7 +81,9 @@ export function start(options: StartOptions) {
     const client = createClient({ headers: options.headers, looks });
     // Brings the trigger mark's rules, which every chat draws.
     client.view(DRAWN_VIEW);
-    const ui: Ui = { client, t: options.t };
+    const commands = createCommands();
+    const surfaces = commandSurfaces({ commands, holdShowsKeys: options.holdShowsKeys, t: options.t });
+    const ui: Ui = { client, commands, t: options.t };
     const mount = (container: HTMLElement, surface: () => JSX.Element) =>
         render(() => <UiProvider value={ui}>{surface()}</UiProvider>, container);
 
@@ -163,6 +171,23 @@ export function start(options: StartOptions) {
         },
         reconnected: () => client.reconnected(options.currentChat()),
         closeChat: () => client.send('chat.close', {}),
+        commands: {
+            register: commands.register,
+            all: commands.all,
+            available: commands.available,
+            conflicts: commands.conflicts,
+            keepBindingsIn: (storage: BindingStorage) => {
+                commands.keepBindingsIn(storage);
+            },
+            openMenu: (anchor: Anchor, list: readonly Command[]) => {
+                surfaces.openMenu(anchor, list);
+            },
+            openPalette: () => {
+                surfaces.palette.set(true);
+            },
+            holdChanged: surfaces.holdChanged,
+            overrides: commands.overrides,
+        },
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         alternatives: alternativesCompat(setLook),
         activations,

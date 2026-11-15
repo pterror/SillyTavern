@@ -1,8 +1,10 @@
 import { createContext, useContext } from 'solid-js';
 import type { Client } from './client.ts';
+import type { Commands } from './commands.ts';
 
 export type Ui = {
     client: Client;
+    commands: Commands;
     t: (text: string, key?: string) => string;
 };
 

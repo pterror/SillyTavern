@@ -1,8 +1,7 @@
-import { handleFieldEditKey } from './character-field-editor.js';
 import { currentPageMacroFacts } from './macro-values.js';
 import { askOnChatOpen, chatOpenPart } from './chat-open-parts.js';
 import { cardTokenTexts } from './card-token-texts.js';
-import { chatBoxText, focusChatBox, setChatBoxPlaceholder } from './chat-box.js';
+import { setChatBoxPlaceholder } from './chat-box.js';
 import { t } from './i18n.js';
 import { DOMPurify, Bowser } from '../lib.js';
 
@@ -13,7 +12,6 @@ import {
     buildAvatarList,
     selectCharacterByAvatar,
     menu_type,
-    requestTextareaSend,
     doNavbarIconClick,
     restoreDrawerOrder,
     keepOneRightPanelOpen,
@@ -139,7 +137,7 @@ export function shouldSendOnEnter() {
  * @param {boolean} own
  * @returns {boolean} whether there was one to edit
  */
-function editLastMessage(own) {
+export function editLastMessage(own) {
     if ($('#shadow_select_chat_popup').css('display') !== 'none') return false;
     if (own) {
         if (!($('.swipe_right:last').css('display') === 'flex' || $('.last_mes').attr('is_system') === 'true')) return false;
@@ -161,28 +159,10 @@ function editLastMessage(own) {
  * @param {boolean} repeated
  * @returns {boolean} whether the last message was swiped
  */
-function swipeLast(side, repeated) {
+export function swipeLast(side, repeated) {
     if (!isSwipingAllowed() || document.body.classList.contains('nGY2_body_scrollbar') || $('#shadow_select_chat_popup').css('display') !== 'none') return false;
     $(`.swipe_${side}:last`).trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated });
     return true;
-}
-
-/** @param {import('@codemirror/view').EditorView} view */
-const isEmpty = view => view.state.doc.length === 0;
-
-/**
- * The chat box's commands on keys: Enter sends (as the person's setting says); in an empty box, Up edits the last
- * message, Ctrl+Up the person's last, and Left and Right swipe the last message
- * @returns {import('@codemirror/view').KeyBinding[]}
- */
-export function chatBoxKeys() {
-    return [
-        { key: 'Enter', run: () => (shouldSendOnEnter() ? (requestTextareaSend('enter'), true) : false) },
-        { key: 'ArrowUp', run: view => isEmpty(view) && editLastMessage(false) },
-        { key: 'Ctrl-ArrowUp', run: view => isEmpty(view) && editLastMessage(true) },
-        { key: 'ArrowLeft', run: view => isEmpty(view) && swipeLast('left', false) },
-        { key: 'ArrowRight', run: view => isEmpty(view) && swipeLast('right', false) },
-    ];
 }
 
 export { humanizedDateTime } from './humanized-date.js';
@@ -727,263 +707,4 @@ export function initRossMods() {
             }
         }
     });
-
-
-    function isInputElementInFocus() {
-        const active = document.activeElement;
-        return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active instanceof HTMLElement && active.isContentEditable);
-    }
-
-    function isModifiedKeyboardEvent(event) {
-        return (event instanceof KeyboardEvent &&
-            (event.shiftKey ||
-            event.ctrlKey ||
-            event.altKey ||
-            event.metaKey));
-    }
-
-    $(document).on('keydown', async function (event) {
-        await processHotkeys(event.originalEvent);
-    });
-
-    const hotkeyTargets = {
-        'dialogue_popup_input': document.querySelector('#dialogue_popup_input'),
-    };
-
-    //Additional hotkeys CTRL+ENTER and CTRL+UPARROW
-    /**
-     * @param {KeyboardEvent} event
-     */
-    async function processHotkeys(event) {
-        // Default hotkeys and shortcuts shouldn't work if any popup is currently open
-        if (Popup.util.isPopupOpen() || document.querySelector('dialog:modal')) {
-            return;
-        }
-
-        if (document.activeElement == hotkeyTargets.dialogue_popup_input && !isMobile()) {
-            if (!event.shiftKey && !event.ctrlKey && event.key == 'Enter') {
-                event.preventDefault();
-                $('#dialogue_popup_ok').trigger('click');
-                return;
-            }
-        }
-        //ctrl+shift+up to scroll to context line
-        if (event.shiftKey && event.ctrlKey && event.key == 'ArrowUp') {
-            event.preventDefault();
-            let contextLine = $('.lastInContext');
-            if (contextLine.length !== 0) {
-                $('#chat').animate({
-                    scrollTop: contextLine.offset().top - $('#chat').offset().top + $('#chat').scrollTop(),
-                }, 300);
-            } else { toastr.warning('Context line not found, send a message first!'); }
-            return;
-        }
-        //ctrl+shift+down to scroll to bottom of chat
-        if (event.shiftKey && event.ctrlKey && event.key == 'ArrowDown') {
-            event.preventDefault();
-            $('#chat').animate({
-                scrollTop: $('#chat').prop('scrollHeight'),
-            }, 300);
-            return;
-        }
-
-        // Alt+Enter or AltGr+Enter to Continue
-        if ((event.altKey || (event.altKey && event.ctrlKey)) && event.key == 'Enter') {
-            if (is_send_press == false) {
-                console.debug('Continuing with Alt+Enter');
-                $('#option_continue').trigger('click');
-                return;
-            }
-        }
-
-        if (event.ctrlKey && event.key == 'Enter') {
-            if (handleFieldEditKey('confirm')) {
-                event.preventDefault();
-                return;
-            }
-            const editMesDone = $('.mes_edit_done:visible');
-            const reasoningMesDone = $('.mes_reasoning_edit_done:visible');
-            if (editMesDone.length > 0) {
-                console.debug('Accepting edits with Ctrl+Enter');
-                event.preventDefault();
-                focusChatBox();
-                editMesDone.trigger('click');
-                return;
-            } else if (reasoningMesDone.length > 0) {
-                console.debug('Accepting edits with Ctrl+Enter');
-                event.preventDefault();
-                focusChatBox();
-                reasoningMesDone.trigger('click');
-                return;
-            } else if (is_send_press == false) {
-                const skipConfirmKey = 'RegenerateWithCtrlEnter';
-                const skipConfirm = accountStorage.getItem(skipConfirmKey) === 'true';
-                function doRegenerate() {
-                    console.debug('Regenerating with Ctrl+Enter');
-                    $('#option_regenerate').trigger('click');
-                    $('#options').hide();
-                }
-
-                // If there is input text, we do not trigger a regenerate - we just send it
-                if (chatBoxText() !== '') {
-                    if (shouldSendOnEnter()) {
-                        console.debug('Sending with Ctrl+Enter');
-                        event.preventDefault();
-                        requestTextareaSend('enter');
-                    } else {
-                        console.debug('Text area is not empty, but send on enter is disabled');
-                    }
-                    return;
-                }
-
-                if (skipConfirm) {
-                    doRegenerate();
-                } else {
-                    let regenerateWithCtrlEnter = false;
-                    const result = await Popup.show.confirm('Regenerate Message', 'Are you sure you want to regenerate the latest message?', {
-                        customInputs: [{ id: 'regenerateWithCtrlEnter', label: 'Don\'t ask again' }],
-                        onClose: (popup) => {
-                            regenerateWithCtrlEnter = Boolean(popup.inputResults.get('regenerateWithCtrlEnter') ?? false);
-                        },
-                    });
-                    if (!result) {
-                        return;
-                    }
-
-                    accountStorage.setItem(skipConfirmKey, String(regenerateWithCtrlEnter));
-                    doRegenerate();
-                }
-                return;
-            } else {
-                console.debug('Ctrl+Enter ignored');
-            }
-        }
-
-        function isNanogallery2LightboxActive() {
-            return document.body.classList.contains('nGY2_body_scrollbar');
-        }
-
-        if (event.key == 'ArrowLeft') {        //swipes left
-            if (
-                isSwipingAllowed() &&
-                !isNanogallery2LightboxActive() &&
-                $('#shadow_select_chat_popup').css('display') === 'none' &&
-                !isInputElementInFocus() &&
-                !(document.activeElement instanceof HTMLVideoElement)
-            ) {
-                if (!isModifiedKeyboardEvent(event)) {
-                    $('.swipe_left:last').trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated: event.repeat });
-                    return;
-                }
-            }
-        }
-        if (event.key == 'ArrowRight') { //swipes right
-            if (
-                isSwipingAllowed() &&
-                !isNanogallery2LightboxActive() &&
-                $('#shadow_select_chat_popup').css('display') === 'none' &&
-                !isInputElementInFocus() &&
-                !(document.activeElement instanceof HTMLVideoElement)
-            ) {
-                if (!isModifiedKeyboardEvent(event)) {
-                    $('.swipe_right:last').trigger('click', { source: SWIPE_SOURCE.KEYBOARD, repeated: event.repeat });
-                    return;
-                }
-            }
-        }
-
-
-        if (event.key == 'Escape' && !event.defaultPrevented) {
-            //dont override Escape hotkey functions from script.js
-            //"close edit box" and "cancel stream generation".
-            if ($('.mes_editor').length || $('#mes_stop').is(':visible')) {
-                console.debug('escape key, but deferring to script.js routines');
-                return;
-            }
-
-            if ($('#dialogue_popup').is(':visible')) {
-                if ($('#dialogue_popup_cancel').is(':visible')) {
-                    $('#dialogue_popup_cancel').trigger('click');
-                    return;
-                } else {
-                    $('#dialogue_popup_ok').trigger('click');
-                    return;
-                }
-            }
-
-            if ($('#select_chat_popup').is(':visible')) {
-                $('#select_chat_cross').trigger('click');
-                return;
-            }
-
-            if ($('#dialogue_del_mes_cancel').is(':visible')) {
-                $('#dialogue_del_mes_cancel').trigger('click');
-                return;
-            }
-
-            if ($('.drawer-content')
-                .not('#left-nav-panel')
-                .not('#right-nav-panel')
-                .not('#floatingPrompt')
-                .not('#cfgConfig')
-                .not('#logprobsViewer')
-                .not('#movingDivs > div')
-                .is(':visible')) {
-                let visibleDrawerContent = $('.drawer-content:visible')
-                    .not('#left-nav-panel')
-                    .not('#right-nav-panel')
-                    .not('#floatingPrompt')
-                    .not('#cfgConfig')
-                    .not('#logprobsViewer')
-                    .not('#movingDivs > div');
-                $(visibleDrawerContent).parent().find('.drawer-icon').trigger('click');
-                return;
-            }
-
-            if ($('#logprobsViewer').is(':visible')) {
-                $('#logprobsViewerClose').trigger('click');
-                return;
-            }
-
-            if ($('#cfgConfig').is(':visible')) {
-                $('#CFGClose').trigger('click');
-                return;
-            }
-
-            if ($('#floatingPrompt').is(':visible')) {
-                $('#ANClose').trigger('click');
-                return;
-            }
-
-            const movingDivs = $('#movingDivs > div').toArray().reverse();
-            for (const div of movingDivs) {
-                if ($(div).is(':visible')) {
-                    $(div).find('.floating_panel_close, .dragClose').trigger('click');
-                    return;
-                }
-            }
-
-            if ($('#left-nav-panel').is(':visible') &&
-                $(LPanelPin).prop('checked') === false) {
-                $('#leftNavDrawerIcon').trigger('click');
-                return;
-            }
-
-            if ($('#right-nav-panel').is(':visible') &&
-                $(RPanelPin).prop('checked') === false) {
-                $('#rightNavDrawerIcon').trigger('click');
-                return;
-            }
-            if ($('.draggable').is(':visible')) {
-                $('.draggable:first').remove();
-                return;
-            }
-        }
-
-
-        if (event.ctrlKey && /^[1-9]$/.test(event.key)) {
-            // This will eventually be to trigger quick replies
-            // event.preventDefault();
-        }
-    }
 }

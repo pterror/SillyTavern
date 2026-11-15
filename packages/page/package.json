@@ -3,16 +3,19 @@
     "private": true,
     "type": "module",
     "exports": {
-        "./client": "./src/client.ts",
-        "./context": "./src/context.ts",
         "./classes": "./src/classes.ts",
+        "./client": "./src/client.ts",
+        "./command-surfaces": "./src/command-surfaces.ts",
+        "./commands": "./src/commands.ts",
+        "./context": "./src/context.ts",
         "./dialog": "./src/layers/dialog.tsx",
         "./looks": "./src/looks.ts",
         "./name": "./src/name.tsx",
         "./popover": "./src/layers/popover.ts"
     },
     "dependencies": {
-        "@pterror/interact-list": "github:pterror/interact#3026ce75a1316de2791e9820e36ceb2af0dff9b5&path:/packages/list",
+        "@pterror/interact-keybinds": "github:pterror/interact#0d2f2d2975aa2c0a331c6227989197d36b476567&path:/packages/keybinds",
+        "@pterror/interact-list": "github:pterror/interact#0d2f2d2975aa2c0a331c6227989197d36b476567&path:/packages/list",
         "@st/protocol": "workspace:*",
         "solid-js": "1.9.17"
     },

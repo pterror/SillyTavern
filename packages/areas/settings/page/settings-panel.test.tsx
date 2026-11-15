@@ -6,6 +6,7 @@ import { FIELDS } from '../protocol.ts';
 import type { SettingsView } from '../protocol.ts';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
+import { createCommands } from '@st/page/commands';
 import { LevelSlider } from './LevelSlider.tsx';
 import { CcOptions, CcSamplers, CcUtility } from './cc.tsx';
 import { TgSamplers, TgTop } from './tg.tsx';
@@ -64,7 +65,14 @@ function mount(
     host.id = 'openai_settings';
     document.body.append(host);
     createRoot(() =>
-        render(() => <UiProvider value={{ client: stood.client, t: (text) => text }}>{surface()}</UiProvider>, host),
+        render(
+            () => (
+                <UiProvider value={{ client: stood.client, commands: createCommands(), t: (text) => text }}>
+                    {surface()}
+                </UiProvider>
+            ),
+            host,
+        ),
     );
     return { host, ...stood };
 }

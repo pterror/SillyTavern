@@ -266,12 +266,6 @@ async function mountFieldEditor(id, text, at) {
         holder.editor = editor;
         const shown = /** @type {HTMLElement} */ (editor.view.dom.closest('.chat-editor'));
         preview.after(shown);
-        shown.addEventListener('keydown', (event) => {
-            if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
-            if (!handleFieldEditKey('escape')) return;
-            event.preventDefault();
-            event.stopPropagation();
-        });
         const place = Math.min(at, text.length);
         editor.view.dispatch({ selection: { anchor: place }, scrollIntoView: true });
         editor.view.focus();
@@ -585,8 +579,13 @@ async function escapeEdit() {
  * @param {'confirm'|'escape'} key
  * @returns {boolean}
  */
+/** @returns {boolean} whether a character field is being edited where it can be seen */
+export function fieldEditOpen() {
+    return activeEdit !== null && activeEdit !== undefined && getPanel(activeEdit.id).is(':visible');
+}
+
 export function handleFieldEditKey(key) {
-    if (!activeEdit || !getPanel(activeEdit.id).is(':visible')) {
+    if (!fieldEditOpen()) {
         return false;
     }
     if (key === 'confirm') {
@@ -742,14 +741,6 @@ function beginEditAtClick(preview, event) {
 export function initCharacterFieldEditor(dependencies) {
     deps = dependencies;
     initTabSwitchGuard();
-
-    document.addEventListener('keydown', (event) => {
-        if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
-        if (event.target instanceof Element && event.target.closest('.cm-editor')) return;
-        if (handleFieldEditKey('escape')) {
-            event.preventDefault();
-        }
-    }, { capture: true });
 
     $(document).on('click', '.field_edit_toggle', function () {
         beginEdit(String($(this).attr('data-for')));
