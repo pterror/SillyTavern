@@ -94,11 +94,17 @@ export function float(element: () => HTMLElement | undefined, options: FloatOpti
     });
 }
 
+export { hostPopoversInModals } from './modal-host.ts';
+
 // A ref that shows its element as a manual popover, in the top layer, while it is mounted: opened from `source()` when
-// it gives one, and opened again from each one it gives after. Placing and closing it are the caller's.
+// it gives one, and opened again from each one it gives after. Placing and closing it are the caller's. It is hidden
+// before it goes, so a modal it was shown in gives it back to its place first (`hostPopoversInModals`).
 export function inTopLayer(source?: () => HTMLElement | undefined) {
     return (element: HTMLElement) => {
         element.popover = 'manual';
+        onCleanup(() => {
+            if (element.matches(':popover-open')) element.hidePopover();
+        });
         createEffect(() => {
             const from = source?.();
             if (!element.isConnected) return;

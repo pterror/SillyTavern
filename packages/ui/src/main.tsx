@@ -12,6 +12,7 @@ import { commandSurfaces } from '@st/page/command-surfaces';
 import { createFocusActions } from '@st/page/focus-actions';
 import type { Anchor } from '@st/page/command-surfaces';
 import { documentLookSheet } from '@st/page/looks';
+import { hostPopoversInModals } from '@st/page/popover';
 import { inlineName, nameElement } from '@st/page/name';
 import { DRAWN_VIEW } from '@st/protocol/looks';
 import type { Declaration, LookState } from '@st/protocol/looks';
@@ -78,6 +79,7 @@ export type StartOptions = {
 };
 
 export function start(options: StartOptions) {
+    hostPopoversInModals(document);
     const looks = documentLookSheet(document);
     const client = createClient({ headers: options.headers, looks });
     // Brings the trigger mark's rules, which every chat draws.
