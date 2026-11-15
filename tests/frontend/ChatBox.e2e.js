@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { chatBox, pasteInto, testSetup } from './frontent-test-utils.js';
+import { connectLlamaCpp, startLlamaCpp } from './llamacpp-mock.js';
 
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
@@ -38,6 +39,13 @@ async function openCharacter(page, avatar) {
     }), { timeout: 15000 }).toBe('string');
 }
 
+/** @type {ReturnType<typeof startLlamaCpp> | null} a local model for the chats these tests open, never one online */
+let model = null;
+test.afterAll(async () => {
+    await (await model)?.close();
+    model = null;
+});
+
 /** @param {import('@playwright/test').Page} page */
 async function openSeraphina(page) {
     await page.evaluate(async () => {
@@ -45,8 +53,8 @@ async function openSeraphina(page) {
         await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
     });
     await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
-    // @ts-ignore
-    await expect.poll(() => page.evaluate(() => stTest.context().onlineStatus), { timeout: 15000 }).not.toBe('no_connection');
+    model ??= startLlamaCpp();
+    await connectLlamaCpp(page, (await model).url);
     await expect(chatBox(page)).toHaveCount(1, { timeout: 10000 });
 }
 
