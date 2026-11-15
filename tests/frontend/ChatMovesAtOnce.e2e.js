@@ -121,7 +121,7 @@ test.describe('a move in the chat is made at once', () => {
             const done = document.querySelector('#chat .last_mes .mes_edit_done');
             if (done instanceof HTMLElement) done.click();
         });
-        await page.waitForTimeout(500);
+        await expect(page.locator('#toast-container')).toContainText('the edit wasn\'t saved');
 
         expect(edits).toEqual([]);
         await page.unrouteAll({ behavior: 'ignoreErrors' });
