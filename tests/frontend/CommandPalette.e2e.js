@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { chatBox, testSetup } from './frontent-test-utils.js';
+import { connectLlamaCpp, startLlamaCpp } from './llamacpp-mock.js';
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 
@@ -81,25 +82,27 @@ test.describe('commands', () => {
     });
 
     test('Enter in the chat box sends', async ({ page }) => {
-        await testSetup.awaitST({ page });
-        await page.evaluate(async () => {
-            // @ts-ignore
-            await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
-            const { power_user } = await import('/scripts/power-user.js');
-            power_user.send_on_enter = 1;
-        });
-        await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
-        await chatBox(page).click();
-        await page.keyboard.type('sent by Enter');
-        await page.keyboard.press('Enter');
-        await expect.poll(() => page.evaluate(() => {
-            // @ts-ignore
-            return stTest.context().chat.some(message => message.is_user && message.mes === 'sent by Enter');
-        })).toBe(true);
-        await page.evaluate(() => {
-            // @ts-ignore
-            stTest.context().stopGeneration?.();
-        });
+        const model = await startLlamaCpp();
+        try {
+            await testSetup.awaitST({ page });
+            await page.evaluate(async () => {
+                // @ts-ignore
+                await stTest.context().executeSlashCommandsWithOptions('/go Seraphina');
+                const { power_user } = await import('/scripts/power-user.js');
+                power_user.send_on_enter = 1;
+            });
+            await expect(page.locator('#chat .mes[mesid="0"]')).toHaveCount(1, { timeout: 10000 });
+            await connectLlamaCpp(page, model.url);
+            await chatBox(page).click();
+            await page.keyboard.type('sent by Enter');
+            await page.keyboard.press('Enter');
+            await expect.poll(() => page.evaluate(() => {
+                // @ts-ignore
+                return stTest.context().chat.some(message => message.is_user && message.mes === 'sent by Enter');
+            })).toBe(true);
+        } finally {
+            await model.close();
+        }
     });
 
     test('a right click on a message opens its actions instead of the browser menu', async ({ page }) => {
