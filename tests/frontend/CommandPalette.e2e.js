@@ -195,4 +195,31 @@ test.describe('commands', () => {
         await page.keyboard.press(`${MOD}+Shift+y`);
         await expect(cheatsheet).toHaveCount(0);
     });
+
+    /**
+     * What the cheatsheet shows beside the command that asks for suggestions
+     * @param {import('@playwright/test').Page} page
+     */
+    async function suggestionKeys(page) {
+        await openChat(page);
+        await page.locator('body').click({ position: { x: 1, y: 1 } });
+        await page.keyboard.press('Shift+Slash');
+        const row = page.locator('.commandCheatsheet:popover-open [role=group] > div', { hasText: 'Show suggestions' });
+        await expect(row).toBeVisible();
+        return (await row.textContent()) ?? '';
+    }
+
+    test('suggestions are asked for on Ctrl+Space', async ({ page }) => {
+        const keys = await suggestionKeys(page);
+        expect(keys).toContain('Ctrl');
+        expect(keys).toContain('Space');
+    });
+
+    test('suggestions are asked for on Option+Esc on a Mac, which Ctrl+Space would clash with', async ({ page }) => {
+        await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel' }));
+        const keys = await suggestionKeys(page);
+        expect(keys).toContain('⌥');
+        expect(keys).toContain('Esc');
+        expect(keys).not.toContain('⌃');
+    });
 });

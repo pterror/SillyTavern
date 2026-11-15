@@ -17,4 +17,5 @@ export { modifierHeld } from '@pterror/interact-keybinds/modifier-held';
 export { formatKey } from '@pterror/interact-keybinds/format-key';
 export { formatSteps } from '@pterror/interact-keybinds/format-steps';
 export { isMac } from '@pterror/interact-keybinds/modifiers';
+export { byPlatform } from '@pterror/interact-keybinds/platform';
 export { overtype } from '@pterror/interact-markdown/overtype';

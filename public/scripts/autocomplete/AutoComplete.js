@@ -1,3 +1,4 @@
+import { byPlatform } from '../../live-editor-lib.js';
 import { t } from '../i18n.js';
 import { attachActions, registerCommands } from '../new-ui-page.js';
 import { power_user } from '../power-user.js';
@@ -53,7 +54,8 @@ registerCommands(() => [
         id: 'suggestions.show',
         label: t`Show suggestions, or the suggestion's details`,
         category: t`Suggestions`,
-        keys: ['ctrl+Space', 'alt+Space'],
+        // Ctrl+Space switches the input source on a Mac; Option+Esc is VS Code's other trigger there
+        keys: [...byPlatform({ mac: ['alt+Escape'], other: ['ctrl+Space'] }), 'alt+Space'],
         typing: true,
         when: () => focusedInstance() !== undefined,
         run: () => {
