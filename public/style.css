@@ -2067,6 +2067,12 @@ input[type="range"].macro-colors-hue {
     cursor: default;
 }
 
+/* Each binding of a command, apart from the next */
+.commandPalette [role="option"] > span:last-child > span + span,
+.commandMenu [role="menuitem"] > span:last-child > span + span {
+    margin-left: 0.75em;
+}
+
 .commandPalette kbd,
 .commandMenu kbd,
 .commandCheatsheet kbd {
