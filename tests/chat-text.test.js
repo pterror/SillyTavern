@@ -13,12 +13,12 @@ jest.unstable_mockModule('../public/lib.js', async () => {
     const { default: hljs } = await import('highlight.js');
     const { reader } = await import('@pterror/interact-editor/reader');
     const { GFM, parser: markdownParser } = await import('@lezer/markdown');
-    const { NodeType, Parser, Tree, parseMixed } = await import('@lezer/common');
+    const { parseMixed } = await import('@lezer/common');
     const { parser: htmlParser } = await import('@lezer/html');
     const { definitionOf, gfmLook, htmlLook, markdownLook } = await import('@pterror/interact-markdown/look');
     return {
         DOMPurify: createDOMPurify(/** @type {any} */ (window)), css, hljs, reader,
-        markdownParser, GFM, htmlParser, parseMixed, Parser, Tree, NodeType, markdownLook, gfmLook, htmlLook, definitionOf,
+        markdownParser, GFM, htmlParser, parseMixed, markdownLook, gfmLook, htmlLook, definitionOf,
     };
 });
 /** @type {import('../public/scripts/macro-pill.js').Translate} */
@@ -271,6 +271,26 @@ describe('Handlebars block tags in chat text', () => {
         expect(macroNodes('{{ #if a }}')).toEqual(['MacroBlockTag:{{ #if a }}']);
         expect(macroNodes('{{// note}}')).toEqual(['Macro:{{// note}}']);
         expect(macroNodes('{{elsewhere}} {{else_x}}')).toEqual(['Macro:{{elsewhere}}', 'Macro:{{else_x}}']);
+    });
+
+    test.each([
+        '{{user}}',
+        '{{outer::{{inner}}}}',
+        '{{#if a}}{{user}}{{else}}{{char}}{{/if}}',
+        '{{// note}} {{elsewhere}}',
+        '{{outer::one\ntwo}}',
+        '{{broken\n\n{{user}}',
+    ])('uses the same macro grammar in HTML text: %s', source => {
+        const macrosIn = (text) => [...surface.drawnText(text, setup()).querySelectorAll('.macro-value')]
+            .map(node => node.getAttribute('data-macro-source') ?? node.textContent);
+        expect(macrosIn('<div>before ' + source + ' after</div>')).toEqual(macrosIn('before ' + source + ' after'));
+    });
+
+    test('keeps Markdown literal in HTML text while parsing macros there', () => {
+        const html = drawn('<div>**bold** `code` [link](url) {{user}}</div>', { values: { '{{user}}': 'Ann' } });
+        expect(html).toContain('**bold** `code` [link](url) ');
+        expect(html).toContain('data-macro-source="{{user}}">Ann</span>');
+        expect(html).not.toMatch(/<(?:p|strong|code|a)[ >]/);
     });
 
     test('are drawn as written, not as a macro without a value', () => {

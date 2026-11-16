@@ -1,50 +1,34 @@
-import { htmlParser, NodeType, Parser, parseMixed, Tree } from '../../lib.js';
-import { macroSpans } from './grammar.js';
+import { htmlParser, markdownParser, parseMixed } from '../../lib.js';
+import { Macros } from './grammar.js';
 
 /**
  * @typedef {import('@lezer/markdown').MarkdownConfig} MarkdownConfig
  * @typedef {import('@lezer/common').SyntaxNode} SyntaxNode
  */
 
-const [TOP, MACRO, BLOCK_TAG, MARK] = ['HTMLText', 'Macro', 'MacroBlockTag', 'MacroMark'].map((name, id) => NodeType.define({ id, name, top: id === 0 }));
+/**
+ * HTML text uses the Markdown grammar's macro rule. Other Markdown syntax stays literal unless the enclosing
+ * element asks for Markdown. HTMLText has no paragraph wrapper, preserving the element's HTML structure.
+ * @type {MarkdownConfig}
+ */
+const htmlText = {
+    defineNodes: ['HTMLText'],
+    remove: ['Escape', 'Entity', 'InlineCode', 'HTMLTag', 'Emphasis', 'HardBreak', 'Link', 'Image', 'Autolink'],
+    parseBlock: [{
+        name: 'HTMLText',
+        parse(cx, line) {
+            const from = cx.lineStart;
+            let to = from + line.text.length;
+            while (cx.nextLine()) to = cx.lineStart + line.text.length;
+            // @ts-ignore input is a BlockContext field the published types leave out.
+            cx.addElement(cx.elt('HTMLText', from, to, cx.parser.parseInline(cx.input.read(from, to), from)));
+            return true;
+        },
+        before: 'LinkReference',
+    }],
+};
 
-/** The text of an HTML element: each `{{…}}` in it a `Macro` or `MacroBlockTag` with its two `MacroMark`s */
-class MacroTextParser extends Parser {
-    /**
-     * @param {import('@lezer/common').Input} input
-     * @param {readonly import('@lezer/common').TreeFragment[]} _fragments
-     * @param {readonly { from: number, to: number }[]} ranges
-     * @returns {import('@lezer/common').PartialParse}
-     */
-    createParse(input, _fragments, ranges) {
-        const from = ranges[0].from;
-        const to = ranges[ranges.length - 1].to;
-        let parsed = from;
-        return {
-            get parsedPos() {
-                return parsed;
-            },
-            stoppedAt: null,
-            stopAt() {},
-            advance() {
-                parsed = to;
-                /** @type {Tree[]} */
-                const children = [];
-                /** @type {number[]} */
-                const positions = [];
-                for (const span of macroSpans(input.read(from, to))) {
-                    const length = span.to - span.from;
-                    const marks = [new Tree(MARK, [], [], 2), new Tree(MARK, [], [], 2)];
-                    children.push(new Tree(span.blockTag ? BLOCK_TAG : MACRO, marks, [0, length - 2], length));
-                    positions.push(span.from);
-                }
-                return new Tree(TOP, children, positions, to - from);
-            },
-        };
-    }
-}
-
-const macroText = new MacroTextParser();
+const macroText = markdownParser.configure([Macros, htmlText]);
 
 const html = htmlParser.configure({
     wrap: parseMixed(node => (node.name === 'Text' && node.from < node.to ? { parser: macroText } : null)),
@@ -68,8 +52,7 @@ function tagsUnder(node) {
 
 /**
  * HTML inside chat text, parsed by `@lezer/html` with the macros in its text: the HTML tags of one leaf block are
- * mounted as one overlay, an HTML block is an overlay over itself (as interact-markdown's `htmlInMarkdown`, whose HTML
- * parser can't be given one that parses macros)
+ * mounted as one overlay, an HTML block is an overlay over itself
  * @type {MarkdownConfig}
  */
 export const htmlInChatText = {

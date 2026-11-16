@@ -11,10 +11,10 @@ jest.unstable_mockModule('../public/lib.js', async () => {
     const { default: hljs } = await import('highlight.js');
     const { reader } = await import('@pterror/interact-editor/reader');
     const { GFM, parser: markdownParser } = await import('@lezer/markdown');
-    const { NodeType, Parser, Tree, parseMixed } = await import('@lezer/common');
+    const { parseMixed } = await import('@lezer/common');
     const { parser: htmlParser } = await import('@lezer/html');
     const { definitionOf, gfmLook, htmlLook, markdownLook } = await import('@pterror/interact-markdown/look');
-    return { DOMPurify: createDOMPurify(/** @type {any} */ (window)), css, hljs, reader, markdownParser, GFM, htmlParser, parseMixed, Parser, Tree, NodeType, markdownLook, gfmLook, htmlLook, definitionOf };
+    return { DOMPurify: createDOMPurify(/** @type {any} */ (window)), css, hljs, reader, markdownParser, GFM, htmlParser, parseMixed, markdownLook, gfmLook, htmlLook, definitionOf };
 });
 jest.unstable_mockModule('../public/scripts/i18n.js', () => ({ t: (strings, ...values) => String.raw({ raw: strings }, ...values) }));
 

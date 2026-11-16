@@ -13,7 +13,7 @@ import DiffMatchPatch from 'diff-match-patch';
 import { isProbablyReaderable, Readability } from '@mozilla/readability';
 import { reader } from '@pterror/interact-editor/reader';
 import { GFM, parser as markdownParser } from '@lezer/markdown';
-import { NodeType, Parser, Tree, parseMixed } from '@lezer/common';
+import { parseMixed } from '@lezer/common';
 import { parser as htmlParser } from '@lezer/html';
 import { definitionOf, gfmLook, htmlLook, markdownLook } from '@pterror/interact-markdown/look';
 import moment from 'moment';
@@ -40,9 +40,6 @@ export {
     GFM,
     htmlParser,
     parseMixed,
-    Parser,
-    Tree,
-    NodeType,
     markdownLook,
     gfmLook,
     htmlLook,

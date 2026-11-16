@@ -371,30 +371,11 @@ function macroEnd(char, from, end) {
 }
 
 /**
- * @param {string} text
- * @returns {{ from: number, to: number, blockTag: boolean }[]} the macros in a text with no markdown in it, in order
- */
-export function macroSpans(text) {
-    /** @type {{ from: number, to: number, blockTag: boolean }[]} */
-    const spans = [];
-    for (let from = text.indexOf('{{'); from >= 0; from = text.indexOf('{{', from)) {
-        const to = macroEnd(pos => text.charCodeAt(pos), from, text.length);
-        if (to < 0) {
-            from += 2;
-            continue;
-        }
-        spans.push({ from, to, blockTag: BLOCK_TAG.test(text.slice(from + 2, to - 2)) });
-        from = to;
-    }
-    return spans;
-}
-
-/**
  * `{{…}}`, nested ones included, as one `Macro` with its two `MacroMark`s; a Handlebars block's opening, `else` and
  * closing tags as `MacroBlockTag`s, which hold no value
  * @type {MarkdownConfig}
  */
-const Macros = {
+export const Macros = {
     defineNodes: ['Macro', 'MacroBlockTag', 'MacroMark'],
     parseInline: [{
         name: 'Macro',
