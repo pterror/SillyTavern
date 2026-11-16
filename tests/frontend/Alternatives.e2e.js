@@ -466,7 +466,7 @@ test.describe('the alternatives of a message', () => {
         await openCharacter(page, avatar);
         await page.locator('#chat .mes[mesid="0"] .swipes-counter').click();
         await expect(rows(page)).toHaveCount(6);
-        const answers = await page.evaluate(async ({ g, s }) => {
+        const answers = await page.evaluate(async ({ g, s, avatar }) => {
             const { getStringHash } = await import('/scripts/utils.js');
             const hash = (/** @type {string} */ text) => getStringHash(JSON.stringify(text));
             // @ts-ignore
@@ -474,8 +474,8 @@ test.describe('the alternatives of a message', () => {
             const send = (/** @type {object} */ payload) => fetch('/api/ui/action', { method: 'POST', headers, body: JSON.stringify({ type: 'alternatives.greeting', payload }) })
                 .then(r => r.text())
                 .then(text => JSON.parse(text.split('\n')[0]));
-            return Promise.all(g.map((text, position) => send({ op: 'edit', position, hash: hash(text), text: `${text} edited ${s}` })));
-        }, { g, s });
+            return Promise.all(g.map((text, position) => send({ op: 'edit', avatar, position, hash: hash(text), text: `${text} edited ${s}` })));
+        }, { g, s, avatar });
         expect(answers.map(a => a.ok)).toEqual(g.map(() => true));
         expect((await storedModel(page, avatar)).greetings).toEqual(g.map(text => `${text} edited ${s}`));
     });

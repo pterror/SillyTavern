@@ -1200,12 +1200,15 @@ async function runGreetingOperation(directories, avatar, op) {
  * @param {import('../chat-engine.js').Actor | null} p.actor
  * @param {string} p.avatar
  * @param {import('../greeting-ops.js').GreetingChange} p.change
+ * @param {{ tree: bigint, groupId: string }} [p.group] the group chat whose openings the answer has, one the character
+ *   is a member of; the character's own chat's when absent
  */
-export async function changeGreetings({ directories, store, actor, avatar, change }) {
+export async function changeGreetings({ directories, store, actor, avatar, change, group }) {
     const result = await applyGreetingOperation(directories, avatar, greetingOperation(change));
-    const [tree] = actor === null ? [null] : await store.people.trees([{ avatar }]);
+    const [tree] = actor === null ? [null] : group ? [group.tree] : await store.people.trees([{ avatar }]);
     if (!result.ok || tree === null || tree === undefined || actor === null) return { result, opening: null };
-    return { result, opening: await countedOpeningState(directories, { store, tree, actor, owner: { avatar } }) };
+    const owner = group ? { groupId: group.groupId } : { avatar };
+    return { result, opening: await countedOpeningState(directories, { store, tree, actor, owner }) };
 }
 
 /**

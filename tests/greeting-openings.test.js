@@ -274,7 +274,7 @@ test('using a card greeting in the chat goes to the opening that holds it, with 
     expect(await chats.useCardGreeting({ tree, greeting: { card: tree, id: 99 }, actor })).toEqual({ ok: false, reason: 'no such greeting' });
 });
 
-test('each opening says the card greeting it is, by id and the hash of its current text, exactly while it is that greeting', async () => {
+test('each opening says the card greeting it is, by id, character and the hash of its current text, exactly while it is that greeting', async () => {
     const session = '0190a1b2-0000-7000-8000-0000000000f8';
     const actor = { user: user.user.profile.handle, session };
     expect((await post('create', { ch_name: 'Linked', first_mes: 'Start', file_name: 'Linked' }, session)).status).toBe(200);
@@ -287,13 +287,13 @@ test('each opening says the card greeting it is, by id and the hash of its curre
     const added = await post('greetings/add', { avatar_url: 'Linked.png', append: true, text: 'Later' }, session);
     const later = (await user.store.lib.greetingModel('Linked.png')).greetings[1];
     expect(added.body.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.greeting])).toEqual([
-        ['Start', { id: start.id, hash: hashGreetingText('Start') }],
-        ['Later', { id: later.id, hash: hashGreetingText('Later') }],
+        ['Start', { id: start.id, hash: hashGreetingText('Start'), avatar: 'Linked.png' }],
+        ['Later', { id: later.id, hash: hashGreetingText('Later'), avatar: 'Linked.png' }],
     ]);
     const edited = await post('greetings/edit', { avatar_url: 'Linked.png', position: 0, expected_hash: added.body.hashes[0], text: 'Start again' }, session);
     expect(edited.body.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.greeting])).toEqual([
-        ['Start again', { id: start.id, hash: hashGreetingText('Start again') }],
+        ['Start again', { id: start.id, hash: hashGreetingText('Start again'), avatar: 'Linked.png' }],
         ['Start', null],
-        ['Later', { id: later.id, hash: hashGreetingText('Later') }],
+        ['Later', { id: later.id, hash: hashGreetingText('Later'), avatar: 'Linked.png' }],
     ]);
 });

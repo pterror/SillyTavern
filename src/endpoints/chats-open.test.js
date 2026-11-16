@@ -307,3 +307,49 @@ test('a group\'s opening is kept in its member\'s greeting\'s group', async () =
     });
     assert.deepEqual((await user.store.chats.store.chatRead('rootGroups', { tree })).map(g => g.group), [greetingGroup(tree, ned, 1)]);
 });
+
+test('a group\'s opening is chosen by its greeting\'s id and character, never its text: two members\' same text are two', async () => {
+    const { hashGreetingText } = await import('../greeting-ops.js');
+    const { readCardGreetings } = await import('../opening-state.js');
+    await writeCharacter('Pip.png', 'Pip', 'Hi.');
+    await writeCharacter('Pop.png', 'Pop', 'Hi.', { alternateGreetings: ['', 'Bye.'] });
+    await writeCharacter('Out.png', 'Out', 'Hi.');
+    await user.store.lib.writeGroup({ id: 'g-chosen', name: 'Chosen band', members: ['Pip.png', 'Pop.png'] });
+    const tab = newSessionKey();
+    await user.store.chats.startChat({ tree: await treeOf(user.store, { group: 'g-chosen' }), actor: { user: 'u', session: tab } });
+    const choose = async (/** @type {Record<string, unknown>} */ body) => {
+        const res = await fetch(`${base}/api/chats/openings/choose`, { method: 'POST', headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: tab }, body: JSON.stringify({ group_id: 'g-chosen', ...body }) });
+        return res.status;
+    };
+    const shown = async () => {
+        const { openings } = (await open({ group_id: 'g-chosen' }, tab)).body;
+        const a = openings.alternatives[openings.default_index - (openings.offset ?? 0)];
+        return [a.original_avatar, a.mes];
+    };
+    const pop = /** @type {import('../opening-state.js').CardGreetingsRead} */ (await readCardGreetings(user.store, 'Pop.png'));
+    assert.deepEqual(pop.texts, ['Hi.', '', 'Bye.']);
+    assert.equal(pop.ids.length, pop.texts.length, 'each greeting, an empty one too, has its id');
+    const [hi, bye] = ['Hi.', 'Bye.'].map(text => pop.ids[pop.texts.indexOf(text)]);
+
+    assert.deepEqual(await shown(), ['Pip.png', 'Hi.']);
+    assert.equal(await choose({ greeting_avatar: 'Pop.png', greeting_id: hi, expected_hash: hashGreetingText('Hi.') }), 200);
+    assert.deepEqual(await shown(), ['Pop.png', 'Hi.'], 'the second member\'s greeting with the first\'s text');
+    assert.equal(await choose({ greeting_avatar: 'Pop.png', greeting_id: bye, expected_hash: hashGreetingText('Bye.') }), 200);
+    assert.deepEqual(await shown(), ['Pop.png', 'Bye.'], 'the greeting after an empty one is its own');
+
+    assert.equal(await choose({ greeting_avatar: 'Pop.png', text: 'Hi.' }), 400, 'a text names no greeting');
+    assert.equal(await choose({ greeting_avatar: 'Pop.png', greeting_id: hi, expected_hash: hashGreetingText('Hi!') }), 409, 'a greeting whose text changed is refused');
+    assert.equal(await choose({ greeting_avatar: 'Out.png', greeting_id: 0, expected_hash: hashGreetingText('Hi.') }), 409, 'a non-member\'s greeting is none the group offers');
+    assert.deepEqual(await shown(), ['Pop.png', 'Bye.']);
+
+    const use = async (/** @type {string} */ avatar, /** @type {number} */ position, /** @type {string} */ text) => {
+        const res = await fetch(`${base}/api/chats/openings/use-greeting`, { method: 'POST', headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: tab }, body: JSON.stringify({ avatar_url: avatar, group_id: 'g-chosen', position, expected_hash: hashGreetingText(text) }) });
+        return { status: res.status, body: await res.json().catch(() => null) };
+    };
+    const used = await use('Pip.png', 0, 'Hi.');
+    assert.equal(used.status, 200, 'a member\'s greeting is used in its group\'s chat');
+    assert.equal(typeof used.body.opened, 'object');
+    assert.deepEqual(await shown(), ['Pip.png', 'Hi.']);
+    assert.equal((await use('Pop.png', 2, 'Hi.')).status, 409, 'a greeting whose text changed is refused');
+    assert.equal((await use('Out.png', 0, 'Hi.')).status, 409, 'a non-member\'s greeting is not the group\'s');
+});

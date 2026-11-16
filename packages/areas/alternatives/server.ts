@@ -1,12 +1,14 @@
 import { actions, COUNTS_VIEW, LIST_VIEW, MATCHES_VIEW, VIEWS } from './protocol.ts';
-import type { GreetingOp, Item, ListView, Target, TokenizerState } from './protocol.ts';
+import type { CardView, GreetingOp, Item, ListView, Target, TokenizerState } from './protocol.ts';
 import { defineArea, patch } from '@st/server-ui';
 import type { ActionContext, ActionResult, User, ViewContext } from '@st/server-ui';
 
 export type Alternative = {
+    /** its node id; an unstored card greeting's as the page names it */
+    id: string;
     nodeId: string | null;
-    /** an unstored card greeting's node id, as the page names it */
-    greetingNodeId?: string | null;
+    /** the card greeting it is (a stored opening: the one it is linked to), by its character and id */
+    greeting: { avatar: string; id: number } | null;
     text: string;
     name: string;
     isUser: boolean;
@@ -16,11 +18,18 @@ export type Alternative = {
     macros?: Record<string, string | null>;
 };
 
+/** a card's greetings, `ids[k]` the id of `greetings[k]` */
+export type ListedCard = { avatar: string; ids: number[]; greetings: string[]; defaultPosition: number | null };
+
 export type Listed = {
     alternatives: Alternative[];
     current: number | null;
-    card: { avatar: string; greetings: string[]; defaultPosition: number | null } | null;
-    openings: string[] | null;
+    /** every card an alternative is a greeting of */
+    cards: ListedCard[];
+    /** the card a new greeting is added to */
+    addsTo: string | null;
+    /** the open chat's openings, each the card greeting it is or null, when the list is of a card the chat offers */
+    openings: ({ avatar: string; id: number } | null)[] | null;
 };
 
 export type Ports = {
@@ -39,7 +48,7 @@ export type Ports = {
     greeting(
         context: ActionContext,
         avatar: string,
-        op: GreetingOp,
+        op: GreetingChange,
     ): Promise<{ ok: true; opening: unknown } | { ok: false; reason: string; same?: number }>;
     move(
         context: ActionContext,
@@ -48,6 +57,9 @@ export type Ports = {
     ): Promise<{ ok: true } | { ok: false; reason: string }>;
 };
 
+/** a card's operation, the card being named apart */
+export type GreetingChange = GreetingOp extends infer Op ? (Op extends unknown ? Omit<Op, 'avatar'> : never) : never;
+
 function freshLook(target: Target, tokenizer: TokenizerState | null): Look {
     const look: Look = {
         target,
@@ -55,7 +67,8 @@ function freshLook(target: Target, tokenizer: TokenizerState | null): Look {
         query: '',
         items: [],
         current: null,
-        card: null,
+        cards: new Set(),
+        addsTo: null,
         counted: new Map(),
         asked: new Set(),
         counting: null,
@@ -81,7 +94,9 @@ type Look = {
     query: string;
     items: Item[];
     current: number | null;
-    card: { avatar: string; greetings: number } | null;
+    /** the cards the list's greeting operations may change */
+    cards: Set<string>;
+    addsTo: string | null;
     counted: Map<string, number>;
     asked: Set<string>;
     counting: Promise<void> | null;
@@ -100,35 +115,37 @@ const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const sameTarget = (a: Target, b: Target) => JSON.stringify(a) === JSON.stringify(b);
 
-const shown = (text: string) => text.trim();
+const sameGreeting = (a: { avatar: string; id: number } | null, b: { avatar: string; id: number } | null) =>
+    a !== null && b !== null && a.avatar === b.avatar && a.id === b.id;
 
-export function itemsOf(listed: Listed, target: Target, hash: (text: string) => number): Item[] {
-    const greetings = listed.card?.greetings ?? [];
-    const positions = new Map<string, number>();
-    greetings.forEach((text, position) => {
-        if (text !== '' && !positions.has(shown(text))) positions.set(shown(text), position);
-    });
-    const openings = listed.openings?.map(shown) ?? null;
-    const seen = new Map<number, number>();
-    const idOf = (text: string) => {
-        const key = hash(text);
-        const nth = seen.get(key) ?? 0;
-        seen.set(key, nth + 1);
-        return nth === 0 ? `card:${key}` : `card:${key}:${nth}`;
+export function cardViewOf(card: ListedCard, hash: (text: string) => number): CardView {
+    return {
+        avatar: card.avatar,
+        greetings: card.greetings,
+        hashes: card.greetings.map((text) => hash(text)),
+        defaultPosition: card.defaultPosition,
+    };
+}
+
+export function itemsOf(listed: Listed, hash: (text: string) => number): Item[] {
+    const cards = new Map(listed.cards.map((card) => [card.avatar, card]));
+    const placeOf = (greeting: Alternative['greeting']) => {
+        const card = greeting === null ? undefined : cards.get(greeting.avatar);
+        const position = card?.ids.indexOf(greeting!.id) ?? -1;
+        if (card === undefined || position < 0) return null;
+        return { avatar: card.avatar, id: greeting!.id, position, hash: hash(card.greetings[position]!) };
     };
     return listed.alternatives.map((a, index) => {
-        const position = 'greetings' in target ? index : positions.get(shown(a.text));
-        const card = position === undefined ? null : { position, hash: hash(greetings[position] ?? a.text) };
-        const at = openings?.indexOf(shown(a.text)) ?? -1;
+        const at = listed.openings?.findIndex((opening) => sameGreeting(opening, a.greeting)) ?? -1;
         return {
-            id: a.nodeId ?? a.greetingNodeId ?? idOf(a.text),
+            id: a.id,
             index,
             text: a.text,
             name: a.name,
             role: a.isSystem ? 'system' : a.isUser ? 'user' : 'assistant',
             date: a.date,
             nodeId: a.nodeId,
-            card,
+            card: placeOf(a.greeting),
             opening: at >= 0 ? at : null,
             macros: a.macros ?? null,
         };
@@ -145,7 +162,8 @@ export function alternativesArea(ports: Ports) {
         total: 0,
         complete: true,
         current: null,
-        card: null,
+        cards: [],
+        addsTo: null,
         chatOpen: false,
     };
 
@@ -159,25 +177,25 @@ export function alternativesArea(ports: Ports) {
         if (!listed) {
             look.items = [];
             look.current = null;
-            look.card = null;
+            look.cards = new Set();
+            look.addsTo = null;
             yield { ...empty, target: look.target };
             return;
         }
-        const items = itemsOf(listed, look.target, (text) => ports.hash(text));
+        const hash = (text: string) => ports.hash(text);
+        const items = itemsOf(listed, hash);
         look.items = items;
         look.current = listed.current;
-        look.card = listed.card
-            ? { avatar: listed.card.avatar, greetings: listed.card.greetings.filter((text) => text !== '').length }
-            : null;
+        look.cards = new Set(listed.cards.map((card) => card.avatar));
+        look.addsTo = listed.addsTo;
         const view: ListView = {
             target: look.target,
             items,
             total: items.length,
             complete: true,
             current: listed.current,
-            card: listed.card
-                ? { ...listed.card, hashes: listed.card.greetings.map((text) => ports.hash(text)) }
-                : null,
+            cards: listed.cards.map((card) => cardViewOf(card, hash)),
+            addsTo: listed.addsTo,
             chatOpen: listed.openings !== null,
         };
         for (let size = FIRST_PART; size < items.length; size *= GROWTH) {
@@ -326,11 +344,11 @@ export function alternativesArea(ports: Ports) {
                 look.query = query;
                 return { changed: [MATCHES_VIEW] };
             },
-            'alternatives.greeting': async (context, op) => {
+            'alternatives.greeting': async (context, { avatar, ...op }) => {
                 const look = lookOf(context);
-                const avatar = look ? ('greetings' in look.target ? look.target.greetings : look.card?.avatar) : null;
-                if (avatar === null || avatar === undefined) return { refused: 'No card to change.' };
-                const sent: GreetingOp =
+                if (look === null || !look.cards.has(avatar)) return { refused: 'No card to change.' };
+                if (op.op === 'add' && avatar !== look.addsTo) return { refused: 'No card to add to.' };
+                const sent: GreetingChange =
                     op.op === 'edit' && op.text.trim() === ''
                         ? { op: 'delete', position: op.position, hash: op.hash }
                         : op;

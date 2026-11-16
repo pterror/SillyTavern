@@ -1,4 +1,4 @@
-import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, unstoredGreetingNodeId, composedOpeningNodeId, redisplayChat, refreshSwipeButtons, showMessageCount, updateMessageBlock, updateViewMessageIds, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
+import { getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, unstoredGreetingNodeId, composedOpeningNodeId, redisplayChat, refreshSwipeButtons, showMessageCount, updateMessageBlock, updateViewMessageIds, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
 import { eventSource, event_types } from './events.js';
 import { openingView } from './opening-view.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -591,24 +591,22 @@ function _noticeSameAlternative(place) {
 }
 
 /**
- * Asks the server to remember the card greeting `text` as the chat's opening, which the page shows already: the chat
- * box moves to it as it is asked (`moveChatBox`). Only an alternative the server named a card greeting is one.
- * @param {string} text
- * @param {(SwipeInfo & { greeting?: unknown }) | undefined} info the alternative's swipe info
+ * Asks the server to remember the card greeting an alternative is as the chat's opening, which the page shows already:
+ * the chat box moves to it as it is asked (`moveChatBox`). Only an alternative the server named a card greeting (its
+ * swipe info's `greeting`: the greeting's id, its character and its text's hash) is one.
+ * @param {(SwipeInfo & { greeting?: { id?: unknown, avatar?: unknown, hash?: unknown } | null }) | undefined} info the alternative's swipe info
  * @returns {Promise<boolean>} false when the server didn't take it
  */
-export async function rememberCardOpening(text, info) {
+export async function rememberCardOpening(info) {
     const owner = _currentOwner();
-    if (!owner || typeof text !== 'string' || text.length === 0 || !info?.greeting) return true;
-    const character = typeof info.original_avatar === 'string' && info.original_avatar !== '' ? charactersStore.get(info.original_avatar) : getCurrentCharacter();
-    if (character?.avatar == null || character.avatar === '') return true;
-    const index = cardToGreetingsModel(character).greetings.indexOf(text);
+    const greeting = info?.greeting;
+    if (!owner || !greeting || !Number.isInteger(greeting.id) || typeof greeting.avatar !== 'string' || greeting.avatar === '') return true;
     const move = moveChatBox({ chat: owner });
     try {
         const response = await fetch('/api/chats/openings/choose', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ ...owner, greeting_avatar: character.avatar, text, ...(index < 0 ? {} : { index }), leaving: move.leaving }),
+            body: JSON.stringify({ ...owner, greeting_avatar: greeting.avatar, greeting_id: greeting.id, expected_hash: greeting.hash, leaving: move.leaving }),
         });
         if (!response.ok) throw new Error(`/api/chats/openings/choose responded ${response.status}`);
         const answer = await response.json().catch(() => null);

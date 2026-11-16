@@ -48,8 +48,9 @@ export async function draftOwnerOf(chat, wire) {
     if (Number.isInteger(given.greeting) && typeof given.avatar === 'string' && given.avatar !== '') {
         const greeting = /** @type {number} */ (given.greeting);
         if (!await opensChat(chat, given.avatar)) return null;
-        const { ids } = await cardGreetingsOf(chat.store, given.avatar);
-        if (!ids.includes(greeting)) return null;
+        const { ids, texts } = await cardGreetingsOf(chat.store, given.avatar);
+        const k = ids.indexOf(greeting);
+        if (k < 0 || texts[k] === '') return null;
         const [card] = await chat.store.lib.ids(TYPE.character, [given.avatar]);
         return card === null || card === undefined ? null : { tree: card, greeting };
     }

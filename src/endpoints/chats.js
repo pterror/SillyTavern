@@ -34,7 +34,7 @@ import { SESSION_GONE_HEADER, requireSessionHeader, sessionHeaderOf } from '../r
 import { pageLooks, ui, uiUser } from '../ui-wiring.js';
 import { CHATS_LOOKS, CHAT_LOOKS, RECENT_LOOKS } from '../../public/scripts/name-holders.js';
 import { pageSettingsHash } from '../settings-hash.js';
-import { PlaceError, placeOf, storedForm } from '../chat-engine.js';
+import { ChatEngine, PlaceError, placeOf, storedForm } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
 import { draftOwnerOf, endDraft } from '../chat-drafts.js';
 import { baseOf } from '../draft-merge.js';
@@ -1249,26 +1249,24 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
 });
 
 /**
- * The chat's opening becomes a card greeting it offers: one of `greeting_avatar`'s (the chat's character's when
- * absent) with the text `text`, at `index` among that card's greetings when given.
+ * The chat's opening becomes a card greeting it offers: `greeting_avatar`'s (the chat's character's when absent)
+ * greeting `greeting_id`, refused unless its text still hashes to `expected_hash`.
  */
 router.post('/openings/choose', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.greeting_avatar || request.body.avatar_url || '');
         if (!avatar) return response.status(400).send({ error: 'greeting_avatar or avatar_url is required' });
-        const index = request.body.index;
-        if (index !== undefined && (!Number.isInteger(index) || index < 0)) return response.status(400).send({ error: 'index must be a non-negative integer' });
-        if (index === undefined && typeof request.body.text !== 'string') return response.status(400).send({ error: 'text or index is required' });
+        const { greeting_id: id, expected_hash: expectedHash } = request.body;
+        if (!Number.isInteger(id) || id < 0) return response.status(400).send({ error: 'greeting_id must be a non-negative integer' });
+        if (!Number.isFinite(expectedHash)) return response.status(400).send({ error: 'expected_hash is required' });
         const chat = await chatOf(request);
         if (!chat) return response.status(404).send({ error: 'unknown chat' });
         const [character] = await chat.store.lib.ids(TYPE.character, [avatar]);
+        if (character === null) return response.status(409).send({ error: 'no such greeting' });
         const card = await chat.store.chats.cardGreetings(chat.tree);
-        if (character === null || !card.cards.includes(character)) return response.status(409).send({ error: 'no such greeting' });
-        const { greetings, defaultEpoch } = await chat.store.lib.greetingModel(avatar);
-        const text = typeof request.body.text === 'string' ? request.body.text : greetings[index]?.text;
-        const chosen = index !== undefined && greetings[index]?.text === text ? greetings[index] : greetings.find(g => g.text === text);
-        if (!chosen) return response.status(409).send({ error: 'no such greeting' });
-        await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greeting: { card: character, id: chosen.id }, epoch: defaultEpoch, actor: chat.session.actor() });
+        const k = ChatEngine.greetingAt(card, { card: character, id });
+        if (k < 0 || hashGreetingText(card.greetings[k].mes) !== expectedHash) return response.status(409).send({ error: 'no such greeting' });
+        await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greeting: { card: character, id }, epoch: card.epochs[k], actor: chat.session.actor() });
         chat.session.answer(response, { moved: true });
         const openings = await openingsForPage(request, chat);
         return response.send({ ok: true, ...openings, ...await endAnswer(response, chat) });
@@ -1278,21 +1276,29 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
     }
 });
 
+/**
+ * The chat's opening becomes the card greeting at `position` of `avatar_url`'s card, refused unless its text still
+ * hashes to `expected_hash`: in that character's chat, or in the group `group_id`'s when given (one of its members).
+ */
 router.post('/openings/use-greeting', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
         if (!avatar) return response.status(400).send({ error: 'avatar_url is required' });
+        const groupId = typeof request.body.group_id === 'string' && request.body.group_id !== '' ? request.body.group_id : null;
         const { position, expected_hash: expectedHash } = request.body;
         if (!Number.isInteger(position) || position < 0) return response.status(400).send({ error: 'position must be a non-negative integer' });
-        const chat = await chatOf(request, { avatar_url: avatar });
+        const owner = groupId === null ? { avatar_url: avatar } : { group_id: groupId };
+        const chat = await chatOf(request, owner);
         if (!chat) return response.status(404).send({ error: 'unknown chat' });
         const { greetings } = await chat.store.lib.greetingModel(avatar);
         const greeting = position < greetings.length ? greetings[position] : null;
         if (greeting === null || hashGreetingText(greeting.text) !== expectedHash) return response.status(409).send({ ok: false, reason: 'the greeting changed' });
-        const used = await chat.store.chats.useCardGreeting({ tree: chat.tree, greeting: { card: chat.tree, id: greeting.id }, actor: chat.session.actor() });
+        const [character] = await chat.store.lib.ids(TYPE.character, [avatar]);
+        if (character === null) return response.status(409).send({ ok: false, reason: 'no such greeting' });
+        const used = await chat.store.chats.useCardGreeting({ tree: chat.tree, greeting: { card: character, id: greeting.id }, actor: chat.session.actor() });
         if (!used.ok) return response.status(409).send(used);
         chat.session.answer(response, { moved: true });
-        const { answer } = await openChatAnswer(request, response, { avatar_url: avatar, send_keys: request.body.send_keys, parts: request.body.parts });
+        const { answer } = await openChatAnswer(request, response, { ...owner, send_keys: request.body.send_keys, parts: request.body.parts });
         return response.send({ ok: true, opened: answer });
     } catch (error) {
         console.error('Error using a greeting in the chat:', error);

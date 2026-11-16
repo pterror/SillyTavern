@@ -325,19 +325,36 @@ async function chatOfTab(context) {
 }
 
 /**
- * @param {Record<string, any>} entry
+ * @param {Record<string, any>} entry an alternative as the chat engine reads it
  * @param {string | null} [avatar] the chat's character, whose card greetings an opening naming no `original_avatar` is
  * @returns {import('@st/alternatives/server').Alternative}
  */
 const alternativeOf = (entry, avatar = null) => ({
+    id: entry.node_id ?? unstoredGreetingNodeId(entry, avatar) ?? '',
     nodeId: entry.node_id ?? null,
-    ...(entry.node_id == null ? { greetingNodeId: unstoredGreetingNodeId(entry, avatar) } : {}),
+    greeting: greetingOf(entry.greeting),
     text: typeof entry.mes === 'string' ? entry.mes : '',
     name: typeof entry.name === 'string' ? entry.name : '',
     isUser: !!entry.is_user,
     isSystem: !!entry.is_system,
     date: typeof entry.send_date === 'string' || typeof entry.send_date === 'number' ? entry.send_date : null,
 });
+
+/**
+ * @param {unknown} greeting an opening's `greeting`, as the chat engine names the card greeting it is
+ * @returns {{ avatar: string, id: number } | null}
+ */
+function greetingOf(greeting) {
+    const g = /** @type {{ avatar?: unknown, id?: unknown } | null | undefined} */ (greeting);
+    return typeof g?.avatar === 'string' && g.avatar !== '' && Number.isInteger(g.id) ? { avatar: g.avatar, id: /** @type {number} */ (g.id) } : null;
+}
+
+/**
+ * @param {string} avatar
+ * @param {import('./opening-state.js').CardGreetingsRead} card
+ * @returns {import('@st/alternatives/server').ListedCard}
+ */
+const listedCard = (avatar, card) => ({ avatar, ids: card.ids, greetings: card.texts, defaultPosition: card.defaultIndex });
 
 /**
  * @param {User} user
@@ -358,31 +375,39 @@ async function listedAlternatives(context, target) {
         const store = await userStore(directoriesOf(context.user), context.user.handle);
         const found = await store.chats.alternatives({ node_id: target.message });
         if (!found) return null;
-        return { alternatives: found.alternatives.map(entry => alternativeOf(entry)), current: found.selected, card: null, openings: null };
+        return { alternatives: found.alternatives.map(entry => alternativeOf(entry)), current: found.selected, cards: [], addsTo: null, openings: null };
     }
     const chat = await chatOfTab(context);
     if ('opening' in target) {
         if (!chat) return null;
-        const card = chat.avatar ? await readCardGreetings(chat.store, chat.avatar) : null;
-        const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE });
+        const offered = await chat.store.chats.cardGreetings(chat.tree);
+        const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, card: offered });
+        const avatars = chat.avatar ? [chat.avatar] : [...new Set(offered.avatars.filter(a => a !== ''))];
+        const read = await Promise.all(avatars.map(avatar => readCardGreetings(chat.store, avatar)));
         return {
             alternatives: openings.alternatives.map(entry => alternativeOf(entry, chat.avatar)),
             current: openings.total > 0 ? openings.default_index : null,
-            card: card && chat.avatar ? { avatar: chat.avatar, greetings: card.texts, defaultPosition: card.defaultIndex } : null,
+            cards: avatars.flatMap((avatar, i) => (read[i] ? [listedCard(avatar, /** @type {import('./opening-state.js').CardGreetingsRead} */ (read[i]))] : [])),
+            addsTo: chat.avatar && read[0] ? chat.avatar : null,
             openings: null,
         };
     }
     const store = chat?.store ?? await userStore(directoriesOf(context.user), context.user.handle);
     const card = await readCardGreetings(store, target.greetings);
     if (!card) return null;
-    const inChat = chat && chat.avatar === target.greetings
-        ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE })
+    const offered = chat ? await chat.store.chats.cardGreetings(chat.tree) : null;
+    const inChat = chat && (chat.avatar === target.greetings || offered?.avatars.includes(target.greetings))
+        ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, card: offered ?? undefined })
         : null;
     return {
-        alternatives: card.texts.map(text => ({ nodeId: null, text, name: card.name, isUser: false, isSystem: false, date: null })),
+        alternatives: card.texts.map((text, k) => {
+            const greeting = { avatar: target.greetings, id: card.ids[k] };
+            return { id: unstoredGreetingNodeId({ extra: { greeting_id: greeting.id } }, greeting.avatar) ?? '', nodeId: null, greeting, text, name: card.name, isUser: false, isSystem: false, date: null };
+        }),
         current: card.defaultIndex,
-        card: { avatar: target.greetings, greetings: card.texts, defaultPosition: card.defaultIndex },
-        openings: inChat ? inChat.alternatives.map(entry => (typeof entry.mes === 'string' ? entry.mes : '')) : null,
+        cards: [listedCard(target.greetings, card)],
+        addsTo: target.greetings,
+        openings: inChat ? inChat.alternatives.map(entry => greetingOf(entry.greeting)) : null,
     };
 }
 
@@ -390,15 +415,16 @@ async function listedAlternatives(context, target) {
  * The listed alternatives, each with the values of the macros it draws. They are read out of the chat, so their macros
  * read no messages.
  * @param {import('@st/server-ui').ViewContext} context
+ * @param {import('@st/alternatives/protocol').Target} target
  * @param {import('@st/alternatives/server').Listed | null} listed
  * @returns {Promise<import('@st/alternatives/server').Listed | null>}
  */
-async function withMacroValues(context, listed) {
+async function withMacroValues(context, target, listed) {
     if (!listed) return listed;
     const wanted = listed.alternatives.map(a => ({ texts: [a.text], speaker: a.isUser ? null : a.name }));
     if (!wanted.some(each => macrosIn(each.texts[0]).length > 0)) return listed;
     const chat = await chatOfTab(context);
-    const owner = listed.card ? { avatar: listed.card.avatar, groupId: null, pageFacts: undefined } : { avatar: chat?.avatar ?? null, groupId: chat?.groupId ?? null, pageFacts: undefined };
+    const owner = 'greetings' in target ? { avatar: target.greetings, groupId: null, pageFacts: undefined } : { avatar: chat?.avatar ?? null, groupId: chat?.groupId ?? null, pageFacts: undefined };
     const values = await macroValuesOf(directoriesOf(context.user), owner, wanted);
     return { ...listed, alternatives: listed.alternatives.map((a, i) => ({ ...a, macros: values[i] })) };
 }
@@ -406,7 +432,7 @@ async function withMacroValues(context, listed) {
 /** @type {import('@st/alternatives/server').Ports} */
 const alternativesPorts = {
     async list(context, target) {
-        return withMacroValues(context, await listedAlternatives(context, target));
+        return withMacroValues(context, target, await listedAlternatives(context, target));
     },
     hash: text => hashGreetingText(text),
     counts: {
@@ -443,8 +469,10 @@ const alternativesPorts = {
         const directories = directoriesOf(context.user);
         const store = await userStore(directories, context.user.handle);
         const actor = { user: context.user.handle, session: context.session };
-        const { result, opening } = await changeGreetings({ directories, store, actor, avatar, change: op });
-        if (result.ok) return { ok: true, opening };
+        const chat = await chatOfTab(context);
+        const group = chat?.groupId ? { tree: chat.tree, groupId: chat.groupId } : undefined;
+        const { result, opening } = await changeGreetings({ directories, store, actor, avatar, change: op, group });
+        if (result.ok) return { ok: true, opening: opening && group ? { ...opening, group_id: group.groupId } : opening };
         return { ok: false, reason: result.reason ?? 'The greetings changed.', ...(Number.isInteger(result.same) ? { same: result.same } : {}) };
     },
     async move(context, nodeId, place) {

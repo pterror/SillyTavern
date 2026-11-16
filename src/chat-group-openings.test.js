@@ -97,7 +97,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const { all, shown } = await listed();
         assert.deepEqual(all, [['ann.png', 'Ann 0', false], ['ann.png', 'Ann 1', false], ['bo.png', 'Bo 0', false], ['bo.png', 'Bo 4', true]]);
         assert.equal(shown?.node_id, node, 'the session is at what it stored');
-        assert.deepEqual(shown?.greeting, { id: 4, hash: message.extra.greeting_hash });
+        assert.deepEqual(shown?.greeting, { id: 4, hash: message.extra.greeting_hash, avatar: 'bo.png' });
 
         const annSaid = await store1(by(ann, 'Bo 4'));
         assert.equal((await decodedOf(annSaid)).message.extra.greeting_hash, undefined, 'another member\'s opening with a greeting\'s text is not that greeting');

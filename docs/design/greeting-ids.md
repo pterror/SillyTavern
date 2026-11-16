@@ -59,7 +59,10 @@ A stored opening names the card greeting it came from in `extra.greeting_id`. Th
 carry the id on each card greeting not yet stored, so whatever the page stores from one keeps it: the greeting stored
 with what goes under it, an in-chat edit of it, an alternative added to it, a duplicate of an opening that has one.
 The page names a card greeting not stored yet by that id and its character (the `original_avatar` the server sends
-with a member's, else the chat's own), never by its text or its speaker's name (`unstoredGreetingNodeId`).
+with a member's, else the chat's own), never by its text or its speaker's name (`unstoredGreetingNodeId`). Each
+opening that is a card greeting (a stored one: linked) carries `greeting`: its id, its character's avatar and its
+text's hash; swiping to one not stored remembers it by that id and character (`/api/chats/openings/choose`, refused
+when the hash is no longer its text's).
 
 An opening's greeting is of the character it is stored as spoken by: a member's, in a group's tree; the tree's own
 character's for one by it, and for a user's own first message, in a character's tree. A user's opening in a group's
@@ -93,9 +96,11 @@ The pager and the chat keep separate positions; two actions copy one to the othe
 resulting state:
 - "Use in chat", beside the pager number, makes the shown greeting the open chat's opening, as swiping to it would: the
   stored opening that holds it, with what is under it, or the card greeting itself. The opening the chat had keeps its
-  replies. It answers with the chat as opening it does. It is disabled unless a chat with this character is open.
+  replies. It answers with the chat as opening it does. It is disabled unless a chat with this character is open, or
+  a group chat it is a member of.
 - "Show in character info", in the opening's message menu, pages the pager to the greeting the opening is linked to,
-  by id and the hash of the text it had, and opens character info on it. It answers with where that greeting is. It is
+  by its character, its id and the hash of the text it had, and opens character info on it (in a group, on that
+  member). It answers with where that greeting is. It is
   disabled when the opening has no live link: it was edited, or its greeting was changed or deleted.
 
 ## Converting cards with the same greeting twice

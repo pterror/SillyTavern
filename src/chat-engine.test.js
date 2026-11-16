@@ -328,7 +328,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const chats = await ChatEngine.open(store, { ...ivyPeople, greetingModel: async () => ({ greetings: [{ id: 5, text: 'Greeting 1' }, { id: 7, text: 'Greeting 2' }, { id: 9, text: 'Greeting 3' }], defaultId: 7, defaultEpoch: 0 }) });
         const t = ivy.id;
         const g = n => ({ name: 'Ivy', is_user: false, is_system: false, send_date: `2025-10-10T10:0${n}:00.000Z`, mes: `Greeting ${n}`, extra: {} });
-        const cardOf = (texts, ids, defaultId, defaultEpoch = 0) => ({ greetings: texts.map((mes, i) => ({ ...g(i), mes })), ids, cards: ids.map(() => t), epochs: ids.map(() => defaultEpoch), defaultAt: defaultId === null ? null : ids.indexOf(defaultId) });
+        const cardOf = (texts, ids, defaultId, defaultEpoch = 0) => ({ greetings: texts.map((mes, i) => ({ ...g(i), mes })), ids, cards: ids.map(() => t), avatars: ids.map(() => ivy.avatar), epochs: ids.map(() => defaultEpoch), defaultAt: defaultId === null ? null : ids.indexOf(defaultId) });
         const card = cardOf(['Greeting 1', 'Greeting 2', 'Greeting 3'], [5, 7, 9], 7);
         const shown = async (c = card, who = actor) => {
             const o = await chats.openingAlternatives({ tree: t, actor: who, card: c });

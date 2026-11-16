@@ -4,7 +4,7 @@ import { unwrap } from 'solid-js/store';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { COUNTS_VIEW, LIST_VIEW, MATCHES_VIEW } from '../protocol.ts';
-import type { CountsView, GreetingOp, Item, ListView, MatchesView, Target } from '../protocol.ts';
+import type { CardView, CountsView, GreetingOp, Item, ListView, MatchesView, Target } from '../protocol.ts';
 import { createSeen } from './seen.ts';
 import type { Seen } from './seen.ts';
 
@@ -37,7 +37,7 @@ export type OldPage = {
     go(mesId: number, index: number): Promise<void>;
     remove(mesId: number, index: number): Promise<void>;
     copy(text: string): Promise<void>;
-    greetingsChanged(card: NonNullable<ListView['card']>, answer: unknown): void;
+    greetingsChanged(card: CardView, answer: unknown): void;
     reordered(mesId: number, current: number): void;
     editAt(event: MouseEvent, rendered: HTMLElement): number | null;
 };
@@ -121,7 +121,7 @@ function Dialog(props: {
     const [query, setQuery] = createSignal('');
     const [notice, setNotice] = createSignal<string | null>(null);
     const [editing, setEditing] = createSignal<{ id: string; at?: number } | null>(null);
-    const [same, setSame] = createSignal<{ at: string; position: number } | null>(null);
+    const [same, setSame] = createSignal<{ at: string; avatar: string; position: number } | null>(null);
     const sameAt = (at: string) => {
         const found = same();
         return found?.at === at ? found.position : null;
@@ -383,26 +383,33 @@ function Dialog(props: {
         if (greetingsList) await props.old.go(0, item.opening!);
         else await props.old.go(mesId!, index);
     };
-    const isCardRow = (item: Item) => item.card !== null && list()?.card != null;
+    const cardOf = (avatar: string | undefined) => list()?.cards.find((card) => card.avatar === avatar);
+    const isCardRow = (item: Item) => item.card !== null && cardOf(item.card.avatar) !== undefined;
+    const isDefault = (item: Item) =>
+        item.card !== null && cardOf(item.card.avatar)?.defaultPosition === item.card.position;
     const reorders = 'message' in props.look.target;
     const canReorder = (item: Item) => isCardRow(item) || (reorders && item.nodeId !== null);
+    // a card orders its own greetings: a card row moves among its card's rows only
+    const reordersWith = (item: Item, other: Item) =>
+        reorders ? other.nodeId !== null : isCardRow(other) && other.card!.avatar === item.card?.avatar;
     const canRemove = (item: Item) => !greetingsList && item.nodeId !== null && total() > 1;
     const remove = async (index: number) => {
         await props.old.remove(mesId!, index);
     };
     const removeGreeting = async (item: Item) => {
         const sure = await ask({ kind: 'confirm', message: t('Delete this greeting from the card?') }, t);
-        if (sure) await greeting({ op: 'delete', position: item.card!.position, hash: item.card!.hash });
+        const card = item.card!;
+        if (sure) await greeting({ op: 'delete', avatar: card.avatar, position: card.position, hash: card.hash });
     };
 
     const greeting = async (op: GreetingOp, at?: string) => {
         const result = await client.send('alternatives.greeting', op);
-        const card = list()?.card;
+        const card = cardOf(op.avatar);
         if (!result.ok) {
             const position = (result.answer as { same?: unknown } | undefined)?.same;
             if (at !== undefined && typeof position === 'number') {
                 setNotice(null);
-                setSame({ at, position });
+                setSame({ at, avatar: op.avatar, position });
             } else {
                 setNotice(result.error);
             }
@@ -413,25 +420,31 @@ function Dialog(props: {
         if (card) props.old.greetingsChanged(structuredClone(unwrap(card)), result.answer);
         return true;
     };
-    const add = async (text: string) => text.trim() !== '' && (await greeting({ op: 'add', text }, ADDING));
+    const add = async (text: string) => {
+        const avatar = list()?.addsTo ?? null;
+        return avatar !== null && text.trim() !== '' && (await greeting({ op: 'add', avatar, text }, ADDING));
+    };
     const save = async (item: Item, text: string) => {
         if (text.trim() === '') {
             const sure = await ask({ kind: 'confirm', message: t('This greeting is empty now. Delete it?') }, t);
             if (!sure) return;
         }
         const card = item.card!;
-        if (await greeting({ op: 'edit', position: card.position, hash: card.hash, text }, item.id)) setEditing(null);
+        const op = { op: 'edit', avatar: card.avatar, position: card.position, hash: card.hash, text } as const;
+        if (await greeting(op, item.id)) setEditing(null);
     };
     const endEdit = (id: string) => {
         forgetSame(id);
         setEditing(null);
     };
     const showSame = (at: string) => {
-        const position = sameAt(at);
-        if (position === null) return;
+        const found = same();
+        if (found?.at !== at) return;
         if (at === ADDING) forgetSame(at);
         else endEdit(at);
-        const item = items().find((each) => each.card?.position === position);
+        const item = items().find(
+            (each) => each.card?.avatar === found.avatar && each.card.position === found.position,
+        );
         if (!item) return;
         if (hidden(item)) search('');
         setPicked(item.index);
@@ -444,11 +457,10 @@ function Dialog(props: {
     };
     const setDefault = (item: Item) => {
         const card = item.card!;
-        const isDefault = list()?.card?.defaultPosition === card.position;
         void greeting(
-            isDefault
-                ? { op: 'undefault', hash: card.hash }
-                : { op: 'default', position: card.position, hash: card.hash },
+            isDefault(item)
+                ? { op: 'undefault', avatar: card.avatar, hash: card.hash }
+                : { op: 'default', avatar: card.avatar, position: card.position, hash: card.hash },
         );
     };
     const move = (item: Item, target: Item, side: 'before' | 'after') => {
@@ -465,9 +477,10 @@ function Dialog(props: {
                 });
             return;
         }
-        if (!item.card || !target.card) return;
+        if (!item.card || !target.card || !reordersWith(item, target)) return;
         void greeting({
             op: 'move',
+            avatar: item.card.avatar,
             position: item.card.position,
             hash: item.card.hash,
             side,
@@ -518,7 +531,7 @@ function Dialog(props: {
     const keyMove = (place: (at: number, last: number) => readonly [number, 'before' | 'after']) => () => {
         const item = handled();
         if (!item) return false;
-        const cards = items().filter((i) => canReorder(i));
+        const cards = items().filter((i) => i.id === item.id || reordersWith(item, i));
         const [index, side] = place(
             cards.findIndex((i) => i.id === item.id),
             cards.length - 1,
@@ -760,14 +773,12 @@ function Dialog(props: {
                                                     type="button"
                                                     class="alternative-button alternative-default fa-star"
                                                     classList={{
-                                                        'fa-solid':
-                                                            list()?.card?.defaultPosition === item.card?.position,
-                                                        'fa-regular':
-                                                            list()?.card?.defaultPosition !== item.card?.position,
+                                                        'fa-solid': isDefault(item),
+                                                        'fa-regular': !isDefault(item),
                                                     }}
                                                     title={t('Default greeting')}
                                                     aria-label={t('Default greeting')}
-                                                    aria-pressed={list()?.card?.defaultPosition === item.card?.position}
+                                                    aria-pressed={isDefault(item)}
                                                     onClick={() => setDefault(item)}
                                                 />
                                                 <button
@@ -831,7 +842,7 @@ function Dialog(props: {
                         </For>
                     </div>
                 </div>
-                <Show when={list()?.card}>
+                <Show when={list()?.addsTo}>
                     <AddBox
                         onAdd={add}
                         same={sameAt(ADDING)}

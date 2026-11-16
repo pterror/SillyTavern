@@ -1,7 +1,7 @@
-import type { CountsView, GreetingOp, ListView, MatchesView, Target } from './protocol.ts';
+import type { CountsView, ListView, MatchesView, Target } from './protocol.ts';
 import { expect, test } from 'vite-plus/test';
 import { FIRST_PART, SEARCH_STEP, alternativesArea, itemsOf } from './server.ts';
-import type { Alternative, Listed, Ports } from './server.ts';
+import type { Alternative, GreetingChange, Listed, Ports } from './server.ts';
 import { patchOf } from '@st/server-ui';
 import type { ActionContext, ActionResult, User } from '@st/server-ui';
 
@@ -19,8 +19,10 @@ const tokenizer = { api: 'textgenerationwebui' };
 
 const hash = (text: string) => text.length * 31 + (text.length > 0 ? text.charCodeAt(0) : 0);
 
-const said = (text: string, nodeId: string | null = null): Alternative => ({
+const said = (text: string, nodeId: string): Alternative => ({
+    id: nodeId,
     nodeId,
+    greeting: null,
     text,
     name: 'Cara',
     isUser: false,
@@ -28,11 +30,30 @@ const said = (text: string, nodeId: string | null = null): Alternative => ({
     date: null,
 });
 
+/** an alternative that is greeting `id` of `avatar`'s card: stored as `nodeId`, or not stored */
+const greetingAlt = (text: string, avatar: string, id: number, nodeId: string | null = null): Alternative => ({
+    ...said(text, nodeId ?? `card:${id}:${avatar}`),
+    nodeId,
+    greeting: { avatar, id },
+});
+
+const cardOf = (
+    avatar: string,
+    greetings: string[],
+    defaultPosition: number | null = 0,
+    ids = greetings.map((_, k) => k),
+) => ({
+    avatar,
+    ids,
+    greetings,
+    defaultPosition,
+});
+
 function world(listed: (target: Target) => Listed | null, stored: Record<string, number> = {}) {
     const state = {
         stored: { ...stored },
         counted: [] as string[][],
-        ops: [] as GreetingOp[],
+        ops: [] as [string, GreetingChange][],
         moves: [] as [string, { after: string } | { first: true }][],
         refuse: null as string | null,
         hold: null as Promise<void> | null,
@@ -55,9 +76,9 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
                 const at = text.toLowerCase().indexOf(query.toLowerCase());
                 return at < 0 ? null : [at, at + query.length];
             }),
-        greeting: async (_u, _a, op) => {
+        greeting: async (_u, avatar, op) => {
             if (state.refuse !== null) return { ok: false, reason: state.refuse };
-            state.ops.push(op);
+            state.ops.push([avatar, op]);
             return { ok: true, opening: null };
         },
         move: async (_c, nodeId, place) => {
@@ -95,7 +116,8 @@ function world(listed: (target: Target) => Listed | null, stored: Record<string,
 const swipes = (texts: string[], current = 0): Listed => ({
     alternatives: texts.map((text, i) => said(text, `n${i}`)),
     current,
-    card: null,
+    cards: [],
+    addsTo: null,
     openings: null,
 });
 
@@ -141,7 +163,8 @@ test('nothing open: every view is empty, and a search is refused', async () => {
         total: 0,
         complete: true,
         current: null,
-        card: null,
+        cards: [],
+        addsTo: null,
         chatOpen: false,
     });
     expect(await w.counts()).toEqual({ counts: {} });
@@ -155,43 +178,99 @@ test("a target that isn't there lists nothing but says what was asked for", asyn
     expect(await w.list()).toMatchObject({ target: { message: 'gone' }, items: [], current: null });
 });
 
-test('an opening list: stored openings carry the card position of the greeting with their text, card-only ones theirs', async () => {
+test('an opening list: an opening that is a card greeting carries its card place, by its id and character', async () => {
     const w = world(() => ({
-        alternatives: [said('Hello there.\n', 'n0'), said('Edited in chat', 'n1'), said('Second greeting')],
+        alternatives: [
+            greetingAlt('Hello there.', 'cara.png', 4, 'n0'),
+            said('Hello there.\n', 'n1'),
+            said('Edited in chat', 'n2'),
+            greetingAlt('Second greeting', 'cara.png', 2),
+        ],
         current: 0,
-        card: { avatar: 'cara.png', greetings: ['Hello there.', 'Second greeting'], defaultPosition: 0 },
+        cards: [cardOf('cara.png', ['Hello there.', 'Second greeting'], 0, [4, 2])],
+        addsTo: 'cara.png',
         openings: null,
     }));
     await w.act('alternatives.open', { target: { opening: true }, tokenizer });
     const view = await w.list();
-    expect(view.items.map((i) => [i.id, i.card?.position ?? null])).toEqual([
-        ['n0', 0],
+    expect(view.items.map((i) => [i.id, i.card])).toEqual([
+        ['n0', { avatar: 'cara.png', id: 4, position: 0, hash: hash('Hello there.') }],
         ['n1', null],
-        [`card:${hash('Second greeting')}`, 1],
+        ['n2', null],
+        ['card:2:cara.png', { avatar: 'cara.png', id: 2, position: 1, hash: hash('Second greeting') }],
     ]);
-    expect(view.items[2]!.card?.hash).toBe(hash('Second greeting'));
-    expect(view.card).toEqual({
-        avatar: 'cara.png',
-        greetings: ['Hello there.', 'Second greeting'],
-        hashes: [hash('Hello there.'), hash('Second greeting')],
-        defaultPosition: 0,
-    });
+    expect(view.cards).toEqual([
+        {
+            avatar: 'cara.png',
+            greetings: ['Hello there.', 'Second greeting'],
+            hashes: [hash('Hello there.'), hash('Second greeting')],
+            defaultPosition: 0,
+        },
+    ]);
+    expect(view.addsTo).toBe('cara.png');
 });
 
-test("a greetings list is the card's, in card order; with the character's chat open each says where it is among the openings", async () => {
-    const card = { avatar: 'cara.png', greetings: ['A', 'B', 'C'], defaultPosition: 1 };
+test("a group's opening list: each greeting is on its member's card, the same id on two cards two places", async () => {
     const w = world(() => ({
-        alternatives: card.greetings.map((text) => said(text)),
+        alternatives: [
+            greetingAlt('Hi', 'ann.png', 0),
+            greetingAlt('Hi', 'bo.png', 0),
+            greetingAlt('Yo', 'bo.png', 1, 'n0'),
+        ],
+        current: 0,
+        cards: [cardOf('ann.png', ['Hi']), cardOf('bo.png', ['Hi', 'Yo'], 1)],
+        addsTo: null,
+        openings: null,
+    }));
+    await w.act('alternatives.open', { target: { opening: true }, tokenizer });
+    const view = await w.list();
+    expect(view.items.map((i) => [i.id, i.card?.avatar, i.card?.position])).toEqual([
+        ['card:0:ann.png', 'ann.png', 0],
+        ['card:0:bo.png', 'bo.png', 0],
+        ['n0', 'bo.png', 1],
+    ]);
+    expect(view.cards.map((c) => [c.avatar, c.defaultPosition])).toEqual([
+        ['ann.png', 0],
+        ['bo.png', 1],
+    ]);
+    expect(view.addsTo).toBeNull();
+});
+
+test("a card with an empty greeting: the positions after it are still each id's", () => {
+    const items = itemsOf(
+        {
+            alternatives: [greetingAlt('B', 'a', 9)],
+            current: 0,
+            cards: [cardOf('a', ['A', '', 'B'], 0, [3, 5, 9])],
+            addsTo: 'a',
+            openings: null,
+        },
+        hash,
+    );
+    expect(items[0]!.card).toEqual({ avatar: 'a', id: 9, position: 2, hash: hash('B') });
+});
+
+test("a greetings list is the card's, in card order; with a chat offering it open each says where it is among the openings", async () => {
+    const card = cardOf('cara.png', ['A', 'B', 'C'], 1, [0, 1, 2]);
+    const w = world(() => ({
+        alternatives: card.greetings.map((text, k) => greetingAlt(text, 'cara.png', k)),
         current: 1,
-        card,
-        openings: ['stored one', 'C', 'A', 'B'],
+        cards: [card],
+        addsTo: 'cara.png',
+        openings: [
+            null,
+            { avatar: 'cara.png', id: 2 },
+            { avatar: 'other.png', id: 1 },
+            { avatar: 'cara.png', id: 0 },
+            { avatar: 'cara.png', id: 1 },
+        ],
     }));
     await w.act('alternatives.open', { target: { greetings: 'cara.png' }, tokenizer });
     const view = await w.list();
     expect(view.items.map((i) => [i.id, i.card?.position, i.opening])).toEqual([
-        [`card:${hash('A')}`, 0, 2],
-        [`card:${hash('B')}`, 1, 3],
-        [`card:${hash('C')}`, 2, 1],
+        ['card:0:cara.png', 0, 3],
+        ['card:1:cara.png', 1, 4],
+        ['card:2:cara.png', 2, 1],
     ]);
     expect(view.chatOpen).toBe(true);
     expect(view.current).toBe(1);
@@ -199,9 +278,10 @@ test("a greetings list is the card's, in card order; with the character's chat o
 
 test('with no chat of the character open, no greeting can be shown in one', async () => {
     const w = world(() => ({
-        alternatives: [said('A')],
+        alternatives: [greetingAlt('A', 'cara.png', 0)],
         current: 0,
-        card: { avatar: 'cara.png', greetings: ['A'], defaultPosition: 0 },
+        cards: [cardOf('cara.png', ['A'])],
+        addsTo: 'cara.png',
         openings: null,
     }));
     await w.act('alternatives.open', { target: { greetings: 'cara.png' }, tokenizer });
@@ -329,23 +409,39 @@ test('closing forgets the look: the views are empty again', async () => {
 
 const greetingsWorld = (greetings: string[]) =>
     world(() => ({
-        alternatives: greetings.map((text) => said(text)),
+        alternatives: greetings.map((text, k) => greetingAlt(text, 'cara.png', k)),
         current: greetings.length > 0 ? 0 : null,
-        card: { avatar: 'cara.png', greetings, defaultPosition: greetings.length > 0 ? 0 : null },
+        cards: [cardOf('cara.png', greetings, greetings.length > 0 ? 0 : null)],
+        addsTo: 'cara.png',
         openings: null,
     }));
 
-test("greeting operations go to the target's card; an edit to empty text removes the greeting", async () => {
+test('greeting operations go to the card they name; an edit to empty text removes the greeting', async () => {
     const w = greetingsWorld(['A', 'B']);
     await w.act('alternatives.open', { target: { greetings: 'cara.png' }, tokenizer });
     await w.list();
-    expect(await w.act('alternatives.greeting', { op: 'edit', position: 1, hash: hash('B'), text: 'B2' })).toEqual({
+    expect(
+        await w.act('alternatives.greeting', {
+            op: 'edit',
+            avatar: 'cara.png',
+            position: 1,
+            hash: hash('B'),
+            text: 'B2',
+        }),
+    ).toEqual({
         changed: ['alternatives.list', 'alternatives.counts', 'alternatives.matches'],
         answer: { opening: null },
     });
-    await w.act('alternatives.greeting', { op: 'edit', position: 1, hash: hash('B2'), text: ' \n' });
+    await w.act('alternatives.greeting', {
+        op: 'edit',
+        avatar: 'cara.png',
+        position: 1,
+        hash: hash('B2'),
+        text: ' \n',
+    });
     await w.act('alternatives.greeting', {
         op: 'move',
+        avatar: 'cara.png',
         position: 1,
         hash: hash('B'),
         side: 'before',
@@ -353,30 +449,55 @@ test("greeting operations go to the target's card; an edit to empty text removes
         targetHash: hash('A'),
     });
     expect(w.state.ops).toEqual([
-        { op: 'edit', position: 1, hash: hash('B'), text: 'B2' },
-        { op: 'delete', position: 1, hash: hash('B2') },
-        { op: 'move', position: 1, hash: hash('B'), side: 'before', target: 0, targetHash: hash('A') },
+        ['cara.png', { op: 'edit', position: 1, hash: hash('B'), text: 'B2' }],
+        ['cara.png', { op: 'delete', position: 1, hash: hash('B2') }],
+        ['cara.png', { op: 'move', position: 1, hash: hash('B'), side: 'before', target: 0, targetHash: hash('A') }],
     ]);
 });
 
 test("an opening list's greeting operations go to the open chat's character's card", async () => {
     const w = world(() => ({
-        alternatives: [said('A', 'n0')],
+        alternatives: [greetingAlt('A', 'cara.png', 0, 'n0')],
         current: 0,
-        card: { avatar: 'cara.png', greetings: ['A'], defaultPosition: 0 },
+        cards: [cardOf('cara.png', ['A'])],
+        addsTo: 'cara.png',
         openings: null,
     }));
     await w.act('alternatives.open', { target: { opening: true }, tokenizer });
     await w.list();
-    await w.act('alternatives.greeting', { op: 'add', text: 'New' });
-    expect(w.state.ops).toEqual([{ op: 'add', text: 'New' }]);
+    await w.act('alternatives.greeting', { op: 'add', avatar: 'cara.png', text: 'New' });
+    expect(w.state.ops).toEqual([['cara.png', { op: 'add', text: 'New' }]]);
+});
+
+test("a group's opening list changes each member's card by its greetings, adds to none, and touches no other card", async () => {
+    const w = world(() => ({
+        alternatives: [greetingAlt('Hi', 'ann.png', 0), greetingAlt('Yo', 'bo.png', 0)],
+        current: 0,
+        cards: [cardOf('ann.png', ['Hi']), cardOf('bo.png', ['Yo'])],
+        addsTo: null,
+        openings: null,
+    }));
+    await w.act('alternatives.open', { target: { opening: true }, tokenizer });
+    await w.list();
+    await w.act('alternatives.greeting', { op: 'edit', avatar: 'bo.png', position: 0, hash: hash('Yo'), text: 'Yo2' });
+    await w.act('alternatives.greeting', { op: 'default', avatar: 'ann.png', position: 0, hash: hash('Hi') });
+    expect(await w.act('alternatives.greeting', { op: 'add', avatar: 'ann.png', text: 'x' })).toMatchObject({
+        refused: expect.any(String),
+    });
+    expect(
+        await w.act('alternatives.greeting', { op: 'delete', avatar: 'cara.png', position: 0, hash: hash('Hi') }),
+    ).toMatchObject({ refused: expect.any(String) });
+    expect(w.state.ops).toEqual([
+        ['bo.png', { op: 'edit', position: 0, hash: hash('Yo'), text: 'Yo2' }],
+        ['ann.png', { op: 'default', position: 0, hash: hash('Hi') }],
+    ]);
 });
 
 test("a message's alternatives have no card: greeting operations are refused", async () => {
     const w = world(() => swipes(['a']));
     await w.act('alternatives.open', { target: { message: 'n0' }, tokenizer });
     await w.list();
-    expect(await w.act('alternatives.greeting', { op: 'add', text: 'x' })).toMatchObject({
+    expect(await w.act('alternatives.greeting', { op: 'add', avatar: 'cara.png', text: 'x' })).toMatchObject({
         refused: expect.any(String),
     });
     expect(w.state.ops).toEqual([]);
@@ -387,7 +508,7 @@ test('a refused operation says why, and the views are read again', async () => {
     await w.act('alternatives.open', { target: { greetings: 'cara.png' }, tokenizer });
     await w.list();
     w.state.refuse = 'expected_hash does not match';
-    expect(await w.act('alternatives.greeting', { op: 'delete', position: 0, hash: 1 })).toEqual({
+    expect(await w.act('alternatives.greeting', { op: 'delete', avatar: 'cara.png', position: 0, hash: 1 })).toEqual({
         refused: 'expected_hash does not match',
         changed: ['alternatives.list', 'alternatives.counts', 'alternatives.matches'],
     });
@@ -397,53 +518,75 @@ test("a greeting change is one change to the card, answered with the character t
     const w = greetingsWorld([]);
     await w.act('alternatives.open', { target: { greetings: 'cara.png' }, tokenizer });
     await w.list();
-    expect(await w.act('alternatives.greeting', { op: 'add', text: 'Hi' })).toEqual({
+    expect(await w.act('alternatives.greeting', { op: 'add', avatar: 'cara.png', text: 'Hi' })).toEqual({
         changed: ['alternatives.list', 'alternatives.counts', 'alternatives.matches'],
         answer: { opening: null },
     });
-    expect(w.state.ops).toEqual([{ op: 'add', text: 'Hi' }]);
+    expect(w.state.ops).toEqual([['cara.png', { op: 'add', text: 'Hi' }]]);
 });
 
-test('a greeting is known by its text, wherever it moves; the same text twice is told apart', () => {
-    const listed = (greetings: string[]): Listed => ({
-        alternatives: greetings.map((text) => said(text)),
+test('a greeting is known by its id, wherever it moves and whatever its text; the same text twice is two', () => {
+    const listed = (greetings: [number, string][]): Listed => ({
+        alternatives: greetings.map(([id, text]) => greetingAlt(text, 'a', id)),
         current: 0,
-        card: { avatar: 'a', greetings, defaultPosition: 0 },
+        cards: [
+            cardOf(
+                'a',
+                greetings.map(([, text]) => text),
+                0,
+                greetings.map(([id]) => id),
+            ),
+        ],
+        addsTo: 'a',
         openings: null,
     });
-    const ids = (greetings: string[]) => itemsOf(listed(greetings), { greetings: 'a' }, hash).map((i) => i.id);
-    const [a, b] = ids(['Hello', 'Goodbye!']);
-    expect(ids(['Goodbye!', 'Hello'])).toEqual([b, a]);
-    expect(ids(['Hello', 'Hello'])).toEqual([a, `${a}:1`]);
+    const ids = (greetings: [number, string][]) => itemsOf(listed(greetings), hash).map((i) => i.id);
+    expect(
+        ids([
+            [0, 'Hello'],
+            [1, 'Goodbye!'],
+        ]),
+    ).toEqual(['card:0:a', 'card:1:a']);
+    expect(
+        ids([
+            [1, 'Goodbye!'],
+            [0, 'Hello, edited'],
+        ]),
+    ).toEqual(['card:1:a', 'card:0:a']);
+    expect(
+        ids([
+            [0, 'Hello'],
+            [1, 'Hello'],
+        ]),
+    ).toEqual(['card:0:a', 'card:1:a']);
 });
 
-test('itemsOf: a card greeting appears at its first position when the card has its text twice', () => {
+test('itemsOf: a stored opening is no card greeting unless the engine named it one, whatever its text', () => {
     const items = itemsOf(
         {
-            alternatives: [said('Same', 'n0')],
+            alternatives: [said('Same', 'n0'), greetingAlt('Same', 'a', 2, 'n1')],
             current: 0,
-            card: { avatar: 'a', greetings: ['Other', 'Same', 'Same'], defaultPosition: 0 },
+            cards: [cardOf('a', ['Other', 'Same'], 0, [1, 2])],
+            addsTo: 'a',
             openings: null,
         },
-        { opening: true },
         hash,
     );
-    expect(items[0]!.card).toEqual({ position: 1, hash: hash('Same') });
+    expect(items.map((i) => i.card?.position ?? null)).toEqual([null, 1]);
 });
 
-test('itemsOf: an unstored card greeting is the item its node id names, whatever its text and speaker name', () => {
-    const greeting = (greetingNodeId: string): Alternative => ({ ...said('Hi'), greetingNodeId });
+test('itemsOf: a greeting gone from its card has no card place', () => {
     const items = itemsOf(
         {
-            alternatives: [greeting('card:0:ann.png'), greeting('card:0:ann2.png'), said('Hi', 'n1')],
+            alternatives: [greetingAlt('Hi', 'a', 7)],
             current: 0,
-            card: null,
+            cards: [cardOf('a', ['Hi'], 0, [1])],
+            addsTo: 'a',
             openings: null,
         },
-        { opening: true },
         hash,
     );
-    expect(items.map((i) => i.id)).toEqual(['card:0:ann.png', 'card:0:ann2.png', 'n1']);
+    expect(items[0]!.card).toBeNull();
 });
 
 test("a message's alternative moves among them: before one is after the one above it, or first; the answer says where the current one is now", async () => {

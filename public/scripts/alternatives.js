@@ -6,7 +6,6 @@ import { getTokenizerState } from './tokenizers.js';
 import { copyText, timestampToMoment } from './utils.js';
 import { alternativeEditor, alternativeReader } from './message-text.js';
 import { isStoredNodeId } from './node-identity.js';
-import { selected_group } from './group-chats.js';
 import { newUi } from './new-ui-page.js';
 import { editPosition } from './chat-text/surface.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -118,7 +117,7 @@ export function openAlternatives(messageId, at) {
         toastr.info(t`This message has no other alternatives yet.`);
         return;
     }
-    const opening = messageId === 0 && selected_group == null;
+    const opening = messageId === 0;
     if (!opening && !isStoredNodeId(message.node_id)) {
         toastr.info(t`This message isn't saved yet.`);
         return;

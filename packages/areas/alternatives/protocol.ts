@@ -26,11 +26,18 @@ export type Item = {
     role: 'user' | 'assistant' | 'system';
     date: string | number | null;
     nodeId: string | null;
-    card: { position: number; hash: number } | null;
+    /** the card greeting it is (a stored opening: the one it is linked to), on the card of its character */
+    card: CardPlace | null;
     opening: number | null;
     /** the values of the macros it draws, each macro's source to its value, null for one only known when sent */
     macros: Record<string, string | null> | null;
 };
+
+/** a card greeting by its character and id, at `position` of its card with its text's hash, as the card's operations take it */
+export type CardPlace = { avatar: string; id: number; position: number; hash: number };
+
+/** a card the list's rows are greetings of */
+export type CardView = { avatar: string; greetings: string[]; hashes: number[]; defaultPosition: number | null };
 
 export type ListView = {
     target: Target | null;
@@ -38,7 +45,10 @@ export type ListView = {
     total: number;
     complete: boolean;
     current: number | null;
-    card: { avatar: string; greetings: string[]; hashes: number[]; defaultPosition: number | null } | null;
+    /** every card a row is a greeting of; a character's list, or its chat's, has its card even with no greetings */
+    cards: CardView[];
+    /** the card a new greeting is added to; null for a group's first message */
+    addsTo: string | null;
     chatOpen: boolean;
 };
 
@@ -53,25 +63,27 @@ export type MatchesView = {
 
 const position = v.pipe(v.number(), v.integer(), v.minValue(0));
 const hash = v.pipe(v.number(), v.finite());
+const avatar = v.pipe(v.string(), v.minLength(1));
 
 export const actions = {
     'alternatives.open': v.object({ target, tokenizer: v.nullable(tokenizer) }),
     'alternatives.close': v.object({}),
     'alternatives.search': v.object({ query: v.string() }),
     'alternatives.greeting': v.variant('op', [
-        v.object({ op: v.literal('add'), text: v.pipe(v.string(), v.minLength(1)) }),
-        v.object({ op: v.literal('edit'), position, hash, text: v.string() }),
-        v.object({ op: v.literal('delete'), position, hash }),
+        v.object({ op: v.literal('add'), avatar, text: v.pipe(v.string(), v.minLength(1)) }),
+        v.object({ op: v.literal('edit'), avatar, position, hash, text: v.string() }),
+        v.object({ op: v.literal('delete'), avatar, position, hash }),
         v.object({
             op: v.literal('move'),
+            avatar,
             position,
             hash,
             side: v.picklist(['before', 'after']),
             target: position,
             targetHash: hash,
         }),
-        v.object({ op: v.literal('default'), position, hash }),
-        v.object({ op: v.literal('undefault'), hash }),
+        v.object({ op: v.literal('default'), avatar, position, hash }),
+        v.object({ op: v.literal('undefault'), avatar, hash }),
     ]),
     'alternatives.move': v.object({
         nodeId: v.pipe(v.string(), v.minLength(1)),

@@ -395,13 +395,14 @@ function alternativeEntry(nodeId, o, itemized) {
 /**
  * The card greetings a tree's first message offers (`cardGreetings`): a character's tree's card's, a group's tree's
  * every member's, in member order, each card's in its order. Greeting k is `greetings[k]` (as the page shows it), of
- * the character `cards[k]`, by its id `ids[k]`, the card's default epoch being `epochs[k]`. `defaultAt` is where the
- * tree's default is: the default of its first character with greetings; null when that one has none.
- * @typedef {{ greetings: Record<string, any>[], ids: number[], cards: bigint[], epochs: number[], defaultAt: number | null }} CardGreetings
+ * the character `cards[k]` (its avatar `avatars[k]`), by its id `ids[k]`, the card's default epoch being `epochs[k]`.
+ * `defaultAt` is where the tree's default is: the default of its first character with greetings; null when that one
+ * has none.
+ * @typedef {{ greetings: Record<string, any>[], ids: number[], cards: bigint[], avatars: string[], epochs: number[], defaultAt: number | null }} CardGreetings
  */
 
 /** @type {CardGreetings} */
-const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], cards: [], epochs: [], defaultAt: null });
+const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], cards: [], avatars: [], epochs: [], defaultAt: null });
 
 /**
  * A card greeting by its character and id
@@ -1102,7 +1103,7 @@ export class ChatEngine {
             if (k >= 0 && at >= 0) defaultIndex = starts[at];
         }
         if (defaultIndex < 0) defaultIndex = 0;
-        const greetingOf = (/** @type {number} */ k) => ({ id: card.ids[k], hash: hashGreetingText(card.greetings[k].mes) });
+        const greetingOf = (/** @type {number} */ k) => ({ id: card.ids[k], hash: hashGreetingText(card.greetings[k].mes), avatar: card.avatars[k] });
         const cardEntry = (/** @type {number} */ k) => {
             const o = storedForm(card.greetings[k]);
             o.extra = { ...(o.extra ?? {}), greeting_id: card.ids[k] };
@@ -1337,7 +1338,7 @@ export class ChatEngine {
         const characters = group ? (this.people.members ? (await this.people.members(tree)).map(m => m.id) : []) : [tree];
         const speakers = await this.people.speakers(characters);
         /** @type {CardGreetings} */
-        const card = { greetings: [], ids: [], cards: [], epochs: [], defaultAt: null };
+        const card = { greetings: [], ids: [], cards: [], avatars: [], epochs: [], defaultAt: null };
         let first = true;
         for (const character of characters) {
             const model = await this.people.greetingModel(character);
@@ -1353,6 +1354,7 @@ export class ChatEngine {
                 card.greetings.push({ name: speaker?.name ?? '', is_user: false, is_system: false, mes: g.text, extra: {}, ...drawn });
                 card.ids.push(g.id);
                 card.cards.push(character);
+                card.avatars.push(speaker?.avatar ?? '');
                 card.epochs.push(model.defaultEpoch ?? 0);
             }
         }

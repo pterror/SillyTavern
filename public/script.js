@@ -61,6 +61,7 @@ import {
     renameGroupChat,
     importGroupChat,
     getGroupCharacterCardsLazy,
+    showOpenedGroupChat,
 } from './scripts/group-chats.js';
 
 import {
@@ -8184,7 +8185,7 @@ async function applyGreetingOpSuccess(character, result) {
         setGreetingPagerGreetings(character.avatar, result.greetings, result.defaultPosition, result.hashes);
     }
     run.character = character;
-    await takeOpenings({ avatar_url: character.avatar }, result.openings);
+    await takeOpenings(openingsOwnerOf(result.openings) ?? { avatar_url: character.avatar }, result.openings);
     refreshOpeningActions(chatElement.children('.mes[mesid="0"]'), 0);
 }
 
@@ -8360,48 +8361,63 @@ function renderGreetingPager() {
     countCharTokensWhenShown();
 }
 
-function canUseShownGreetingInChat() {
+/**
+ * The open chat the greeting the pager shows can be used in: the pager's character's own, or a group's it is a member of
+ * @returns {{ avatar_url: string } | { group_id: string } | null}
+ */
+function chatForShownGreeting() {
     const { owner, index, hashes } = greetingPagerState;
-    return owner !== null && !selected_group && getCurrentCharacter()?.avatar === owner && Number.isFinite(hashes[index]);
+    if (owner === null || getCurrentCharacter()?.avatar !== owner || !Number.isFinite(hashes[index])) return null;
+    if (!selected_group) return { avatar_url: owner };
+    return groupsStore.get(selected_group)?.members?.includes(owner) ? { group_id: selected_group } : null;
 }
 
 function refreshUseInChat() {
-    const usable = canUseShownGreetingInChat();
+    const usable = chatForShownGreeting() !== null;
     $('.greeting-pager-use').toggleClass('disabled', !usable).attr('aria-disabled', String(!usable));
 }
 
 async function useShownGreetingInChat() {
-    if (!canUseShownGreetingInChat() || blockWhileFieldEditing()) return;
-    if (is_send_press) {
+    const owner = chatForShownGreeting();
+    if (owner === null || blockWhileFieldEditing()) return;
+    if (is_send_press || is_group_generating) {
         toastr.warning(t`Wait for the reply to finish first.`);
         return;
     }
-    const { owner, index, hashes } = greetingPagerState;
-    const avatar = /** @type {string} */ (owner);
+    const { index, hashes } = greetingPagerState;
+    const avatar = /** @type {string} */ (greetingPagerState.owner);
     let answer = null;
     try {
         const response = await fetch('/api/chats/openings/use-greeting', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, position: index, expected_hash: hashes[index], ...chatOpenAsk({ avatar_url: avatar }) }),
+            body: JSON.stringify({ avatar_url: avatar, ...owner, position: index, expected_hash: hashes[index], ...chatOpenAsk(owner) }),
         });
         answer = response.ok ? await response.json() : null;
     } catch (error) {
         console.error('[greetings] Could not use the greeting in the chat:', error);
     }
     if (!answer?.opened) {
-        chatOpenRefused({ avatar_url: avatar });
+        chatOpenRefused(owner);
         toastr.error(t`The greeting could not be used in the chat. Reopen the character to see its current greetings.`, t`Greeting not used`);
         return;
     }
+    if ('group_id' in owner) {
+        if (selected_group !== owner.group_id) {
+            chatOpenRefused(owner);
+            return;
+        }
+        await showOpenedGroupChat(owner.group_id, takeChatOpenAnswer(owner, answer.opened));
+        return;
+    }
     if (selected_group || getCurrentCharacter()?.avatar !== avatar) {
-        chatOpenRefused({ avatar_url: avatar });
+        chatOpenRefused(owner);
         return;
     }
     await clearChat({ clearData: true });
     setChatMetadata({});
     _resetMetadataSaveSnapshot();
-    await openCharacterConversation({ opened: takeChatOpenAnswer({ avatar_url: avatar }, answer.opened) });
+    await openCharacterConversation({ opened: takeChatOpenAnswer(owner, answer.opened) });
 }
 
 /**
@@ -8411,12 +8427,12 @@ async function useShownGreetingInChat() {
  * @returns {{ avatar: string, id: number, hash: number } | null}
  */
 function openingGreetingLink(mesId) {
-    if (mesId !== 0 || selected_group) return null;
+    if (mesId !== 0) return null;
     const message = chat[0];
-    const avatar = getCurrentCharacter()?.avatar;
-    const greeting = message?.swipe_info?.[message.swipe_id ?? 0]?.greeting;
-    if (!avatar || !greeting || message.swipe_info?.[message.swipe_id ?? 0]?.node_id !== message.node_id) return null;
-    return { avatar, id: greeting.id, hash: greeting.hash };
+    const info = message?.swipe_info?.[message.swipe_id ?? 0];
+    const greeting = info?.greeting;
+    if (!greeting || typeof greeting.avatar !== 'string' || greeting.avatar === '' || info?.node_id !== message.node_id) return null;
+    return { avatar: greeting.avatar, id: greeting.id, hash: greeting.hash };
 }
 
 /**
@@ -8425,7 +8441,7 @@ function openingGreetingLink(mesId) {
  */
 function refreshOpeningActions(messageElement, mesId) {
     const button = messageElement.find('.mes_show_greeting');
-    const isOpening = mesId === 0 && !selected_group;
+    const isOpening = mesId === 0;
     button.toggle(isOpening);
     if (!isOpening) return;
     const live = canShowOpeningInCharacterInfo(mesId);
@@ -8462,6 +8478,7 @@ export async function showOpeningInCharacterInfo(mesId) {
         return;
     }
     takeShownGreeting(link.avatar, answer.greeting_shown);
+    if (selected_group && getCurrentCharacter()?.avatar !== link.avatar && !is_group_generating && charactersStore.has(link.avatar)) setCharacterId(link.avatar);
     if (getCurrentCharacter()?.avatar !== link.avatar) return;
     if (menu_type !== 'character_edit' || greetingPagerState.owner !== link.avatar) {
         selected_button = 'character_edit';

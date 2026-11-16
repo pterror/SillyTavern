@@ -3,7 +3,8 @@ import { storedValues } from './entity-values.js';
 import { greetingModelOf } from './greeting-items.js';
 
 /**
- * A character's card greetings, for the page's list of them
+ * A character's card greetings, for the page's list of them, in card order: `ids[k]` is the id of `texts[k]`, an empty
+ * greeting's included
  * @typedef {{ ids: number[], texts: string[], defaultIndex: number | null, name: string }} CardGreetingsRead
  */
 
@@ -19,7 +20,7 @@ export async function readCardGreetings(store, avatar) {
         const model = greetingModelOf(entity);
         const defaultIndex = model.greetings.findIndex(g => g.id === model.defaultId);
         return {
-            ids: model.greetings.filter(g => g.text.length > 0).map(g => g.id),
+            ids: model.greetings.map(g => g.id),
             texts: model.greetings.map(g => g.text),
             defaultIndex: defaultIndex < 0 ? null : defaultIndex,
             name: storedValues(entity).values.get(FIELD.name)?.text ?? '',

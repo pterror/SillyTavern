@@ -54,7 +54,8 @@ async function moveToNewCharacter(page) {
         const response = await fetch('/api/characters/create', { method: 'POST', headers: context.getRequestHeaders({ omitContentType: true }), body: form });
         if (!response.ok) throw new Error(`create failed: ${response.status}`);
         const avatar = await response.text();
-        const chose = await fetch('/api/chats/openings/choose', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar, index: 0 }) });
+        const { getStringHash } = await import('/scripts/utils.js');
+        const chose = await fetch('/api/chats/openings/choose', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar, greeting_id: 0, expected_hash: getStringHash(JSON.stringify('Hello.')) }) });
         if (!chose.ok) throw new Error(`choose failed: ${chose.status}`);
     }, `Tab-${stamp}`);
     await expect.poll(async () => (await tabState(page)).place.length).toBe(place.length + 1);

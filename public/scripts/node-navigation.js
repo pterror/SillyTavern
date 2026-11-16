@@ -83,7 +83,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true, b
             if (avatar != null) _setCurrentTarget(getCurrentChatId() ?? '', null);
             move.arrive(payload.draft);
         }
-    } else if (mesId === 0 && !await rememberCardOpening(message.swipes?.[swipeId], message.swipe_info?.[swipeId])) {
+    } else if (mesId === 0 && !await rememberCardOpening(message.swipe_info?.[swipeId])) {
         payload = null;
     }
 

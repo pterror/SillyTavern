@@ -2056,6 +2056,19 @@ export async function createNewGroupChat(groupId, { replace = null } = {}) {
 }
 
 /**
+ * Draws the group's chat as an action that opened it answered
+ * @param {string} groupId
+ * @param {import('../script.js').ChatOpenAnswer} opened the answer, taken on with takeChatOpenAnswer()
+ * @returns {Promise<void>}
+ */
+export async function showOpenedGroupChat(groupId, opened) {
+    if (!groupsStore.get(groupId)) return;
+    await clearChat({ clearData: true });
+    updateChatMetadata({}, true);
+    await openGroupConversation(groupId, { opened });
+}
+
+/**
  * Opens a specific group chat for the specified group by its ID.
  * @param {string} groupId Group ID
  * @param {string} chatId Chat ID
