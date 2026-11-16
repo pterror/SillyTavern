@@ -235,13 +235,14 @@ export function openableMacros(viewOf, redraw) {
  * @typedef {object} WantedValues
  * @property {(sources: string[]) => Promise<boolean>} wantMacros asks for the values of macros, answering whether
  *   that changed what is shown
- * @property {() => Promise<boolean>} [refresh] asks for the values known again, answering whether any changed
+ * @property {(sources: string[]) => Promise<boolean>} [refresh] asks for the values of macros known again, answering
+ *   whether any changed
  */
 
 /**
  * Asks for the value of each macro the text comes to have without one: those it has when the editor starts, and those
  * typed or pasted, once the text has been still for a moment, in one request for all of them. A moment after an edit
- * it asks for the values it has again, since they may depend on it.
+ * it asks for the values of its macros again, since they may depend on it.
  * @param {object} options
  * @param {MacroValueSource} options.values the values the text has
  * @param {WantedValues} options.wanted where the others are asked
@@ -271,7 +272,7 @@ export function macroValueRequests({ values, wanted, redraw }) {
             this.asking = setTimeout(() => this.ask(), ASK_DELAY);
             if (wanted.refresh) {
                 clearTimeout(this.refreshing);
-                this.refreshing = setTimeout(() => void wanted.refresh?.().then(changed => changed && !this.stopped && redraw()), REFRESH_DELAY);
+                this.refreshing = setTimeout(() => void wanted.refresh?.(this.written()).then(changed => changed && !this.stopped && redraw()), REFRESH_DELAY);
             }
         }
 
@@ -290,6 +291,21 @@ export function macroValueRequests({ values, wanted, redraw }) {
                     return false;
                 },
             });
+        }
+
+        /** @returns {string[]} the macros in the text */
+        written() {
+            const { state } = this.view;
+            /** @type {Set<string>} */
+            const written = new Set();
+            syntaxTree(state).iterate({
+                enter: (node) => {
+                    if (node.name !== 'Macro') return;
+                    written.add(state.sliceDoc(node.from, node.to));
+                    return false;
+                },
+            });
+            return [...written];
         }
 
         ask() {

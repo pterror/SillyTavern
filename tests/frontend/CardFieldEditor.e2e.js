@@ -319,10 +319,9 @@ test.describe('card fields edit in the editor', () => {
         await page.keyboard.press('Control+End');
         const asked = [];
         page.on('request', request => { if (request.url().endsWith('/api/macros/values')) asked.push(request.postDataJSON().macros); });
-        await page.keyboard.type('{{char}}', { delay: 20 });
-        await expect(editor.locator('.macro-pill-mention')).toHaveText(await page.locator('#character_name_pole').inputValue());
-        expect(asked).toHaveLength(1);
-        expect(asked[0]).toContain('{{char}}');
+        await page.keyboard.type('{{getglobalvar::typed}}', { delay: 20 });
+        await expect(editor.locator('.macro-pill-empty[data-macro-name="getglobalvar"]')).toHaveText('getglobalvar · typed');
+        expect(asked).toEqual([['{{getglobalvar::typed}}']]);
         await page.locator('.field_edit_cancel[data-for="scenario_pole"]').click();
     });
 

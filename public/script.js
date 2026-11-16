@@ -258,7 +258,7 @@ import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder, pageMacroFacts } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { editingIn, initMessageText, messageEditorSetup, redrawMessageText, shownMessageMacros, showBiasText, showMessageText } from './scripts/message-text.js';
-import { onMacroValuesChanged, replaceMacroValues, setSettingsCarrier, takeMacroValues } from './scripts/macro-values.js';
+import { macroScopesChanged, onMacroValuesChanged, replaceMacroValues, setSettingsCarrier, takeMacroValues } from './scripts/macro-values.js';
 import {
     updateMessage,
     updateIn,
@@ -10599,6 +10599,7 @@ jQuery(async function () {
     });
 
     eventSource.on(event_types.CHAT_CHANGED, refreshUseInChat);
+    eventSource.on(event_types.CHAT_CHANGED, macroScopesChanged);
 
 
     $('#favorite_button').on('click', async function () {

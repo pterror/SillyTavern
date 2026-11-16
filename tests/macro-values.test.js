@@ -93,4 +93,15 @@ describe('the page\'s macro values', () => {
         await settle();
         expect(view.get('{{user}}')).toBe('Fresh');
     });
+
+    test('a refresh after an edit asks again only for the edited text\'s macros the page holds', async () => {
+        values.takeMacroValues(ada, [{ speaker: null, values: { '{{user}}': 'Me', '{{description}}': 'Tall' } }]);
+        const view = new values.MacroValues(() => ada);
+        const refreshed = view.refresh(['{{user}}', '{{unheld}}']);
+        await settle();
+        expect(asked.map(each => each.body.macros)).toEqual([['{{user}}']]);
+        asked[0].answer(['You']);
+        expect(await refreshed).toBe(true);
+        expect([view.get('{{user}}'), view.get('{{description}}')]).toEqual(['You', 'Tall']);
+    });
 });

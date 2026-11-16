@@ -163,6 +163,14 @@ function changed() {
 }
 
 /**
+ * Says the chat the page's texts are drawn in changed: every text is drawn again in the scope it is in now, and asks for
+ * the values it lacks there
+ */
+export function macroScopesChanged() {
+    changed();
+}
+
+/**
  * @param {unknown} value
  * @returns {string | null}
  */
@@ -385,13 +393,14 @@ export class MacroValues {
     }
 
     /**
-     * Asks for the values known again, since an edit may have changed them
+     * Asks for the values held of some macros again, since an edit may have changed them
+     * @param {string[]} written the macros
      * @returns {Promise<boolean>} whether any changed
      */
-    async refresh() {
+    async refresh(written) {
         const scope = this.scope();
         const entry = held.get(macroScopeKey(scope));
-        const sources = entry ? [...entry.values.keys()] : [];
+        const sources = entry ? written.filter(source => entry.values.has(source)) : [];
         if (!entry || sources.length === 0) return false;
         const { epoch } = entry;
         const values = await fetchMacroValues(sources, scope);
