@@ -112,7 +112,7 @@ resulting state:
   a group chat it is a member of.
 - "Show in character info", in the opening's message menu, pages the pager to the greeting the opening is linked to,
   by its character, its id and the hash of the text it had, and opens character info on it (in a group, on that
-  member). It answers with that greeting's id. It is
+  member), in front of every other panel. It answers with that greeting's id. It is
   disabled when the opening has no live link: it was edited, or its greeting was changed or deleted.
 
 ## Converting cards with the same greeting twice

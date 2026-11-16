@@ -67,6 +67,35 @@ function greetingRow(page, index) {
     return page.locator('dialog.alternatives li.alternative').nth(index);
 }
 
+/**
+ * Clicks "Show in character info" in the first message's menu, as a user does
+ * @param {import('@playwright/test').Page} page
+ */
+async function showInCharacterInfo(page) {
+    const show = page.locator('#chat .mes[mesid="0"] .mes_show_greeting');
+    await expect(show).not.toHaveClass(/disabled/, { timeout: 10000 });
+    await page.locator('#chat .mes[mesid="0"]').hover();
+    await page.locator('#chat .mes[mesid="0"] .extraMesButtonsHint').click();
+    const shown = page.waitForResponse(r => new URL(r.url()).pathname === '/api/characters/greetings/show', { timeout: 10000 });
+    await show.click();
+    expect((await shown).ok()).toBe(true);
+}
+
+/**
+ * The character editor is shown, and nothing covers its greeting pager
+ * @param {import('@playwright/test').Page} page
+ */
+async function expectEditorInFront(page) {
+    await expect(page.locator('#char-info-panel')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => {
+        const use = document.querySelector('.greeting-pager-use');
+        if (!use) return 'no pager';
+        const box = use.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return hit?.closest('#char-info-panel') ? 'editor' : (hit?.closest('[id]')?.id ?? 'nothing');
+    }), { timeout: 10000 }).toBe('editor');
+}
+
 const stamp = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 test.describe('a card has each greeting text once, and the pager and the chat copy greetings to each other', () => {
@@ -128,23 +157,35 @@ test.describe('a card has each greeting text once, and the pager and the chat co
         await openInfoTab(page, 'greeting');
 
         await pageTo(page, 3);
-        const used = page.waitForResponse(r => new URL(r.url()).pathname === '/api/chats/openings/use-greeting');
+        const used = page.waitForRequest(r => new URL(r.url()).pathname === '/api/chats/openings/use-greeting');
         await page.locator('.greeting-pager-use').click();
-        expect((await used).ok()).toBe(true);
+        const request = await used;
+        expect((await request.response())?.ok()).toBe(true);
+        const ids = await page.evaluate(async (avatar) => {
+            // @ts-ignore
+            const headers = stTest.context().getRequestHeaders();
+            return (await (await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) })).json()).card_greetings.ids;
+        }, avatar);
+        expect(request.postDataJSON()).toMatchObject({ avatar_url: avatar, greeting_id: ids[2] });
+        expect(request.postDataJSON()).not.toHaveProperty('position');
         await expect.poll(() => shownText(page), { timeout: 10000 }).toBe(g[2]);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(g[2]);
 
+        const paged = page.waitForResponse(r => new URL(r.url()).pathname === '/api/characters/greetings/show');
         await pageTo(page, 1);
-        const button = page.locator('#chat .mes[mesid="0"] .mes_show_greeting');
-        await expect(button).not.toHaveClass(/disabled/);
-        const shown = page.waitForResponse(r => new URL(r.url()).pathname === '/api/characters/greetings/show');
-        await page.evaluate(() => {
-            // @ts-ignore
-            $('#chat .mes[mesid="0"] .mes_show_greeting').trigger('click');
-        });
-        expect((await shown).ok()).toBe(true);
+        expect((await paged).ok()).toBe(true);
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect(page.locator('#rm_print_characters_block')).toBeVisible();
+        await page.locator('#rightNavDrawerIcon').click();
+        await expect(page.locator('#right-nav-panel')).not.toHaveClass(/openDrawer/);
+        await expect(page.locator('#chat .mes[mesid="0"]')).toBeVisible();
+        const sent = page.waitForRequest(r => new URL(r.url()).pathname === '/api/characters/greetings/show');
+        await showInCharacterInfo(page);
+        expect((await sent).postDataJSON()).toMatchObject({ avatar_url: avatar, greeting_id: ids[2] });
         await expect(page.locator('.greeting-pager-input')).toHaveValue('3');
         await expect(page.locator('#greeting_field')).toHaveValue(g[2]);
+        await expectEditorInFront(page);
+        await expect(page.locator('#right-nav-panel')).not.toHaveClass(/openDrawer/);
     });
 
     test('"Show in character info" is enabled exactly while the opening is its greeting with that greeting\'s current text', async ({ page }) => {

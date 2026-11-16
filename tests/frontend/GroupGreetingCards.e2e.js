@@ -106,6 +106,50 @@ async function swipeTo(page, swipeId) {
     return request.postDataJSON();
 }
 
+/**
+ * Clicks "Show in character info" in the first message's menu, as a user does
+ * @param {import('@playwright/test').Page} page
+ */
+async function showInCharacterInfo(page) {
+    const show = page.locator('#chat .mes[mesid="0"] .mes_show_greeting');
+    await expect(show).not.toHaveClass(/disabled/, { timeout: 10000 });
+    await page.locator('#chat .mes[mesid="0"]').hover();
+    await page.locator('#chat .mes[mesid="0"] .extraMesButtonsHint').click();
+    const shown = page.waitForResponse(r => new URL(r.url()).pathname === '/api/characters/greetings/show', { timeout: 10000 });
+    await show.click();
+    expect((await shown).ok()).toBe(true);
+}
+
+/**
+ * The character editor is shown, and nothing covers its greeting pager
+ * @param {import('@playwright/test').Page} page
+ */
+async function expectEditorInFront(page) {
+    await expect(page.locator('#char-info-panel')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => {
+        const use = document.querySelector('.greeting-pager-use');
+        if (!use) return 'no pager';
+        const box = use.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return hit?.closest('#char-info-panel') ? 'editor' : (hit?.closest('[id]')?.id ?? 'nothing');
+    }), { timeout: 10000 }).toBe('editor');
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} avatar
+ * @param {string} text
+ * @returns {Promise<number>} the id of the character's greeting with the text
+ */
+async function greetingId(page, avatar, text) {
+    return page.evaluate(async ({ avatar, text }) => {
+        // @ts-ignore
+        const headers = stTest.context().getRequestHeaders();
+        const card = await (await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) })).json();
+        return card.card_greetings.ids[card.card_greetings.texts.indexOf(text)];
+    }, { avatar, text });
+}
+
 const list = (/** @type {import('@playwright/test').Page} */ page) => page.locator('dialog.alternatives');
 const rows = (/** @type {import('@playwright/test').Page} */ page) => list(page).locator('li.alternative');
 
@@ -194,7 +238,7 @@ test.describe('a group chat\'s first message, its card greetings', () => {
         expect(await reopened()).toMatchObject({ mes: same, original_avatar: annAvatar, swipe_id: 0 });
     });
 
-    test('"Show in character info" opens the member\'s greeting, and "Use in chat" makes it the group\'s opening again', async ({ page }) => {
+    test('"Show in character info" opens the member\'s greeting in front, and "Use in chat" makes it the group\'s opening again, each by its id', async ({ page }) => {
         const s = stamp();
         const ann = [`Ann zero ${s}`, `Ann one ${s}`];
         const bo = [`Bo zero ${s}`, `Bo one ${s}`];
@@ -202,21 +246,25 @@ test.describe('a group chat\'s first message, its card greetings', () => {
         const boAvatar = await createCharacter(page, `InfoBo-${s}`, bo);
         await openNewGroup(page, `GroupInfo-${s}`, [annAvatar, boAvatar]);
         await swipeTo(page, 3);
+        await expect(page.locator('#right-nav-panel')).not.toHaveClass(/openDrawer/);
 
-        await expect.poll(() => page.evaluate(async () => (await import('/script.js')).canShowOpeningInCharacterInfo(0))).toBe(true);
-        await page.evaluate(async () => (await import('/script.js')).showOpeningInCharacterInfo(0));
+        await showInCharacterInfo(page);
         await expect(page.locator('#greeting_field')).toHaveValue(bo[1], { timeout: 10000 });
+        await expect(page.locator('.greeting-pager-input')).toHaveValue('2');
+        await expectEditorInFront(page);
+        await expect(page.locator('#right-nav-panel')).not.toHaveClass(/openDrawer/);
 
         await swipeTo(page, 0);
         expect((await opening(page)).original_avatar).toBe(annAvatar);
         const use = page.locator('.greeting-pager-use');
         await expect(use).not.toHaveClass(/disabled/);
-        const used = page.waitForResponse(r => new URL(r.url()).pathname === '/api/chats/openings/use-greeting', { timeout: 10000 });
-        await page.evaluate(() => {
-            // @ts-ignore
-            $('.greeting-pager-use').trigger('click');
-        });
-        expect((await used).ok()).toBe(true);
+        const used = page.waitForRequest(r => new URL(r.url()).pathname === '/api/chats/openings/use-greeting', { timeout: 10000 });
+        await use.click();
+        const request = await used;
+        expect((await request.response())?.ok()).toBe(true);
+        const sent = request.postDataJSON();
+        expect(sent).toMatchObject({ avatar_url: boAvatar, greeting_id: await greetingId(page, boAvatar, bo[1]), expected_hash: expect.any(Number) });
+        expect(sent).not.toHaveProperty('position');
         await expect.poll(async () => (await opening(page)).mes, { timeout: 10000 }).toBe(bo[1]);
         expect((await opening(page)).original_avatar).toBe(boAvatar);
     });

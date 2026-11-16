@@ -8531,13 +8531,7 @@ export async function showOpeningInCharacterInfo(mesId) {
         tab.checked = true;
         tab.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    const panel = document.getElementById('right-nav-panel');
-    if (panel && !$(panel).is(':visible')) {
-        $('#rightNavDrawerIcon').trigger('click');
-    } else if (panel && isDrawerCovered(panel)) {
-        raiseDrawer(panel);
-        drawerStackChanged();
-    }
+    ensureDrawerOpen('charInfoHolder');
 }
 
 /**
