@@ -26,14 +26,6 @@ function macroNameOf(source) {
 }
 
 /**
- * @param {string} source
- * @returns {string} what the macro is, as a pill names it
- */
-function described(source) {
-    return source.replace(/^\{\{\s*/, '').replace(/\s*\}\}$/, '').split('::').map(part => part.trim()).filter(Boolean).join(' · ');
-}
-
-/**
  * Macros drawn by their value, for reading: a value only known when sent shows what the macro is, a person their
  * name with their card on hover. A text drawn again when its values change draws its pieces again.
  * @param {MacroValueSource} values
@@ -44,32 +36,15 @@ function described(source) {
 export function macroValuePieces(values, person, t) {
     return (source) => {
         const name = macroNameOf(source);
-        /** @param {HTMLElement} element */
-        const fill = (element) => {
-            const value = values.get(source);
-            if (value === undefined) {
-                element.className = 'macro-value macro-value-unknown';
-                element.setAttribute('data-macro-source', source);
-                if (name) element.setAttribute('data-macro-name', name);
-                element.textContent = described(source);
-                return;
-            }
-            const macro = { source, name, value };
-            const { kind, label } = macroPillContent(macro, t);
-            element.className = `macro-value macro-value-${kind}`;
-            element.textContent = label;
-            const shownPerson = kind === 'mention' && name ? person(name) : null;
-            for (const [attribute, attributeValue] of Object.entries(macroTooltipAttributes(macro, { t, person: shownPerson }))) {
-                element.setAttribute(attribute, attributeValue);
-            }
-        };
         return {
             same: other => 'source' in other && other.source === source,
             source,
             draw() {
-                const element = document.createElement('span');
-                fill(element);
-                return element;
+                const macro = { source, name, value: values.get(source) };
+                const shownPerson = macroPillContent(macro, t).kind === 'mention' && name ? person(name) : null;
+                const pill = macroPill(macro, { t, person: shownPerson });
+                pill.classList.add('macro-value');
+                return pill;
             },
         };
     };

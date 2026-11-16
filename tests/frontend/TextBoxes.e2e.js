@@ -133,7 +133,7 @@ test.describe('prompt text boxes', () => {
         const box = page.locator('#context_story_string + .text_box');
         const view = box.locator('.text_box_view');
         await expect(view.locator('.macro-block-tag')).toHaveText(['{{#if description}}', '{{else}}', '{{/if}}']);
-        await expect(view.locator('.macro-value-unknown')).toHaveCount(0);
+        await expect(view.locator('.macro-pill-unknown')).toHaveCount(0);
         expect(await view.locator('.macro-block-tag').first().evaluate(el => getComputedStyle(el).fontStyle)).toBe('normal');
         await page.evaluate(() => {
             for (let node = /** @type {HTMLElement | null} */ (document.querySelector('#context_story_string + .text_box')); node && node !== document.body; node = node.parentElement) {

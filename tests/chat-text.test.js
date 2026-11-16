@@ -97,9 +97,9 @@ describe('chat text, read', () => {
     test('draws a macro as its value, one known only when sent as what it is, and none as written', () => {
         const values = { '{{user}}': 'Ann', '{{random::a::b}}': null, '{{// note}}': '' };
         expect(drawn('{{user}} {{random::a::b}} {{// note}}', { values })).toBe(
-            '<p><span class="macro-value macro-value-mention" data-macro-name="user" data-macro-source="{{user}}">Ann</span> '
-            + '<span class="macro-value macro-value-later" data-macro-name="random" data-macro-source="{{random::a::b}}" data-macro-note="Filled in when sent">random · a · b</span> '
-            + '<span class="macro-value macro-value-empty" data-macro-name="//" data-macro-source="{{// note}}" data-macro-note="Sends nothing">// note</span></p>',
+            '<p><span class="macro-pill macro-pill-mention macro-value" data-macro-name="user" data-macro-source="{{user}}">Ann</span> '
+            + '<span class="macro-pill macro-pill-later macro-value" data-macro-name="random" data-macro-source="{{random::a::b}}" data-macro-note="Filled in when sent"><i class="macro-pill-icon fa-solid fa-code" aria-hidden="true"></i>random · a · b</span> '
+            + '<span class="macro-pill macro-pill-empty macro-value" data-macro-name="//" data-macro-source="{{// note}}" data-macro-note="Sends nothing"><i class="macro-pill-icon fa-solid fa-code" aria-hidden="true"></i>// note</span></p>',
         );
     });
 
@@ -267,11 +267,11 @@ describe('Handlebars block tags in chat text', () => {
         const html = drawn('{{#if a}}Hi {{user}}{{else}}no{{/if}}', { values: { '{{user}}': 'Ann' } });
         expect(html).toBe(
             '<p><span class="macro-value macro-block-tag" data-macro-name="if">{{#if a}}</span>Hi '
-            + '<span class="macro-value macro-value-mention" data-macro-name="user" data-macro-source="{{user}}">Ann</span>'
+            + '<span class="macro-pill macro-pill-mention macro-value" data-macro-name="user" data-macro-source="{{user}}">Ann</span>'
             + '<span class="macro-value macro-block-tag" data-macro-name="else">{{else}}</span>no'
             + '<span class="macro-value macro-block-tag" data-macro-name="if">{{/if}}</span></p>',
         );
-        expect(html).not.toContain('macro-value-unknown');
+        expect(html).not.toContain('macro-pill-unknown');
     });
 });
 
