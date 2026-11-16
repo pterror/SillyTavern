@@ -591,16 +591,16 @@ function _noticeSameAlternative(place) {
 }
 
 /**
- * Asks the server to remember the card greeting `text` of the character `avatar` as the chat's opening, which the page
- * shows already: the chat box moves to it as it is asked (`moveChatBox`)
+ * Asks the server to remember the card greeting `text` as the chat's opening, which the page shows already: the chat
+ * box moves to it as it is asked (`moveChatBox`). Only an alternative the server named a card greeting is one.
  * @param {string} text
- * @param {string | undefined} avatar the greeting's character; the chat's character when none
+ * @param {(SwipeInfo & { greeting?: unknown }) | undefined} info the alternative's swipe info
  * @returns {Promise<boolean>} false when the server didn't take it
  */
-export async function rememberCardOpening(text, avatar) {
+export async function rememberCardOpening(text, info) {
     const owner = _currentOwner();
-    if (!owner || typeof text !== 'string' || text.length === 0) return true;
-    const character = typeof avatar === 'string' && avatar !== '' ? charactersStore.get(avatar) : getCurrentCharacter();
+    if (!owner || typeof text !== 'string' || text.length === 0 || !info?.greeting) return true;
+    const character = typeof info.original_avatar === 'string' && info.original_avatar !== '' ? charactersStore.get(info.original_avatar) : getCurrentCharacter();
     if (character?.avatar == null || character.avatar === '') return true;
     const index = cardToGreetingsModel(character).greetings.indexOf(text);
     const move = moveChatBox({ chat: owner });

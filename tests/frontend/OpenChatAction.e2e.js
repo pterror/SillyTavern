@@ -76,7 +76,7 @@ test('opening a character is one request and writes nothing but what was opened'
     expect(state).toEqual({ chat: expect.stringMatching(new RegExp(`^Open-${stamp} - \\d{4}-\\d{2}-\\d{2}@\\d{2}h\\d{2}m\\d{2}s\\d{3}ms$`)), current: state.chat, active: avatar });
 });
 
-test('a group chat with no messages shows its greetings unsaved, and stores them before the first message', async ({ page }) => {
+test('a group chat with no messages shows one opening of its members\' greetings unsaved, and stores it before the first message', async ({ page }) => {
     await testSetup.awaitST({ page });
     await openCharacterManagementDrawer(page);
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -96,8 +96,12 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
             const { openGroupById } = await import('/scripts/group-chats.js');
             await openGroupById(id);
         }, groupId);
-        await expect(page.locator('#chat .mes')).toHaveCount(2);
+        await expect(page.locator('#chat .mes')).toHaveCount(1);
     });
+    expect(await page.evaluate(() => {
+        // @ts-ignore
+        return stTest.context().chat[0].swipes;
+    })).toEqual(['A says hi.', 'B says hi.']);
     expect(seen.filter(path => path !== '/api/groups/members')).toEqual(['/api/chats/open']);
 
     const stored = await page.evaluate(async () => {
@@ -106,7 +110,7 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
         // @ts-ignore
         return stTest.context().chat.map(m => ({ mes: m.mes, node_id: m.node_id }));
     });
-    expect(stored.map(m => m.mes)).toEqual(['A says hi.', 'B says hi.', 'Hello both.']);
+    expect(stored.map(m => m.mes)).toEqual(['A says hi.', 'Hello both.']);
     for (const message of stored) expect(message.node_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
     await page.reload();
@@ -115,9 +119,9 @@ test('a group chat with no messages shows its greetings unsaved, and stores them
         const { openGroupById } = await import('/scripts/group-chats.js');
         await openGroupById(id);
     }, groupId);
-    await expect(page.locator('#chat .mes')).toHaveCount(3);
+    await expect(page.locator('#chat .mes')).toHaveCount(2);
     expect(await page.evaluate(() => {
         // @ts-ignore
         return stTest.context().chat.map(m => m.mes);
-    })).toEqual(['A says hi.', 'B says hi.', 'Hello both.']);
+    })).toEqual(['A says hi.', 'Hello both.']);
 });
