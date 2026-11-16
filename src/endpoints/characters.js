@@ -37,6 +37,7 @@ import { savedViewsEvents } from '../saved-views.js';
 import { getAtPath, getStringHash, normalizeFav, setAtPath } from '../../public/scripts/hash-utils.js';
 import { applyGreetingsModelToCard } from '../greeting-list.js';
 import { defaultPositionOf, greetingOperation, hashGreetingText } from '../greeting-ops.js';
+import { cardGreetingsReadOf } from '../opening-state.js';
 import { countedOpeningState, MESSAGE_COUNTS_EVENT } from '../message-count-service.js';
 import { CHAT_LINKS_EVENT } from '../chat-links.js';
 import { showGreeting } from '../tab-views.js';
@@ -426,7 +427,8 @@ function sendWriteFailure(response, err) {
  * @param {import('express').Request} request
  * @param {string[]} avatars
  * @param {{ shallow: boolean }} o
- * @returns {Promise<(Record<string, any> | null)[]>}
+ * @returns {Promise<(Record<string, any> | null)[]>} a full one carries `card_greetings`, its greetings in card order with
+ *   their ids (`readCardGreetings`)
  */
 export async function characterObjects(request, avatars, { shallow }) {
     const store = await requestStore(request);
@@ -456,7 +458,10 @@ export async function characterObjects(request, avatars, { shallow }) {
         character.tag_ids = tagKeys.get(e.id) ?? [];
         const allow = e.values.find(v => v.field === FIELD.allow_global_styles);
         if (allow?.json !== undefined) character.allow_global_styles = !!JSON.parse(allow.json);
-        return shallow ? toShallow(character) : character;
+        if (shallow) return toShallow(character);
+        const greetings = cardGreetingsReadOf(e);
+        character.card_greetings = { ids: greetings.ids, texts: greetings.texts, default_index: greetings.defaultIndex };
+        return character;
     }));
 }
 
@@ -1136,8 +1141,8 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
 /**
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {string} avatar
- * @param {(model: import('../greeting-items.js').GreetingModel) => {ok: boolean, reason?: string, model?: import('../greeting-items.js').GreetingModel, position?: number, sourcePosition?: number, targetPosition?: number}} op
- * @returns {Promise<{ok: boolean, reason?: string, status?: number, same?: number, greetings?: string[], hashes?: number[], defaultPosition?: number|null, position?: number, sourcePosition?: number, targetPosition?: number}>}
+ * @param {(model: import('../greeting-items.js').GreetingModel) => {ok: boolean, reason?: string, same?: number, sameId?: number, model?: import('../greeting-items.js').GreetingModel, position?: number, id?: number, sourcePosition?: number, targetPosition?: number}} op
+ * @returns {Promise<{ok: boolean, reason?: string, status?: number, same?: number, sameId?: number, greetings?: string[], ids?: number[], hashes?: number[], defaultPosition?: number|null, position?: number, id?: number, sourcePosition?: number, targetPosition?: number}>}
  */
 export function applyGreetingOperation(directories, avatar, op) {
     const key = `${directories.root}\u0000${avatar}`;
@@ -1169,14 +1174,16 @@ async function runGreetingOperation(directories, avatar, op) {
     const model = await (await userStore(directories)).lib.greetingModel(avatar);
     const result = op(model);
     if (!result.ok) {
-        return { ok: false, reason: result.reason, status: 409, ...(Number.isInteger(result.same) ? { same: result.same } : {}) };
+        return { ok: false, reason: result.reason, status: 409, ...(Number.isInteger(result.same) ? { same: result.same, sameId: result.sameId } : {}) };
     }
     const answer = {
         ok: true,
         greetings: result.model.greetings.map(g => g.text),
+        ids: result.model.greetings.map(g => g.id),
         hashes: result.model.greetings.map(g => hashGreetingText(g.text)),
         defaultPosition: defaultPositionOf(result.model),
         position: result.position,
+        id: result.id,
         sourcePosition: result.sourcePosition,
         targetPosition: result.targetPosition,
     };
@@ -1222,12 +1229,13 @@ async function sendGreetingChange(request, response, change) {
     const actor = await sessionActorOf(request, store, avatar);
     const { result, opening } = await changeGreetings({ directories: request.user.directories, store, actor, avatar, change });
     if (!result.ok) {
-        return response.status(result.status ?? 409).send({ ok: false, reason: result.reason, ...(Number.isInteger(result.same) ? { same_position: result.same } : {}) });
+        return response.status(result.status ?? 409).send({ ok: false, reason: result.reason, ...(Number.isInteger(result.same) ? { same_position: result.same, same_id: result.sameId } : {}) });
     }
     const counts = await savedCardCounts(request, avatar);
     /** @type {Record<string, unknown>} */
-    const body = { ok: true, greetings: result.greetings, hashes: result.hashes, default_position: result.defaultPosition, ...(counts ? { card_token_counts: counts } : {}), ...(opening ?? {}) };
+    const body = { ok: true, greetings: result.greetings, ids: result.ids, hashes: result.hashes, default_position: result.defaultPosition, ...(counts ? { card_token_counts: counts } : {}), ...(opening ?? {}) };
     if (result.position !== undefined) body.position = result.position;
+    if (result.id !== undefined) body.id = result.id;
     if (result.sourcePosition !== undefined) body.source_position = result.sourcePosition;
     if (result.targetPosition !== undefined) body.target_position = result.targetPosition;
     return response.status(200).send(body);
@@ -1273,15 +1281,13 @@ router.post('/greetings/add', validateAvatarUrlMiddleware, async function (reque
 router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
-        const position = Number(request.body.position);
-        const expectedHash = Number(request.body.expected_hash);
-        const text = request.body.text;
+        const { greeting_id: id, expected_hash: expectedHash, text } = request.body;
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
         if (typeof text !== 'string') return response.status(400).send({ ok: false, reason: 'text is required' });
         if (text === '') return response.status(400).send({ ok: false, reason: 'refused to blank stored greeting text' });
-        if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
+        if (!Number.isInteger(id)) return response.status(400).send({ ok: false, reason: 'greeting_id must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
-        return await sendGreetingChange(request, response, { op: 'edit', position, hash: expectedHash, text });
+        return await sendGreetingChange(request, response, { op: 'edit', id, hash: expectedHash, text });
     } catch (error) {
         console.error('Error editing greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
@@ -1291,12 +1297,11 @@ router.post('/greetings/edit', validateAvatarUrlMiddleware, async function (requ
 router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
-        const position = Number(request.body.position);
-        const expectedHash = Number(request.body.expected_hash);
+        const { greeting_id: id, expected_hash: expectedHash } = request.body;
         if (!avatar) return response.status(400).send({ ok: false, reason: 'avatar_url is required' });
-        if (!Number.isInteger(position)) return response.status(400).send({ ok: false, reason: 'position must be an integer' });
+        if (!Number.isInteger(id)) return response.status(400).send({ ok: false, reason: 'greeting_id must be an integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ ok: false, reason: 'expected_hash is required' });
-        return await sendGreetingChange(request, response, { op: 'delete', position, hash: expectedHash });
+        return await sendGreetingChange(request, response, { op: 'delete', id, hash: expectedHash });
     } catch (error) {
         console.error('Error deleting greeting:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });
@@ -1306,21 +1311,16 @@ router.post('/greetings/delete', validateAvatarUrlMiddleware, async function (re
 router.post('/greetings/show', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
-        const byId = Number.isInteger(request.body.greeting_id);
-        const position = Number(request.body.position);
-        const expectedHash = Number(request.body.expected_hash);
-        const order = request.body.order;
-        if (!avatar || !(byId || Number.isInteger(position)) || !Number.isFinite(expectedHash) || !Number.isSafeInteger(order)) return response.status(400).send({ ok: false, reason: 'avatar_url, position or greeting_id, expected_hash and order are required' });
+        const { greeting_id: id, expected_hash: expectedHash, order } = request.body;
+        if (!avatar || !Number.isInteger(id) || !Number.isFinite(expectedHash) || !Number.isSafeInteger(order)) return response.status(400).send({ ok: false, reason: 'avatar_url, greeting_id, expected_hash and order are required' });
         const tab = sessionHeaderOf(request);
         if (tab === undefined || tab === 'none') return response.status(400).send({ ok: false, reason: 'the tab has no session' });
         const store = await requestStore(request);
         const { greetings } = await store.lib.greetingModel(avatar);
-        const at = byId
-            ? greetings.findIndex(g => g.id === request.body.greeting_id && hashGreetingText(g.text) === expectedHash)
-            : greetings[position] && hashGreetingText(greetings[position].text) === expectedHash ? position : greetings.findIndex(g => hashGreetingText(g.text) === expectedHash);
-        if (at < 0) return response.status(409).send({ ok: false, reason: byId ? 'the greeting changed or is gone' : 'greeting at position changed since it was loaded' });
-        await showGreeting(store.lib, tab, avatar, greetings[at].id, order);
-        return response.send({ ok: true, greeting_shown: { position: at, hash: expectedHash } });
+        const greeting = greetings.find(g => g.id === id);
+        if (!greeting || hashGreetingText(greeting.text) !== expectedHash) return response.status(409).send({ ok: false, reason: 'the greeting changed or is gone' });
+        await showGreeting(store.lib, tab, avatar, id, order);
+        return response.send({ ok: true, greeting_shown: { id } });
     } catch (error) {
         console.error('Error keeping the greeting shown:', error);
         return response.status(500).send({ ok: false, reason: 'internal error' });

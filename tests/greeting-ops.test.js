@@ -2,81 +2,66 @@ import { describe, test, expect } from '@jest/globals';
 import * as ops from '../src/greeting-ops.js';
 
 const { hashGreetingText } = ops;
-const idModel = ({ greetings, defaultIndex }) => ({
-    greetings: greetings.map((text, id) => ({ id, text })),
-    defaultId: defaultIndex === null ? null : defaultIndex,
-    nextId: greetings.length,
-});
-const plain = result => (result.ok
-    ? { ...result, model: { greetings: result.model.greetings.map(g => g.text), defaultIndex: ops.defaultPositionOf(result.model) } }
-    : result);
-const onPlain = op => (model, ...args) => plain(op(idModel(model), ...args));
-const opAdd = onPlain(ops.opAdd);
-const opAppend = onPlain(ops.opAppend);
-const opEdit = onPlain(ops.opEdit);
-const opDelete = onPlain(ops.opDelete);
-const opMove = onPlain(ops.opMove);
-const opSetDefault = onPlain(ops.opSetDefault);
-const opUnsetDefaultByHash = onPlain(ops.opUnsetDefaultByHash);
-
 const h = hashGreetingText;
-const modelOf = (greetings, defaultIndex = 0) => ({ greetings, defaultIndex });
 
-const move = (model, from, side, to) => opMove(model, from, h(model.greetings[from]), side, to, h(model.greetings[to]));
+/**
+ * A card whose greetings have the given texts and ids (ids 0, 1, 2, … when none are given)
+ * @param {string[]} texts
+ * @param {number|null} defaultIndex
+ * @param {number[]} [ids]
+ */
+const card = (texts, defaultIndex = 0, ids = texts.map((_, k) => k)) => ({
+    greetings: texts.map((text, k) => ({ id: ids[k], text })),
+    defaultId: defaultIndex === null ? null : ids[defaultIndex],
+    nextId: Math.max(-1, ...ids) + 1,
+});
+const texts = result => result.model.greetings.map(g => g.text);
+const ids = result => result.model.greetings.map(g => g.id);
+const defaultText = result => result.model.greetings.find(g => g.id === result.model.defaultId)?.text ?? null;
+
+const move = (model, from, side, to) => ops.opMove(
+    model,
+    from, h(model.greetings.find(g => g.id === from)?.text ?? ''),
+    side,
+    to, h(model.greetings.find(g => g.id === to)?.text ?? ''),
+);
 
 describe('opMove', () => {
-    const abcde = () => modelOf(['a', 'b', 'c', 'd', 'e'], null);
+    const abcde = () => card(['a', 'b', 'c', 'd', 'e'], null);
 
-    test('before an anchor that comes after the source', () => {
-        expect(move(abcde(), 1, 'before', 3)).toEqual({ ok: true, model: modelOf(['a', 'c', 'b', 'd', 'e'], null), sourcePosition: 1, targetPosition: 3 });
+    test('before or after an anchor on either side of the source', () => {
+        expect(texts(move(abcde(), 1, 'before', 3))).toEqual(['a', 'c', 'b', 'd', 'e']);
+        expect(texts(move(abcde(), 1, 'after', 3))).toEqual(['a', 'c', 'd', 'b', 'e']);
+        expect(texts(move(abcde(), 3, 'before', 1))).toEqual(['a', 'd', 'b', 'c', 'e']);
+        expect(texts(move(abcde(), 3, 'after', 1))).toEqual(['a', 'b', 'd', 'c', 'e']);
+        expect(texts(move(abcde(), 0, 'after', 4))).toEqual(['b', 'c', 'd', 'e', 'a']);
     });
 
-    test('after an anchor that comes after the source', () => {
-        expect(move(abcde(), 1, 'after', 3)).toEqual({ ok: true, model: modelOf(['a', 'c', 'd', 'b', 'e'], null), sourcePosition: 1, targetPosition: 3 });
+    test('says where the ends were', () => {
+        expect(move(abcde(), 1, 'after', 3)).toMatchObject({ ok: true, sourcePosition: 1, targetPosition: 3 });
     });
 
-    test('before an anchor that comes before the source', () => {
-        expect(move(abcde(), 3, 'before', 1)).toEqual({ ok: true, model: modelOf(['a', 'd', 'b', 'c', 'e'], null), sourcePosition: 3, targetPosition: 1 });
+    test('the default stays on its greeting', () => {
+        expect(defaultText(move(card(['a', 'b', 'c', 'd'], 1), 1, 'after', 3))).toBe('b');
+        expect(defaultText(move(card(['a', 'b', 'c', 'd'], 2), 0, 'after', 3))).toBe('c');
     });
 
-    test('after an anchor that comes before the source', () => {
-        expect(move(abcde(), 3, 'after', 1)).toEqual({ ok: true, model: modelOf(['a', 'b', 'd', 'c', 'e'], null), sourcePosition: 3, targetPosition: 1 });
+    test('each end is the greeting of its id, wherever it is now', () => {
+        const moved = card(['c', 'a', 'b'], null, [2, 0, 1]);
+        expect(texts(move(moved, 0, 'after', 2))).toEqual(['c', 'a', 'b']);
+        expect(texts(move(moved, 2, 'after', 1))).toEqual(['a', 'b', 'c']);
     });
 
-    test('to the end is after the last greeting', () => {
-        expect(move(abcde(), 0, 'after', 4)).toEqual({ ok: true, model: modelOf(['b', 'c', 'd', 'e', 'a'], null), sourcePosition: 0, targetPosition: 4 });
+    test('an end that is gone, or whose text changed, is refused', () => {
+        expect(ops.opMove(abcde(), 9, h('b'), 'after', 3, h('d'))).toEqual({ ok: false, reason: 'the greeting is gone' });
+        expect(ops.opMove(abcde(), 1, h('x'), 'after', 3, h('d'))).toEqual({ ok: false, reason: 'the greeting changed since it was loaded' });
+        expect(ops.opMove(abcde(), 1, h('b'), 'after', 9, h('d'))).toEqual({ ok: false, reason: 'the target greeting is gone' });
+        expect(ops.opMove(abcde(), 1, h('b'), 'after', 3, h('x'))).toEqual({ ok: false, reason: 'the target greeting changed since it was loaded' });
     });
 
-    test('the default follows the moved greeting', () => {
-        const result = move(modelOf(['a', 'b', 'c', 'd'], 1), 1, 'after', 3);
-        expect(result.model.greetings).toEqual(['a', 'c', 'd', 'b']);
-        expect(result.model.defaultIndex).toBe(3);
-    });
-
-    test('the default follows a greeting the move passes', () => {
-        const result = move(modelOf(['a', 'b', 'c', 'd'], 2), 0, 'after', 3);
-        expect(result.model.greetings).toEqual(['b', 'c', 'd', 'a']);
-        expect(result.model.greetings[result.model.defaultIndex]).toBe('c');
-
-        const back = move(modelOf(['a', 'b', 'c', 'd'], 1), 3, 'before', 0);
-        expect(back.model.greetings).toEqual(['d', 'a', 'b', 'c']);
-        expect(back.model.greetings[back.model.defaultIndex]).toBe('b');
-    });
-
-    test('a stale source hash is refused', () => {
-        const model = abcde();
-        expect(opMove(model, 1, h('x'), 'after', 3, h('d'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-    });
-
-    test('a stale target hash is refused', () => {
-        const model = abcde();
-        expect(opMove(model, 1, h('b'), 'after', 3, h('x'))).toEqual({ ok: false, reason: 'target greeting changed since it was loaded' });
-    });
-
-    test('a target out of range whose hash no greeting has is refused', () => {
-        const model = abcde();
-        expect(opMove(model, 1, h('b'), 'after', 5, h('x'))).toEqual({ ok: false, reason: 'target position out of range' });
-        expect(opMove(model, 1, h('b'), 'before', -1, h('x'))).toEqual({ ok: false, reason: 'target position out of range' });
+    test('an end is never found by its text', () => {
+        expect(ops.opMove(abcde(), 0, h('b'), 'after', 3, h('d'))).toEqual({ ok: false, reason: 'the greeting changed since it was loaded' });
+        expect(ops.opMove(abcde(), 1, h('b'), 'after', 4, h('d'))).toEqual({ ok: false, reason: 'the target greeting changed since it was loaded' });
     });
 
     test('a greeting cannot be moved next to itself', () => {
@@ -84,300 +69,198 @@ describe('opMove', () => {
     });
 
     test('a no-op placement returns a model equal to the input', () => {
-        const model = modelOf(['a', 'b', 'c'], 1);
-        expect(move(model, 1, 'before', 2)).toEqual({ ok: true, model, sourcePosition: 1, targetPosition: 2 });
-        expect(move(model, 1, 'after', 0)).toEqual({ ok: true, model, sourcePosition: 1, targetPosition: 0 });
+        const model = card(['a', 'b', 'c'], 1);
+        expect(move(model, 1, 'before', 2).model).toEqual(model);
+        expect(move(model, 1, 'after', 0).model).toEqual(model);
     });
 
     test('the input model is never mutated', () => {
-        const model = modelOf(['a', 'b', 'c'], 0);
+        const model = card(['a', 'b', 'c'], 0);
         move(model, 0, 'after', 2);
-        expect(model).toEqual(modelOf(['a', 'b', 'c'], 0));
-    });
-
-    test('next to either of two identical greetings gives the same result', () => {
-        const model = modelOf(['x', 'same', 'same', 'y'], null);
-        expect(move(model, 3, 'after', 1)).toEqual({ ok: true, model: modelOf(['x', 'same', 'y', 'same'], null), sourcePosition: 3, targetPosition: 1 });
-        expect(move(model, 3, 'before', 2)).toEqual({ ok: true, model: modelOf(['x', 'same', 'y', 'same'], null), sourcePosition: 3, targetPosition: 2 });
-        expect(move(model, 0, 'after', 1)).toEqual({ ok: true, model: modelOf(['same', 'x', 'same', 'y'], null), sourcePosition: 0, targetPosition: 1 });
-        expect(move(model, 0, 'before', 2)).toEqual({ ok: true, model: modelOf(['same', 'x', 'same', 'y'], null), sourcePosition: 0, targetPosition: 2 });
+        expect(model).toEqual(card(['a', 'b', 'c'], 0));
     });
 });
 
 describe('opEdit', () => {
-    const abc = () => modelOf(['a', 'b', 'c'], 0);
+    const abc = () => card(['a', 'b', 'c'], 0);
 
-    test('edits the greeting at the position when its hash matches', () => {
-        expect(opEdit(abc(), 1, h('b'), 'B')).toEqual({ ok: true, model: modelOf(['a', 'B', 'c'], 0), position: 1 });
+    test('edits the greeting of the id when its text is the one read', () => {
+        expect(ops.opEdit(abc(), 1, h('b'), 'B')).toEqual({ ok: true, model: card(['a', 'B', 'c'], 0), position: 1, id: 1 });
     });
 
-    test('the position wins over another greeting with the same hash', () => {
-        expect(opEdit(modelOf(['b', 'b'], 0), 1, h('b'), 'B')).toEqual({ ok: true, model: modelOf(['b', 'B'], 0), position: 1 });
-    });
-
-    test('a hash that moved to another position edits the one greeting that has it', () => {
-        expect(opEdit(abc(), 0, h('c'), 'C')).toEqual({ ok: true, model: modelOf(['a', 'b', 'C'], 0), position: 2 });
-    });
-
-    test('a position past the end edits the one greeting that has the hash', () => {
-        expect(opEdit(modelOf(['b', 'c'], 0), 2, h('c'), 'C')).toEqual({ ok: true, model: modelOf(['b', 'C'], 0), position: 1 });
+    test('the greeting is found by its id wherever it moved', () => {
+        const result = ops.opEdit(card(['c', 'a', 'b'], 0, [2, 0, 1]), 1, h('b'), 'B');
+        expect(texts(result)).toEqual(['c', 'a', 'B']);
+        expect(result).toMatchObject({ position: 2, id: 1 });
     });
 
     test('the default stays where it was', () => {
-        expect(opEdit(modelOf(['a', 'b', 'c'], 2), 0, h('b'), 'B')).toEqual({ ok: true, model: modelOf(['a', 'B', 'c'], 2), position: 1 });
+        expect(defaultText(ops.opEdit(card(['a', 'b', 'c'], 2), 1, h('b'), 'B'))).toBe('c');
     });
 
-    test('refuses when no greeting has the hash', () => {
-        expect(opEdit(abc(), 1, h('x'), 'X')).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        expect(opEdit(abc(), 3, h('x'), 'X')).toEqual({ ok: false, reason: 'position out of range' });
+    test('refuses a greeting that is gone, or whose text changed, and never takes another with the text', () => {
+        expect(ops.opEdit(abc(), 7, h('b'), 'X')).toEqual({ ok: false, reason: 'the greeting is gone' });
+        expect(ops.opEdit(abc(), 1, h('x'), 'X')).toEqual({ ok: false, reason: 'the greeting changed since it was loaded' });
+        expect(ops.opEdit(abc(), 0, h('c'), 'C')).toEqual({ ok: false, reason: 'the greeting changed since it was loaded' });
     });
 
-    test('refuses when more than one other greeting has the hash', () => {
-        expect(opEdit(modelOf(['a', 'b', 'b'], 0), 0, h('b'), 'B')).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        expect(opEdit(modelOf(['b', 'b'], 0), 5, h('b'), 'B')).toEqual({ ok: false, reason: 'position out of range' });
-    });
-
-    test('refuses empty text even when the hash matches', () => {
-        expect(opEdit(abc(), 1, h('b'), '')).toEqual({ ok: false, reason: 'refused to blank stored greeting text' });
+    test('refuses empty text', () => {
+        expect(ops.opEdit(abc(), 1, h('b'), '')).toEqual({ ok: false, reason: 'refused to blank stored greeting text' });
     });
 
     test('never mutates the input model', () => {
         const model = abc();
-        opEdit(model, 0, h('c'), 'C');
+        ops.opEdit(model, 2, h('c'), 'C');
         expect(model).toEqual(abc());
     });
 });
 
 describe('opDelete', () => {
-    const abc = (defaultIndex = 0) => modelOf(['a', 'b', 'c'], defaultIndex);
+    const abc = (defaultIndex = 0) => card(['a', 'b', 'c'], defaultIndex);
 
-    test('deletes the greeting at the position when its hash matches', () => {
-        expect(opDelete(abc(), 1, h('b'))).toEqual({ ok: true, model: modelOf(['a', 'c'], 0), position: 1 });
+    test('deletes the greeting of the id when its text is the one read', () => {
+        expect(ops.opDelete(abc(), 1, h('b'))).toEqual({ ok: true, model: { ...card(['a', 'c'], 0, [0, 2]), nextId: 3 }, position: 1, id: 1 });
     });
 
-    test('the position wins over another greeting with the same hash', () => {
-        expect(opDelete(modelOf(['b', 'b'], 0), 1, h('b'))).toEqual({ ok: true, model: modelOf(['b'], 0), position: 1 });
+    test('the default stays on its greeting, or is none when it is the one deleted', () => {
+        expect(defaultText(ops.opDelete(abc(2), 1, h('b')))).toBe('c');
+        expect(ops.opDelete(abc(1), 1, h('b')).model.defaultId).toBeNull();
     });
 
-    test('a hash that moved to another position deletes the one greeting that has it', () => {
-        expect(opDelete(abc(), 0, h('c'))).toEqual({ ok: true, model: modelOf(['a', 'b'], 0), position: 2 });
-    });
-
-    test('a position past the end deletes the one greeting that has the hash', () => {
-        expect(opDelete(modelOf(['b', 'c'], 0), 2, h('c'))).toEqual({ ok: true, model: modelOf(['b'], 0), position: 1 });
-    });
-
-    test('the default is reindexed from the position actually deleted', () => {
-        expect(opDelete(abc(2), 0, h('b'))).toEqual({ ok: true, model: modelOf(['a', 'c'], 1), position: 1 });
-        expect(opDelete(abc(1), 0, h('b'))).toEqual({ ok: true, model: modelOf(['a', 'c'], null), position: 1 });
-    });
-
-    test('refuses when no greeting has the hash', () => {
-        expect(opDelete(abc(), 1, h('x'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        expect(opDelete(abc(), 3, h('x'))).toEqual({ ok: false, reason: 'position out of range' });
-    });
-
-    test('refuses when more than one other greeting has the hash', () => {
-        expect(opDelete(modelOf(['a', 'b', 'b'], 0), 0, h('b'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        expect(opDelete(modelOf(['b', 'b'], 0), 5, h('b'))).toEqual({ ok: false, reason: 'position out of range' });
+    test('refuses a greeting that is gone, or whose text changed, and never takes another with the text', () => {
+        expect(ops.opDelete(abc(), 3, h('x'))).toEqual({ ok: false, reason: 'the greeting is gone' });
+        expect(ops.opDelete(abc(), 1, h('x'))).toEqual({ ok: false, reason: 'the greeting changed since it was loaded' });
+        expect(ops.opDelete(abc(), 0, h('c'))).toEqual({ ok: false, reason: 'the greeting changed since it was loaded' });
     });
 
     test('never mutates the input model', () => {
         const model = abc();
-        opDelete(model, 0, h('c'));
+        ops.opDelete(model, 2, h('c'));
         expect(model).toEqual(abc());
     });
 });
 
 describe('opSetDefault', () => {
-    const abc = () => modelOf(['a', 'b', 'c'], 0);
+    const abc = () => card(['a', 'b', 'c'], 0);
 
-    test('makes the greeting at the position the default when its hash matches', () => {
-        expect(opSetDefault(abc(), 1, h('b'))).toEqual({ ok: true, model: modelOf(['a', 'b', 'c'], 1), position: 1 });
+    test('makes the greeting of the id the default when its text is the one read', () => {
+        expect(ops.opSetDefault(abc(), 1, h('b'))).toEqual({ ok: true, model: card(['a', 'b', 'c'], 1), position: 1, id: 1 });
     });
 
-    test('the position wins over another greeting with the same hash', () => {
-        expect(opSetDefault(modelOf(['a', 'b', 'b'], 0), 2, h('b'))).toEqual({ ok: true, model: modelOf(['a', 'b', 'b'], 2), position: 2 });
+    test('an already default greeting is no change', () => {
+        expect(ops.opSetDefault(abc(), 0, h('a')).model).toEqual(abc());
     });
 
-    test('a hash that moved to another position makes the one greeting that has it the default', () => {
-        expect(opSetDefault(abc(), 1, h('c'))).toEqual({ ok: true, model: modelOf(['a', 'b', 'c'], 2), position: 2 });
-    });
-
-    test('a position past the end makes the one greeting that has the hash the default', () => {
-        expect(opSetDefault(modelOf(['b', 'c'], 0), 2, h('c'))).toEqual({ ok: true, model: modelOf(['b', 'c'], 1), position: 1 });
-    });
-
-    test('refuses when no greeting has the hash', () => {
-        expect(opSetDefault(abc(), 1, h('x'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        expect(opSetDefault(abc(), 3, h('x'))).toEqual({ ok: false, reason: 'position out of range' });
-    });
-
-    test('refuses when more than one other greeting has the hash', () => {
-        expect(opSetDefault(modelOf(['a', 'b', 'b'], 0), 0, h('b'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        expect(opSetDefault(modelOf(['a', 'b', 'b'], 0), 5, h('b'))).toEqual({ ok: false, reason: 'position out of range' });
+    test('refuses a greeting that is gone, or whose text changed, and never takes another with the text', () => {
+        expect(ops.opSetDefault(abc(), 3, h('x'))).toEqual({ ok: false, reason: 'the greeting is gone' });
+        expect(ops.opSetDefault(abc(), 1, h('x'))).toEqual({ ok: false, reason: 'the greeting changed since it was loaded' });
+        expect(ops.opSetDefault(abc(), 1, h('c'))).toEqual({ ok: false, reason: 'the greeting changed since it was loaded' });
     });
 });
 
-describe('opMove looks each end up by its hash', () => {
-    const abcde = (defaultIndex = null) => modelOf(['a', 'b', 'c', 'd', 'e'], defaultIndex);
-
-    test('returns the source and target positions it used', () => {
-        expect(opMove(abcde(), 1, h('b'), 'after', 3, h('d'))).toEqual({
-            ok: true, model: modelOf(['a', 'c', 'd', 'b', 'e'], null), sourcePosition: 1, targetPosition: 3,
-        });
+describe('opUnsetDefault', () => {
+    test('clears the default when it is the greeting of the id, with the text read', () => {
+        expect(ops.opUnsetDefault(card(['a', 'b', 'c'], 1), 1, h('b'))).toEqual({ ok: true, model: card(['a', 'b', 'c'], null) });
     });
 
-    test('a source whose hash moved is found by it, and the landing is computed from where it was found', () => {
-        expect(opMove(abcde(), 0, h('b'), 'after', 3, h('d'))).toEqual({
-            ok: true, model: modelOf(['a', 'c', 'd', 'b', 'e'], null), sourcePosition: 1, targetPosition: 3,
-        });
+    test('refuses when the default is another greeting, or its text changed', () => {
+        expect(ops.opUnsetDefault(card(['a', 'b', 'c'], 2), 1, h('b'))).toEqual({ ok: false, reason: 'default greeting changed since it was loaded' });
+        expect(ops.opUnsetDefault(card(['a', 'b', 'c'], 1), 1, h('x'))).toEqual({ ok: false, reason: 'default greeting changed since it was loaded' });
     });
 
-    test('a target whose hash moved is found by it', () => {
-        expect(opMove(abcde(), 1, h('b'), 'after', 4, h('d'))).toEqual({
-            ok: true, model: modelOf(['a', 'c', 'd', 'b', 'e'], null), sourcePosition: 1, targetPosition: 3,
-        });
-    });
-
-    test('both ends past the end are found by their hashes', () => {
-        expect(opMove(modelOf(['b', 'd'], null), 5, h('b'), 'after', 6, h('d'))).toEqual({
-            ok: true, model: modelOf(['d', 'b'], null), sourcePosition: 0, targetPosition: 1,
-        });
-    });
-
-    test('the default follows from the positions actually used', () => {
-        const result = opMove(abcde(1), 0, h('b'), 'after', 3, h('d'));
-        expect(result.model.greetings).toEqual(['a', 'c', 'd', 'b', 'e']);
-        expect(result.model.defaultIndex).toBe(3);
-    });
-
-    test('a source hash no greeting or more than one has is refused', () => {
-        expect(opMove(abcde(), 1, h('x'), 'after', 3, h('d'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        expect(opMove(modelOf(['a', 'b', 'b', 'd'], null), 0, h('b'), 'after', 3, h('d'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-        expect(opMove(modelOf(['a', 'b', 'b', 'd'], null), 9, h('b'), 'after', 3, h('d'))).toEqual({ ok: false, reason: 'position out of range' });
-    });
-
-    test('a target hash no greeting or more than one has is refused', () => {
-        expect(opMove(abcde(), 1, h('b'), 'after', 3, h('x'))).toEqual({ ok: false, reason: 'target greeting changed since it was loaded' });
-        expect(opMove(modelOf(['a', 'b', 'd', 'd'], null), 1, h('b'), 'after', 0, h('d'))).toEqual({ ok: false, reason: 'target greeting changed since it was loaded' });
-        expect(opMove(modelOf(['a', 'b', 'd', 'd'], null), 1, h('b'), 'after', 9, h('d'))).toEqual({ ok: false, reason: 'target position out of range' });
-    });
-
-    test('ends that are found to be the same greeting are refused', () => {
-        expect(opMove(abcde(), 0, h('b'), 'after', 1, h('b'))).toEqual({ ok: false, reason: 'cannot move a greeting next to itself' });
-    });
-});
-
-describe('opAppend', () => {
-    test('puts the text after the last greeting, whatever the length', () => {
-        expect(opAppend(modelOf(['a', 'b'], 0), 'c')).toEqual({ ok: true, model: modelOf(['a', 'b', 'c'], 0), position: 2 });
-        expect(opAppend(modelOf([], null), 'a')).toEqual({ ok: true, model: modelOf(['a'], 0), position: 0 });
-    });
-
-    test('keeps the default where it is', () => {
-        expect(opAppend(modelOf(['a', 'b'], 1), 'c')).toEqual({ ok: true, model: modelOf(['a', 'b', 'c'], 1), position: 2 });
-    });
-
-    test('refuses empty text', () => {
-        expect(opAppend(modelOf(['a'], 0), '')).toEqual({ ok: false, reason: 'refused to add empty greeting text' });
+    test('with no default any more it is no change', () => {
+        expect(ops.opUnsetDefault(card(['a', 'b'], null), 1, h('b'))).toEqual({ ok: true, model: card(['a', 'b'], null) });
     });
 
     test('never mutates the input model', () => {
-        const model = modelOf(['a'], 0);
-        opAppend(model, 'b');
-        expect(model).toEqual(modelOf(['a'], 0));
+        const model = card(['a', 'b'], 1);
+        ops.opUnsetDefault(model, 1, h('b'));
+        expect(model).toEqual(card(['a', 'b'], 1));
     });
 });
 
-describe('opUnsetDefaultByHash', () => {
-    test('clears the default when the default greeting has the hash, wherever it now sits', () => {
-        expect(opUnsetDefaultByHash(modelOf(['a', 'b', 'c'], 1), h('b'))).toEqual({ ok: true, model: modelOf(['a', 'b', 'c'], null) });
-        expect(opUnsetDefaultByHash(modelOf(['b', 'c'], 0), h('b'))).toEqual({ ok: true, model: modelOf(['b', 'c'], null) });
+describe('an edit sent again after it was stored', () => {
+    test('succeeds when the greeting of the id already has the new text', () => {
+        const model = card(['a', 'X', 'c'], 0);
+        expect(ops.opEdit(model, 1, h('b'), 'X')).toEqual({ ok: true, model, position: 1, id: 1 });
     });
 
-    test('refuses when the default is another greeting', () => {
-        expect(opUnsetDefaultByHash(modelOf(['a', 'b', 'c'], 2), h('b'))).toEqual({ ok: false, reason: 'default greeting changed since it was loaded' });
-    });
-
-
-    test('never mutates the input model', () => {
-        const model = modelOf(['a', 'b'], 1);
-        opUnsetDefaultByHash(model, h('b'));
-        expect(model).toEqual(modelOf(['a', 'b'], 1));
+    test('is refused when only another greeting has the new text', () => {
+        expect(ops.opEdit(card(['X', 'a', 'c'], 0), 1, h('b'), 'X')).toEqual({ ok: false, reason: 'the greeting changed since it was loaded' });
     });
 });
 
-describe('an op whose outcome is already in place succeeds', () => {
-    test('unset with no default any more', () => {
-        expect(opUnsetDefaultByHash(modelOf(['a', 'b'], null), h('b'))).toEqual({ ok: true, model: modelOf(['a', 'b'], null) });
+describe('opAdd and opAppend', () => {
+    test('append puts the text after the last greeting, whatever the length, and keeps the default', () => {
+        expect(texts(ops.opAppend(card(['a', 'b'], 1), 'c'))).toEqual(['a', 'b', 'c']);
+        expect(defaultText(ops.opAppend(card(['a', 'b'], 1), 'c'))).toBe('b');
     });
 
-    test('set default, when copies of the text make the greeting ambiguous but the default is one of them', () => {
-        expect(opSetDefault(modelOf(['b', 'a', 'b'], 2), 1, h('b'))).toEqual({ ok: true, model: modelOf(['b', 'a', 'b'], 2), position: 2 });
-    });
-
-    test('set default still refuses an ambiguous greeting when the default has other text', () => {
-        expect(opSetDefault(modelOf(['b', 'a', 'b'], 1), 1, h('b'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-    });
-
-    test('edit, when the greeting at the position already has the new text', () => {
-        expect(opEdit(modelOf(['a', 'X', 'c'], 0), 1, h('b'), 'X')).toEqual({ ok: true, model: modelOf(['a', 'X', 'c'], 0), position: 1 });
-    });
-
-    test('edit still refuses when the new text is only at another position', () => {
-        expect(opEdit(modelOf(['X', 'a', 'c'], 0), 1, h('b'), 'X')).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-    });
-
-    test('delete still refuses when no greeting has the hash', () => {
-        expect(opDelete(modelOf(['a', 'c'], 0), 1, h('b'))).toEqual({ ok: false, reason: 'greeting at position changed since it was loaded' });
-    });
-});
-
-describe('the first greeting', () => {
-    test('added to a card with none is its default, inserted or appended', () => {
-        expect(opAdd(modelOf([], null), 0, 0, 'Hi')).toEqual({ ok: true, model: modelOf(['Hi'], 0), position: 0 });
-        expect(opAppend(modelOf([], null), 'Hi')).toEqual({ ok: true, model: modelOf(['Hi'], 0), position: 0 });
+    test('the first greeting of a card with none is its default, inserted or appended', () => {
+        expect(ops.opAdd(card([], null), 0, 0, 'Hi')).toEqual({ ok: true, model: card(['Hi'], 0), position: 0, id: 0 });
+        expect(ops.opAppend(card([], null), 'Hi')).toEqual({ ok: true, model: card(['Hi'], 0), position: 0, id: 0 });
     });
 
     test('a later one leaves the default where it is', () => {
-        expect(opAdd(modelOf(['a'], null), 0, 1, 'b')).toEqual({ ok: true, model: modelOf(['b', 'a'], null), position: 0 });
-        expect(opAdd(modelOf(['a', 'b'], 1), 1, 2, 'c')).toEqual({ ok: true, model: modelOf(['a', 'c', 'b'], 2), position: 1 });
+        expect(defaultText(ops.opAdd(card(['a'], null), 0, 1, 'b'))).toBeNull();
+        expect(defaultText(ops.opAdd(card(['a', 'b'], 1), 1, 2, 'c'))).toBe('b');
+    });
+
+    test('refuses empty text, or a list that changed length', () => {
+        expect(ops.opAppend(card(['a'], 0), '')).toEqual({ ok: false, reason: 'refused to add empty greeting text' });
+        expect(ops.opAdd(card(['a'], 0), 1, 2, 'b')).toEqual({ ok: false, reason: 'greeting list length changed since it was loaded' });
+    });
+
+    test('never mutates the input model', () => {
+        const model = card(['a'], 0);
+        ops.opAppend(model, 'b');
+        expect(model).toEqual(card(['a'], 0));
     });
 });
 
 describe('a greeting keeps its id', () => {
-    const abc = { greetings: [{ id: 4, text: 'a' }, { id: 7, text: 'b' }, { id: 9, text: 'c' }], defaultId: 7, nextId: 12 };
-    const ids = result => result.model.greetings.map(g => g.id);
+    const abc = () => card(['a', 'b', 'c'], 1, [4, 7, 9]);
 
-    test('through an edit, a move and a delete of another; an add takes the next id', () => {
-        expect(ids(ops.opEdit(abc, 1, h('b'), 'B'))).toEqual([4, 7, 9]);
-        expect(ids(ops.opMove(abc, 0, h('a'), 'after', 2, h('c')))).toEqual([7, 9, 4]);
-        expect(ids(ops.opDelete(abc, 0, h('a')))).toEqual([7, 9]);
-        const added = ops.opAdd(abc, 1, 3, 'x');
+    test('through an edit, a move and a delete of another; an add takes the next id and says it', () => {
+        expect(ids(ops.opEdit({ ...abc(), nextId: 12 }, 7, h('b'), 'B'))).toEqual([4, 7, 9]);
+        expect(ids(move(abc(), 4, 'after', 9))).toEqual([7, 9, 4]);
+        expect(ids(ops.opDelete(abc(), 4, h('a')))).toEqual([7, 9]);
+        const added = ops.opAdd({ ...abc(), nextId: 12 }, 1, 3, 'x');
         expect(ids(added)).toEqual([4, 12, 7, 9]);
+        expect(added.id).toBe(12);
         expect(added.model.nextId).toBe(13);
     });
 
     test('the default is an id: it stays on its greeting wherever that moves, and goes with it', () => {
-        expect(ops.opMove(abc, 1, h('b'), 'after', 2, h('c')).model.defaultId).toBe(7);
-        expect(ops.opAdd(abc, 0, 3, 'x').model.defaultId).toBe(7);
-        expect(ops.opDelete(abc, 1, h('b')).model.defaultId).toBeNull();
-        expect(ops.opSetDefault(abc, 2, h('c')).model.defaultId).toBe(9);
+        expect(move(abc(), 7, 'after', 9).model.defaultId).toBe(7);
+        expect(ops.opAdd(abc(), 0, 3, 'x').model.defaultId).toBe(7);
+        expect(ops.opDelete(abc(), 7, h('b')).model.defaultId).toBeNull();
+        expect(ops.opSetDefault(abc(), 9, h('c')).model.defaultId).toBe(9);
     });
 });
 
 describe('a card has each greeting text once', () => {
-    const ab = { greetings: [{ id: 0, text: 'a' }, { id: 1, text: 'b' }], defaultId: 0, nextId: 2 };
+    const ab = () => card(['a', 'b'], 0, [3, 5]);
 
-    test('an add or an edit to another greeting\'s text is refused, naming that greeting', () => {
-        expect(ops.opAdd(ab, 2, 2, 'a')).toEqual({ ok: false, reason: 'same as greeting 1', same: 0 });
-        expect(ops.opAppend(ab, 'b')).toEqual({ ok: false, reason: 'same as greeting 2', same: 1 });
-        expect(ops.opEdit(ab, 1, h('b'), 'a')).toEqual({ ok: false, reason: 'same as greeting 1', same: 0 });
+    test('an add or an edit to another greeting\'s text is refused, naming that greeting by its place and id', () => {
+        expect(ops.opAdd(ab(), 2, 2, 'a')).toEqual({ ok: false, reason: 'same as greeting 1', same: 0, sameId: 3 });
+        expect(ops.opAppend(ab(), 'b')).toEqual({ ok: false, reason: 'same as greeting 2', same: 1, sameId: 5 });
+        expect(ops.opEdit(ab(), 5, h('b'), 'a')).toEqual({ ok: false, reason: 'same as greeting 1', same: 0, sameId: 3 });
     });
 
     test('whitespace makes a different text; an edit to its own text is no change', () => {
-        expect(ops.opAppend(ab, 'a ').ok).toBe(true);
-        expect(ops.opEdit(ab, 0, h('a'), 'a')).toEqual({ ok: true, model: ab, position: 0 });
+        expect(ops.opAppend(ab(), 'a ').ok).toBe(true);
+        expect(ops.opEdit(ab(), 3, h('a'), 'a')).toEqual({ ok: true, model: ab(), position: 0, id: 3 });
+    });
+});
+
+describe('greetingOperation', () => {
+    test('names each existing greeting by its id', () => {
+        const model = card(['a', 'b'], 0, [3, 5]);
+        expect(texts(ops.greetingOperation({ op: 'edit', id: 5, hash: h('b'), text: 'B' })(model))).toEqual(['a', 'B']);
+        expect(texts(ops.greetingOperation({ op: 'delete', id: 3, hash: h('a') })(model))).toEqual(['b']);
+        expect(texts(ops.greetingOperation({ op: 'move', id: 3, hash: h('a'), side: 'after', target: 5, targetHash: h('b') })(model))).toEqual(['b', 'a']);
+        expect(ops.greetingOperation({ op: 'default', id: 5, hash: h('b') })(model).model.defaultId).toBe(5);
+        expect(ops.greetingOperation({ op: 'undefault', id: 3, hash: h('a') })(model).model.defaultId).toBeNull();
     });
 });

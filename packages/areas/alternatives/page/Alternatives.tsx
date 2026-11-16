@@ -121,7 +121,7 @@ function Dialog(props: {
     const [query, setQuery] = createSignal('');
     const [notice, setNotice] = createSignal<string | null>(null);
     const [editing, setEditing] = createSignal<{ id: string; at?: number } | null>(null);
-    const [same, setSame] = createSignal<{ at: string; avatar: string; position: number } | null>(null);
+    const [same, setSame] = createSignal<{ at: string; avatar: string; id: number; position: number } | null>(null);
     const sameAt = (at: string) => {
         const found = same();
         return found?.at === at ? found.position : null;
@@ -385,8 +385,10 @@ function Dialog(props: {
     };
     const cardOf = (avatar: string | undefined) => list()?.cards.find((card) => card.avatar === avatar);
     const isCardRow = (item: Item) => item.card !== null && cardOf(item.card.avatar) !== undefined;
-    const isDefault = (item: Item) =>
-        item.card !== null && cardOf(item.card.avatar)?.defaultPosition === item.card.position;
+    const isDefault = (item: Item) => {
+        const card = item.card === null ? undefined : cardOf(item.card.avatar);
+        return card !== undefined && card.defaultPosition !== null && card.ids[card.defaultPosition] === item.card!.id;
+    };
     const reorders = 'message' in props.look.target;
     const canReorder = (item: Item) => isCardRow(item) || (reorders && item.nodeId !== null);
     // a card orders its own greetings: a card row moves among its card's rows only
@@ -399,17 +401,17 @@ function Dialog(props: {
     const removeGreeting = async (item: Item) => {
         const sure = await ask({ kind: 'confirm', message: t('Delete this greeting from the card?') }, t);
         const card = item.card!;
-        if (sure) await greeting({ op: 'delete', avatar: card.avatar, position: card.position, hash: card.hash });
+        if (sure) await greeting({ op: 'delete', avatar: card.avatar, id: card.id, hash: card.hash });
     };
 
     const greeting = async (op: GreetingOp, at?: string) => {
         const result = await client.send('alternatives.greeting', op);
         const card = cardOf(op.avatar);
         if (!result.ok) {
-            const position = (result.answer as { same?: unknown } | undefined)?.same;
-            if (at !== undefined && typeof position === 'number') {
+            const found = (result.answer as { same?: { id?: unknown; position?: unknown } } | undefined)?.same;
+            if (at !== undefined && typeof found?.id === 'number' && typeof found.position === 'number') {
                 setNotice(null);
-                setSame({ at, avatar: op.avatar, position });
+                setSame({ at, avatar: op.avatar, id: found.id, position: found.position });
             } else {
                 setNotice(result.error);
             }
@@ -430,7 +432,7 @@ function Dialog(props: {
             if (!sure) return;
         }
         const card = item.card!;
-        const op = { op: 'edit', avatar: card.avatar, position: card.position, hash: card.hash, text } as const;
+        const op = { op: 'edit', avatar: card.avatar, id: card.id, hash: card.hash, text } as const;
         if (await greeting(op, item.id)) setEditing(null);
     };
     const endEdit = (id: string) => {
@@ -442,9 +444,7 @@ function Dialog(props: {
         if (found?.at !== at) return;
         if (at === ADDING) forgetSame(at);
         else endEdit(at);
-        const item = items().find(
-            (each) => each.card?.avatar === found.avatar && each.card.position === found.position,
-        );
+        const item = items().find((each) => each.card?.avatar === found.avatar && each.card.id === found.id);
         if (!item) return;
         if (hidden(item)) search('');
         setPicked(item.index);
@@ -459,8 +459,8 @@ function Dialog(props: {
         const card = item.card!;
         void greeting(
             isDefault(item)
-                ? { op: 'undefault', avatar: card.avatar, hash: card.hash }
-                : { op: 'default', avatar: card.avatar, position: card.position, hash: card.hash },
+                ? { op: 'undefault', avatar: card.avatar, id: card.id, hash: card.hash }
+                : { op: 'default', avatar: card.avatar, id: card.id, hash: card.hash },
         );
     };
     const move = (item: Item, target: Item, side: 'before' | 'after') => {
@@ -481,10 +481,10 @@ function Dialog(props: {
         void greeting({
             op: 'move',
             avatar: item.card.avatar,
-            position: item.card.position,
+            id: item.card.id,
             hash: item.card.hash,
             side,
-            target: target.card.position,
+            target: target.card.id,
             targetHash: target.card.hash,
         });
     };

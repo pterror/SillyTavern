@@ -33,11 +33,18 @@ export type Item = {
     macros: Record<string, string | null> | null;
 };
 
-/** a card greeting by its character and id, at `position` of its card with its text's hash, as the card's operations take it */
+/** a card greeting by its character and id, with its text's hash as the card's operations take it, at `position` of its card */
 export type CardPlace = { avatar: string; id: number; position: number; hash: number };
 
 /** a card the list's rows are greetings of */
-export type CardView = { avatar: string; greetings: string[]; hashes: number[]; defaultPosition: number | null };
+export type CardView = {
+    avatar: string;
+    /** `ids[k]` the id of `greetings[k]` */
+    ids: number[];
+    greetings: string[];
+    hashes: number[];
+    defaultPosition: number | null;
+};
 
 export type ListView = {
     target: Target | null;
@@ -61,7 +68,7 @@ export type MatchesView = {
     total: number;
 };
 
-const position = v.pipe(v.number(), v.integer(), v.minValue(0));
+const id = v.pipe(v.number(), v.integer(), v.minValue(0));
 const hash = v.pipe(v.number(), v.finite());
 const avatar = v.pipe(v.string(), v.minLength(1));
 
@@ -71,19 +78,19 @@ export const actions = {
     'alternatives.search': v.object({ query: v.string() }),
     'alternatives.greeting': v.variant('op', [
         v.object({ op: v.literal('add'), avatar, text: v.pipe(v.string(), v.minLength(1)) }),
-        v.object({ op: v.literal('edit'), avatar, position, hash, text: v.string() }),
-        v.object({ op: v.literal('delete'), avatar, position, hash }),
+        v.object({ op: v.literal('edit'), avatar, id, hash, text: v.string() }),
+        v.object({ op: v.literal('delete'), avatar, id, hash }),
         v.object({
             op: v.literal('move'),
             avatar,
-            position,
+            id,
             hash,
             side: v.picklist(['before', 'after']),
-            target: position,
+            target: id,
             targetHash: hash,
         }),
-        v.object({ op: v.literal('default'), avatar, position, hash }),
-        v.object({ op: v.literal('undefault'), avatar, hash }),
+        v.object({ op: v.literal('default'), avatar, id, hash }),
+        v.object({ op: v.literal('undefault'), avatar, id, hash }),
     ]),
     'alternatives.move': v.object({
         nodeId: v.pipe(v.string(), v.minLength(1)),

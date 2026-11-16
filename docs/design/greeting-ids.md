@@ -6,8 +6,8 @@ refers to its id: the default, and each session's remembered choice of the greet
 greeting's position, so nothing is reindexed when greetings are added, deleted or moved.
 
 No two greetings of a card have the same text; texts that differ only in whitespace are different. An add or an edit
-to another greeting's text is refused with that greeting's position (`same_position`), and the page keeps the field
-open, unsaved, saying which greeting it is the same as, with a link that pages to it. The create form checks the same
+to another greeting's text is refused with that greeting's position and id (`same_position`, `same_id`), and the page
+keeps the field open, unsaved, saying which greeting it is the same as, with a link that pages to it by its id. The create form checks the same
 before the card is saved.
 
 ## In the store
@@ -21,6 +21,11 @@ On the character's entity:
 
 A change is written by id: an edit changes the text of that id, a move places that id, an add takes the next id, a
 delete removes the id, a new default moves its id into `first_mes_item` and the old default's id into the list.
+
+A change names each greeting it acts on by its id and the hash of the text it was read with (`greetings/edit`,
+`greetings/delete`, and the alternatives list's operations: `greeting_id` / `id`, `expected_hash` / `hash`); it is
+refused when that greeting is gone or its text is no longer the one read, never applied to another greeting found by
+its text or position. An add names only where it goes. Each answer has the card's greetings with their ids (`ids`).
 
 ## In the card file
 
@@ -88,19 +93,26 @@ Chats imported from upstream are linked as they are written. Openings stored bef
 
 ## The greeting character info shows
 
+The pager holds each greeting with its id: the character the page gets carries its greetings as `readCardGreetings`
+reads them (`card_greetings`: `ids` aligned with `texts`, an empty greeting's included, and `default_index`), and each
+greeting change answers with them. Every pager action names a greeting by its character and id, with the hash of the
+text it had where the action changes or uses it: paging, edit, delete, "Use in chat", "Show in character info". A
+greeting being added has no id until it is saved.
+
 The greeting the character info pager shows is the tab's view of that card: kept per tab and card by greeting id on
 the server, with the tab's other view state, so it stays through closing the panel and a reload. Paging is one
-request; opening a character answers with it. A shown greeting that's deleted gives way to the card's first.
+request (`greetings/show`, by id); opening a character answers with it (`greeting_shown`: its id). A shown greeting
+that's deleted gives way to the card's first.
 
 The pager and the chat keep separate positions; two actions copy one to the other, each one request whose answer is the
 resulting state:
-- "Use in chat", beside the pager number, makes the shown greeting the open chat's opening, as swiping to it would: the
+- "Use in chat", beside the pager number, makes the shown greeting (`greeting_id`) the open chat's opening, as swiping to it would: the
   stored opening that holds it, with what is under it, or the card greeting itself. The opening the chat had keeps its
   replies. It answers with the chat as opening it does. It is disabled unless a chat with this character is open, or
   a group chat it is a member of.
 - "Show in character info", in the opening's message menu, pages the pager to the greeting the opening is linked to,
   by its character, its id and the hash of the text it had, and opens character info on it (in a group, on that
-  member). It answers with where that greeting is. It is
+  member). It answers with that greeting's id. It is
   disabled when the opening has no live link: it was edited, or its greeting was changed or deleted.
 
 ## Converting cards with the same greeting twice

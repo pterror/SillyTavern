@@ -248,13 +248,13 @@ test('a character opens with the greeting its character info shows in this tab, 
     const { greetings } = await user.store.lib.greetingModel('Shown.png');
     assert.equal(await showGreeting(user.store.lib, tab, 'Shown.png', greetings[2].id, 2), true);
     assert.equal(await showGreeting(user.store.lib, tab, 'Shown.png', greetings[0].id, 1), false, 'a move made earlier that arrives later is not kept');
-    assert.deepEqual((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, { position: 2, hash: hashGreetingText('Third') });
+    assert.deepEqual((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, { id: greetings[2].id });
     assert.equal((await open({ avatar_url: 'Shown.png' }, newSessionKey())).body.greeting_shown, null, 'another tab has its own');
 
     const { changeGreetings } = await import('./characters.js');
-    await changeGreetings({ directories, store: user.store, actor: null, avatar: 'Shown.png', change: { op: 'delete', position: 0, hash: hashGreetingText('First') } });
-    assert.deepEqual((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, { position: 1, hash: hashGreetingText('Third') });
-    await changeGreetings({ directories, store: user.store, actor: null, avatar: 'Shown.png', change: { op: 'delete', position: 1, hash: hashGreetingText('Third') } });
+    await changeGreetings({ directories, store: user.store, actor: null, avatar: 'Shown.png', change: { op: 'delete', id: greetings[0].id, hash: hashGreetingText('First') } });
+    assert.deepEqual((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, { id: greetings[2].id });
+    await changeGreetings({ directories, store: user.store, actor: null, avatar: 'Shown.png', change: { op: 'delete', id: greetings[2].id, hash: hashGreetingText('Third') } });
     assert.equal((await open({ avatar_url: 'Shown.png' }, tab)).body.greeting_shown, null, 'a deleted greeting gives way to the first');
 });
 
@@ -329,6 +329,8 @@ test('a group\'s opening is chosen by its greeting\'s id and character, never it
     const pop = /** @type {import('../opening-state.js').CardGreetingsRead} */ (await readCardGreetings(user.store, 'Pop.png'));
     assert.deepEqual(pop.texts, ['Hi.', '', 'Bye.']);
     assert.equal(pop.ids.length, pop.texts.length, 'each greeting, an empty one too, has its id');
+    const { character } = (await open({ avatar_url: 'Pop.png', with_character: true }, tab)).body;
+    assert.deepEqual(character.card_greetings, { ids: pop.ids, texts: pop.texts, default_index: pop.defaultIndex }, 'the character the page gets has its greetings with their ids');
     const [hi, bye] = ['Hi.', 'Bye.'].map(text => pop.ids[pop.texts.indexOf(text)]);
 
     assert.deepEqual(await shown(), ['Pip.png', 'Hi.']);
@@ -342,14 +344,17 @@ test('a group\'s opening is chosen by its greeting\'s id and character, never it
     assert.equal(await choose({ greeting_avatar: 'Out.png', greeting_id: 0, expected_hash: hashGreetingText('Hi.') }), 409, 'a non-member\'s greeting is none the group offers');
     assert.deepEqual(await shown(), ['Pop.png', 'Bye.']);
 
-    const use = async (/** @type {string} */ avatar, /** @type {number} */ position, /** @type {string} */ text) => {
-        const res = await fetch(`${base}/api/chats/openings/use-greeting`, { method: 'POST', headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: tab }, body: JSON.stringify({ avatar_url: avatar, group_id: 'g-chosen', position, expected_hash: hashGreetingText(text) }) });
+    const use = async (/** @type {string} */ avatar, /** @type {Record<string, unknown>} */ greeting, /** @type {string} */ text) => {
+        const res = await fetch(`${base}/api/chats/openings/use-greeting`, { method: 'POST', headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: tab }, body: JSON.stringify({ avatar_url: avatar, group_id: 'g-chosen', ...greeting, expected_hash: hashGreetingText(text) }) });
         return { status: res.status, body: await res.json().catch(() => null) };
     };
-    const used = await use('Pip.png', 0, 'Hi.');
+    const used = await use('Pip.png', { greeting_id: 0 }, 'Hi.');
     assert.equal(used.status, 200, 'a member\'s greeting is used in its group\'s chat');
     assert.equal(typeof used.body.opened, 'object');
     assert.deepEqual(await shown(), ['Pip.png', 'Hi.']);
-    assert.equal((await use('Pop.png', 2, 'Hi.')).status, 409, 'a greeting whose text changed is refused');
-    assert.equal((await use('Out.png', 0, 'Hi.')).status, 409, 'a non-member\'s greeting is not the group\'s');
+    assert.equal((await use('Pop.png', { greeting_id: bye }, 'Bye.')).status, 200, 'the greeting after an empty one is used by its id');
+    assert.deepEqual(await shown(), ['Pop.png', 'Bye.']);
+    assert.equal((await use('Pop.png', { greeting_id: bye }, 'Hi.')).status, 409, 'a greeting whose text changed is refused, though another has that text');
+    assert.equal((await use('Pop.png', { position: 0 }, 'Hi.')).status, 400, 'a position names no greeting');
+    assert.equal((await use('Out.png', { greeting_id: 0 }, 'Hi.')).status, 409, 'a non-member\'s greeting is not the group\'s');
 });

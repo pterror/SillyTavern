@@ -79,13 +79,17 @@ async function pageModel(page, avatar) {
 /**
  * @param {import('@playwright/test').Page} page
  * @param {string} op
- * @param {object} body
+ * @param {{ avatar_url: string, position: number, [key: string]: unknown }} body an edit or a delete names the greeting
+ *   stored at `position` now, sent by its id
  */
 async function otherSessionOp(page, op, body) {
     const status = await page.evaluate(async ({ op, body }) => {
         // @ts-ignore
         const headers = stTest.context().getRequestHeaders();
-        const response = await fetch(`/api/characters/greetings/${op}`, { method: 'POST', headers, body: JSON.stringify(body) });
+        const card = await (await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: body.avatar_url }) })).json();
+        const { position, ...rest } = body;
+        const sent = { ...rest, greeting_id: card.card_greetings.ids[position] };
+        const response = await fetch(`/api/characters/greetings/${op}`, { method: 'POST', headers, body: JSON.stringify(sent) });
         return response.status;
     }, { op, body });
     expect(status).toBe(200);

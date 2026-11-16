@@ -473,7 +473,7 @@ const alternativesPorts = {
         const group = chat?.groupId ? { tree: chat.tree, groupId: chat.groupId } : undefined;
         const { result, opening } = await changeGreetings({ directories, store, actor, avatar, change: op, group });
         if (result.ok) return { ok: true, opening: opening && group ? { ...opening, group_id: group.groupId } : opening };
-        return { ok: false, reason: result.reason ?? 'The greetings changed.', ...(Number.isInteger(result.same) ? { same: result.same } : {}) };
+        return { ok: false, reason: result.reason ?? 'The greetings changed.', ...(Number.isInteger(result.same) ? { same: { id: /** @type {number} */ (result.sameId), position: /** @type {number} */ (result.same) } } : {}) };
     },
     async move(context, nodeId, place) {
         const chat = await chatOfTab(context);

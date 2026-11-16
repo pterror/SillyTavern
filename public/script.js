@@ -7306,8 +7306,7 @@ export function select_selected_character(avatar, { switchMenu = true } = {}) {
     $('#creator_textarea').val(characterFormValue(character, '#creator_textarea'));
     $('#character_version_textarea').val(characterFormValue(character, '#character_version_textarea'));
     setFieldValue('personality_textarea', characterFormValue(character, '#personality_textarea'));
-    const greetingModel = cardToGreetingsModel(character);
-    setGreetingPagerGreetings(character.avatar, greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
+    setGreetingPagerGreetings(character.avatar, pagerCardOf(character));
     setFieldValue('scenario_pole', characterFormValue(character, '#scenario_pole'));
     setFieldValue('depth_prompt_prompt', characterFormValue(character, '#depth_prompt_prompt'));
     $('#depth_prompt_depth').val(characterFormValue(character, '#depth_prompt_depth'));
@@ -7394,7 +7393,7 @@ function select_rm_create({ switchMenu = true, show = true } = {}) {
     setFieldValue('personality_textarea', create_save.personality);
     if (show) {
         const greetingModel = cardToGreetingsModel({ first_mes: create_save.first_message, data: { alternate_greetings: create_save.alternate_greetings, extensions: create_save.extensions } });
-        setGreetingPagerGreetings(null, greetingModel.greetings, greetingModel.defaultIndex, greetingModel.greetings.map(hashGreetingText));
+        setGreetingPagerGreetings(null, unsavedPagerCard(greetingModel.greetings, greetingModel.defaultIndex));
     }
     $('#talkativeness_slider').val(create_save.talkativeness);
     setFieldValue('scenario_pole', create_save.scenario);
@@ -8121,16 +8120,17 @@ function hashGreetingText(text) {
  * @typedef {object} GreetingOpResult
  * @property {true} ok
  * @property {string[]} greetings
+ * @property {number[]} ids `ids[k]` the id of `greetings[k]`
  * @property {number[]} hashes
  * @property {number|null} defaultPosition
- * @property {number} [position]
+ * @property {number} [id] the greeting the operation added or changed
  * @property {unknown} openings the answer, carrying the character tree's openings when the server sent them
  */
 
 /**
  * @param {string} opName
  * @param {object} body
- * @returns {Promise<GreetingOpResult|{ok: false, status?: number, reason?: string, same?: number}>}
+ * @returns {Promise<GreetingOpResult|{ok: false, status?: number, reason?: string, same?: { position: number, id: number }}>}
  */
 async function postGreetingOp(opName, body) {
     try {
@@ -8143,9 +8143,10 @@ async function postGreetingOp(opName, body) {
         try { payload = await response.json(); } catch { /* no body, or not JSON */ }
         if (response.ok && payload?.ok) {
             takeCardCounts(payload.card_token_counts);
-            return { ok: true, greetings: payload.greetings, hashes: payload.hashes, defaultPosition: payload.default_position, position: payload.position, openings: payload };
+            return { ok: true, greetings: payload.greetings, ids: payload.ids, hashes: payload.hashes, defaultPosition: payload.default_position, id: payload.id, openings: payload };
         }
-        return { ok: false, status: response.status, reason: payload?.reason, same: Number.isInteger(payload?.same_position) ? payload.same_position : undefined };
+        const same = Number.isInteger(payload?.same_position) && Number.isInteger(payload?.same_id) ? { position: payload.same_position, id: payload.same_id } : undefined;
+        return { ok: false, status: response.status, reason: payload?.reason, same };
     } catch (error) {
         console.error(`Greeting op "${opName}" request failed`, error);
         return { ok: false, reason: 'network error' };
@@ -8181,8 +8182,9 @@ async function applyGreetingOpSuccess(character, result) {
         throw new Error(`applyGreetingOpSuccess: no queued greeting save for ${character?.avatar} is running`);
     }
     applyGreetingsModelToCharacter(character, { greetings: result.greetings, defaultIndex: result.defaultPosition });
+    character.card_greetings = { ids: result.ids.slice(), texts: result.greetings.slice(), default_index: result.defaultPosition };
     if (greetingPagerState.owner === character.avatar) {
-        setGreetingPagerGreetings(character.avatar, result.greetings, result.defaultPosition, result.hashes);
+        setGreetingPagerGreetings(character.avatar, { greetings: result.greetings, ids: result.ids, defaultIndex: result.defaultPosition, hashes: result.hashes });
     }
     run.character = character;
     await takeOpenings(openingsOwnerOf(result.openings) ?? { avatar_url: character.avatar }, result.openings);
@@ -8256,10 +8258,16 @@ function queueGreetingSave(avatar, save) {
     return run.then(result => fired.then(() => result), error => fired.then(() => { throw error; }));
 }
 
+/**
+ * The greetings the pager pages through: `ids[k]` is the id of `greetings[k]` on the card, none for one not saved yet
+ * (the create form's, a new one being added), and `hashes[k]` the hash of its saved text
+ */
 const greetingPagerState = {
     /** @type {string|null} */
     owner: null,
     greetings: [''],
+    /** @type {(number|undefined)[]} */
+    ids: [undefined],
     /** @type {boolean[]} */
     defaults: [true],
     /** @type {number[]} */
@@ -8268,6 +8276,36 @@ const greetingPagerState = {
     index: 0,
 };
 
+/**
+ * @typedef {object} PagerCard
+ * @property {string[]} greetings
+ * @property {(number|undefined)[]} ids
+ * @property {number|null} defaultIndex
+ * @property {number[]} hashes
+ */
+
+/**
+ * @param {{ avatar: string, card_greetings?: { ids: number[], texts: string[], default_index: number|null } }} character a
+ *   full character, as the server sends it
+ * @returns {PagerCard}
+ */
+function pagerCardOf(character) {
+    const card = character.card_greetings;
+    if (!card || !Array.isArray(card.ids) || !Array.isArray(card.texts) || card.ids.length !== card.texts.length) {
+        throw new TypeError(`The character ${character.avatar} came without its card greetings`);
+    }
+    return { greetings: card.texts, ids: card.ids, defaultIndex: card.default_index ?? null, hashes: card.texts.map(hashGreetingText) };
+}
+
+/**
+ * @param {string[]} greetings
+ * @param {number|null} defaultIndex
+ * @returns {PagerCard} greetings no card has yet: the create form's
+ */
+function unsavedPagerCard(greetings, defaultIndex) {
+    return { greetings, ids: greetings.map(() => undefined), defaultIndex, hashes: greetings.map(hashGreetingText) };
+}
+
 function pagerDefaultIndex() {
     const at = greetingPagerState.defaults.indexOf(true);
     return at < 0 ? null : at;
@@ -8275,18 +8313,19 @@ function pagerDefaultIndex() {
 
 /**
  * @typedef {object} GreetingPagerEdit
- * @property {number} position
+ * @property {number} position the pager's place of the greeting being edited, where a new one is added
+ * @property {number|undefined} id the greeting being edited, none until a new one is saved
  * @property {boolean} committed
  * @property {number|undefined} hash
- * @property {{owner: string|null, greetings: string[], defaultIndex: number|null, hashes: number[]}|null} pending
+ * @property {{owner: string|null, card: PagerCard}|null} pending
  */
 
 /** @type {GreetingPagerEdit|null} */
 let greetingPagerEdit = null;
 
 function beginGreetingPagerEdit() {
-    const { index, committed, hashes } = greetingPagerState;
-    greetingPagerEdit = { position: index, committed: committed[index] !== false, hash: hashes[index], pending: null };
+    const { index, ids, committed, hashes } = greetingPagerState;
+    greetingPagerEdit = { position: index, id: ids[index], committed: committed[index] !== false, hash: hashes[index], pending: null };
 }
 
 function endGreetingPagerEdit() {
@@ -8300,11 +8339,11 @@ function endGreetingPagerEdit() {
         }
         return;
     }
-    const { owner, greetings, defaultIndex, hashes } = edit.pending;
-    setGreetingPagerGreetings(owner, greetings, defaultIndex, hashes, {
+    const { owner, card } = edit.pending;
+    setGreetingPagerGreetings(owner, card, {
         owner: greetingPagerState.owner,
         index: edit.position,
-        hash: edit.committed ? edit.hash : undefined,
+        id: edit.committed ? edit.id : undefined,
     });
 }
 
@@ -8312,8 +8351,9 @@ function endGreetingPagerEdit() {
  * @param {number} position
  */
 function dropUncommittedPagerSlot(position) {
-    const { greetings, committed, defaults } = greetingPagerState;
+    const { greetings, ids, committed, defaults } = greetingPagerState;
     greetings.splice(position, 1);
+    ids.splice(position, 1);
     committed.splice(position, 1);
     defaults.splice(position, 1);
     greetingPagerState.index = Math.min(greetingPagerState.index, greetings.length - 1);
@@ -8329,24 +8369,24 @@ function dropUncommittedPagerSlot(position) {
 
 /**
  * @param {string|null} owner a character's avatar, or null for the create form
- * @param {string[]} greetings
- * @param {number|null} defaultIndex
- * @param {number[]} hashes
+ * @param {PagerCard} card
  * @param {import('./scripts/greeting-pager-selection.js').GreetingSelection} [selected]
  */
-function setGreetingPagerGreetings(owner, greetings, defaultIndex, hashes, selected) {
+function setGreetingPagerGreetings(owner, card, selected) {
+    const { greetings, ids, defaultIndex, hashes } = card;
     if (greetingPagerEdit) {
-        greetingPagerEdit.pending = { owner, greetings: greetings.slice(), defaultIndex, hashes: hashes.slice() };
+        greetingPagerEdit.pending = { owner, card: { greetings: greetings.slice(), ids: ids.slice(), defaultIndex, hashes: hashes.slice() } };
         return;
     }
     const { index } = greetingPagerState;
-    const shown = selected ?? pagerSelection({ owner: greetingPagerState.owner, index, hash: greetingPagerState.hashes[index] }, owner, owner === null ? undefined : shownGreetings.get(owner));
+    const shown = selected ?? pagerSelection({ owner: greetingPagerState.owner, index, id: greetingPagerState.ids[index] }, owner, owner === null ? undefined : shownGreetings.get(owner));
     greetingPagerState.owner = owner;
     greetingPagerState.greetings = greetings.length > 0 ? greetings.slice() : [''];
+    greetingPagerState.ids = greetings.length > 0 ? ids.slice() : [undefined];
     greetingPagerState.defaults = greetings.length > 0 ? greetings.map((_, i) => i === defaultIndex) : [true];
     greetingPagerState.hashes = greetings.length > 0 ? hashes.slice() : [];
     greetingPagerState.committed = greetings.length > 0 ? greetingPagerState.greetings.map(() => true) : [false];
-    greetingPagerState.index = selectedGreetingIndex(shown, owner, greetingPagerState.hashes, greetingPagerState.greetings.length);
+    greetingPagerState.index = selectedGreetingIndex(shown, owner, greetingPagerState.ids, greetingPagerState.greetings.length);
     renderGreetingPager();
 }
 
@@ -8366,8 +8406,8 @@ function renderGreetingPager() {
  * @returns {{ avatar_url: string } | { group_id: string } | null}
  */
 function chatForShownGreeting() {
-    const { owner, index, hashes } = greetingPagerState;
-    if (owner === null || getCurrentCharacter()?.avatar !== owner || !Number.isFinite(hashes[index])) return null;
+    const { owner, index, ids, hashes } = greetingPagerState;
+    if (owner === null || getCurrentCharacter()?.avatar !== owner || !Number.isInteger(ids[index]) || !Number.isFinite(hashes[index])) return null;
     if (!selected_group) return { avatar_url: owner };
     return groupsStore.get(selected_group)?.members?.includes(owner) ? { group_id: selected_group } : null;
 }
@@ -8384,14 +8424,14 @@ async function useShownGreetingInChat() {
         toastr.warning(t`Wait for the reply to finish first.`);
         return;
     }
-    const { index, hashes } = greetingPagerState;
+    const { index, ids, hashes } = greetingPagerState;
     const avatar = /** @type {string} */ (greetingPagerState.owner);
     let answer = null;
     try {
         const response = await fetch('/api/chats/openings/use-greeting', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, ...owner, position: index, expected_hash: hashes[index], ...chatOpenAsk(owner) }),
+            body: JSON.stringify({ avatar_url: avatar, ...owner, greeting_id: ids[index], expected_hash: hashes[index], ...chatOpenAsk(owner) }),
         });
         answer = response.ok ? await response.json() : null;
     } catch (error) {
@@ -8484,8 +8524,7 @@ export async function showOpeningInCharacterInfo(mesId) {
         selected_button = 'character_edit';
         select_selected_character(link.avatar);
     }
-    const { position, hash } = answer.greeting_shown;
-    greetingPagerState.index = selectedGreetingIndex({ owner: link.avatar, index: position, hash }, link.avatar, greetingPagerState.hashes, greetingPagerState.greetings.length);
+    greetingPagerState.index = selectedGreetingIndex({ owner: link.avatar, index: 0, id: answer.greeting_shown.id }, link.avatar, greetingPagerState.ids, greetingPagerState.greetings.length);
     renderGreetingPager();
     const tab = document.querySelector('#charInfoTabs input[name="charInfoTabs_tab"][value="greeting"]');
     if (tab instanceof HTMLInputElement && !tab.checked) {
@@ -8505,25 +8544,26 @@ export async function showOpeningInCharacterInfo(mesId) {
  * @param {number} newIndex
  */
 function navigateGreetingPager(newIndex) {
-    const { greetings, index, owner, hashes } = greetingPagerState;
+    const { greetings, index, owner, ids, hashes } = greetingPagerState;
     greetings[index] = String($('#greeting_field').val());
     const shown = ((newIndex % greetings.length) + greetings.length) % greetings.length;
     greetingPagerState.index = shown;
     renderGreetingPager();
+    const id = ids[shown];
     const hash = hashes[shown];
-    if (owner === null || !Number.isFinite(hash)) return;
-    shownGreetings.set(owner, { index: shown, hash });
+    if (owner === null || id === undefined || !Number.isFinite(hash)) return;
+    shownGreetings.set(owner, { id });
     void fetch('/api/characters/greetings/show', {
         method: 'POST',
         headers: getRequestHeaders(),
         keepalive: true,
-        body: JSON.stringify({ avatar_url: owner, position: shown, expected_hash: hash, order: nextGreetingShownOrder() }),
+        body: JSON.stringify({ avatar_url: owner, greeting_id: id, expected_hash: hash, order: nextGreetingShownOrder() }),
     }).then(response => {
         if (!response.ok) console.warn('[greetings] The shown greeting was not kept:', response.status);
     }, error => console.warn('[greetings] The shown greeting was not kept:', error));
 }
 
-/** @type {Map<string, { index: number, hash: number }>} */
+/** @type {Map<string, { id: number }>} */
 const shownGreetings = new Map();
 
 let lastGreetingShownOrder = 0;
@@ -8539,10 +8579,11 @@ function nextGreetingShownOrder() {
 
 /**
  * Says, under the greeting field, that what it holds is another greeting's text; the field stays open and unsaved.
- * @param {number} position the other greeting's place in the pager
+ * @param {number} position the other greeting's place on the card
+ * @param {number} [id] the other greeting, none on the create form, whose greetings have no ids
  */
-function showSameGreeting(position) {
-    const link = $('<a href="#" class="greeting_same_link"></a>').text(String(position + 1)).data('position', position);
+function showSameGreeting(position, id) {
+    const link = $('<a href="#" class="greeting_same_link"></a>').text(String(position + 1)).data({ position, id });
     $('#greeting_same_note').empty().append(document.createTextNode(`${t`Same as greeting`} `), link).removeClass('displayNone');
 }
 
@@ -8552,35 +8593,35 @@ function clearSameGreeting() {
 
 /**
  * @param {string} avatar
- * @param {{ position: number, hash: number } | null} shown
+ * @param {{ id: number } | null} shown
  */
 function takeShownGreeting(avatar, shown) {
-    if (shown) shownGreetings.set(avatar, { index: shown.position, hash: shown.hash });
+    if (shown && Number.isInteger(shown.id)) shownGreetings.set(avatar, { id: shown.id });
     else shownGreetings.delete(avatar);
 }
 
 /**
  * @param {string} avatar
  * @param {object} character
- * @param {number} position
+ * @param {number|undefined} id
  * @param {number|undefined} expectedHash
  * @param {string} text
- * @returns {Promise<{position: number, hash: number}|null>}
+ * @returns {Promise<{position: number, hash: number}|null>} where the greeting is now in the pager, with its saved text's hash
  */
-async function saveGreetingPagerEdit(avatar, character, position, expectedHash, text) {
-    if (!Number.isFinite(expectedHash)) return null;
+async function saveGreetingPagerEdit(avatar, character, id, expectedHash, text) {
+    if (id === undefined || !Number.isFinite(expectedHash)) return null;
 
-    const result = await postGreetingOp('edit', { avatar_url: avatar, position, expected_hash: expectedHash, text });
+    const result = await postGreetingOp('edit', { avatar_url: avatar, greeting_id: id, expected_hash: expectedHash, text });
     if (result.ok) {
-        const landed = Number.isInteger(result.position) ? result.position : position;
         await applyGreetingOpSuccess(character, result);
-        return { position: landed, hash: result.hashes[landed] };
+        const landed = result.ids.indexOf(id);
+        return landed < 0 ? null : { position: landed, hash: result.hashes[landed] };
     }
     if (result.same !== undefined) {
-        showSameGreeting(result.same);
+        showSameGreeting(result.same.position, result.same.id);
         return null;
     }
-    console.error('Greeting save failed', { avatar, position, status: result.status, reason: result.reason });
+    console.error('Greeting save failed', { avatar, id, status: result.status, reason: result.reason });
     if (result.status === 409) {
         toastr.error(t`This character was changed in another session, so this greeting change was not saved. Reopen the character to see the current version.`, t`Greeting not saved`);
         return null;
@@ -8614,26 +8655,27 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
     if (!character) return false;
     return await queueGreetingSave(avatar, async () => {
         const edit = greetingPagerEdit;
-        const target = edit ?? { position: index, committed: greetingPagerState.committed[index] !== false, hash: greetingPagerState.hashes[index] };
+        const target = edit ?? { position: index, id: greetingPagerState.ids[index], committed: greetingPagerState.committed[index] !== false, hash: greetingPagerState.hashes[index] };
         if (target.committed && value === '') {
-            if (!confirmed || !Number.isFinite(target.hash)) return false;
-            const removed = await postGreetingOp('delete', { avatar_url: avatar, position: target.position, expected_hash: target.hash });
+            if (!confirmed || !Number.isInteger(target.id) || !Number.isFinite(target.hash)) return false;
+            const removed = await postGreetingOp('delete', { avatar_url: avatar, greeting_id: target.id, expected_hash: target.hash });
             if (removed.ok) {
                 await applyGreetingOpSuccess(character, removed);
                 if (edit && greetingPagerEdit === edit) {
                     edit.committed = false;
+                    edit.id = undefined;
                     edit.hash = undefined;
                 }
                 return true;
             }
-            console.error('Greeting delete failed', { avatar, position: target.position, status: removed.status, reason: removed.reason });
+            console.error('Greeting delete failed', { avatar, id: target.id, status: removed.status, reason: removed.reason });
             toastr.error(removed.status === 409
                 ? t`This character was changed in another session, so the greeting was not deleted. Reopen the character to see the current version.`
                 : t`Failed to delete the greeting.`, t`Greeting not deleted`);
             return false;
         }
         if (target.committed) {
-            const landed = await saveGreetingPagerEdit(avatar, character, target.position, target.hash, value);
+            const landed = await saveGreetingPagerEdit(avatar, character, target.id, target.hash, value);
             if (!landed) return false;
             if (edit && greetingPagerEdit === edit) {
                 edit.position = landed.position;
@@ -8646,14 +8688,17 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
         const result = await postGreetingOp('add', { avatar_url: avatar, position: target.position, expected_length: expectedLength, text: value });
         if (result.ok) {
             await applyGreetingOpSuccess(character, result);
-            if (edit && greetingPagerEdit === edit) {
+            const added = result.id === undefined ? -1 : result.ids.indexOf(result.id);
+            if (edit && greetingPagerEdit === edit && added >= 0) {
                 edit.committed = true;
-                edit.hash = result.hashes[target.position];
+                edit.id = result.id;
+                edit.position = added;
+                edit.hash = result.hashes[added];
             }
             return true;
         }
         if (result.same !== undefined) {
-            showSameGreeting(result.same);
+            showSameGreeting(result.same.position, result.same.id);
             return false;
         }
         console.error('Greeting add failed', { avatar, position: target.position, status: result.status, reason: result.reason });
@@ -8663,8 +8708,9 @@ async function commitGreetingFieldValue(value, { confirmed = false } = {}) {
 }
 
 async function deleteGreetingPagerGreeting() {
-    const { greetings, committed, index, defaults, hashes } = greetingPagerState;
+    const { greetings, ids, committed, index, defaults, hashes } = greetingPagerState;
     if (greetings.length === 1 && greetings[0] === '') return;
+    const id = ids[index];
     const expectedHash = hashes[index];
     if (committed[index] === false && menu_type !== 'create') {
         dropUncommittedPagerSlot(index);
@@ -8684,21 +8730,21 @@ async function deleteGreetingPagerGreeting() {
         create_save.alternate_greetings = stripEmptyAlternateGreetings(fields.alternateGreetings, 'greeting pager delete (create mode)');
         if (!create_save.extensions) create_save.extensions = {};
         create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
-        setGreetingPagerGreetings(null, remaining, remainingDefault, remaining.map(hashGreetingText));
+        setGreetingPagerGreetings(null, unsavedPagerCard(remaining, remainingDefault));
         return;
     }
 
     const avatar = $('.open_alternate_greetings').data('avatar');
     const character = avatar ? charactersStore.get(avatar) : null;
     if (!character) return;
-    if (!Number.isFinite(expectedHash)) return;
+    if (!Number.isInteger(id) || !Number.isFinite(expectedHash)) return;
     await queueGreetingSave(avatar, async () => {
-        const result = await postGreetingOp('delete', { avatar_url: avatar, position: index, expected_hash: expectedHash });
+        const result = await postGreetingOp('delete', { avatar_url: avatar, greeting_id: id, expected_hash: expectedHash });
         if (result.ok) {
             await applyGreetingOpSuccess(character, result);
             return;
         }
-        console.error('Greeting delete failed', { avatar, position: index, status: result.status, reason: result.reason });
+        console.error('Greeting delete failed', { avatar, id, status: result.status, reason: result.reason });
         toastr.error(result.status === 409
             ? t`This character was changed in another session, so the greeting was not deleted. Reopen the character to see the current version.`
             : t`Failed to delete the greeting.`, t`Greeting not deleted`);
@@ -8751,7 +8797,7 @@ function openGreetingsList() {
 
 /**
  * @param {string} avatar
- * @param {{ greetings: string[], hashes: number[], defaultPosition: number|null }} card
+ * @param {{ greetings: string[], ids: number[], hashes: number[], defaultPosition: number|null }} card
  * @param {unknown} openings the dialog's answer, carrying the character tree's openings
  * @returns {Promise<void>}
  */
@@ -8761,6 +8807,7 @@ export function applyServerGreetings(avatar, card, openings) {
     return queueGreetingSave(avatar, () => applyGreetingOpSuccess(character, {
         ok: true,
         greetings: card.greetings,
+        ids: card.ids,
         hashes: card.hashes,
         defaultPosition: card.defaultPosition,
         openings,
@@ -8896,7 +8943,7 @@ async function createCharacterFromCreateSave({ jsonData } = {}) {
             field.callback && field.callback(fieldValue);
         });
         create_save.first_message = '';
-        setGreetingPagerGreetings(null, [''], 0, []);
+        setGreetingPagerGreetings(null, { greetings: [''], ids: [undefined], defaultIndex: 0, hashes: [] });
 
         if (Array.isArray(create_save.extra_books) && create_save.extra_books.length > 0) {
             await sendAuxBooksOp(getCharaFilename(avatarId), 'set', create_save.extra_books);
@@ -10494,7 +10541,7 @@ jQuery(async function () {
         if (blockFieldEditStart()) {
             return;
         }
-        const { greetings, committed, defaults, index } = greetingPagerState;
+        const { greetings, ids, committed, defaults, index } = greetingPagerState;
         greetings[index] = String($('#greeting_field').val());
         if (committed[index] === false && greetings[index] === '') {
             beginEdit('greeting_field');
@@ -10502,6 +10549,7 @@ jQuery(async function () {
         }
         const newIndex = greetings.length;
         greetings.push('');
+        ids[newIndex] = undefined;
         committed[newIndex] = false;
         defaults[newIndex] = false;
         greetingPagerState.index = newIndex;
@@ -10542,9 +10590,10 @@ jQuery(async function () {
 
     $('#greeting_same_note').on('click', '.greeting_same_link', function (event) {
         event.preventDefault();
-        const position = Number($(this).data('position'));
+        const id = $(this).data('id');
+        const position = Number.isInteger(id) ? greetingPagerState.ids.indexOf(id) : Number($(this).data('position'));
         if (!discardFieldEdit('greeting_field')) return;
-        navigateGreetingPager(position);
+        if (position >= 0) navigateGreetingPager(position);
     });
 
     $('#greeting_field').on('input', clearSameGreeting);

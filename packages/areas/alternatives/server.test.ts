@@ -202,6 +202,7 @@ test('an opening list: an opening that is a card greeting carries its card place
     expect(view.cards).toEqual([
         {
             avatar: 'cara.png',
+            ids: [4, 2],
             greetings: ['Hello there.', 'Second greeting'],
             hashes: [hash('Hello there.'), hash('Second greeting')],
             defaultPosition: 0,
@@ -424,7 +425,7 @@ test('greeting operations go to the card they name; an edit to empty text remove
         await w.act('alternatives.greeting', {
             op: 'edit',
             avatar: 'cara.png',
-            position: 1,
+            id: 1,
             hash: hash('B'),
             text: 'B2',
         }),
@@ -435,23 +436,23 @@ test('greeting operations go to the card they name; an edit to empty text remove
     await w.act('alternatives.greeting', {
         op: 'edit',
         avatar: 'cara.png',
-        position: 1,
+        id: 1,
         hash: hash('B2'),
         text: ' \n',
     });
     await w.act('alternatives.greeting', {
         op: 'move',
         avatar: 'cara.png',
-        position: 1,
+        id: 1,
         hash: hash('B'),
         side: 'before',
         target: 0,
         targetHash: hash('A'),
     });
     expect(w.state.ops).toEqual([
-        ['cara.png', { op: 'edit', position: 1, hash: hash('B'), text: 'B2' }],
-        ['cara.png', { op: 'delete', position: 1, hash: hash('B2') }],
-        ['cara.png', { op: 'move', position: 1, hash: hash('B'), side: 'before', target: 0, targetHash: hash('A') }],
+        ['cara.png', { op: 'edit', id: 1, hash: hash('B'), text: 'B2' }],
+        ['cara.png', { op: 'delete', id: 1, hash: hash('B2') }],
+        ['cara.png', { op: 'move', id: 1, hash: hash('B'), side: 'before', target: 0, targetHash: hash('A') }],
     ]);
 });
 
@@ -479,17 +480,17 @@ test("a group's opening list changes each member's card by its greetings, adds t
     }));
     await w.act('alternatives.open', { target: { opening: true }, tokenizer });
     await w.list();
-    await w.act('alternatives.greeting', { op: 'edit', avatar: 'bo.png', position: 0, hash: hash('Yo'), text: 'Yo2' });
-    await w.act('alternatives.greeting', { op: 'default', avatar: 'ann.png', position: 0, hash: hash('Hi') });
+    await w.act('alternatives.greeting', { op: 'edit', avatar: 'bo.png', id: 0, hash: hash('Yo'), text: 'Yo2' });
+    await w.act('alternatives.greeting', { op: 'default', avatar: 'ann.png', id: 0, hash: hash('Hi') });
     expect(await w.act('alternatives.greeting', { op: 'add', avatar: 'ann.png', text: 'x' })).toMatchObject({
         refused: expect.any(String),
     });
     expect(
-        await w.act('alternatives.greeting', { op: 'delete', avatar: 'cara.png', position: 0, hash: hash('Hi') }),
+        await w.act('alternatives.greeting', { op: 'delete', avatar: 'cara.png', id: 0, hash: hash('Hi') }),
     ).toMatchObject({ refused: expect.any(String) });
     expect(w.state.ops).toEqual([
-        ['bo.png', { op: 'edit', position: 0, hash: hash('Yo'), text: 'Yo2' }],
-        ['ann.png', { op: 'default', position: 0, hash: hash('Hi') }],
+        ['bo.png', { op: 'edit', id: 0, hash: hash('Yo'), text: 'Yo2' }],
+        ['ann.png', { op: 'default', id: 0, hash: hash('Hi') }],
     ]);
 });
 
@@ -508,7 +509,7 @@ test('a refused operation says why, and the views are read again', async () => {
     await w.act('alternatives.open', { target: { greetings: 'cara.png' }, tokenizer });
     await w.list();
     w.state.refuse = 'expected_hash does not match';
-    expect(await w.act('alternatives.greeting', { op: 'delete', avatar: 'cara.png', position: 0, hash: 1 })).toEqual({
+    expect(await w.act('alternatives.greeting', { op: 'delete', avatar: 'cara.png', id: 0, hash: 1 })).toEqual({
         refused: 'expected_hash does not match',
         changed: ['alternatives.list', 'alternatives.counts', 'alternatives.matches'],
     });

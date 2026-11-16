@@ -124,19 +124,35 @@ async function storedGreetings(session, avatar) {
  * @param {string} text
  */
 async function deleteGreetingViaApi(session, avatar, text) {
-    const position = (await storedGreetings(session, avatar)).indexOf(text);
-    expect(position).toBeGreaterThanOrEqual(0);
-    const status = await session.evaluate(async ({ avatar, position, expectedHash }) => {
+    const id = await storedGreetingId(session, avatar, text);
+    const status = await session.evaluate(async ({ avatar, id, expectedHash }) => {
         // @ts-ignore
         const headers = stTest.context().getRequestHeaders();
         const response = await fetch('/api/characters/greetings/delete', {
             method: 'POST',
             headers,
-            body: JSON.stringify({ avatar_url: avatar, position, expected_hash: expectedHash }),
+            body: JSON.stringify({ avatar_url: avatar, greeting_id: id, expected_hash: expectedHash }),
         });
         return response.status;
-    }, { avatar, position, expectedHash: hashGreetingText(text) });
+    }, { avatar, id, expectedHash: hashGreetingText(text) });
     expect(status).toBe(200);
+}
+
+/**
+ * @param {import('@playwright/test').Page} session
+ * @param {string} avatar
+ * @param {string} text
+ * @returns {Promise<number>} the id of the character's greeting with the text
+ */
+async function storedGreetingId(session, avatar, text) {
+    const id = await session.evaluate(async ({ avatar, text }) => {
+        // @ts-ignore
+        const headers = stTest.context().getRequestHeaders();
+        const card = await (await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) })).json();
+        return card.card_greetings.ids[card.card_greetings.texts.indexOf(text)];
+    }, { avatar, text });
+    expect(Number.isInteger(id)).toBe(true);
+    return id;
 }
 
 /**
@@ -239,16 +255,17 @@ test.describe('editing the showing provisional greeting keeps it shown', () => {
         await expect.poll(async () => (await openingState(page)).mes, { timeout: 10000 }).toBe(typed);
 
         await withOtherSession(browser, async (other) => {
-            const status = await other.evaluate(async ({ avatar, expectedHash, text }) => {
+            const id = await storedGreetingId(other, avatar, typed);
+            const status = await other.evaluate(async ({ avatar, id, expectedHash, text }) => {
                 // @ts-ignore
                 const headers = stTest.context().getRequestHeaders();
                 const response = await fetch('/api/characters/greetings/edit', {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({ avatar_url: avatar, position: 1, expected_hash: expectedHash, text }),
+                    body: JSON.stringify({ avatar_url: avatar, greeting_id: id, expected_hash: expectedHash, text }),
                 });
                 return response.status;
-            }, { avatar, expectedHash: hashGreetingText(typed), text: otherText });
+            }, { avatar, id, expectedHash: hashGreetingText(typed), text: otherText });
             expect(status).toBe(200);
             expect(await storedGreetings(other, avatar)).toEqual([g0, otherText, g2]);
         });

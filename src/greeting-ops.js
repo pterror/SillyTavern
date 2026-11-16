@@ -9,19 +9,6 @@ export function hashGreetingText(text) {
     return getStringHash(JSON.stringify(text));
 }
 
-function positionInBounds(position, length) {
-    return Number.isInteger(position) && position >= 0 && position < length;
-}
-
-/**
- * @param {GreetingModel} model
- * @param {number} position
- * @param {number} expectedHash
- */
-function hashMatches(model, position, expectedHash) {
-    return hashGreetingText(model.greetings[position].text) === expectedHash;
-}
-
 /**
  * @param {GreetingModel} model
  * @returns {number | null}
@@ -33,46 +20,39 @@ export function defaultPositionOf(model) {
 
 /**
  * @param {GreetingModel} model
- * @param {number} position
- * @param {number} expectedHash
- * @param {{outOfRange: string, changed: string}} reasons
+ * @param {number} id
+ * @param {number} expectedHash the hash of the text the greeting had when it was read
+ * @param {{gone: string, changed: string}} reasons
  * @returns {{ok: true, position: number}|{ok: false, reason: string}}
  */
-function findGreeting(model, position, expectedHash, reasons) {
-    const inBounds = positionInBounds(position, model.greetings.length);
-    if (inBounds && hashMatches(model, position, expectedHash)) {
-        return { ok: true, position };
-    }
-    const matches = [];
-    for (let i = 0; i < model.greetings.length && matches.length < 2; i++) {
-        if (hashMatches(model, i, expectedHash)) matches.push(i);
-    }
-    if (matches.length !== 1) {
-        return { ok: false, reason: inBounds ? reasons.changed : reasons.outOfRange };
-    }
-    return { ok: true, position: matches[0] };
+function findGreeting(model, id, expectedHash, reasons) {
+    const position = model.greetings.findIndex(g => g.id === id);
+    if (position < 0) return { ok: false, reason: reasons.gone };
+    if (hashGreetingText(model.greetings[position].text) !== expectedHash) return { ok: false, reason: reasons.changed };
+    return { ok: true, position };
 }
 
 /**
  * @param {GreetingModel} model
  * @param {string} text
- * @param {number} [except] the position of the greeting being changed
- * @returns {{ok: false, reason: string, same: number} | null} the refusal when another greeting has the text
+ * @param {number} [except] the id of the greeting being changed
+ * @returns {{ok: false, reason: string, same: number, sameId: number} | null} the refusal when another greeting has the
+ *   text: `same` its position, `sameId` its id
  */
-function sameAsAnother(model, text, except = -1) {
-    const same = model.greetings.findIndex((g, i) => i !== except && g.text === text);
-    return same < 0 ? null : { ok: false, reason: `same as greeting ${same + 1}`, same };
+function sameAsAnother(model, text, except) {
+    const same = model.greetings.findIndex(g => g.id !== except && g.text === text);
+    return same < 0 ? null : { ok: false, reason: `same as greeting ${same + 1}`, same, sameId: model.greetings[same].id };
 }
 
-const GREETING_REASONS = { outOfRange: 'position out of range', changed: 'greeting at position changed since it was loaded' };
-const TARGET_REASONS = { outOfRange: 'target position out of range', changed: 'target greeting changed since it was loaded' };
+const GREETING_REASONS = { gone: 'the greeting is gone', changed: 'the greeting changed since it was loaded' };
+const TARGET_REASONS = { gone: 'the target greeting is gone', changed: 'the target greeting changed since it was loaded' };
 
 /**
  * @param {GreetingModel} model
- * @param {number} position
+ * @param {number} position where in the card the greeting goes
  * @param {number} expectedLength
  * @param {string} text
- * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string, same?: number}}
+ * @returns {{ok: true, model: GreetingModel, position: number, id: number}|{ok: false, reason: string, same?: number, sameId?: number}}
  */
 export function opAdd(model, position, expectedLength, text) {
     if (typeof text !== 'string' || text === '') {
@@ -90,13 +70,13 @@ export function opAdd(model, position, expectedLength, text) {
     const greetings = model.greetings.slice();
     greetings.splice(position, 0, added);
     const defaultId = model.greetings.length === 0 ? added.id : model.defaultId;
-    return { ok: true, model: { greetings, defaultId, nextId: model.nextId + 1 }, position };
+    return { ok: true, model: { greetings, defaultId, nextId: model.nextId + 1 }, position, id: added.id };
 }
 
 /**
  * @param {GreetingModel} model
  * @param {string} text
- * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
+ * @returns {ReturnType<typeof opAdd>}
  */
 export function opAppend(model, text) {
     const length = model.greetings.length;
@@ -105,55 +85,54 @@ export function opAppend(model, text) {
 
 /**
  * @param {GreetingModel} model
- * @param {number} position
+ * @param {number} id
  * @param {number} expectedHash
  * @param {string} text
- * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
+ * @returns {{ok: true, model: GreetingModel, position: number, id: number}|{ok: false, reason: string, same?: number, sameId?: number}}
  */
-export function opEdit(model, position, expectedHash, text) {
+export function opEdit(model, id, expectedHash, text) {
     if (typeof text !== 'string' || text === '') {
         return { ok: false, reason: 'refused to blank stored greeting text' };
     }
-    const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
+    const found = findGreeting(model, id, expectedHash, GREETING_REASONS);
     if (!found.ok) {
-        if (positionInBounds(position, model.greetings.length) && model.greetings[position].text === text) {
-            return { ok: true, model, position };
-        }
+        const at = model.greetings.findIndex(g => g.id === id);
+        // the same edit sent again, after the first one was stored
+        if (at >= 0 && model.greetings[at].text === text) return { ok: true, model, position: at, id };
         return found;
     }
-    const same = sameAsAnother(model, text, found.position);
+    const same = sameAsAnother(model, text, id);
     if (same) return same;
     const greetings = model.greetings.map((g, i) => (i === found.position ? { id: g.id, text } : g));
-    return { ok: true, model: { ...model, greetings }, position: found.position };
+    return { ok: true, model: { ...model, greetings }, position: found.position, id };
 }
 
 /**
  * @param {GreetingModel} model
- * @param {number} position
+ * @param {number} id
  * @param {number} expectedHash
- * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
+ * @returns {{ok: true, model: GreetingModel, position: number, id: number}|{ok: false, reason: string}}
  */
-export function opDelete(model, position, expectedHash) {
-    const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
+export function opDelete(model, id, expectedHash) {
+    const found = findGreeting(model, id, expectedHash, GREETING_REASONS);
     if (!found.ok) return found;
-    const gone = model.greetings[found.position];
-    const greetings = model.greetings.filter((_, i) => i !== found.position);
-    return { ok: true, model: { ...model, greetings, defaultId: model.defaultId === gone.id ? null : model.defaultId }, position: found.position };
+    const greetings = model.greetings.filter(g => g.id !== id);
+    return { ok: true, model: { ...model, greetings, defaultId: model.defaultId === id ? null : model.defaultId }, position: found.position, id };
 }
 
 /**
  * @param {GreetingModel} model
- * @param {number} sourcePosition
+ * @param {number} id
  * @param {number} expectedHash
  * @param {'before'|'after'} side
- * @param {number} targetPosition
+ * @param {number} targetId
  * @param {number} targetExpectedHash
  * @returns {{ok: true, model: GreetingModel, sourcePosition: number, targetPosition: number}|{ok: false, reason: string}}
  */
-export function opMove(model, sourcePosition, expectedHash, side, targetPosition, targetExpectedHash) {
-    const source = findGreeting(model, sourcePosition, expectedHash, GREETING_REASONS);
+export function opMove(model, id, expectedHash, side, targetId, targetExpectedHash) {
+    const source = findGreeting(model, id, expectedHash, GREETING_REASONS);
     if (!source.ok) return source;
-    const target = findGreeting(model, targetPosition, targetExpectedHash, TARGET_REASONS);
+    const target = findGreeting(model, targetId, targetExpectedHash, TARGET_REASONS);
     if (!target.ok) return target;
     if (target.position === source.position) {
         return { ok: false, reason: 'cannot move a greeting next to itself' };
@@ -170,42 +149,38 @@ export function opMove(model, sourcePosition, expectedHash, side, targetPosition
 
 /**
  * @param {GreetingModel} model
- * @param {number} position
+ * @param {number} id
  * @param {number} expectedHash
- * @returns {{ok: true, model: GreetingModel, position: number}|{ok: false, reason: string}}
+ * @returns {{ok: true, model: GreetingModel, position: number, id: number}|{ok: false, reason: string}}
  */
-export function opSetDefault(model, position, expectedHash) {
-    const found = findGreeting(model, position, expectedHash, GREETING_REASONS);
-    if (!found.ok) {
-        const shown = defaultPositionOf(model);
-        if (shown !== null && hashMatches(model, shown, expectedHash)) {
-            return { ok: true, model, position: shown };
-        }
-        return found;
-    }
-    return { ok: true, model: { ...model, defaultId: model.greetings[found.position].id }, position: found.position };
+export function opSetDefault(model, id, expectedHash) {
+    const found = findGreeting(model, id, expectedHash, GREETING_REASONS);
+    if (!found.ok) return found;
+    return { ok: true, model: { ...model, defaultId: id }, position: found.position, id };
 }
 
 /**
  * @param {GreetingModel} model
- * @param {number} expectedDefaultHash
+ * @param {number} id the default greeting, as it was read
+ * @param {number} expectedHash
  * @returns {{ok: true, model: GreetingModel}|{ok: false, reason: string}}
  */
-export function opUnsetDefaultByHash(model, expectedDefaultHash) {
-    const shown = defaultPositionOf(model);
-    if (shown !== null && !hashMatches(model, shown, expectedDefaultHash)) {
-        return { ok: false, reason: 'default greeting changed since it was loaded' };
-    }
+export function opUnsetDefault(model, id, expectedHash) {
+    if (model.defaultId === null) return { ok: true, model };
+    if (model.defaultId !== id) return { ok: false, reason: 'default greeting changed since it was loaded' };
+    const found = findGreeting(model, id, expectedHash, GREETING_REASONS);
+    if (!found.ok) return { ok: false, reason: 'default greeting changed since it was loaded' };
     return { ok: true, model: { ...model, defaultId: null } };
 }
 
 /**
+ * A change to a card's greetings, each existing greeting named by its id with the hash of the text it was read with
  * @typedef {{op: 'add', text: string, position?: number, expectedLength?: number}
- *   | {op: 'edit', position: number, hash: number, text: string}
- *   | {op: 'delete', position: number, hash: number}
- *   | {op: 'move', position: number, hash: number, side: 'before'|'after', target: number, targetHash: number}
- *   | {op: 'default', position: number, hash: number}
- *   | {op: 'undefault', hash: number}} GreetingChange
+ *   | {op: 'edit', id: number, hash: number, text: string}
+ *   | {op: 'delete', id: number, hash: number}
+ *   | {op: 'move', id: number, hash: number, side: 'before'|'after', target: number, targetHash: number}
+ *   | {op: 'default', id: number, hash: number}
+ *   | {op: 'undefault', id: number, hash: number}} GreetingChange
  */
 
 /**
@@ -217,10 +192,10 @@ export function greetingOperation(change) {
         case 'add': return change.position === undefined
             ? model => opAppend(model, change.text)
             : model => opAdd(model, /** @type {number} */ (change.position), /** @type {number} */ (change.expectedLength), change.text);
-        case 'edit': return model => opEdit(model, change.position, change.hash, change.text);
-        case 'delete': return model => opDelete(model, change.position, change.hash);
-        case 'move': return model => opMove(model, change.position, change.hash, change.side, change.target, change.targetHash);
-        case 'default': return model => opSetDefault(model, change.position, change.hash);
-        case 'undefault': return model => opUnsetDefaultByHash(model, change.hash);
+        case 'edit': return model => opEdit(model, change.id, change.hash, change.text);
+        case 'delete': return model => opDelete(model, change.id, change.hash);
+        case 'move': return model => opMove(model, change.id, change.hash, change.side, change.target, change.targetHash);
+        case 'default': return model => opSetDefault(model, change.id, change.hash);
+        case 'undefault': return model => opUnsetDefault(model, change.id, change.hash);
     }
 }

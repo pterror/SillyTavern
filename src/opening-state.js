@@ -9,6 +9,21 @@ import { greetingModelOf } from './greeting-items.js';
  */
 
 /**
+ * @param {import('./entity-values.js').StoredEntity} entity a character's
+ * @returns {CardGreetingsRead}
+ */
+export function cardGreetingsReadOf(entity) {
+    const model = greetingModelOf(entity);
+    const defaultIndex = model.greetings.findIndex(g => g.id === model.defaultId);
+    return {
+        ids: model.greetings.map(g => g.id),
+        texts: model.greetings.map(g => g.text),
+        defaultIndex: defaultIndex < 0 ? null : defaultIndex,
+        name: storedValues(entity).values.get(FIELD.name)?.text ?? '',
+    };
+}
+
+/**
  * @param {import('./user-stores.js').UserStore} store
  * @param {string} avatar
  * @returns {Promise<CardGreetingsRead | null>}
@@ -16,15 +31,7 @@ import { greetingModelOf } from './greeting-items.js';
 export async function readCardGreetings(store, avatar) {
     try {
         const entity = await store.lib.entity(TYPE.character, avatar);
-        if (!entity) return null;
-        const model = greetingModelOf(entity);
-        const defaultIndex = model.greetings.findIndex(g => g.id === model.defaultId);
-        return {
-            ids: model.greetings.map(g => g.id),
-            texts: model.greetings.map(g => g.text),
-            defaultIndex: defaultIndex < 0 ? null : defaultIndex,
-            name: storedValues(entity).values.get(FIELD.name)?.text ?? '',
-        };
+        return entity ? cardGreetingsReadOf(entity) : null;
     } catch (error) {
         console.error(`Error reading card greetings for "${avatar}":`, error);
         return null;

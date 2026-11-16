@@ -212,7 +212,7 @@ describe('an image write keeps the stored card set', () => {
 });
 
 describe('greeting operations read and write the same place', () => {
-    test('add -> edit -> delete chains through returned hashes without a 409', async () => {
+    test('add -> edit -> delete chains through returned ids and hashes without a 409', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
 
         const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
@@ -220,11 +220,15 @@ describe('greeting operations read and write the same place', () => {
         const addBody = await add.json();
         expect(addBody.hashes).toHaveLength(2);
 
-        const edited = await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: addBody.hashes[1], text: 'second-edited' });
+        expect(addBody.ids).toHaveLength(2);
+        expect(addBody.id).toBe(addBody.ids[1]);
+
+        const edited = await post('greetings/edit', { avatar_url: 'Alice.png', greeting_id: addBody.id, expected_hash: addBody.hashes[1], text: 'second-edited' });
         expect(edited.status).toBe(200);
         const editedBody = await edited.json();
+        expect(editedBody.id).toBe(addBody.id);
 
-        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', position: 1, expected_hash: editedBody.hashes[1] });
+        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', greeting_id: addBody.id, expected_hash: editedBody.hashes[1] });
         expect(deleted.status).toBe(200);
         expect((await deleted.json()).hashes).toHaveLength(1);
     });
@@ -284,23 +288,35 @@ describe('add is conflict-checked too', () => {
     });
 });
 
-describe('delete finds a greeting that moved by its hash, and answers with the position it used', () => {
+describe('edit and delete name a greeting by its id, never by its position or text', () => {
     const storedCard = async () => JSON.parse(await cardJsonOf('Alice.png'));
 
     async function aliceWithThreeGreetings() {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
         await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
         const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'third' });
-        return (await add.json()).hashes;
+        return add.json();
     }
 
-    test('delete at a stale position deletes the greeting with the hash and answers with its position', async () => {
-        const hashes = await aliceWithThreeGreetings();
+    test('delete takes the greeting of the id and answers where it was', async () => {
+        const { ids, hashes } = await aliceWithThreeGreetings();
 
-        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[2] });
+        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', greeting_id: ids[2], expected_hash: hashes[2] });
         expect(deleted.status).toBe(200);
-        expect(await deleted.json()).toMatchObject({ ok: true, greetings: ['hello', 'second'], hashes: [hashes[0], hashes[1]], default_position: 0, position: 2 });
+        expect(await deleted.json()).toMatchObject({ ok: true, greetings: ['hello', 'second'], ids: [ids[0], ids[1]], hashes: [hashes[0], hashes[1]], default_position: 0, position: 2, id: ids[2] });
         expect((await storedCard()).data.alternate_greetings).toEqual(['second']);
+    });
+
+    test('another greeting\'s text, a gone id, or a position is refused, and the card is left as it was', async () => {
+        const { ids, hashes } = await aliceWithThreeGreetings();
+        const before = await storedCard();
+
+        expect((await post('greetings/delete', { avatar_url: 'Alice.png', greeting_id: ids[1], expected_hash: hashes[2] })).status).toBe(409);
+        expect((await post('greetings/edit', { avatar_url: 'Alice.png', greeting_id: ids[1], expected_hash: hashes[2], text: 'x' })).status).toBe(409);
+        expect((await post('greetings/delete', { avatar_url: 'Alice.png', greeting_id: 99, expected_hash: hashes[2] })).status).toBe(409);
+        expect((await post('greetings/delete', { avatar_url: 'Alice.png', position: 2, expected_hash: hashes[2] })).status).toBe(400);
+        expect((await post('greetings/edit', { avatar_url: 'Alice.png', position: 2, expected_hash: hashes[2], text: 'x' })).status).toBe(400);
+        expect(await storedCard()).toEqual(before);
     });
 });
 
@@ -340,14 +356,14 @@ describe('/greetings/add with append appends without a length check', () => {
 });
 
 describe('an op whose outcome is already in place answers 200 and writes nothing', () => {
-    test('edit when the greeting at the position already has the new text', async () => {
+    test('edit when the greeting of the id already has the new text', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
         const add = await post('greetings/add', { avatar_url: 'Alice.png', position: 1, expected_length: 1, text: 'second' });
-        const hashes = (await add.json()).hashes;
-        await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[1], text: 'second-edited' });
+        const { id, hashes } = await add.json();
+        await post('greetings/edit', { avatar_url: 'Alice.png', greeting_id: id, expected_hash: hashes[1], text: 'second-edited' });
         const seqBefore = await changeSeq();
 
-        const again = await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: hashes[1], text: 'second-edited' });
+        const again = await post('greetings/edit', { avatar_url: 'Alice.png', greeting_id: id, expected_hash: hashes[1], text: 'second-edited' });
         expect(again.status).toBe(200);
         const body = await again.json();
         expect(body.position).toBe(1);
@@ -368,11 +384,11 @@ describe('every greeting op answers with the greeting list as stored', () => {
         expect(add.greetings).toEqual(['hello', 'second']);
         await body(await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'third' }));
 
-        const edit = await body(await post('greetings/edit', { avatar_url: 'Alice.png', position: 1, expected_hash: add.hashes[1], text: 'second-edited' }));
+        const edit = await body(await post('greetings/edit', { avatar_url: 'Alice.png', greeting_id: add.ids[1], expected_hash: add.hashes[1], text: 'second-edited' }));
         expect(edit.greetings).toEqual(['hello', 'second-edited', 'third']);
         expect(edit.hashes).toHaveLength(3);
 
-        const deleted = await body(await post('greetings/delete', { avatar_url: 'Alice.png', position: 0, expected_hash: edit.hashes[0] }));
+        const deleted = await body(await post('greetings/delete', { avatar_url: 'Alice.png', greeting_id: edit.ids[0], expected_hash: edit.hashes[0] }));
         expect(deleted.greetings).toEqual(['second-edited', 'third']);
     });
 });

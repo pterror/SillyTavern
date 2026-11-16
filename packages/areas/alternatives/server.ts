@@ -49,7 +49,7 @@ export type Ports = {
         context: ActionContext,
         avatar: string,
         op: GreetingChange,
-    ): Promise<{ ok: true; opening: unknown } | { ok: false; reason: string; same?: number }>;
+    ): Promise<{ ok: true; opening: unknown } | { ok: false; reason: string; same?: { id: number; position: number } }>;
     move(
         context: ActionContext,
         nodeId: string,
@@ -121,6 +121,7 @@ const sameGreeting = (a: { avatar: string; id: number } | null, b: { avatar: str
 export function cardViewOf(card: ListedCard, hash: (text: string) => number): CardView {
     return {
         avatar: card.avatar,
+        ids: card.ids,
         greetings: card.greetings,
         hashes: card.greetings.map((text) => hash(text)),
         defaultPosition: card.defaultPosition,
@@ -349,9 +350,7 @@ export function alternativesArea(ports: Ports) {
                 if (look === null || !look.cards.has(avatar)) return { refused: 'No card to change.' };
                 if (op.op === 'add' && avatar !== look.addsTo) return { refused: 'No card to add to.' };
                 const sent: GreetingChange =
-                    op.op === 'edit' && op.text.trim() === ''
-                        ? { op: 'delete', position: op.position, hash: op.hash }
-                        : op;
+                    op.op === 'edit' && op.text.trim() === '' ? { op: 'delete', id: op.id, hash: op.hash } : op;
                 const result = await ports.greeting(context, avatar, sent);
                 if (!result.ok) {
                     return {

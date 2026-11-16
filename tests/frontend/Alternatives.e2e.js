@@ -474,7 +474,9 @@ test.describe('the alternatives of a message', () => {
             const send = (/** @type {object} */ payload) => fetch('/api/ui/action', { method: 'POST', headers, body: JSON.stringify({ type: 'alternatives.greeting', payload }) })
                 .then(r => r.text())
                 .then(text => JSON.parse(text.split('\n')[0]));
-            return Promise.all(g.map((text, position) => send({ op: 'edit', avatar, position, hash: hash(text), text: `${text} edited ${s}` })));
+            const card = await (await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) })).json();
+            const { ids } = card.card_greetings;
+            return Promise.all(g.map((text, k) => send({ op: 'edit', avatar, id: ids[k], hash: hash(text), text: `${text} edited ${s}` })));
         }, { g, s, avatar });
         expect(answers.map(a => a.ok)).toEqual(g.map(() => true));
         expect((await storedModel(page, avatar)).greetings).toEqual(g.map(text => `${text} edited ${s}`));
@@ -550,12 +552,14 @@ test.describe('the alternatives of a message', () => {
             return [...stTest.context().chat[0].swipes];
         })).toContain(added);
 
-        const status = await page.evaluate(async ({ avatar, text, hash }) => {
+        const status = await page.evaluate(async ({ avatar, old, text, hash }) => {
             // @ts-ignore
             const headers = stTest.context().getRequestHeaders();
-            const response = await fetch('/api/characters/greetings/edit', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, position: 0, expected_hash: hash, text }) });
+            const card = await (await fetch('/api/characters/get', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar }) })).json();
+            const id = card.card_greetings.ids[card.card_greetings.texts.indexOf(old)];
+            const response = await fetch('/api/characters/greetings/edit', { method: 'POST', headers, body: JSON.stringify({ avatar_url: avatar, greeting_id: id, expected_hash: hash, text }) });
             return response.status;
-        }, { avatar, text: `Zero edited ${s}`, hash: hashGreetingText(g[0]) });
+        }, { avatar, old: g[0], text: `Zero edited ${s}`, hash: hashGreetingText(g[0]) });
         expect(status).toBe(200);
         expect(await openings()).toEqual({ stored: 1, texts: [`Zero edited ${s}`, added, g[1]] });
     });

@@ -780,7 +780,7 @@ function openingsForPage(request, chat) {
 /**
  * @param {import('../chat-request.js').ChatContext} chat
  * @param {string} avatar
- * @returns {Promise<{ position: number, hash: number } | null>} where the greeting the tab's character info shows is on the card
+ * @returns {Promise<{ id: number } | null>} the greeting the tab's character info shows, while the card has it
  */
 async function greetingShownOf(chat, avatar) {
     const tab = chat.session.header;
@@ -788,8 +788,7 @@ async function greetingShownOf(chat, avatar) {
     const id = await shownGreeting(chat.store.lib, tab, avatar);
     if (id === null) return null;
     const { greetings } = await chat.store.lib.greetingModel(avatar);
-    const position = greetings.findIndex(g => g.id === id);
-    return position < 0 ? null : { position, hash: hashGreetingText(greetings[position].text) };
+    return greetings.some(g => g.id === id) ? { id } : null;
 }
 
 /**
@@ -1277,25 +1276,25 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
 });
 
 /**
- * The chat's opening becomes the card greeting at `position` of `avatar_url`'s card, refused unless its text still
- * hashes to `expected_hash`: in that character's chat, or in the group `group_id`'s when given (one of its members).
+ * The chat's opening becomes `avatar_url`'s card greeting `greeting_id`, refused unless its text still hashes to
+ * `expected_hash`: in that character's chat, or in the group `group_id`'s when given (one of its members).
  */
 router.post('/openings/use-greeting', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         const avatar = String(request.body.avatar_url || '');
         if (!avatar) return response.status(400).send({ error: 'avatar_url is required' });
         const groupId = typeof request.body.group_id === 'string' && request.body.group_id !== '' ? request.body.group_id : null;
-        const { position, expected_hash: expectedHash } = request.body;
-        if (!Number.isInteger(position) || position < 0) return response.status(400).send({ error: 'position must be a non-negative integer' });
+        const { greeting_id: id, expected_hash: expectedHash } = request.body;
+        if (!Number.isInteger(id) || id < 0) return response.status(400).send({ error: 'greeting_id must be a non-negative integer' });
         const owner = groupId === null ? { avatar_url: avatar } : { group_id: groupId };
         const chat = await chatOf(request, owner);
         if (!chat) return response.status(404).send({ error: 'unknown chat' });
         const { greetings } = await chat.store.lib.greetingModel(avatar);
-        const greeting = position < greetings.length ? greetings[position] : null;
-        if (greeting === null || hashGreetingText(greeting.text) !== expectedHash) return response.status(409).send({ ok: false, reason: 'the greeting changed' });
+        const greeting = greetings.find(g => g.id === id);
+        if (!greeting || hashGreetingText(greeting.text) !== expectedHash) return response.status(409).send({ ok: false, reason: 'the greeting changed' });
         const [character] = await chat.store.lib.ids(TYPE.character, [avatar]);
         if (character === null) return response.status(409).send({ ok: false, reason: 'no such greeting' });
-        const used = await chat.store.chats.useCardGreeting({ tree: chat.tree, greeting: { card: character, id: greeting.id }, actor: chat.session.actor() });
+        const used = await chat.store.chats.useCardGreeting({ tree: chat.tree, greeting: { card: character, id }, actor: chat.session.actor() });
         if (!used.ok) return response.status(409).send(used);
         chat.session.answer(response, { moved: true });
         const { answer } = await openChatAnswer(request, response, { ...owner, send_keys: request.body.send_keys, parts: request.body.parts });

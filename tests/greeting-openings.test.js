@@ -133,14 +133,14 @@ test('a card greeting the session chose stays shown through the session\'s own c
     const { greetings } = await user.store.lib.greetingModel('Chooser.png');
     await chats.chooseCardGreeting({ tree, greeting: { card: tree, id: greetings[2].id }, actor: { user: user.user.profile.handle, session } });
 
-    const deleted = await post('greetings/delete', { avatar_url: 'Chooser.png', position: 0, expected_hash: yo.body.hashes[0] }, session);
+    const deleted = await post('greetings/delete', { avatar_url: 'Chooser.png', greeting_id: yo.body.ids[0], expected_hash: yo.body.hashes[0] }, session);
     expect(deleted.body.greetings).toEqual(['Yo', 'Hey']);
     expect(shownText(deleted.body)).toBe('Hey');
 
-    const edited = await post('greetings/edit', { avatar_url: 'Chooser.png', position: 1, expected_hash: deleted.body.hashes[1], text: 'Hey there' }, session);
+    const edited = await post('greetings/edit', { avatar_url: 'Chooser.png', greeting_id: deleted.body.ids[1], expected_hash: deleted.body.hashes[1], text: 'Hey there' }, session);
     expect(shownText(edited.body)).toBe('Hey there');
 
-    const gone = await post('greetings/delete', { avatar_url: 'Chooser.png', position: 1, expected_hash: edited.body.hashes[1] }, session);
+    const gone = await post('greetings/delete', { avatar_url: 'Chooser.png', greeting_id: edited.body.ids[1], expected_hash: edited.body.hashes[1] }, session);
     expect(gone.body.greetings).toEqual(['Yo']);
     expect(shownText(gone.body)).toBe('Yo');
 });
@@ -163,13 +163,14 @@ test('a card greeting a session chose stays shown through another session\'s add
         return shownText(await openingState({ store: user.store, tree, actor: { user: theirs.user, session: mine }, avatar: 'Shared.png' }));
     };
 
-    await elsewhere({ op: 'add', text: 'Zero', position: 0, expectedLength: 3 });
-    await elsewhere({ op: 'move', position: 3, hash: hashGreetingText('Three'), side: 'before', target: 0, targetHash: hashGreetingText('Zero') });
-    await elsewhere({ op: 'delete', position: 2, hash: hashGreetingText('One') });
+    const [one, two, three] = before.greetings.map(g => g.id);
+    const zero = (await elsewhere({ op: 'add', text: 'Zero', position: 0, expectedLength: 3 })).result.id;
+    await elsewhere({ op: 'move', id: three, hash: hashGreetingText('Three'), side: 'before', target: zero, targetHash: hashGreetingText('Zero') });
+    await elsewhere({ op: 'delete', id: one, hash: hashGreetingText('One') });
     expect((await lib.greetingModel('Shared.png')).greetings.map(g => g.text)).toEqual(['Three', 'Zero', 'Two']);
     expect(await mineNow()).toBe('Three');
 
-    await elsewhere({ op: 'default', position: 2, hash: hashGreetingText('Two') });
+    await elsewhere({ op: 'default', id: two, hash: hashGreetingText('Two') });
     expect(await mineNow()).toBe('Two');
 });
 
@@ -187,11 +188,11 @@ test('a greeting that a stored opening holds is history: changing or deleting th
     const card = await post('greetings/add', { avatar_url: 'Teller.png', append: true, text: 'Twice' }, session);
     expect(card.body.openings).toMatchObject({ total: 2, stored: 1 });
 
-    const edited = await post('greetings/edit', { avatar_url: 'Teller.png', position: 0, expected_hash: card.body.hashes[0], text: 'Once upon a time' }, session);
+    const edited = await post('greetings/edit', { avatar_url: 'Teller.png', greeting_id: card.body.ids[0], expected_hash: card.body.hashes[0], text: 'Once upon a time' }, session);
     expect(edited.body.openings.alternatives.map((/** @type {any} */ a) => a.mes)).toEqual(['Once upon a time', 'Once', 'Twice']);
     expect(edited.body.openings.stored).toBe(1);
 
-    const deleted = await post('greetings/delete', { avatar_url: 'Teller.png', position: 0, expected_hash: edited.body.hashes[0] }, session);
+    const deleted = await post('greetings/delete', { avatar_url: 'Teller.png', greeting_id: edited.body.ids[0], expected_hash: edited.body.hashes[0] }, session);
     expect(deleted.body.openings.alternatives.map((/** @type {any} */ a) => a.mes)).toEqual(['Twice', 'Once']);
     expect(shownText(deleted.body)).toBe('Once');
 });
@@ -210,7 +211,7 @@ test('an opening written with a card greeting\'s text is that greeting; a card e
         contents: [storedForm({ name: 'You', is_user: true, mes: 'Shared', extra: { greeting_id: before.greetings[0].id }, send_date: Date.now() })],
         actor: { user: user.user.profile.handle, session },
     });
-    const edited = await post('greetings/edit', { avatar_url: 'Twins.png', position: 2, expected_hash: two.body.hashes[2], text: 'Shared' }, session);
+    const edited = await post('greetings/edit', { avatar_url: 'Twins.png', greeting_id: two.body.ids[2], expected_hash: two.body.hashes[2], text: 'Shared' }, session);
     const texts = edited.body.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.node_id !== null]);
     expect(texts).toEqual([['Zero', false], ['Shared', true], ['One', false], ['Shared', false]]);
 
@@ -230,22 +231,25 @@ test('an add or an edit to another greeting\'s exact text is refused and names t
     expect((await post('create', { ch_name: 'Echo', first_mes: 'Hello', file_name: 'Echo' }, session)).status).toBe(200);
     const two = await post('greetings/add', { avatar_url: 'Echo.png', append: true, text: 'Bye' }, session);
     const added = await post('greetings/add', { avatar_url: 'Echo.png', append: true, text: 'Hello' }, session);
-    expect(added).toEqual({ status: 409, body: { ok: false, reason: 'same as greeting 1', same_position: 0 } });
-    const edited = await post('greetings/edit', { avatar_url: 'Echo.png', position: 1, expected_hash: two.body.hashes[1], text: 'Hello' }, session);
-    expect(edited.body).toMatchObject({ ok: false, same_position: 0 });
+    expect(added).toEqual({ status: 409, body: { ok: false, reason: 'same as greeting 1', same_position: 0, same_id: two.body.ids[0] } });
+    const edited = await post('greetings/edit', { avatar_url: 'Echo.png', greeting_id: two.body.ids[1], expected_hash: two.body.hashes[1], text: 'Hello' }, session);
+    expect(edited.body).toMatchObject({ ok: false, same_position: 0, same_id: two.body.ids[0] });
     expect((await user.store.lib.greetingModel('Echo.png')).greetings.map(g => g.text)).toEqual(['Hello', 'Bye']);
     expect((await post('greetings/add', { avatar_url: 'Echo.png', append: true, text: 'Hello ' }, session)).status).toBe(200);
 });
 
-test('a greeting is shown in character info by its id while its text is the one the opening has, and the answer says where it is', async () => {
+test('a greeting is shown in character info by its id while its text is the one the opening has, and the answer names it', async () => {
     const session = '0190a1b2-0000-7000-8000-0000000000f6';
     expect((await post('create', { ch_name: 'Shower', first_mes: 'First', file_name: 'Shower' }, session)).status).toBe(200);
     const second = await post('greetings/add', { avatar_url: 'Shower.png', append: true, text: 'Second' }, session);
     const { greetings } = await user.store.lib.greetingModel('Shower.png');
     const shown = await post('greetings/show', { avatar_url: 'Shower.png', greeting_id: greetings[1].id, expected_hash: second.body.hashes[1], order: 1 }, session);
-    expect(shown.body).toEqual({ ok: true, greeting_shown: { position: 1, hash: second.body.hashes[1] } });
+    expect(shown.body).toEqual({ ok: true, greeting_shown: { id: greetings[1].id } });
     const stale = await post('greetings/show', { avatar_url: 'Shower.png', greeting_id: greetings[1].id, expected_hash: second.body.hashes[0], order: 2 }, session);
     expect(stale.status).toBe(409);
+    const otherWithText = await post('greetings/show', { avatar_url: 'Shower.png', greeting_id: greetings[0].id, expected_hash: second.body.hashes[1], order: 3 }, session);
+    expect(otherWithText.status).toBe(409);
+    expect((await post('greetings/show', { avatar_url: 'Shower.png', position: 1, expected_hash: second.body.hashes[1], order: 4 }, session)).status).toBe(400);
 });
 
 test('using a card greeting in the chat goes to the opening that holds it, with what is under it, or to the greeting itself', async () => {
@@ -290,7 +294,7 @@ test('each opening says the card greeting it is, by id, character and the hash o
         ['Start', { id: start.id, hash: hashGreetingText('Start'), avatar: 'Linked.png' }],
         ['Later', { id: later.id, hash: hashGreetingText('Later'), avatar: 'Linked.png' }],
     ]);
-    const edited = await post('greetings/edit', { avatar_url: 'Linked.png', position: 0, expected_hash: added.body.hashes[0], text: 'Start again' }, session);
+    const edited = await post('greetings/edit', { avatar_url: 'Linked.png', greeting_id: added.body.ids[0], expected_hash: added.body.hashes[0], text: 'Start again' }, session);
     expect(edited.body.openings.alternatives.map((/** @type {any} */ a) => [a.mes, a.greeting])).toEqual([
         ['Start again', { id: start.id, hash: hashGreetingText('Start again'), avatar: 'Linked.png' }],
         ['Start', null],
