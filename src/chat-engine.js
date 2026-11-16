@@ -172,14 +172,6 @@ function patchedContent(now, edit) {
 }
 
 /**
- * @param {Record<string, any>} m
- */
-function identityOf(m) {
-    const speaker = m?.is_user ? `u\u0001${m?.persona ?? m?.name ?? ''}` : `c\u0001${m?.name ?? ''}`;
-    return `${speaker}\u0000${m?.mes ?? ''}`;
-}
-
-/**
  * Who wrote a message: for a user message the persona it was sent as (`persona`, the persona's avatar key; a message
  * that records none is one author), for any other the character it is spoken as
  * @param {Record<string, any>} m
@@ -187,6 +179,15 @@ function identityOf(m) {
  */
 function authorOf(m, speaker) {
     return m?.is_user === true ? `u\u0001${typeof m.persona === 'string' ? m.persona : ''}` : `c\u0001${speaker ?? ''}`;
+}
+
+/**
+ * A message's text with its author (`authorOf`): two messages with the same are twins
+ * @param {Record<string, any>} m
+ * @param {bigint | null} speaker as for `authorOf`
+ */
+function twinKey(m, speaker) {
+    return `${authorOf(m, speaker)}\u0000${m?.mes ?? ''}`;
 }
 
 /**
@@ -1102,7 +1103,10 @@ export class ChatEngine {
             const rows = await this.openings(tree);
             /** @type {Map<string, bigint>} */
             const byIdentity = new Map();
-            for (const r of rows) if (!byIdentity.has(identityOf(r.message))) byIdentity.set(identityOf(r.message), r.id);
+            for (const r of rows) {
+                const key = twinKey(r.message, speakerIdOf(r.stored));
+                if (!byIdentity.has(key)) byIdentity.set(key, r.id);
+            }
             /** @type {(bigint | null)[]} */
             const ids = [];
             const now = this.now();
@@ -1116,7 +1120,8 @@ export class ChatEngine {
                     ids.push(null);
                     continue;
                 }
-                const key = identityOf(content);
+                const speaker = await this.speakerFor(content, treeSpeaker);
+                const key = twinKey(content, speaker?.id ?? null);
                 const existing = byIdentity.get(key);
                 if (existing !== undefined) {
                     ids.push(existing);
@@ -1124,7 +1129,6 @@ export class ChatEngine {
                 }
                 const id = this.next.message++;
                 const time = now + added;
-                const speaker = await this.speakerFor(content, treeSpeaker);
                 records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: null, owner: tree, time, session: null, user, sendKey: null }));
                 this.keyNew(records, id);
                 records.push(...('last' in place ? await this.rootPlacement(tree, id, content, greetings, user, null, false) : placed(id)));
@@ -1192,7 +1196,8 @@ export class ChatEngine {
                 }
                 state ??= await this.stateMap(tree, cursor);
                 const produced = producedChanges(changes[i], state);
-                const twin = isToolTurn(content) ? null : await this.twinOf(tree, cursor, content, ids, regenerated ? produced : undefined);
+                const speaker = await this.speakerFor(content, treeSpeaker);
+                const twin = isToolTurn(content) ? null : await this.twinOf(tree, cursor, content, speaker, ids, regenerated ? produced : undefined);
                 if (twin !== null) {
                     if (session !== null && i === contents.length - 1) records.push(...this.moveTo(session, user, cursor, twin));
                     ids.push(twin);
@@ -1202,7 +1207,6 @@ export class ChatEngine {
                 }
                 const id = this.next.message++;
                 const time = now + i;
-                const speaker = await this.speakerFor(content, treeSpeaker);
                 records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: cursor, owner: tree, time, session, user, sendKey: key }));
                 this.keyNew(records, id);
                 if (i === 0 && after === null && 'last' in place) records.push(...await this.rootPlacement(tree, id, content, this.people.greetings ? await this.people.greetings(tree) : [], user, session, false));
@@ -1520,16 +1524,18 @@ export class ChatEngine {
      * @param {bigint} tree
      * @param {bigint | null} parent
      * @param {Record<string, any>} content
+     * @param {Speaker | null} speaker the character `content` will be stored as spoken by (`speakerFor`)
      * @param {bigint[]} written
      * @param {ProducedChange[]} [produced]
      */
-    async twinOf(tree, parent, content, written, produced) {
+    async twinOf(tree, parent, content, speaker, written, produced) {
         if (parent !== null && written.includes(parent)) return null;
         const siblings = await this.children(tree, parent);
         if (!siblings.length) return null;
-        const decoded = await this.decoded([...(await this.stored(siblings)).values()]);
-        const want = identityOf(content);
-        const same = siblings.filter((_, i) => identityOf(decoded[i]) === want);
+        const stored = await this.stored(siblings);
+        const decoded = await this.decoded(siblings.map(id => stored.get(id)));
+        const want = twinKey(content, speaker?.id ?? null);
+        const same = siblings.filter((id, i) => twinKey(decoded[i], speakerIdOf(stored.get(id))) === want);
         if (!same.length || produced === undefined) return same[0] ?? null;
         const theirs = await this.store.chatRead('produced', { messages: same });
         const wanted = JSON.stringify(produced);
@@ -1932,11 +1938,11 @@ export class ChatEngine {
             if (sb.parent !== a) return { ok: false, reason: 'not adjacent' };
             const [now] = session === null ? [null] : await this.store.chatRead('sessions', { ids: [session] });
             const moves = session !== null && !(now?.tree === tree && now.at !== null && await this.store.chatRead('within', { message: b, at: now.at }));
-            let id = await this.twinOf(tree, a, content, []);
+            const speaker = await this.speakerFor(content, treeSpeaker);
+            let id = await this.twinOf(tree, a, content, speaker, []);
             if (id === null) {
                 id = this.next.message++;
                 const time = this.now();
-                const speaker = await this.speakerFor(content, treeSpeaker);
                 records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: a, owner: tree, time, session: moves ? session : null, user, sendKey: sendKey ? Buffer.from(sendKey, 'utf8') : null }));
                 this.keyNew(records, id);
             } else if (moves) {
@@ -2407,13 +2413,15 @@ export class ChatEngine {
                 /** @type {bigint | null} */
                 let pick = null;
                 for (const [k, content] of contents.entries()) {
-                    let sid = level.twin(content, null);
+                    const speaker = await this.speakerFor(content, treeSpeaker);
+                    const key = twinKey(content, speaker?.id ?? null);
+                    let sid = level.get(key) ?? null;
                     if (sid === null) {
                         sid = this.next.message++;
                         const time = now + written++;
-                        records.push(...messageRecords(sid, this.encoded(content, time, await this.speakerFor(content, treeSpeaker)), { parent, owner: tree, time, session: null, user, sendKey: null }));
+                        records.push(...messageRecords(sid, this.encoded(content, time, speaker), { parent, owner: tree, time, session: null, user, sendKey: null }));
                         this.keyNew(records, sid);
-                        level.add(sid, content);
+                        level.set(key, sid);
                     }
                     if (k === selected) pick = sid;
                 }
@@ -2456,26 +2464,22 @@ export class ChatEngine {
     }
 
     /**
+     * The messages of one list (`children`) by their twin key, the first of each
      * @param {bigint} tree
      * @param {bigint | null} parent
+     * @returns {Promise<Map<string, bigint>>}
      */
     async level(tree, parent) {
         const ids = await this.children(tree, parent);
         const stored = await this.stored(ids);
         const decoded = await this.decoded(ids.map(id => stored.get(id)));
-        /** @type {Map<bigint, Record<string, any>>} */
-        const byId = new Map(ids.map((id, i) => [id, decoded[i]]));
-        return {
-            stored,
-            byId,
-            twin: (/** @type {Record<string, any>} */ content, /** @type {bigint | null} */ except) => {
-                const want = identityOf(content);
-                for (const [id, m] of byId) if (id !== except && identityOf(m) === want) return id;
-                return null;
-            },
-            add: (/** @type {bigint} */ id, /** @type {Record<string, any>} */ content) => byId.set(id, content),
-            set: (/** @type {bigint} */ id, /** @type {Record<string, any>} */ content) => byId.set(id, content),
-        };
+        /** @type {Map<string, bigint>} */
+        const byKey = new Map();
+        for (const [i, id] of ids.entries()) {
+            const key = twinKey(decoded[i], speakerIdOf(stored.get(id)));
+            if (!byKey.has(key)) byKey.set(key, id);
+        }
+        return byKey;
     }
 
 

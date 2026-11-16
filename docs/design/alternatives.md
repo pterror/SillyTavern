@@ -113,6 +113,9 @@ other's character by its id (the speaker stored with it, or for the edit the one
 two personas or two characters with one name are two authors. A card greeting's author is its character, so a user's
 opening, or another character's, with a greeting's text is not that greeting.
 
+The same author (`authorOf`) decides when a message written to the tree is one already stored beside it (`twinKey`):
+a message sent or grafted, an opening added, an alternative imported.
+
 The server decides (`sameAlternative`, `src/chat-engine.js`), in the request that saves the edit: an edit of a stored
 message (`/api/chats/message/edit`); of a card greeting not stored, which is stored as an opening
 (`/api/chats/message/select` with the opening); a new alternative typed into an empty swipe (`/api/chats/message/append`

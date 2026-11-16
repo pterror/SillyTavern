@@ -205,4 +205,66 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual(await listed(), [['Greeting 1', true], ['Greeting 2', true], ['Greeting 3 ', false], ['Greeting 3', true]], 'an edit is linked the same way');
         await store.close();
     });
+
+    test(`${kind}: a message sent with an alternative's text and author is that alternative; a name never counts`, async () => {
+        const { store, chats, t, id, send } = await fresh(engine);
+        const user = (/** @type {string} */ name, /** @type {string} */ persona) => ({ ...said('u1'), is_user: true, name, persona });
+        const append = async (/** @type {Record<string, any>} */ content, after = id.g) => (await chats.appendMessages({ tree: t, treeSpeaker: ivy, after, contents: [content], actor: a })).node_ids[0];
+        await send(null, ['g']);
+        const first = await append(user('You', 'a.png'));
+        assert.equal(await append(user('Renamed', 'a.png')), first, 'the same persona under another name');
+        assert.notEqual(await append(user('You', 'b.png')), first, 'another persona with the same name');
+        const unrecorded = await append({ ...said('u1'), is_user: true, name: 'You' });
+        assert.notEqual(unrecorded, first);
+        assert.equal(await append({ ...said('u1'), is_user: true, name: 'Renamed' }), unrecorded, 'messages that record no persona are one author');
+        const reply = await append(said('b1'), first);
+        assert.equal(await append({ ...said('b1'), name: 'Renamed' }, first), reply, 'the same character under another name');
+        assert.notEqual(await append({ ...said('b1'), original_avatar: rowan.avatar }, first), reply, 'another character with the same name');
+        await store.close();
+    });
+
+    test(`${kind}: a message grafted with an alternative's text and author is that alternative; a name never counts`, async () => {
+        const { store, chats, t, id, send } = await fresh(engine);
+        await send(null, ['g']);
+        await send('g', ['u1', 'b1']);
+        await send('g', ['x']);
+        const graft = async (/** @type {Record<string, any>} */ content) => (/** @type {any} */ (await chats.graftMessage({ tree: t, treeSpeaker: ivy, after: id.g, before: id.u1, content, actor: a }))).node_id;
+        assert.equal(await graft({ ...said('x'), name: 'Renamed' }), id.x);
+        assert.notEqual(await graft({ ...said('x'), original_avatar: rowan.avatar }), id.x);
+        await store.close();
+    });
+
+    test(`${kind}: an opening added with a stored opening's text and author is that opening; a name never counts`, async () => {
+        const { store, chats, t } = await fresh(engine);
+        const add = async (/** @type {Record<string, any>} */ content) => (await chats.addOpenings({ tree: t, treeSpeaker: ivy, contents: [content], actor: { user: a.user } })).node_ids[0];
+        const hi = await add(said('Hi'));
+        assert.equal(await add({ ...said('Hi'), name: 'Renamed' }), hi);
+        const theirs = await add({ ...said('Hi'), original_avatar: rowan.avatar });
+        assert.notEqual(theirs, hi, 'another character with the same name');
+        const mine = await add({ ...said('Hi'), is_user: true, name: 'You', persona: 'a.png' });
+        assert.notEqual(mine, hi);
+        assert.equal(await add({ ...said('Hi'), is_user: true, name: 'Renamed', persona: 'a.png' }), mine);
+        assert.notEqual(await add({ ...said('Hi'), is_user: true, name: 'You', persona: 'b.png' }), mine);
+        await store.close();
+    });
+
+    test(`${kind}: an import keeps alternatives apart by author and merges them by author, whatever their names`, async () => {
+        const { store, chats, t } = await fresh(engine);
+        const child = async (/** @type {string | null} */ parent) => {
+            const [p] = parent === null ? [null] : await chats.messageIds([parent]);
+            return chats.externalIds(await chats.children(t, p));
+        };
+        const imported = async (/** @type {Record<string, any>[]} */ messages) => /** @type {any} */ (await chats.importChat({ tree: t, treeSpeaker: ivy, name: null, messages, metadata: {}, actor: a, bookmark: false })).node_ids;
+        const [g1, u1] = await imported([said('g'), { ...said('u1'), is_user: true, name: 'You', persona: 'a.png' }]);
+        const [g2, u2] = await imported([{ ...said('g'), name: 'Renamed' }, { ...said('u1'), is_user: true, name: 'Renamed', persona: 'a.png' }]);
+        assert.deepEqual([g2, u2], [g1, u1], 'the same authors under other names');
+        const [g3, u3] = await imported([{ ...said('g'), original_avatar: rowan.avatar }, { ...said('u1'), is_user: true, name: 'You', persona: 'b.png' }]);
+        assert.notEqual(g3, g1, 'another character with the same name');
+        assert.deepEqual(await child(g3), [u3]);
+        const [, u4] = await imported([said('g'), { ...said('u1'), is_user: true, name: 'You', persona: 'b.png' }]);
+        assert.notEqual(u4, u1, 'another persona with the same name');
+        assert.deepEqual((await child(null)).length, 2);
+        assert.deepEqual((await child(g1)).length, 2);
+        await store.close();
+    });
 }
