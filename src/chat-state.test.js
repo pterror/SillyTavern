@@ -116,7 +116,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const [c3] = (await append([tools], [], true)).node_ids;
         assert.equal(new Set([c1, c2, c3]).size, 3);
         const resolved = { ...tools, extra: { tool_invocations: [{ ...tools.extra.tool_invocations[0], result: '4' }] } };
-        assert.deepEqual(await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: c2, content: resolved }], actor: tabA }), { ok: true, applied: 1, refused: [] });
+        assert.deepEqual(await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: c2, content: resolved }], actor: tabA }), { ok: true, applied: 1, refused: [], shown: [] });
         const [r2] = (await append([{ ...reply, mes: 'Nothing here.' }], [])).node_ids;
         const edit = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: r2, content: reply }], actor: tabA });
         assert.equal(edit.refused.length, 1);
@@ -129,7 +129,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const [id] = await chats.messageIds([r]);
         const continued = { ...reply, mes: 'You find a coin.' };
         const edited = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: r, content: continued, changes: [{ key: 'gold', variable: true, value: 2 }, { key: 'scene', value: 'road' }] }], actor: tabA });
-        assert.deepEqual(edited, { ok: true, applied: 1, refused: [] });
+        assert.deepEqual(edited, { ok: true, applied: 1, refused: [], shown: [] });
         assert.deepEqual((await chats.stateAt({ tree: t, at: r })).state, { variables: { gold: 2 }, scene: 'road' });
         assert.deepEqual(await chats.store.chatRead('produced', { messages: [id] }),
             [[{ key: 'gold', variable: true, value: '1' }, { key: 'gold', variable: true, value: '2' }, { key: 'scene', variable: false, value: '"road"' }]]);

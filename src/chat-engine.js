@@ -320,6 +320,8 @@ function alternativeEntry(nodeId, o, itemized) {
 
 const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], defaultId: null, defaultEpoch: 0 });
 
+/** @typedef {{ node: bigint } | { greeting: number, epoch: number }} SameAlternative a stored alternative, or a card greeting with the card's default epoch */
+
 /**
  * A group of a tree's openings: its greeting group (the greeting's id + 1, or 0), its card greeting's position (null
  * for none or a deleted greeting), whether its first opening holds that greeting, how many it has and the first.
@@ -1225,6 +1227,97 @@ export class ChatEngine {
     }
 
     /**
+     * @param {bigint} tree
+     * @returns {Promise<CardGreetings>} the card greetings of a character's tree; none for a group's
+     */
+    async cardGreetings(tree) {
+        const model = this.people.greetingModel ? await this.people.greetingModel(tree) : null;
+        if (model === null) return NO_GREETINGS;
+        return {
+            greetings: model.greetings.map(g => ({ mes: g.text, extra: {} })),
+            ids: model.greetings.map(g => g.id),
+            defaultId: model.defaultId,
+            defaultEpoch: model.defaultEpoch,
+        };
+    }
+
+    /**
+     * The alternative of a message, other than the one being edited, whose text is exactly `text`: a stored one, or at
+     * a character tree's root a card greeting no stored opening holds.
+     * @param {bigint} tree
+     * @param {bigint | null} parent the message's parent; null for a first message
+     * @param {string} text
+     * @param {{ node?: bigint, greeting?: number }} self the alternative being edited: its node, or the card greeting
+     * @returns {Promise<SameAlternative | null>}
+     */
+    async sameAlternative(tree, parent, text, self) {
+        const siblings = (await this.children(tree, parent)).filter(id => id !== self.node);
+        const stored = await this.stored(siblings);
+        const decoded = await this.decoded(siblings.map(id => stored.get(id)));
+        const at = decoded.findIndex(m => m?.mes === text);
+        if (at >= 0) return { node: siblings[at] };
+        if (parent !== null) return null;
+        const card = await this.cardGreetings(tree);
+        const k = card.greetings.findIndex((g, i) => g.mes === text && card.ids[i] !== self.greeting);
+        if (k < 0) return null;
+        const segment = (await this.openingSegments(tree, card)).find(seg => seg.card === k);
+        return segment?.held ? null : { greeting: card.ids[k], epoch: card.defaultEpoch };
+    }
+
+    /**
+     * @param {SameAlternative} same
+     * @returns {Promise<{ node_id: string } | { greeting_id: number }>}
+     */
+    async sameNamed(same) {
+        return 'node' in same ? { node_id: /** @type {string} */ ((await this.externalIds([same.node]))[0]) } : { greeting_id: same.greeting };
+    }
+
+    /**
+     * Records that make the session show `same`, with what it shows below it
+     * @param {bigint} tree
+     * @param {bigint | null} parent
+     * @param {SameAlternative} same
+     * @param {bigint} user
+     * @param {bigint} session
+     */
+    async showRecords(tree, parent, same, user, session) {
+        if ('node' in same) return this.selectRecords(tree, parent, same.node, user, session);
+        return this.choiceRecords(tree, same.greeting, same.epoch, user, session);
+    }
+
+    /**
+     * For an alternative typed but not stored yet, `content`, under `after` (null: a first message, typed over the card
+     * greeting it names, if any): makes the session show the alternative with its text, when there is one; with
+     * `typing`, the session stays where it is.
+     * @param {object} p
+     * @param {bigint} p.tree
+     * @param {string | null} p.after
+     * @param {Record<string, any>} p.content
+     * @param {boolean} p.typing
+     * @param {Actor} p.actor
+     * @returns {Promise<{ node_id: string } | { greeting_id: number } | null>} the alternative with that text
+     */
+    showSameAlternative({ tree, after, content, typing, actor }) {
+        return this.serialized(tree, async () => {
+            if (typeof content?.mes !== 'string') return null;
+            const parent = after === null ? null : (await this.messageOf(tree, after))?.id;
+            if (parent === undefined) return null;
+            const greetingId = content?.extra?.greeting_id;
+            const same = await this.sameAlternative(tree, parent, content.mes, parent === null && Number.isInteger(greetingId) ? { greeting: greetingId } : {});
+            if (same === null) return null;
+            if (!typing) {
+                const records = [];
+                const { user, session } = await this.actorIds(actor, records);
+                if (session === null) throw new Error('An alternative is shown through a session');
+                records.push(...await this.showRecords(tree, parent, same, user, session));
+                await this.claimConversation(records, tree, actor, { user, session });
+                if (records.length) await this.store.commit(records);
+            }
+            return this.sameNamed(same);
+        });
+    }
+
+    /**
      * What the text written in a chat will be sent after: the message the session landed on; at the root, the opening
      * it shows, stored or a card greeting (a group's last member opening); with none, the root
      * @param {{ tree: bigint, actor: Actor }} p
@@ -1238,14 +1331,7 @@ export class ChatEngine {
             const last = (await this.memberOpenings({ tree, actor })).at(-1);
             return last ? { tree: last.card, greeting: last.greetingId } : { tree };
         }
-        const model = this.people.greetingModel ? await this.people.greetingModel(tree) : null;
-        /** @type {CardGreetings} */
-        const card = model === null ? NO_GREETINGS : {
-            greetings: model.greetings.map(g => ({ mes: g.text, extra: {} })),
-            ids: model.greetings.map(g => g.id),
-            defaultId: model.defaultId,
-            defaultEpoch: model.defaultEpoch,
-        };
+        const card = await this.cardGreetings(tree);
         const [shown] = (await this.openingAlternatives({ tree, actor, range: { limit: 1 }, card })).alternatives;
         if (typeof shown?.node_id === 'string') {
             const [id] = await this.messageIds([shown.node_id]);
@@ -1494,10 +1580,12 @@ export class ChatEngine {
     }
 
     /**
+     * An edit that gives a message the text of another of its alternatives (`sameAlternative`) is not stored: a
+     * `finished` one makes the session show that alternative (`shown`), any other is refused.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
-     * @param {{ node_id: string, content?: Record<string, any>, patch?: Record<string, any>, unset?: string[], changes?: StateOp[] | null }[]} p.edits
+     * @param {{ node_id: string, content?: Record<string, any>, patch?: Record<string, any>, unset?: string[], changes?: StateOp[] | null, finished?: boolean }[]} p.edits
      * @param {number} [p.author]
      * @param {string | null} [p.ref]
      * @param {Actor} p.actor
@@ -1513,6 +1601,8 @@ export class ChatEngine {
             const decoded = new Map((await this.decoded([...stored.values()])).map((d, i) => [[...stored.keys()][i], d]));
             let applied = 0;
             const refused = [];
+            /** @type {{ node_id: string, same: { node_id: string } | { greeting_id: number } }[]} */
+            const shown = [];
             for (const [i, edit] of edits.entries()) {
                 const id = ids[i];
                 const s = id === null ? undefined : stored.get(id);
@@ -1546,12 +1636,15 @@ export class ChatEngine {
                     refused.push({ node_id: edit.node_id, reason: 'refused to blank stored text' });
                     continue;
                 }
-                if (s.parent !== null && !isToolTurn(next)) {
-                    const twin = await this.twinOf(tree, s.parent, next, []);
-                    if (twin !== null && twin !== id) {
-                        refused.push({ node_id: edit.node_id, reason: 'an alternative with this text already exists', twin: (await this.externalIds([twin]))[0] });
-                        continue;
+                const same = typeof next.mes === 'string' && next.mes !== now.mes && !isToolTurn(next) ? await this.sameAlternative(tree, s.parent, next.mes, { node: id }) : null;
+                if (same !== null) {
+                    if (edit.finished !== true || session === null) {
+                        refused.push({ node_id: edit.node_id, reason: 'an alternative with this text already exists', same: await this.sameNamed(same) });
+                    } else {
+                        records.push(...await this.showRecords(tree, s.parent, same, user, session));
+                        shown.push({ node_id: edit.node_id, same: await this.sameNamed(same) });
                     }
+                    continue;
                 }
                 await recordProduced();
                 const speaker = await this.speakerFor(next, treeSpeaker);
@@ -1568,7 +1661,7 @@ export class ChatEngine {
             }
             await this.claimConversation(records, tree, actor, { user, session });
             if (records.length) await this.store.commit(records);
-            return { ok: true, applied, refused };
+            return { ok: true, applied, refused, shown };
         }));
     }
 
@@ -1595,11 +1688,22 @@ export class ChatEngine {
         const records = [];
         const { user, session } = await this.actorIds(actor, records);
         if (session === null) throw new Error('A choice is made through a session');
-        const end = await this.store.chatRead('branchEnd', { tree, at: s.id, session, user });
-        records.push(this.moveTo(session, user, s.parent, s.id)[0], { kind: 'pointerMove', session, user, target: end });
+        records.push(...await this.selectRecords(tree, s.parent, s.id, user, session));
         await this.claimConversation(records, tree, actor, { user, session });
         await this.store.commit(records);
         return true;
+    }
+
+    /**
+     * @param {bigint} tree
+     * @param {bigint | null} parent
+     * @param {bigint} id
+     * @param {bigint} user
+     * @param {bigint} session
+     */
+    async selectRecords(tree, parent, id, user, session) {
+        const end = await this.store.chatRead('branchEnd', { tree, at: id, session, user });
+        return [this.moveTo(session, user, parent, id)[0], { kind: 'pointerMove', session, user, target: end }];
     }
 
     /**
@@ -1698,15 +1802,31 @@ export class ChatEngine {
         const records = [];
         const { user, session } = await this.actorIds(actor, records);
         if (session === null) throw new Error('A greeting is chosen through a session');
-        const [now] = await this.store.chatRead('sessions', { ids: [session] });
-        const atRoot = !!now && now.tree === tree && now.at === null;
-        const chosen = now ? await this.cardChoice(session, tree) : null;
-        if (atRoot && (chosen === null ? greetingId === null : chosen.id === greetingId && chosen.epoch === epoch)) return { ok: true };
-        if (!atRoot) records.push({ kind: 'pointerRoot', session, user, tree, time: this.now() });
-        records.push({ kind: 'openingChoice', session, user, tree, index: greetingChoice(greetingId, epoch) });
+        const choice = await this.choiceRecords(tree, greetingId, epoch, user, session);
+        if (!choice.length) return { ok: true };
+        records.push(...choice);
         await this.claimConversation(records, tree, actor, { user, session });
         await this.store.commit(records);
         return { ok: true };
+    }
+
+    /**
+     * @param {bigint} tree
+     * @param {number | null} greetingId
+     * @param {number} epoch
+     * @param {bigint} user
+     * @param {bigint} session
+     * @returns {Promise<object[]>} none when the session shows that greeting already
+     */
+    async choiceRecords(tree, greetingId, epoch, user, session) {
+        const [now] = await this.store.chatRead('sessions', { ids: [session] });
+        const atRoot = !!now && now.tree === tree && now.at === null;
+        const chosen = now ? await this.cardChoice(session, tree) : null;
+        if (atRoot && (chosen === null ? greetingId === null : chosen.id === greetingId && chosen.epoch === epoch)) return [];
+        return [
+            ...(atRoot ? [] : [{ kind: 'pointerRoot', session, user, tree, time: this.now() }]),
+            { kind: 'openingChoice', session, user, tree, index: greetingChoice(greetingId, epoch) },
+        ];
     }
 
     /**

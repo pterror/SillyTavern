@@ -103,6 +103,39 @@ Where the new alternative goes is part of the add (`ordered-lists.md`):
 
 Its number, the counter and a typed number are a rank and a select in the list, never a read of the whole list.
 
+## An edit with another alternative's text
+
+"An edit that becomes identical to an existing greeting or swipe goes to that one, with no duplicate", for every
+message: a reply's alternatives are its siblings; a first message's are the stored openings and the card greetings no
+stored opening holds. Identical is the exact text, whitespace included; the speaker doesn't count.
+
+The server decides (`sameAlternative`, `src/chat-engine.js`), in the request that saves the edit: an edit of a stored
+message (`/api/chats/message/edit`); of a card greeting not stored, which is stored as an opening
+(`/api/chats/message/select` with the opening); a new alternative typed into an empty swipe (`/api/chats/message/append`
+with `typed`, or the select with the opening for a first message); an edit saved as a new alternative
+(`/api/chats/message/alternative` with `typed`). A card greeting shown unedited is itself, not the same as another.
+When the text is another alternative's:
+- the edit is not stored, and the message it was made on stays as it was stored;
+- a finished edit (Done, and any save that isn't saving while typing) makes the session show that alternative, with
+  what goes under it; the answer (`shown`) has the path from the message down, and for a first message its openings
+  and the end's draft. The page shows the edit at once, then what the answer says, with the notice "The text is the same
+  as alternative N, so the message shows that one." (a toast for now: one call, `_noticeSameAlternative` in
+  `public/scripts/chat-store.js`);
+- a save while typing (saving edits while typing on) is refused with the alternative it matches, and the page keeps
+  the editor's text unsaved, so typing through another alternative's text never moves the editor; the next save, or
+  Done, decides again.
+
+With saving while typing, the message being edited holds what the last save stored when Done goes to another
+alternative.
+
+An opening whose text is a card greeting's but for surrounding whitespace is stored, and linked to that greeting by
+`greeting-ids.md`'s rule (the exact text first, then the text without surrounding whitespace), so it holds the
+greeting and the greeting is left out of the openings. Whether that link should take the exact text only is not
+decided.
+
+Not covered yet: a card greeting of a group chat's opening, edited while not stored (the page stores the group's
+openings together).
+
 ## Creating a character
 
 A character being created isn't on the server yet, so its greetings are the create form's (the pager there adds,

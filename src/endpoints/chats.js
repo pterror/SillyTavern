@@ -840,6 +840,33 @@ async function endAnswer(response, chat) {
 }
 
 /**
+ * What the page shows once an edit went to the alternative with its text, from the edited message down
+ * @param {import('express').Request} request
+ * @param {import('express').Response} response
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @param {string | null} parent the edited message's parent; null for a first message
+ * @param {{ node_id: string } | { greeting_id: number }} same the alternative it went to
+ */
+async function shownAnswer(request, response, chat, parent, same) {
+    const { chats } = chat.store;
+    const actor = chat.session.actor();
+    chat.session.answer(response, { moved: true });
+    const loaded = await chats.load({ tree: chat.tree, at: await chats.landingOf(chat.tree, actor), session: actor.session });
+    const path = loaded?.messages ?? [];
+    const from = parent === null ? 0 : path.findIndex(m => m.node_id === parent) + 1;
+    const messages = from > 0 || parent === null ? path.slice(from) : [];
+    await shapeSent(request, chat, { messages });
+    return {
+        same,
+        messages,
+        chat_metadata: loaded?.metadata,
+        links: await chatLinks(request.user.directories, chat, messages, { metadata: loaded?.metadata }),
+        ...await endAnswer(response, chat),
+        ...(parent === null ? await openingsAnswerOf(request, chat) : {}),
+    };
+}
+
+/**
  * @param {import('express').Request} request
  * @param {import('express').Response} response
  * @param {{ avatar_url?: unknown, group_id?: unknown, chat?: unknown, make_current?: unknown, fresh?: unknown, send_keys?: unknown, with_group?: unknown, with_character?: unknown, parts?: unknown }} body
@@ -1152,9 +1179,15 @@ router.post('/message/edit', validateAvatarUrlMiddleware, async function (reques
         if (!nodeId) return response.status(400).send({ error: 'node_id is required' });
         const chat = await chatOf(request);
         if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
-        const result = await chat.store.chats.editMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, edits: [{ node_id: nodeId, content: request.body.content, patch: request.body.patch, unset: request.body.unset }], actor: chat.session.actor() });
+        const edit = { node_id: nodeId, content: request.body.content, patch: request.body.patch, unset: request.body.unset, finished: request.body.typing !== true };
+        const before = await chat.store.chats.messageOf(chat.tree, nodeId);
+        const result = await chat.store.chats.editMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, edits: [edit], actor: chat.session.actor() });
         const refused = result.refused[0];
         if (refused) return response.status(409).send({ ok: false, ...refused });
+        if (result.shown[0]) {
+            const parent = before?.parent == null ? null : (await chat.store.chats.externalIds([before.parent]))[0];
+            return response.send({ ok: true, shown: await shownAnswer(request, response, chat, parent, result.shown[0].same) });
+        }
         return response.send({ ok: true, message_counts: await storedMessageCounts(request, chat, [nodeId]), message_macros: await storedMessageMacros(request, chat, [nodeId]), links: await storedChatLinks(request.user.directories, chat, [nodeId]), ...(await touchesOpening(chat, [nodeId]) ? await openingsAnswerOf(request, chat) : {}) });
     } catch (error) {
         console.error('Error editing message:', error);
@@ -1199,6 +1232,10 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
             return response.send({ ok: true, node_ids: written.pushedIds, stored: storedMessagesOf(response) ?? undefined, ...await endAnswer(response, chat), message_counts: await storedMessageCounts(request, chat, written.pushedIds), message_macros: await storedMessageMacros(request, chat, written.pushedIds), links: await storedChatLinks(request.user.directories, chat, written.pushedIds), ...await openingsAnswerOf(request, chat) });
         }
         const contents = (Array.isArray(request.body.messages) ? request.body.messages : []).map(storedForm);
+        if (request.body.typed === true && contents.length === 1) {
+            const same = await chat.store.chats.showSameAlternative({ tree: chat.tree, after, content: contents[0], typing: false, actor: chat.session.actor() });
+            if (same !== null) return response.send({ ok: true, shown: await shownAnswer(request, response, chat, after, same) });
+        }
         const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
         const result = await chat.store.chats.appendMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, contents, sendKeys, actor: chat.session.actor(), draftSent: chat.draftSent ?? null });
         chat.session.answer(response, { moved: result.ok });
@@ -1285,6 +1322,11 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
         if (!chat || (!opening && !s)) return response.status(409).send({ ok: false, reason: 'unknown node' });
         const { chats } = chat.store;
         const actor = { user: chat.session.actor().user };
+        if (request.body.typed === true && contents.length === 1) {
+            const after = opening || s?.parent == null ? null : (await chats.externalIds([s.parent]))[0];
+            const same = await chats.showSameAlternative({ tree: chat.tree, after, content: contents[0], typing: false, actor: chat.session.actor() });
+            if (same !== null) return response.send({ ok: true, shown: await shownAnswer(request, response, chat, after, same) });
+        }
         try {
             if (opening || s?.parent === null) {
                 const added = await chats.addOpenings({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, contents, place, actor });
@@ -1371,6 +1413,13 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
         const chat = named ? await chatOfMessage(request, named) : await chatOf(request);
         if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
         let child = String(request.body.node_id || '');
+        const openingMessages = request.body.opening?.messages;
+        if (!child && !request.body.group_id && Array.isArray(openingMessages) && openingMessages.length === 1) {
+            const typing = request.body.typing === true;
+            const same = await chat.store.chats.showSameAlternative({ tree: chat.tree, after: null, content: storedForm(openingMessages[0]), typing, actor: chat.session.actor() });
+            if (same !== null && typing) return response.status(409).send({ ok: false, reason: 'an alternative with this text already exists', same });
+            if (same !== null) return response.send({ ok: true, shown: await shownAnswer(request, response, chat, null, same) });
+        }
         if (!child && request.body.opening) {
             const written = await applyPageWrites(response, chat, { node_id: null, opening: request.body.opening, page_metadata: request.body.page_metadata });
             if (!written) return;

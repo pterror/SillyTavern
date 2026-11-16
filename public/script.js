@@ -273,6 +273,7 @@ import {
     takeOpenings,
     isComposedSlot,
     chatOpStoreComposed,
+    followSameAlternative,
     _setCurrentTarget,
     setStoreRef,
     storeRefOf,
@@ -6667,11 +6668,11 @@ export async function messageEdit(editMessageId, place, reasoningAt) {
             }
             const { node, greeting } = /** @type {NonNullable<typeof messageEditing>} */ (messageEditing);
             applyMessageEdit(editMessageId, now);
-            const savedAs = await chatOpEdit(editMessageId);
-            if (savedAs === null && greeting !== undefined) undoGreetingEdit(editMessageId, greeting, node, { redraw: false });
-            if (savedAs === null || messageEditing?.editor !== editor) return;
-            messageEditing.node = savedAs;
-            messageEditing.greeting = isProvisionalNodeId(savedAs) ? now : undefined;
+            const saved = await chatOpEdit(editMessageId, { typing: true });
+            if (saved === null && greeting !== undefined) undoGreetingEdit(editMessageId, greeting, node, { redraw: false });
+            if (saved === null || !('node' in saved) || messageEditing?.editor !== editor) return;
+            messageEditing.node = saved.node;
+            messageEditing.greeting = undefined;
         },
         className: 'mes_editor',
         label: t`Message text`,
@@ -11029,17 +11030,23 @@ jQuery(async function () {
             return;
         }
 
-        let createdId = null;
+        let created = null;
         try {
-            createdId = await chatOpAddAlternative(mesId, text, { next: true });
+            created = await chatOpAddAlternative(mesId, text, { next: true, typed: true });
         } catch (error) {
             console.warn('[duplicate] Could not create the alternative:', error);
         }
 
-        if (!createdId) {
+        if (!created) {
             toastr.error(t`Could not create the alternative.`);
             return;
         }
+        if (typeof created === 'object') {
+            await messageEditCancel(mesId);
+            await followSameAlternative(mesId, created.shown);
+            return;
+        }
+        const createdId = created;
 
         const current = chat[mesId] ?? message;
         const swipes = Array.isArray(current.swipes) ? [...current.swipes] : [current.mes ?? ''];

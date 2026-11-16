@@ -200,7 +200,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await send('u1', ['b1x'], b);
         const [stored] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
         const patched = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, patch: { mes: 'b1x edited', extra: { note: 1 } } }], actor: a });
-        assert.deepEqual(patched, { ok: true, applied: 1, refused: [] });
+        assert.deepEqual(patched, { ok: true, applied: 1, refused: [], shown: [] });
         assert.deepEqual((await replies('u1')).sort(), ['b1', 'b1x edited']);
         const [after] = await chats.decoded([(await chats.stored([(await chats.messageIds([id.b1x]))[0]])).values().next().value]);
         assert.deepEqual(after, { ...stored, mes: 'b1x edited', extra: { note: 1 } });
@@ -215,7 +215,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.equal(unset.extra, undefined);
         const before = await store.chatRead('nextIds', {});
         const same = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [{ node_id: id.b1x, patch: { mes: 'b1x edited' } }], actor: a });
-        assert.deepEqual(same, { ok: true, applied: 1, refused: [] });
+        assert.deepEqual(same, { ok: true, applied: 1, refused: [], shown: [] });
         assert.deepEqual(await store.chatRead('nextIds', {}), before);
         const refused = await chats.editMessages({ tree: t, treeSpeaker: cara, edits: [
             { node_id: id.b1, patch: { mes: '' } }, { node_id: 'no-such-message', patch: { mes: 'x' } }, { node_id: id.b1 },

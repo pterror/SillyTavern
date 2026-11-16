@@ -1,0 +1,158 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { after, test } from 'node:test';
+
+import { loadEngine } from '../engine/load.js';
+import { fakeOwners } from './chat-test-people.js';
+
+const { ChatEngine } = await import('./chat-engine.js');
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-same-alternative-test-'));
+after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+const ivy = { id: 2n, name: 'Ivy', avatar: 'ivy.png' };
+const greetings = [{ id: 5, text: 'Greeting 1' }, { id: 7, text: 'Greeting 2' }, { id: 9, text: 'Greeting 3' }];
+const people = {
+    speakers: async (/** @type {bigint[]} */ ids) => new Map(ids.filter(id => id === ivy.id).map(id => [id, ivy])),
+    byAvatar: async (/** @type {string[]} */ avatars) => new Map(avatars.filter(a => a === ivy.avatar).map(a => [a, ivy])),
+    greetings: async () => greetings,
+    greetingModel: async () => ({ greetings, defaultId: 5, defaultEpoch: 0 }),
+};
+/** @type {any} */ (people).owners = fakeOwners(people);
+const a = { user: 'tester', session: '0190a1b2-0000-7000-8000-0000000000c1' };
+const said = (/** @type {string} */ mes, /** @type {Record<string, any>} */ extra = {}) => ({ name: mes.startsWith('u') ? 'You' : 'Ivy', is_user: mes.startsWith('u'), is_system: false, mes, extra });
+
+let n = 0;
+/**
+ * @param {any} engine
+ */
+async function fresh(engine) {
+    const store = await engine.Store.open(path.join(root, `s${n++}`));
+    const chats = await ChatEngine.open(store, /** @type {any} */ (people));
+    let clock = 1_760_090_000_000;
+    chats.now = () => (clock += 1000);
+    const t = ivy.id;
+    /** @type {Record<string, string>} */
+    const id = {};
+    const send = async (/** @type {string | null} */ after, /** @type {(string | Record<string, any>)[]} */ given) => {
+        const contents = given.map(x => (typeof x === 'string' ? said(x) : x));
+        const ids = (await chats.appendMessages({ tree: t, treeSpeaker: ivy, after: after === null ? null : id[after], contents, actor: a })).node_ids;
+        contents.forEach((x, i) => (id[x.mes] = ids[i]));
+    };
+    const shown = async () => {
+        const at = (await chats.pointer(a.session))?.at ?? null;
+        return (await chats.load({ tree: t, at })).messages.map((/** @type {any} */ m) => m.mes);
+    };
+    const textOf = async (/** @type {string} */ node) => {
+        const [s] = (await chats.stored((await chats.messageIds([node])).filter(x => x !== null))).values();
+        return (await chats.decoded([s]))[0].mes;
+    };
+    const edit = (/** @type {string} */ node, /** @type {string} */ mes, finished = true) => chats.editMessages({ tree: t, treeSpeaker: ivy, edits: [{ node_id: node, patch: { mes }, finished }], actor: a });
+    const card = async () => chats.cardGreetings(t);
+    const chosen = async () => {
+        const [session] = await store.chatRead('ids', { space: 1, keys: [a.session] });
+        return chats.cardChoice(session, t);
+    };
+    return { store, chats, t, id, send, shown, textOf, edit, card, chosen };
+}
+
+for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
+    test(`${kind}: a reply edited to another reply's exact text goes to that one when finished, and is refused while typed`, async () => {
+        const { store, chats, t, id, send, shown, textOf, edit } = await fresh(engine);
+        await send(null, ['g']);
+        await send('g', ['u1', 'b1', 'u2']);
+        await send('u1', ['b1x']);
+        assert.deepEqual(await shown(), ['g', 'u1', 'b1x']);
+
+        const typed = await edit(id.b1x, 'b1', false);
+        assert.deepEqual(typed.refused, [{ node_id: id.b1x, reason: 'an alternative with this text already exists', same: { node_id: id.b1 } }]);
+        assert.deepEqual(typed.shown, []);
+        assert.equal(await textOf(id.b1x), 'b1x');
+        assert.deepEqual(await shown(), ['g', 'u1', 'b1x'], 'an edit still being typed moves no one');
+
+        const done = await edit(id.b1x, 'b1');
+        assert.deepEqual([done.applied, done.refused, done.shown], [0, [], [{ node_id: id.b1x, same: { node_id: id.b1 } }]]);
+        assert.equal(await textOf(id.b1x), 'b1x', 'the edit is not stored as a duplicate');
+        assert.deepEqual(await shown(), ['g', 'u1', 'b1', 'u2'], 'the session shows the one with that text, with what is under it');
+
+        for (const text of [' b1', 'b1 ', 'b1\n']) {
+            const kept = await edit(id.b1x, text);
+            assert.deepEqual([kept.applied, kept.shown], [1, []], `${JSON.stringify(text)} differs from "b1"`);
+            assert.equal(await textOf(id.b1x), text);
+        }
+
+        await chats.select({ tree: t, node_id: id.b1x, actor: a });
+        assert.equal(await chats.showSameAlternative({ tree: t, after: id.u1, content: said('b1!'), typing: false, actor: a }), null);
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: id.u1, content: said('b1'), typing: false, actor: a }), { node_id: id.b1 }, 'a new alternative typed with a reply\'s text is that reply');
+        assert.deepEqual(await shown(), ['g', 'u1', 'b1', 'u2']);
+        assert.equal((await chats.children(t, (await chats.messageIds([id.u1]))[0])).length, 2);
+        await store.close();
+    });
+
+    test(`${kind}: a stored opening edited to another stored opening's exact text goes to that one`, async () => {
+        const { store, id, send, shown, textOf, edit } = await fresh(engine);
+        await send(null, ['Own A']);
+        await send(null, ['Own B']);
+        await send('Own B', ['u1']);
+        assert.deepEqual(await shown(), ['Own B', 'u1']);
+
+        assert.deepEqual((await edit(id['Own B'], 'Own A', false)).refused.map(r => r.same), [{ node_id: id['Own A'] }]);
+        const done = await edit(id['Own B'], 'Own A');
+        assert.deepEqual(done.shown, [{ node_id: id['Own B'], same: { node_id: id['Own A'] } }]);
+        assert.equal(await textOf(id['Own B']), 'Own B');
+        assert.deepEqual(await shown(), ['Own A']);
+
+        const spaced = await edit(id['Own B'], 'Own A ');
+        assert.deepEqual([spaced.applied, spaced.shown], [1, []]);
+        assert.equal(await textOf(id['Own B']), 'Own A ');
+        await store.close();
+    });
+
+    test(`${kind}: a stored opening edited to a card greeting's exact text shows that greeting; one with other whitespace stays an edit`, async () => {
+        const { store, chats, t, id, send, shown, textOf, edit, card, chosen } = await fresh(engine);
+        await send(null, [said('Greeting 2, edited', { greeting_id: 7 })]);
+        await send('Greeting 2, edited', ['u1']);
+        assert.deepEqual(await shown(), ['Greeting 2, edited', 'u1']);
+
+        const done = await edit(id['Greeting 2, edited'], 'Greeting 2');
+        assert.deepEqual(done.shown, [{ node_id: id['Greeting 2, edited'], same: { greeting_id: 7 } }]);
+        assert.equal(await textOf(id['Greeting 2, edited']), 'Greeting 2, edited');
+        assert.deepEqual(await shown(), [], 'the session is at the root');
+        assert.deepEqual(await chosen(), { id: 7, epoch: 0 });
+        const openings = /** @type {any} */ (await chats.openingAlternatives({ tree: t, actor: a, range: { limit: 10 }, card: await card() }));
+        assert.deepEqual(openings.alternatives.map((/** @type {any} */ x) => [x.mes, x.node_id === null]), [['Greeting 1', true], ['Greeting 2', true], ['Greeting 2, edited', false], ['Greeting 3', true]]);
+        assert.equal(openings.alternatives[openings.default_index].mes, 'Greeting 2');
+
+        const spaced = await edit(id['Greeting 2, edited'], 'Greeting 2 ');
+        assert.deepEqual([spaced.applied, spaced.shown], [1, []]);
+        assert.equal(await textOf(id['Greeting 2, edited']), 'Greeting 2 ');
+        await store.close();
+    });
+
+    test(`${kind}: a card greeting's edit stored as an opening goes to the alternative with its exact text: a stored opening, or another card greeting`, async () => {
+        const { store, chats, t, id, send, shown, chosen } = await fresh(engine);
+        await send(null, ['Own A']);
+        const count = async () => (await chats.children(t, null)).length;
+        const from = (/** @type {number} */ greetingId, /** @type {string} */ mes) => said(mes, { greeting_id: greetingId });
+
+        assert.equal(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Greeting 1'), typing: false, actor: a }), null, 'a greeting unedited is itself');
+        assert.equal(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Own A '), typing: false, actor: a }), null);
+        assert.equal(await chats.showSameAlternative({ tree: t, after: null, content: from(5, ' Greeting 2'), typing: false, actor: a }), null);
+
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Own A'), typing: true, actor: a }), { node_id: id['Own A'] });
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Greeting 2'), typing: true, actor: a }), { greeting_id: 7 });
+        assert.deepEqual(await shown(), ['Own A'], 'while typed, the session stays');
+
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Greeting 2'), typing: false, actor: a }), { greeting_id: 7 });
+        assert.deepEqual([await shown(), await chosen()], [[], { id: 7, epoch: 0 }]);
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(9, 'Own A'), typing: false, actor: a }), { node_id: id['Own A'] });
+        assert.deepEqual(await shown(), ['Own A']);
+        assert.equal(await count(), 1, 'nothing is stored');
+
+        await send(null, [said('Greeting 3', { greeting_id: 9 })]);
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Greeting 3'), typing: false, actor: a }), { node_id: id['Greeting 3'] }, 'a greeting held by a stored opening is that opening');
+        await store.close();
+    });
+}

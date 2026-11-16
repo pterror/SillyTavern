@@ -145,7 +145,6 @@ State and other
 - Greetings:
   - An in-chat greeting equal to a card greeting links back to it (the other direction of "go"), so editing the card's updates the chat, and an edit in the chat can be applied to the card.
   - Editing a greeting in the chat twice with no message after it doesn't keep the first edit as a separate alternative.
-  - An edit that becomes identical to an existing greeting or swipe goes to that one, with no duplicate.
   - Arrows on an in-chat greeting step through the card's greetings, skipping edits.
 - Example messages: the input needs its redesign.
 - Slowness and frozen UI: favouriting freezes the UI thread; invalidating a search and opening a card stall it.

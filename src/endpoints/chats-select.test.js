@@ -68,7 +68,16 @@ test('a greeting shown without a row is stored and selected in one request', asy
         avatar_url: 'bob.png', activate: true,
         opening: { refs: ['g2'], messages: [{ name: 'Bob', is_user: false, mes: 'Welcome aboard.', extra: {} }] },
     }, tab);
-    assert.equal(again.data.stored.find(s => s.ref === 'g2').node_id, stored.node_id);
+    assert.equal(again.status, 200);
+    assert.deepEqual(again.data.shown.same, { node_id: stored.node_id }, 'one with a stored opening\'s text goes to it');
+    assert.equal(again.data.stored, undefined);
+    assert.deepEqual(again.data.shown.messages.map(m => m.node_id), [stored.node_id]);
+
+    const typing = await postJson('/api/chats/message/select', {
+        avatar_url: 'bob.png', activate: true, typing: true,
+        opening: { refs: ['g3'], messages: [{ name: 'Bob', is_user: false, mes: 'Welcome aboard.', extra: {} }] },
+    }, tab);
+    assert.deepEqual([typing.status, typing.data.same], [409, { node_id: stored.node_id }]);
 });
 
 test('a group chat\'s greetings are stored in a row under the chat\'s name, with the metadata\'s new integrity', async () => {

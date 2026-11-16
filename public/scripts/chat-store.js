@@ -1,4 +1,4 @@
-import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, refreshSwipeButtons, showMessageCount, updateMessageBlock, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
+import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, refreshSwipeButtons, showMessageCount, updateMessageBlock, updateViewMessageIds, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
 import { eventSource, event_types } from './events.js';
 import { openingView } from './opening-view.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -12,7 +12,7 @@ import { setStoredAdopter } from './stored-report.js';
 import { askToDrop, confirmOf, hasDrops, warnDropped } from './edit-drops.js';
 import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 import { countedTextHash } from './counted-text.js';
-import { chatBoxFollowCut, chatBoxLeft, moveChatBox } from './chat-box.js';
+import { arriveChatBox, chatBoxFollowCut, chatBoxLeft, moveChatBox } from './chat-box.js';
 import { takeChatLinks } from './chat-links.js';
 
 /**
@@ -391,7 +391,7 @@ export function updateIn(mesId, path, value) {
 }
 
 
-/** @type {Map<string|undefined, Promise<void>>} */
+/** @type {Map<string|undefined, { done: Promise<'answered' | 'shown' | 'same'>, typing: boolean }>} */
 const _openingRowInFlight = new Map();
 
 /** @type {Map<string, ChatMessage>} each unstored opening an opening request sent, by its store ref, until it is adopted */
@@ -496,43 +496,110 @@ export function openingForRequest(mesId) {
  * @returns {Promise<string|null>}
  */
 export async function ensureOpeningRow(mesId = 0) {
+    const saved = await _storeOpening(mesId, { typing: false });
+    return saved !== null && 'node' in saved && isStoredNodeId(saved.node) ? saved.node : null;
+}
+
+/**
+ * @typedef {{ node: string, shown?: true } | { same: true } | null} EditSaved what saving a message came to: the node it
+ *   is now, which with `shown` is the alternative with the text of the edit, that the edit went to; `same` when the
+ *   edit, still being typed, has the text of another alternative, so it isn't saved yet; null when nothing was saved
+ */
+
+/**
+ * Stores the opening shown from the card at `mesId`, as the page shows it
+ * @param {number} mesId
+ * @param {{ typing: boolean }} options typing: the opening is an edit still being typed
+ * @returns {Promise<EditSaved>}
+ */
+async function _storeOpening(mesId, { typing }) {
     const message = _chatAt(mesId);
     if (!message) return null;
-    if (isStoredNodeId(message.node_id)) return message.node_id;
+    if (isStoredNodeId(message.node_id)) return { node: message.node_id };
 
     const inGroup = selected_group != null && selected_group !== '';
     const provisional = inGroup ? _chatAt(0)?.node_id : message.node_id;
-    let pending = _openingRowInFlight.get(provisional);
-    if (!pending) {
-        const request = openingForRequest(mesId);
-        if (!request) return null;
-        pending = (async () => {
-            const response = await fetch('/api/chats/message/select', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify(inGroup
-                    ? { group_id: selected_group, ...request }
-                    : { avatar_url: getCurrentCharacter()?.avatar, ...request }),
-            });
-            const answer = response.ok ? await response.json().catch(() => null) : null;
-            adoptStored(answer?.stored);
-            takeChatLinks(answer?.links);
-            if (!inGroup) await takeOpenings(getCurrentCharacter()?.avatar, answer);
-        })().finally(() => {
-            _openingRowInFlight.delete(provisional);
-            for (const ref of request.opening.refs) _openingsSent.delete(ref);
+    const flight = _openingRowInFlight.get(provisional);
+    if (flight) {
+        const came = await flight.done;
+        if (!(came === 'same' && flight.typing && !typing)) return _openingSaved(mesId, came);
+        return _storeOpening(mesId, { typing });
+    }
+    const request = openingForRequest(mesId);
+    if (!request) return null;
+    /** @type {Promise<'answered' | 'shown' | 'same'>} */
+    const done = (async () => {
+        const response = await fetch('/api/chats/message/select', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ...(inGroup ? { group_id: selected_group } : { avatar_url: getCurrentCharacter()?.avatar }),
+                ...request,
+                ...(typing ? { typing: true } : {}),
+            }),
         });
-        _openingRowInFlight.set(provisional, pending);
-    }
-
-    try {
-        await pending;
-    } catch (error) {
+        const answer = response.ok || response.status === 409 ? await response.json().catch(() => null) : null;
+        if (answer?.ok === false && answer.same) return 'same';
+        if (response.ok && answer?.shown) {
+            await followSameAlternative(mesId, answer.shown);
+            return 'shown';
+        }
+        if (!response.ok) return 'answered';
+        adoptStored(answer?.stored);
+        takeChatLinks(answer?.links);
+        if (!inGroup) await takeOpenings(getCurrentCharacter()?.avatar, answer);
+        return 'answered';
+    })().catch(error => {
         console.warn('[greetings] Could not give this greeting a row:', error);
-        return null;
+        return /** @type {'answered'} */ ('answered');
+    }).finally(() => {
+        _openingRowInFlight.delete(provisional);
+        for (const ref of request.opening.refs) _openingsSent.delete(ref);
+    });
+    _openingRowInFlight.set(provisional, { done, typing });
+    return _openingSaved(mesId, await done);
+}
+
+/**
+ * @param {number} mesId
+ * @param {'answered' | 'shown' | 'same'} came what the opening's request came to
+ * @returns {EditSaved}
+ */
+function _openingSaved(mesId, came) {
+    if (came === 'same') return { same: true };
+    const node = _chatAt(mesId)?.node_id;
+    if (came === 'shown') return typeof node === 'string' ? { node, shown: true } : null;
+    return isStoredNodeId(node) ? { node } : null;
+}
+
+/**
+ * Shows what the server answered once an edit of message `mesId` went to the alternative with its text, and says so
+ * @param {number} mesId
+ * @param {any} shown the answer's `shown`: the messages from `mesId` down, and for a first message its openings
+ */
+export async function followSameAlternative(mesId, shown) {
+    const owner = _currentOwner();
+    forgetStored(chat.slice(mesId).map(m => m.node_id).filter(isStoredNodeId));
+    chat.splice(mesId, chat.length - mesId, ...(Array.isArray(shown.messages) ? shown.messages : []));
+    for (const message of chat.slice(mesId)) {
+        if (isStoredNodeId(message.node_id)) markStoredAs(message.node_id, message);
     }
-    const stored = _chatAt(mesId)?.node_id;
-    return isStoredNodeId(stored) ? stored : null;
+    if (owner && 'avatar_url' in owner) await takeOpenings(owner.avatar_url, shown, { render: false });
+    takeChatLinks(shown.links);
+    if (shown.chat_metadata) (await import('./metadata-store.js')).takeServerState(shown.chat_metadata);
+    if (owner) arriveChatBox(owner, shown.draft);
+    await redisplayChat({ startIndex: mesId });
+    updateViewMessageIds();
+    refreshSwipeButtons(true);
+    const now = _chatAt(mesId);
+    if (now !== undefined) _noticeSameAlternative((now.swipe_id ?? 0) + 1);
+}
+
+/**
+ * @param {number} place the alternative's number, as the swipe counter shows it
+ */
+function _noticeSameAlternative(place) {
+    toastr.info(t`The text is the same as alternative ${place}, so the message shows that one.`, t`Same as alternative ${place}`);
 }
 
 /**
@@ -839,26 +906,22 @@ function _refuseGenerating(mesId) {
 }
 
 /**
+ * Saves the message as the page shows it: a card greeting not stored in the tree saves as a new stored opening. An edit
+ * with the text of another of the message's alternatives isn't stored; once it is finished the message goes to that
+ * alternative, as the server answers.
  * @param {number} mesId
- * @returns {Promise<string | null>} the node the message is saved as: a card greeting not stored in the tree saves as a
- *   new stored opening, or as the card greeting its text is; null when nothing was saved
+ * @param {{ typing?: boolean }} [options] typing: the edit is still being typed
+ * @returns {Promise<EditSaved>}
  */
-export async function chatOpEdit(mesId) {
+export async function chatOpEdit(mesId, { typing = false } = {}) {
     if (isReplyGenerating(mesId)) {
         _refuseGenerating(mesId);
         return null;
     }
     let msg = _chatAt(mesId);
     if (isProvisionalNodeId(msg?.node_id)) {
-        const inGroup = selected_group != null && selected_group !== '';
-        const asCard = provisionalNodeId(msg.name, msg.mes);
-        if (!inGroup && typeof msg.mes === 'string' && (msg.swipe_info ?? []).some(info => info.node_id === asCard)) {
-            if (!await rememberCardOpening(msg.mes)) {
-                toastr.warning(t`The chat couldn't remember the greeting you switched to, so reopening it will show the default greeting.`, t`Greeting not remembered`);
-            }
-            return asCard;
-        }
-        if (!isStoredNodeId(await ensureOpeningRow(mesId))) return null;
+        const opening = await _storeOpening(mesId, { typing });
+        if (opening === null || !('node' in opening) || opening.shown) return opening;
         // The row may have been made by a request already under way, from the text before this edit: the edit goes onto it.
         msg = _chatAt(mesId);
     }
@@ -868,16 +931,29 @@ export async function chatOpEdit(mesId) {
     const edit = _editOf(msg);
     if (edit !== null) {
         _waitForCounts([mesId]);
+        /** @type {any} */
+        let answer;
         try {
-            await _chatOpPost('/api/chats/message/edit', edit);
+            answer = await _chatOpPostAnswering('/api/chats/message/edit', { ...edit, ...(typing ? { typing: true } : {}) }, [409]);
         } catch (error) {
             _stopWaitingHere([mesId], { failed: true });
             throw error;
         }
+        if (answer?.ok === false) {
+            _stopWaitingHere([mesId], { failed: true });
+            if (answer.same) return { same: true };
+            _reportChatOpFailure();
+            throw new Error(`The edit was refused: ${answer.reason}`);
+        }
+        if (answer?.shown) {
+            await followSameAlternative(mesId, answer.shown);
+            const node = _chatAt(mesId)?.node_id;
+            return typeof node === 'string' ? { node, shown: true } : null;
+        }
         _stopWaitingHere([mesId]);
     }
     _markMessageSaved(mesId, msg.node_id);
-    return msg.node_id;
+    return { node: /** @type {string} */ (msg.node_id) };
 }
 
 /**
@@ -902,12 +978,18 @@ export async function chatOpStoreComposed(mesId) {
     let nodeId = null;
     if (mesId === 0) {
         updateMessage(0, { node_id: provisionalNodeId(msg.name, msg.mes) });
-        nodeId = await ensureOpeningRow(0);
+        const saved = await _storeOpening(0, { typing: false });
+        if (saved !== null && 'node' in saved && saved.shown) return saved.node;
+        nodeId = saved !== null && 'node' in saved && isStoredNodeId(saved.node) ? saved.node : null;
         if (nodeId === null) updateMessage(0, { node_id: undefined });
     } else {
         const after = appendTarget(mesId);
         if (after === null) return null;
-        const result = await _chatOpPost('/api/chats/message/append', { ...(typeof after === 'string' ? { after_node_id: after } : after), messages: [_messageContent(msg)], send_keys: [null] });
+        const result = await _chatOpPost('/api/chats/message/append', { ...(typeof after === 'string' ? { after_node_id: after, typed: true } : after), messages: [_messageContent(msg)], send_keys: [null] });
+        if (result?.shown) {
+            await followSameAlternative(mesId, result.shown);
+            return _chatAt(mesId)?.node_id ?? null;
+        }
         nodeId = result.node_ids?.[0] ?? null;
         if (isStoredNodeId(nodeId)) updateMessage(mesId, { node_id: nodeId });
     }
@@ -1162,24 +1244,29 @@ export async function chatOpPatch(edits) {
 /**
  * @param {number} mesId
  * @param {string} text
- * @param {{ next?: boolean }} [options] next: right after the alternative shown (an opening shown from the card goes
- *     first, so it follows that greeting); otherwise last
- * @returns {Promise<string|null>}
+ * @param {{ next?: boolean, typed?: boolean }} [options] next: right after the alternative shown (an opening shown from
+ *     the card goes first, so it follows that greeting); otherwise last. typed: the text is an edit of the message, so
+ *     with the text of another of its alternatives it goes to that one, not stored
+ * @returns {Promise<string | { shown: object } | null>} the new alternative's node; `shown`: the answer saying which
+ *     alternative a typed one went to (`followSameAlternative`)
  */
-export async function chatOpAddAlternative(mesId, text, { next = false } = {}) {
+export async function chatOpAddAlternative(mesId, text, { next = false, typed = false } = {}) {
     const msg = _chatAt(mesId);
     if (typeof text !== 'string' || !text.length) return null;
+    /** @type {any} */
+    let created;
     if (mesId === 0 && msg && !isStoredNodeId(msg.node_id) && _currentOwner()) {
-        const created = await _chatOpPost('/api/chats/message/alternative', { opening: true, contents: [_messageContent(msg, text)], ...(next ? { place: { first: true } } : {}) });
-        return created?.node_ids?.[0] ?? null;
+        created = await _chatOpPost('/api/chats/message/alternative', { opening: true, contents: [_messageContent(msg, text)], ...(next ? { place: { first: true } } : {}), ...(typed ? { typed: true } : {}) });
+    } else {
+        if (!isStoredNodeId(msg?.node_id)) return null;
+        created = await _chatOpPost('/api/chats/message/alternative', {
+            sibling_node_id: msg.node_id,
+            contents: [_messageContent(msg, text)],
+            ...(next ? { place: { after: msg.node_id } } : {}),
+            ...(typed ? { typed: true } : {}),
+        });
     }
-    if (!isStoredNodeId(msg?.node_id)) return null;
-
-    const created = await _chatOpPost('/api/chats/message/alternative', {
-        sibling_node_id: msg.node_id,
-        contents: [_messageContent(msg, text)],
-        ...(next ? { place: { after: msg.node_id } } : {}),
-    });
+    if (created?.shown) return { shown: created.shown };
     return created?.node_ids?.[0] ?? null;
 }
 
