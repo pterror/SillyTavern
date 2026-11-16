@@ -986,3 +986,83 @@ pub fn local_import_paths(
             .collect(),
     ))
 }
+
+fn convo_js(view: &View, c: sessions::Convo) -> Result<Option<Vec<(&'static str, Js)>>, StoreError> {
+    Ok(match c {
+        sessions::Convo::Bookmark(b) => chat::bookmark_tree(view, b)?.map(|t| {
+            vec![("bookmark", Js::Big(b)), ("session", Js::Null), ("tree", Js::Big(t))]
+        }),
+        sessions::Convo::Session(s, t) => Some(vec![
+            ("bookmark", Js::Null),
+            ("session", Js::Big(s)),
+            ("tree", Js::Big(t)),
+        ]),
+    })
+}
+
+pub fn recent_history(
+    view: &View,
+    chat: Option<sessions::Convo>,
+    before: Option<&[u8]>,
+    limit: usize,
+) -> Result<Js, StoreError> {
+    let mut out = Vec::new();
+    for (cursor, e) in super::tips::entries(view, chat, before, limit)? {
+        let (c, fields) = match e {
+            super::tips::Entry::At { chat, at, activity } => (
+                chat,
+                vec![
+                    ("kind", Js::Text(b"at".to_vec())),
+                    ("message", Js::Big(at)),
+                    ("activity", Js::Big(activity)),
+                    ("split", Js::Null),
+                    ("tips", Js::Num(0.0)),
+                ],
+            ),
+            super::tips::Entry::Group {
+                chat,
+                split,
+                latest,
+                activity,
+                tips,
+            } => (
+                chat,
+                vec![
+                    ("kind", Js::Text(b"group".to_vec())),
+                    ("message", Js::Big(latest)),
+                    ("activity", Js::Big(activity)),
+                    ("split", opt_big(split)),
+                    ("tips", Js::Num(tips as f64)),
+                ],
+            ),
+        };
+        let Some(mut obj) = convo_js(view, c)? else {
+            continue;
+        };
+        obj.push(("cursor", Js::Bytes(cursor)));
+        obj.extend(fields);
+        out.push(Js::Obj(obj));
+    }
+    Ok(Js::Arr(out))
+}
+
+pub fn history_tips(
+    view: &View,
+    chat: sessions::Convo,
+    split: Option<u64>,
+    before: Option<&[u8]>,
+    limit: usize,
+) -> Result<Js, StoreError> {
+    Ok(Js::Arr(
+        super::tips::group_tips(view, chat, split, before, limit)?
+            .into_iter()
+            .map(|(cursor, m, activity)| {
+                Js::Obj(vec![
+                    ("cursor", Js::Bytes(cursor)),
+                    ("message", Js::Big(m)),
+                    ("activity", Js::Big(activity)),
+                ])
+            })
+            .collect(),
+    ))
+}

@@ -109,7 +109,7 @@ fn session_tree_bytes(p: Spot) -> Vec<u8> {
     }
 }
 
-fn parse_session_tree(b: &[u8]) -> Result<TreePosition, StoreError> {
+pub(super) fn parse_session_tree(b: &[u8]) -> Result<TreePosition, StoreError> {
     match parse_varints::<1>(b) {
         Ok([p]) if p > 0 => Ok((unptr(p), None)),
         _ => {
@@ -140,7 +140,7 @@ impl Target {
         }
     }
 
-    fn of(code: u64) -> Target {
+    pub(super) fn of(code: u64) -> Target {
         if code & 1 == 0 {
             Target::Message(code >> 1)
         } else {
@@ -439,14 +439,14 @@ pub fn recent(
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Convo {
     Bookmark(u64),
     Session(u64, u64),
 }
 
 impl Convo {
-    fn parts(self) -> (u64, u64, u64) {
+    pub(super) fn parts(self) -> (u64, u64, u64) {
         match self {
             Convo::Bookmark(b) => (0, b, 0),
             Convo::Session(s, t) => (1, s, t),
@@ -480,6 +480,7 @@ pub fn convo_active(view: &View, out: &mut Out, c: Convo, pos: u64) -> Result<()
 }
 
 pub fn convo_gone(view: &View, out: &mut Out, c: Convo) -> Result<(), StoreError> {
+    super::tips::chat_gone(view, out, c)?;
     let at = convo_at_key(c);
     if let Some([old]) = get_vals::<1>(view, &at)? {
         out.del(convo_order_key(old, c));
@@ -717,9 +718,10 @@ pub fn moved(
     at: Loc,
     owned: bool,
     meaningful: bool,
+    appended: Option<Option<u64>>,
 ) -> Result<(), StoreError> {
     let target = spot.message();
-    pointer_moved(view, out, s, u, tree, spot, at, meaningful)?;
+    pointer_moved(view, out, s, u, tree, spot, at, meaningful, appended)?;
     let n = get_vals::<1>(view, &key::id(HISTORY_N, s))?.map_or(1, |[n]| n + 1);
     out.put(key::id(HISTORY_N, s), varints(&[n]));
     let (rp, rl) = if owned { (at.pos + 1, at.len) } else { (0, 0) };
@@ -774,9 +776,11 @@ fn pointer_moved(
     spot: Spot,
     at: Loc,
     meaningful: bool,
+    appended: Option<Option<u64>>,
 ) -> Result<(), StoreError> {
     let target = spot.message();
     let entering = session_pointer(view, s)?.map(|(t, _)| t) != Some(tree);
+    super::tips::moved(view, out, s, tree, target, appended, at.pos)?;
     set_pointer(view, out, s, tree, target)?;
     if let Some([old]) = get_vals::<1>(view, &key::id(RECENT_AT, s))? {
         out.del(key::ids(RECENT, old, s));
@@ -976,7 +980,7 @@ pub fn stepped(
     if let Some(m) = target {
         super::prune::refuse_doomed(view, tree, m)?;
     }
-    pointer_moved(view, out, s, u, tree, Spot::of(target, time), at, false)?;
+    pointer_moved(view, out, s, u, tree, Spot::of(target, time), at, false, None)?;
     set_cursor_entry(view, out, s, n, Some(at))
 }
 
@@ -1018,7 +1022,7 @@ pub fn forked(
         Target::Message(m) => (tree_of(view, m)?, Spot::Message(m)),
         Target::Root(tree) => (tree, Spot::Root(time)),
     };
-    pointer_moved(view, out, s, u, tree, spot, at, false)?;
+    pointer_moved(view, out, s, u, tree, spot, at, false, None)?;
     out.put(key::id(HISTORY_CUR, s), varints(&[n, 0, 0]));
     Ok(())
 }
@@ -1423,6 +1427,7 @@ pub fn message_gone(
         Some(p) => Some(p),
         None => newest_root_but(view, tree, m)?,
     };
+    super::tips::message_gone(view, out, m, parent, to)?;
     let sp = key::id(SESSIONS_AT, m);
     for (k, _) in view.scan(&sp, &key::prefix_end(&sp), usize::MAX)? {
         let mut at = sp.len();
@@ -1495,6 +1500,7 @@ pub fn message_gone(
 
 pub fn session_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError> {
     chat::tombstone_key(view, out, chat::KEYED_SESSION, s)?;
+    super::tips::session_gone(view, out, s)?;
     let fp = key::id(FORK_SESSION, s);
     let mut gone = Vec::new();
     let mut owned = Vec::new();

@@ -30,6 +30,7 @@ pub mod sessions;
 pub mod state;
 pub mod stats;
 pub mod tags;
+pub mod tips;
 pub mod token_cache;
 pub mod world_bulk;
 pub mod world_cells;
@@ -869,6 +870,23 @@ impl Store {
                 Ok(())
             }),
             Box::new(move |r| done(r.map(|()| more.load(Ordering::Relaxed)))),
+        ));
+    }
+
+    pub fn recent_history_conversion_step(
+        &self,
+        from: Option<Vec<u8>>,
+        batch: usize,
+        done: Box<dyn FnOnce(StoreResult<Option<Vec<u8>>>) + Send>,
+    ) {
+        let next = Arc::new(Mutex::new(None));
+        let found = next.clone();
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| {
+                *found.lock().unwrap() = tips::conversion_step(view, out, from.as_deref(), batch)?;
+                Ok(())
+            }),
+            Box::new(move |r| done(r.map(|()| next.lock().unwrap().take()))),
         ));
     }
 
@@ -2209,6 +2227,8 @@ mod drafts_tests;
 mod state_tests;
 #[cfg(test)]
 mod tags_tests;
+#[cfg(test)]
+mod tips_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

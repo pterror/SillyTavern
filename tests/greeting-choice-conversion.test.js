@@ -75,6 +75,8 @@ test('a store from before greeting ids is refused until the conversion script ha
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-message-order.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Steps of 2000 messages: 1.');
         expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-links-exact.mjs');
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-links-exact.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Openings that held a greeting whose text differs from theirs in whitespace, and hold it no more: 0.');
+        expect(await stores.oldFormatLine({ root })).toContain('convert-recent-history.mjs');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-recent-history.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Steps of 2000 moves: 3.');
         expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });
@@ -178,6 +180,8 @@ test('a store converted by the first version of the script gets the links when i
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-message-order.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Steps of 2000 messages: 1.');
         expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-links-exact.mjs');
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-links-exact.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Openings that held a greeting whose text differs from theirs in whitespace, and hold it no more: 0.');
+        expect(await stores.oldFormatLine({ root })).toContain('convert-recent-history.mjs');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-recent-history.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Steps of 2000 moves: 3.');
         expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });

@@ -20,6 +20,7 @@ export const WORLDBUILDING_VERSIONS_AND_DELETE_SETS = 'worldbuilding-versions-an
 export const CARD_BOOK_COPIES_DELETED = 'card-lorebook-copies-deleted';
 export const MESSAGE_ORDER = 'message-order';
 export const GREETING_LINKS_EXACT = 'greeting-links-exact';
+export const RECENT_HISTORY = 'recent-history';
 // A store the lorebook conversion has run on has every marker; one marked only by an earlier run is converted again.
 export const WORLDBUILDING_MARKERS = Object.freeze([WORLDBUILDING_INDEXED, WORLDBUILDING_KEYS_AND_NAMES_INDEXED, WORLDBUILDING_ENTRIES_COUNTED, WORLDBUILDING_ENTRIES_SORTED, WORLDBUILDING_VERSIONS_AND_DELETE_SETS]);
 
@@ -30,6 +31,7 @@ const CONVERSIONS = Object.freeze([
     { markers: [CARD_BOOK_COPIES_DELETED], script: 'convert-card-lorebook-copies.mjs', why: 'has lorebooks made from a character\'s own lorebook (by "Import Card Lore")' },
     { markers: [MESSAGE_ORDER], script: 'convert-message-order.mjs', why: 'has chats whose alternatives aren\'t yet kept in an order of their own' },
     { markers: [GREETING_LINKS_EXACT], script: 'convert-greeting-links-exact.mjs', why: 'has chats whose openings may hold a card greeting whose text differs from theirs in whitespace' },
+    { markers: [RECENT_HISTORY], script: 'convert-recent-history.mjs', why: 'has chats whose recent history isn\'t built from their moves yet' },
 ]);
 
 /**

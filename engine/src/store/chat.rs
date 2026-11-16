@@ -504,6 +504,7 @@ impl Deriver for MessageAppend {
                 at,
                 false,
                 true,
+                Some(parent),
             )?;
             let f = match parent {
                 Some(p) => Fork::Message(p),
@@ -1386,6 +1387,7 @@ impl Deriver for PointerMove {
             at,
             true,
             false,
+            None,
         )
     }
 
@@ -1412,7 +1414,7 @@ impl Deriver for PointerRoot {
         let (s, u, tree) = (id(rec, 0), id(rec, 1), id(rec, 2));
         sessions::check_actor(view, Some(s), Some(u))?;
         let spot = sessions::Spot::Root(time_at(rec, 3));
-        sessions::moved(view, out, s, u, tree, spot, at, true, false)
+        sessions::moved(view, out, s, u, tree, spot, at, true, false, None)
     }
 
     fn is_live(&self, _: &Record, pos: u64, view: &View) -> Result<bool, StoreError> {

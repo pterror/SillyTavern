@@ -314,6 +314,23 @@ function alternativeEntry(nodeId, o, itemized) {
  */
 
 /**
+ * @typedef {{ node_id: string, mes: string, name: string, is_user: boolean, is_system: boolean, send_date: unknown }} HistoryMessage
+ */
+
+/**
+ * @typedef {object} HistoryEntry
+ * @property {'at' | 'group'} kind
+ * @property {bigint} tree
+ * @property {{ bookmark: string | null, session: string | null, name: string }} chat the bookmark, or the session's own
+ *   conversation; `name` its chat id
+ * @property {HistoryMessage} message where the chat is, or the group's latest tip
+ * @property {{ node_id: string | null, number: number | null } | null} split a group's: the message its tips split off
+ *   at, by its number in the chat (from 0); both null at the tree's root
+ * @property {number} tips how many tips a group has
+ * @property {string | null} group a group's, for `historyTips`
+ */
+
+/**
  * @typedef {object} EditRequest
  * @property {bigint} tree
  * @property {Actor} actor
@@ -2976,6 +2993,103 @@ export class ChatEngine {
             rows.push({ ...row, position: e.position, id: e.bookmark === null ? await this.conversationName(row.session, row.session, e.tree) : await this.bookmarkChatId(e.tree, e.bookmark), name: e.bookmark === null ? null : row.name });
         }
         return { rows, more: page.length > limit };
+    }
+
+    /**
+     * Recent history (`engine/src/store/tips.rs`): a page of entries, the latest activity first. An entry is where a
+     * chat is (`at`), or a group of the tips it left that split off at one message (`group`), shown as its latest tip.
+     * @param {object} p
+     * @param {{ tree: bigint, actor: Actor } | null} p.of the chat the actor's session shows in the tree; null: every chat
+     * @param {string | null} [p.before] the `next` of the page before
+     * @param {number} p.limit
+     * @returns {Promise<{ entries: HistoryEntry[], next: string | null }>}
+     */
+    async recentHistory({ of, before = null, limit }) {
+        let chat = {};
+        if (of !== null) {
+            const session = await this.sessionId(of.actor.session ?? undefined);
+            if (session === null) return { entries: [], next: null };
+            const bookmark = await this.store.chatRead('currentChat', { session, tree: of.tree });
+            chat = bookmark === null ? { session, tree: of.tree } : { bookmark };
+        }
+        const page = await this.store.chatRead('recentHistory', { ...chat, limit: limit + 1, ...(before === null ? {} : { before: Buffer.from(before, 'base64url') }) });
+        const shown = page.slice(0, limit);
+        return { entries: await this.historyEntries(shown), next: page.length > limit ? shown[shown.length - 1].cursor.toString('base64url') : null };
+    }
+
+    /**
+     * A page of a group's tips (`recentHistory`), the latest first, its shown tip among them.
+     * @param {object} p
+     * @param {string} p.group the entry's `group`
+     * @param {string | null} [p.before] the `next` of the page before
+     * @param {number} p.limit
+     * @returns {Promise<{ tips: HistoryMessage[], next: string | null }>}
+     */
+    async historyTips({ group, before = null, limit }) {
+        const { tree, bookmark, session, split } = JSON.parse(group);
+        const chat = bookmark === null ? { session: BigInt(session), tree: BigInt(tree) } : { bookmark: BigInt(bookmark) };
+        const page = await this.store.chatRead('historyTips', { ...chat, ...(split === null ? {} : { split: BigInt(split) }), limit: limit + 1, ...(before === null ? {} : { before: Buffer.from(before, 'base64url') }) });
+        /** @type {{ cursor: Buffer, message: bigint }[]} */
+        const shown = page.slice(0, limit);
+        const messages = await this.historyMessages(shown.map(t => t.message));
+        const tips = /** @type {HistoryMessage[]} */ (shown.map(t => messages.get(t.message)).filter(m => m !== undefined));
+        return { tips, next: page.length > limit ? shown[shown.length - 1].cursor.toString('base64url') : null };
+    }
+
+    /**
+     * @param {bigint[]} ids
+     * @returns {Promise<Map<bigint, HistoryMessage>>}
+     */
+    async historyMessages(ids) {
+        const stored = await this.stored(ids);
+        const found = [...stored.keys()];
+        const decoded = await this.decoded(found.map(id => stored.get(id)));
+        return new Map(found.map((id, i) => {
+            const m = decoded[i];
+            return [id, {
+                node_id: this.externalId(stored.get(id)),
+                mes: typeof m?.mes === 'string' ? m.mes : '',
+                name: typeof m?.name === 'string' ? m.name : '',
+                is_user: m?.is_user === true,
+                is_system: m?.is_system === true,
+                send_date: m?.send_date ?? null,
+            }];
+        }));
+    }
+
+    /**
+     * @param {any[]} rows the engine's `recentHistory` rows
+     * @returns {Promise<HistoryEntry[]>}
+     */
+    async historyEntries(rows) {
+        const messages = await this.historyMessages(rows.flatMap(r => (r.split === null ? [r.message] : [r.message, r.split])));
+        const sessionIds = [...new Set(rows.flatMap(r => (r.session === null ? [] : [r.session])))];
+        const sessionRows = sessionIds.length ? await this.store.chatRead('sessions', { ids: sessionIds }) : [];
+        const keys = new Map(sessionIds.map((id, i) => [id, sessionRows[i]?.key ?? null]));
+        const out = [];
+        for (const r of rows) {
+            const message = messages.get(r.message);
+            const sessionKey = r.session === null ? null : keys.get(r.session) ?? null;
+            if (!message || (r.session !== null && sessionKey === null)) continue;
+            const [name] = await this.chatIdsOf(r.tree, [{ bookmark: r.bookmark, session: sessionKey }]);
+            let split = null;
+            if (r.kind === 'group') {
+                const at = r.split === null ? null : messages.get(r.split);
+                if (r.split !== null && !at) continue;
+                const number = r.split === null ? null : (await this.store.chatRead('messageCount', { tree: r.tree, at: r.split })).count - 1;
+                split = { node_id: at ? at.node_id : null, number };
+            }
+            out.push({
+                kind: r.kind,
+                tree: r.tree,
+                chat: { bookmark: r.bookmark === null ? null : String(r.bookmark), session: sessionKey, name },
+                message,
+                split,
+                tips: r.tips,
+                group: r.kind === 'group' ? JSON.stringify({ tree: String(r.tree), bookmark: r.bookmark === null ? null : String(r.bookmark), session: r.session === null ? null : String(r.session), split: r.split === null ? null : String(r.split) }) : null,
+            });
+        }
+        return out;
     }
 
     /**

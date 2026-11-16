@@ -406,6 +406,28 @@ fn integers(o: &Object, name: &str) -> Result<Vec<u64>> {
     list.into_iter().map(|v| integer(name, v)).collect()
 }
 
+fn opt_buffer(o: &Object, name: &str) -> Result<Option<Vec<u8>>> {
+    match o.get::<Unknown>(name)? {
+        Some(v) if !matches!(v.get_type()?, ValueType::Null | ValueType::Undefined) => Ok(Some(
+            Uint8Array::from_unknown(v)
+                .map_err(|_| invalid(format!("{name} is a Uint8Array")))?
+                .to_vec(),
+        )),
+        _ => Ok(None),
+    }
+}
+
+/// A chat: `bookmark`, or `session` and `tree`; none when it names neither.
+fn opt_convo(o: &Object) -> Result<Option<crate::store::sessions::Convo>> {
+    use crate::store::sessions::Convo;
+    match (opt_integer(o, "bookmark")?, opt_integer(o, "session")?, opt_integer(o, "tree")?) {
+        (Some(b), None, _) => Ok(Some(Convo::Bookmark(b))),
+        (None, Some(s), Some(t)) => Ok(Some(Convo::Session(s, t))),
+        (None, None, _) => Ok(None),
+        _ => Err(invalid("a chat is a bookmark, or a session and a tree".into())),
+    }
+}
+
 fn byte_list(o: &Object, name: &str) -> Result<Vec<Vec<u8>>> {
     let list: Vec<Unknown> = o
         .get(name)?
@@ -1515,6 +1537,28 @@ impl Store {
             batch.max(1) as usize,
             Box::new(move |r| match r {
                 Ok(more) => deferred.resolve(move |_| Ok(more)),
+                Err(e) => deferred.reject(store_error(e)),
+            }),
+        );
+        Ok(promise)
+    }
+
+    #[napi(
+        ts_args_type = "from: Buffer | null, batch: number",
+        ts_return_type = "Promise<Buffer | null>"
+    )]
+    pub fn recent_history_conversion_step<'env>(
+        &self,
+        env: &'env Env,
+        from: Option<Buffer>,
+        batch: u32,
+    ) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.recent_history_conversion_step(
+            from.map(|b| b.to_vec()),
+            batch.max(1) as usize,
+            Box::new(move |r| match r {
+                Ok(next) => deferred.resolve(move |_| Ok(next.map(Buffer::from))),
                 Err(e) => deferred.reject(store_error(e)),
             }),
         );
@@ -2864,6 +2908,21 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
             let tree = req_integer(a, "tree")?;
             Box::new(move |s| {
                 s.chat_read(|v| Ok(cr::Js::Bool(crate::store::prune::pending_in(v, tree)?)))
+                    .map(JsTree)
+            })
+        }
+        "recentHistory" => {
+            let (chat, before, limit) = (opt_convo(a)?, opt_buffer(a, "before")?, limit(a)?);
+            Box::new(move |s| {
+                s.chat_read(|v| cr::recent_history(v, chat, before.as_deref(), limit))
+                    .map(JsTree)
+            })
+        }
+        "historyTips" => {
+            let chat = opt_convo(a)?.ok_or_else(|| invalid("historyTips needs a chat".into()))?;
+            let (split, before, limit) = (opt_integer(a, "split")?, opt_buffer(a, "before")?, limit(a)?);
+            Box::new(move |s| {
+                s.chat_read(|v| cr::history_tips(v, chat, split, before.as_deref(), limit))
                     .map(JsTree)
             })
         }
