@@ -214,8 +214,7 @@ export function alternativeEditor({ name, isUser, values, text, changed }) {
     let wanted = false;
     const placed = () => {
         if (!editor || !wanted) return;
-        const place = Math.min(at ?? current.length, current.length);
-        editor.view.dispatch({ selection: { anchor: place }, scrollIntoView: true });
+        editor.place(Math.min(at ?? text.length, text.length));
         editor.view.focus();
     };
     void loadChatEditor().then(({ chatEditor }) => {

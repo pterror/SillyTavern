@@ -340,6 +340,21 @@ export function pasteFor(setup) {
 export const editorPage = () => page;
 
 /**
+ * The editor's text holds each line break as `\n`, as CodeMirror's document does: `\r\n` and `\r` in a text as stored are
+ * one line break each there, so positions in the stored text and the editor's differ by a `\r\n`'s `\r` before them
+ * @param {string} text
+ * @returns {string}
+ */
+const editorText = text => text.replace(/\r\n?/g, '\n');
+
+/**
+ * @param {string} text a text as stored
+ * @param {number} at a position in it
+ * @returns {number} the position in the editor's text
+ */
+const editorPosition = (text, at) => at - (text.slice(0, at).match(/\r\n/g)?.length ?? 0);
+
+/**
  * @typedef {object} ChatEditorOptions
  * @property {Element} parent where the editor and its toolbar go
  * @property {TextSetup} setup how the text is drawn
@@ -362,8 +377,10 @@ export const editorPage = () => page;
 /**
  * @typedef {object} ChatEditor
  * @property {View} view
- * @property {() => string} text the text as edited
+ * @property {() => string} text the text as edited: as it opened until an edit, then with its line breaks as `\n`
  * @property {() => Promise<void>} save stores the text as edited now
+ * @property {(from: number, to?: number) => void} place selects from one position in the text as it opened to another,
+ *   and scrolls to it
  * @property {() => void} redraw draws the text again, as when its macros' values changed
  * @property {() => void} stop
  */
@@ -376,12 +393,14 @@ export const editorPage = () => page;
  * @returns {ChatEditor}
  */
 export function chatEditor({ parent, setup, macroValue, macroValues, speaker, person = name => page.person(name, speaker), initial, edited, save, className, label, placeholder, presetContext, extensions = [] }) {
-    let current = initial;
+    const asOpened = editorText(initial);
+    let current = asOpened;
+    let changed = false;
     /** @type {string | undefined} */
     let latest;
     let sent = 0;
     let asWritten = false;
-    const stored = savedText(initial);
+    const stored = savedText(asOpened);
     const opened = openableMacros(() => view, () => redraw());
     const pill = macroPills({ get: macroValue }, person, page.t, () => asWritten, opened.isOpen);
     const drawing = new Compartment();
@@ -414,6 +433,7 @@ export function chatEditor({ parent, setup, macroValue, macroValues, speaker, pe
         text: stored.port,
         edit(changes, id) {
             for (const change of [...changes].reverse()) current = current.slice(0, change.from) + change.insert + current.slice(change.to);
+            changed = true;
             latest = id;
             edited(current);
         },
@@ -449,14 +469,18 @@ export function chatEditor({ parent, setup, macroValue, macroValues, speaker, pe
 
     return {
         view,
-        text: () => current,
+        text: () => (changed ? current : initial),
         async save() {
-            const text = current;
+            const text = changed ? current : initial;
             const id = latest;
             sent += 1;
             const order = sent;
             await save(text);
-            stored.saved(text, id, order);
+            stored.saved(editorText(text), id, order);
+        },
+        place(from, to = from) {
+            const at = (/** @type {number} */ position) => Math.min(editorPosition(initial, position), view.state.doc.length);
+            view.dispatch({ selection: { anchor: at(from), head: at(to) }, scrollIntoView: true });
         },
         redraw,
         stop() {

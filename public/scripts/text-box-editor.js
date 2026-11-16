@@ -155,7 +155,7 @@ function textBox(textarea) {
             });
             current.editor = editor;
             bar.after(editor.view.dom.closest('.chat-editor') ?? editor.view.dom);
-            editor.view.dispatch({ selection: { anchor: Math.min(at, text.length) }, scrollIntoView: true });
+            editor.place(Math.min(at, text.length));
             editor.view.focus();
             attachActions(editor.view.dom, { cancel: () => end(false) });
             drawerStackChanged();

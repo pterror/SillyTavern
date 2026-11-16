@@ -1306,7 +1306,7 @@ function setReasoningEventHandlers() {
         reasoningEditors.set(holder, { editor, autosave });
         editingIn(reasoningBlock[0], editor);
         drawerStackChanged();
-        editor.view.dispatch({ selection: { anchor: Math.min(at ?? reasoning.length, reasoning.length) }, scrollIntoView: true });
+        editor.place(Math.min(at ?? reasoning.length, reasoning.length));
         editor.view.focus();
 
         const holderRect = holder.getBoundingClientRect();

@@ -6710,8 +6710,7 @@ export async function messageEdit(editMessageId, place, reasoningAt) {
     editingIn(messageText[0], editor);
     drawerStackChanged();
     const from = Math.min(place?.from ?? text.length, text.length);
-    const to = Math.min(place?.to ?? from, text.length);
-    editor.view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true });
+    editor.place(from, Math.min(place?.to ?? from, text.length));
     if (reasoningAt === undefined) editor.view.focus();
 
     if (Number(this_edit_mes_id) === chat.length - 1) {

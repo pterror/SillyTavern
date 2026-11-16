@@ -144,3 +144,33 @@ test('a macro in an HTML block is drawn as its value, as text', async ({ page })
     await expect(box.locator('b')).toHaveText(`Boxed ${s}`);
     await expect(box.locator('i')).toHaveCount(0);
 });
+
+test('a macro typed in a message stored with \\r\\n line breaks lands where it was typed, and Done with no edit keeps the text', async ({ page }) => {
+    const s = stamp();
+    const avatar = await createCharacter(page, `Lines ${s}`, ['Hello.']);
+    await openCharacter(page, avatar);
+    const written = 'One {{user}}.\r\nTwo {{char}}.\r\nThree.';
+    await page.evaluate(async (written) => {
+        // @ts-ignore
+        await stTest.context().SlashCommandParser.commands['send'].callback({}, written);
+    }, written);
+    const mes = page.locator('#chat .mes[mesid="1"]');
+    const stored = () => page.evaluate(() => {
+        // @ts-ignore
+        return stTest.context().chat[1].mes;
+    });
+    await expect(mes.locator('.mes_text')).toContainText('Three.');
+    await mes.locator('.mes_edit').click();
+    await expect(mes.locator('.cm-content')).toBeVisible();
+    await mes.locator('.mes_edit_done').click();
+    await expect(mes.locator('.cm-content')).toHaveCount(0);
+    expect(await stored()).toBe(written);
+
+    await mes.locator('.mes_edit').click();
+    await mes.locator('.cm-content').click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type(' Four {{char}}');
+    await mes.locator('.mes_edit_done').click();
+    await expect.poll(stored).toBe('One {{user}}.\nTwo {{char}}.\nThree. Four {{char}}');
+    await expect(mes.locator('.mes_text')).toContainText(`Three. Four Lines ${s}`);
+});

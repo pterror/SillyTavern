@@ -267,8 +267,7 @@ async function mountFieldEditor(id, text, at) {
         holder.editor = editor;
         const shown = /** @type {HTMLElement} */ (editor.view.dom.closest('.chat-editor'));
         preview.after(shown);
-        const place = Math.min(at, text.length);
-        editor.view.dispatch({ selection: { anchor: place }, scrollIntoView: true });
+        editor.place(Math.min(at, text.length));
         editor.view.focus();
         if (await asked && !holder.ended) editor.redraw();
     } catch (error) {
