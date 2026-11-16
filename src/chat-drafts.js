@@ -24,7 +24,7 @@ import { draftWriteOf } from './chat-engine.js';
  * @param {string} avatar
  * @returns {Promise<boolean>} whether the card's greetings can open this chat: the chat's own card, or a member's
  */
-async function opensChat(chat, avatar) {
+export async function opensChat(chat, avatar) {
     if (chat.avatar !== null) return avatar === chat.avatar;
     if (chat.groupId === null) return false;
     const [group] = await chat.store.lib.groups([chat.groupId]);

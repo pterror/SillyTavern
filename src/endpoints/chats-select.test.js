@@ -112,4 +112,10 @@ test('with_ancestry answers the path down to the selected message and the conver
     assert.deepEqual(data.messages.map(m => m.mes), ['Three.']);
 });
 
+test('a selection of a message no chat stores is refused as an unknown node', async () => {
+    const tab = newSessionKey();
+    const { status, data } = await postJson('/api/chats/message/select', { avatar_url: 'cara.png', node_id: '01a1e3e2-0000-7000-8000-000000000000' }, tab);
+    assert.deepEqual([status, data], [409, { ok: false, reason: 'unknown node' }]);
+});
+
 after(() => user.close());

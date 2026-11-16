@@ -321,6 +321,10 @@ test('a group\'s opening is chosen by its greeting\'s id and character, never it
         const res = await fetch(`${base}/api/chats/openings/choose`, { method: 'POST', headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: tab }, body: JSON.stringify({ group_id: 'g-chosen', ...body }) });
         return res.status;
     };
+    const refusal = async (/** @type {Record<string, unknown>} */ body) => {
+        const res = await fetch(`${base}/api/chats/openings/choose`, { method: 'POST', headers: { 'Content-Type': 'application/json', [SESSION_HEADER]: tab }, body: JSON.stringify({ group_id: 'g-chosen', ...body }) });
+        return [res.status, await res.json()];
+    };
     const shown = async () => {
         const { openings } = (await open({ group_id: 'g-chosen' }, tab)).body;
         const a = openings.alternatives[openings.default_index - (openings.offset ?? 0)];
@@ -340,8 +344,10 @@ test('a group\'s opening is chosen by its greeting\'s id and character, never it
     assert.deepEqual(await shown(), ['Pop.png', 'Bye.'], 'the greeting after an empty one is its own');
 
     assert.equal(await choose({ greeting_avatar: 'Pop.png', text: 'Hi.' }), 400, 'a text names no greeting');
-    assert.equal(await choose({ greeting_avatar: 'Pop.png', greeting_id: hi, expected_hash: hashGreetingText('Hi!') }), 409, 'a greeting whose text changed is refused');
-    assert.equal(await choose({ greeting_avatar: 'Out.png', greeting_id: 0, expected_hash: hashGreetingText('Hi.') }), 409, 'a non-member\'s greeting is none the group offers');
+    assert.deepEqual(await refusal({ greeting_avatar: 'Pop.png', greeting_id: hi, expected_hash: hashGreetingText('Hi!') }), [409, { ok: false, reason: 'the greeting changed' }], 'a greeting whose text changed is refused');
+    assert.deepEqual(await refusal({ greeting_avatar: 'Pop.png', greeting_id: 99, expected_hash: hashGreetingText('Hi.') }), [409, { ok: false, reason: 'no such greeting' }], 'a greeting the card doesn\'t have is refused');
+    assert.deepEqual(await refusal({ greeting_avatar: 'Out.png', greeting_id: 0, expected_hash: hashGreetingText('Hi.') }), [409, { ok: false, reason: 'not in this chat' }], 'a non-member\'s greeting is none the group offers');
+    assert.deepEqual(await refusal({ greeting_avatar: 'Nobody.png', greeting_id: 0, expected_hash: hashGreetingText('Hi.') }), [409, { ok: false, reason: 'not in this chat' }], 'nor is an unknown character\'s');
     assert.deepEqual(await shown(), ['Pop.png', 'Bye.']);
 
     const use = async (/** @type {string} */ avatar, /** @type {Record<string, unknown>} */ greeting, /** @type {string} */ text) => {

@@ -36,7 +36,7 @@ import { CHATS_LOOKS, CHAT_LOOKS, RECENT_LOOKS } from '../../public/scripts/name
 import { pageSettingsHash } from '../settings-hash.js';
 import { ChatEngine, PlaceError, placeOf, storedForm } from '../chat-engine.js';
 import { TYPE } from '../library-engine.js';
-import { draftOwnerOf, endDraft } from '../chat-drafts.js';
+import { draftOwnerOf, endDraft, opensChat } from '../chat-drafts.js';
 import { baseOf } from '../draft-merge.js';
 
 /**
@@ -1249,7 +1249,9 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
 
 /**
  * The chat's opening becomes a card greeting it offers: `greeting_avatar`'s (the chat's character's when absent)
- * greeting `greeting_id`, refused unless its text still hashes to `expected_hash`.
+ * greeting `greeting_id`, refused unless its text still hashes to `expected_hash`. A refusal's `reason`: 'unknown chat';
+ * 'not in this chat', the character is not the chat's or one of its group's members; 'no such greeting', the card has
+ * no such greeting; 'the greeting changed', its text is not the one the page showed.
  */
 router.post('/openings/choose', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1259,12 +1261,13 @@ router.post('/openings/choose', validateAvatarUrlMiddleware, async function (req
         if (!Number.isInteger(id) || id < 0) return response.status(400).send({ error: 'greeting_id must be a non-negative integer' });
         if (!Number.isFinite(expectedHash)) return response.status(400).send({ error: 'expected_hash is required' });
         const chat = await chatOf(request);
-        if (!chat) return response.status(404).send({ error: 'unknown chat' });
+        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
         const [character] = await chat.store.lib.ids(TYPE.character, [avatar]);
-        if (character === null) return response.status(409).send({ error: 'no such greeting' });
+        if (character === null || !await opensChat(chat, avatar)) return response.status(409).send({ ok: false, reason: 'not in this chat' });
         const card = await chat.store.chats.cardGreetings(chat.tree);
         const k = ChatEngine.greetingAt(card, { card: character, id });
-        if (k < 0 || hashGreetingText(card.greetings[k].mes) !== expectedHash) return response.status(409).send({ error: 'no such greeting' });
+        if (k < 0) return response.status(409).send({ ok: false, reason: 'no such greeting' });
+        if (hashGreetingText(card.greetings[k].mes) !== expectedHash) return response.status(409).send({ ok: false, reason: 'the greeting changed' });
         await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greeting: { card: character, id }, epoch: card.epochs[k], actor: chat.session.actor() });
         chat.session.answer(response, { moved: true });
         const openings = await openingsForPage(request, chat);
@@ -1409,7 +1412,7 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
     try {
         const named = String(request.body.node_id || '');
         const chat = named ? await chatOfMessage(request, named) : await chatOf(request);
-        if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
+        if (!chat) return response.status(409).send({ ok: false, reason: named ? 'unknown node' : 'unknown chat' });
         let child = String(request.body.node_id || '');
         const openingMessages = request.body.opening?.messages;
         if (!child && Array.isArray(openingMessages) && openingMessages.length === 1) {
