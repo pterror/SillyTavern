@@ -1053,6 +1053,7 @@ async function editTagOnServer(id, patch, tag, applyStored) {
         }
         await eventSource.emit(event_types.SETTINGS_UPDATED);
         refreshUsedTagBars();
+        onFolderListChanged();
         return 'stored';
     } catch (error) {
         console.error(`Error editing tag ${id}:`, error);
@@ -1302,6 +1303,7 @@ async function dropTagsLocally(drops) {
         $(`.tag_view_item[id="${id}"]`).remove();
     }
     refreshUsedTagBars();
+    onFolderListChanged();
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
@@ -1727,19 +1729,22 @@ function getOpenBogusFolders() {
  * @returns {boolean} If currently viewing a folder
  */
 function isBogusFolderOpen() {
-    const shownCase = readShownFolderCase();
-    return getOpenBogusFolders().length > 0 || (shownCase !== null && shownCase !== 'none');
+    return getOpenBogusFolders().length > 0 || readShownFolderCase() !== 'none';
 }
 
 let showFolderCase = /** @type {((folderCase: string) => void) | null} */ (null);
-let readShownFolderCase = /** @type {() => string | null} */ (() => null);
+let readShownFolderCase = /** @type {() => string} */ (() => 'none');
+let onFolderListChanged = () => {};
 
 /**
- * @param {{ show: (folderCase: string) => void, read: () => string | null }} handlers
+ * @param {{ show: (folderCase: string) => void, read: () => string, listChanged: () => void }} handlers
+ * `listChanged`: tag definitions or their order changed, so which closed folders there are, or how they are named or
+ * ordered, may have changed.
  */
-export function registerFolderCaseHandlers({ show, read }) {
+export function registerFolderCaseHandlers({ show, read, listChanged }) {
     showFolderCase = show;
     readShownFolderCase = read;
+    onFolderListChanged = listChanged;
 }
 
 /**
@@ -1751,11 +1756,11 @@ export function registerFolderCaseHandlers({ show, read }) {
  */
 function chooseBogusFolder(source, tagId, remove = false) {
     const shownCase = readShownFolderCase();
-    if (showFolderCase && tagId === 'back' && shownCase !== null && shownCase !== 'none') {
+    if (showFolderCase && tagId === 'back' && shownCase !== 'none') {
         showFolderCase('none');
         return;
     }
-    if (showFolderCase && shownCase !== null && tagId !== 'back' && !tagsStore.get(tagId)) {
+    if (showFolderCase && tagId !== 'back' && !tagsStore.get(tagId)) {
         void readTagsForIds([tagId]).then(answer => {
             if (answer?.tags.get(tagId)?.folder_type === 'CLOSED') showFolderCase?.(remove ? 'none' : tagId);
             else chooseTagFilterFolder(source, tagId, remove);
@@ -1872,13 +1877,6 @@ function filterByGroups(filterHelper) {
  * @param {FilterHelper} filterHelper Instance of FilterHelper class.
  */
 function filterByFolder(filterHelper) {
-    if (!power_user.bogus_folders) {
-        $('#bogus_folders').prop('checked', true).trigger('input');
-        onViewTagsListClick();
-        flashHighlight($('#tag_view_list .tag_as_folder, #tag_view_list .tag_folder_indicator'));
-        return;
-    }
-
     applyActionableTagFilter.call(this, filterHelper, ACTIONABLE_TAGS.FOLDER, FILTER_TYPES.FOLDER, ACTIONABLE_FILTER_STORAGE_KEYS.FOLDER);
 }
 
@@ -2137,7 +2135,8 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
  * @returns {boolean}
  */
 function tagChangeAffectsCurrentView(tagIds) {
-    if (power_user.bogus_folders) {
+    // A tag the page doesn't hold may be a folder.
+    if (tagIds.some(id => !tagsStore.has(id) || isBogusFolder(tagsStore.get(id)))) {
         return true;
     }
 
@@ -3533,12 +3532,7 @@ function printTagFilters(type = tag_filter_type.character) {
         }
     }
 
-    let actionTags = Object.values(ACTIONABLE_TAGS);
-    if (power_user.bogus_folders) {
-        actionTags = actionTags.filter(x => x !== ACTIONABLE_TAGS.FOLDER);
-    } else {
-        ACTIONABLE_TAGS.FOLDER.name = 'Enable \'Tags as Folder\'\n\nAllows characters to be grouped in folders by their assigned tags.\nTags have to be explicitly chosen as folder to show up.\n\nClick here to start';
-    }
+    let actionTags = Object.values(ACTIONABLE_TAGS).filter(x => x !== ACTIONABLE_TAGS.FOLDER);
 
     if (isGroupContext(type)) {
         actionTags = filterActionableTagsForGroupContext(actionTags);
@@ -3562,7 +3556,7 @@ function printTagFilters(type = tag_filter_type.character) {
 
     const bogusDrilldown = $filterContainer.siblings('.rm_tag_bogus_drilldown');
     bogusDrilldown.empty();
-    if (power_user.bogus_folders && bogusDrilldown.length > 0) {
+    if (bogusDrilldown.length > 0) {
         const navigatedTags = getOpenBogusFolders();
         printTagList(bogusDrilldown, { tags: navigatedTags, tagOptions: { removable: true } });
     }
@@ -3580,7 +3574,7 @@ function printTagFilters(type = tag_filter_type.character) {
 function printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags, tail) {
     const $container = $(FILTER_SELECTOR);
     const drawn = JSON.stringify([tagsToDisplay.map(tag => tag.id), inactiveTags, tail]);
-    if (!power_user.bogus_folders && tagFilterRenderCache.get(type) === drawn && $container.find('.tag:not(.actionable)').length) return;
+    if (!tagsToDisplay.some(isBogusFolder) && tagFilterRenderCache.get(type) === drawn && $container.find('.tag:not(.actionable)').length) return;
 
     $container.find('.tag:not(.actionable)').remove();
     const inactive = new Set(inactiveTags);
@@ -3746,7 +3740,7 @@ function renderTagSearchItem(list, item) {
 async function onViewTagsListClick() {
     const html = $(document.createElement('div'));
     html.attr('id', 'tag_view_list');
-    html.append(await renderTemplateAsync('tagManagement', { bogus_folders: power_user.bogus_folders }));
+    html.append(await renderTemplateAsync('tagManagement'));
 
     const topEdge = $('<div class="tag_view_list_edge"></div>');
     const tagContainer = $('<div class="tag_view_list_tags ui-sortable"></div>');
@@ -3782,6 +3776,7 @@ async function onViewTagsListClick() {
         saveSettingsDebounced('power_user.tag_sort_mode');
         reloadViewTagList();
         refreshUsedTagBars();
+        onFolderListChanged();
     });
 
     const $search = html.find('#tag_view_search');
@@ -3889,6 +3884,7 @@ async function moveTagOnServer(id, placement, mode) {
     }
 
     refreshUsedTagBars();
+    onFolderListChanged();
 
     if (answer.queued) return;
 
@@ -3973,6 +3969,7 @@ async function rereadTagDefinitions() {
     if (sortOrderChanged) redrawAfterTagSortOrderChange();
     refreshViewTagList();
     refreshUsedTagBars();
+    onFolderListChanged();
     return readAll;
 }
 
@@ -4001,6 +3998,7 @@ async function takeInTagChanges() {
         if (changedTags.length || removed.length) {
             refreshViewTagList();
             refreshUsedTagBars();
+            onFolderListChanged();
         }
         tagChangesSeq = page.seq;
         if (!page.hasMore) return;
@@ -4182,6 +4180,7 @@ async function onTagRestoreFileSelect(e) {
     printCharactersDebounced();
     refreshViewTagList();
     refreshUsedTagBars();
+    onFolderListChanged();
 }
 
 function onBackupRestoreClick() {
@@ -4308,11 +4307,6 @@ function appendViewTagToList(list, tag, count) {
     template.find('.tag_view_name').addClass('tag').each((_, element) => nameOn(element, tag.thing));
 
     const tagAsFolderId = tag.id + '-tag-folder';
-
-    if (!power_user.bogus_folders) {
-        template.find('.tag_as_folder').hide();
-    }
-
     template.find('.tag_as_folder').attr('id', tagAsFolderId);
     template.find('.tag_view_look').toggle(Boolean(tag.thing)).on('click', () => onTagLookClick(tag.id));
 

@@ -6,7 +6,7 @@ let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...va
 /**
  * @typedef {{ id: string, name: string, thing?: string }} ClosedFolder `thing`: its tag's, which its look is drawn by
  * @typedef {object} FolderSwitcherDeps
- * @property {() => string | null} getCase
+ * @property {() => string} getCase
  * @property {(folderCase: string) => void} setCase
  * @property {(term: string, cursor: string | null) => Promise<{ rows: ClosedFolder[], cursor: string | null } | null>} list
  * @property {(id: string) => Promise<ClosedFolder | null | undefined>} get
@@ -24,6 +24,11 @@ let firstPageHasMore = false;
 /** @type {ClosedFolder | null} */
 let shownOutsideFirstPage = null;
 let refreshRun = 0;
+/** Counts folderListChanged() calls; the first page is current while it was listed at this count. */
+let listGeneration = 0;
+let listedGeneration = -1;
+/** @type {{ generation: number, page: ReturnType<FolderSwitcherDeps['list']> } | null} */
+let listing = null;
 
 /**
  * @param {object} options
@@ -46,25 +51,33 @@ export function initFolderSwitcher({ after, deps: given, translate }) {
     new ResizeObserver(() => draw()).observe(strip.parentElement ?? strip);
 }
 
+/**
+ * To be called when closed folders may have been added, removed, renamed or reordered: the strip lists them again.
+ */
+export function folderListChanged() {
+    listGeneration++;
+    void refreshFolderSwitcher();
+}
+
 export async function refreshFolderSwitcher() {
     if (!deps || !strip) return;
     const run = ++refreshRun;
     const shown = deps.getCase();
-    if (shown === null) {
-        firstPage = null;
-        closePopover();
-        draw();
-        return;
+    if (listedGeneration !== listGeneration || firstPage === null) {
+        if (listing?.generation !== listGeneration) listing = { generation: listGeneration, page: deps.list('', null) };
+        const reading = listing;
+        const page = await reading.page;
+        if (listing === reading) listing = null;
+        if (run !== refreshRun) return;
+        if (page === null) {
+            return;
+        }
+        firstPage = page.rows;
+        firstPageHasMore = page.cursor !== null;
+        shownOutsideFirstPage = null;
+        listedGeneration = reading.generation;
     }
-    const page = await deps.list('', null);
-    if (run !== refreshRun) return;
-    if (page === null) {
-        return;
-    }
-    firstPage = page.rows;
-    firstPageHasMore = page.cursor !== null;
-    shownOutsideFirstPage = null;
-    if (shown !== 'none' && !firstPage.some(folder => folder.id === shown)) {
+    if (shown !== 'none' && !firstPage.some(folder => folder.id === shown) && shownOutsideFirstPage?.id !== shown) {
         const folder = await deps.get(shown);
         if (run !== refreshRun) return;
         if (folder === null) {
@@ -86,7 +99,7 @@ function shownLabel() {
 function draw() {
     if (!deps || !strip) return;
     const shown = deps.getCase();
-    if (shown === null || firstPage === null || firstPage.length === 0) {
+    if (firstPage === null || firstPage.length === 0) {
         strip.hidden = true;
         strip.replaceChildren();
         return;

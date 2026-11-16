@@ -13,7 +13,7 @@ import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, norm
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
 import { applyKeptView, initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
-import { initFolderSwitcher, refreshFolderSwitcher } from './folder-switcher.js';
+import { folderListChanged, initFolderSwitcher, refreshFolderSwitcher } from './folder-switcher.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -735,7 +735,7 @@ export function getCharacterView() {
         fav: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.FAV)),
         group: triStateToBoolean(entitiesFilter.getFilterData(FILTER_TYPES.GROUP)),
         sort,
-        folderCase: power_user.bogus_folders ? readFolderCase() : null,
+        folderCase: readFolderCase(),
     };
 }
 
@@ -753,7 +753,7 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
     entitiesFilter.setFilterData(FILTER_TYPES.TAG, { selected: [...next.tags.include], excluded: [...next.tags.exclude] }, true);
     writeTagMode(next.tags.mode === 'or' ? 'or' : 'and');
     writeRanges(next.ranges);
-    if (power_user.bogus_folders) writeFolderCase(next.folderCase);
+    writeFolderCase(next.folderCase);
     entitiesFilter.setFilterData(FILTER_TYPES.FAV, booleanToTriState(next.fav), true);
     entitiesFilter.setFilterData(FILTER_TYPES.GROUP, booleanToTriState(next.group), true);
     if (JSON.stringify(current.sort) !== JSON.stringify(next.sort) && next.sort.field !== 'search') {
@@ -1205,6 +1205,7 @@ export function initCharacterSearch() {
     registerFolderCaseHandlers({
         show: folderCase => setCharacterView({ folderCase }),
         read: () => getCharacterView().folderCase,
+        listChanged: folderListChanged,
     });
 
     searchButton.on('click', function () {

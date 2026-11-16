@@ -313,7 +313,6 @@ export const power_user = {
     fuzzy_search: false,
     encode_tags: false,
     servers: [],
-    bogus_folders: false,
     zoomed_avatar_magnification: false,
     show_tag_filters: false,
     aux_field: 'character_version',
@@ -1543,14 +1542,6 @@ function applyTheme(name) {
             },
         },
         {
-            key: 'bogus_folders',
-            action: (oldValue, newValue) => {
-                $('#bogus_folders').prop('checked', power_user.bogus_folders);
-                if (oldValue !== newValue) resetCharacterListPositionOnNextPrint();
-                printCharactersDebounced();
-            },
-        },
-        {
             key: 'zoomed_avatar_magnification',
             action: () => {
                 $('#zoomed_avatar_magnification').prop('checked', power_user.zoomed_avatar_magnification);
@@ -1834,7 +1825,6 @@ export async function loadPowerUserSettings(settings, data) {
     $('#request_token_probabilities').prop('checked', power_user.request_token_probabilities);
     $('#show_group_chat_queue').prop('checked', power_user.show_group_chat_queue);
     $('#auto_scroll_chat_to_bottom').prop('checked', power_user.auto_scroll_chat_to_bottom);
-    $('#bogus_folders').prop('checked', power_user.bogus_folders);
     $('#zoomed_avatar_magnification').prop('checked', power_user.zoomed_avatar_magnification);
     $(`#tokenizer option[value="${power_user.tokenizer}"]`).prop('selected', true);
     $(`#send_on_enter option[value=${power_user.send_on_enter}]`).prop('selected', true);
@@ -3759,13 +3749,6 @@ jQuery(() => {
 
     $('#debug_menu').on('click', function () {
         showDebugMenu();
-    });
-
-    $('#bogus_folders').on('input', function () {
-        power_user.bogus_folders = !!$(this).prop('checked');
-        resetCharacterListPositionOnNextPrint();
-        printCharactersDebounced();
-        saveSettingsDebounced('power_user.bogus_folders');
     });
 
     $('#zoomed_avatar_magnification').on('input', function () {

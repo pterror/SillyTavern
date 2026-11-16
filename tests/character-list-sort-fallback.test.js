@@ -19,7 +19,7 @@ function createFakeLocalforageInstance() {
     };
 }
 
-const powerUser = { bogus_folders: false, fuzzy_search: false, sort_field: 'name', sort_order: 'asc', sort_rule: undefined };
+const powerUser = { fuzzy_search: false, sort_field: 'name', sort_order: 'asc', sort_rule: undefined };
 
 jest.unstable_mockModule('../public/lib.js', () => ({
     localforage: { createInstance: createFakeLocalforageInstance },

@@ -30,7 +30,6 @@
     "enableLabMode": "",
     "hotswap_enabled": true,
     "custom_css": "",
-    "bogus_folders": true,
     "reduced_motion": false,
     "compact_input_area": true
 }

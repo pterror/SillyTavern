@@ -44,7 +44,7 @@ export const DEAD_PATHS = Object.freeze([
     'power_user.negative_prompt', 'power_user.stscript.autocomplete_style', 'power_user.world_import_dialog',
     'power_user.instruct.derived', 'power_user.instruct.separator_sequence', 'power_user.instruct.system_prompt',
     'power_user.reasoning.preset', 'power_user.sysprompt.preset', 'textgenerationwebui_settings.stopping_strings',
-    'power_user.movingUI', 'power_user.movingUIState', 'power_user.movingUIPreset',
+    'power_user.movingUI', 'power_user.movingUIState', 'power_user.movingUIPreset', 'power_user.bogus_folders',
 ]);
 
 export const DERIVED_PATHS = Object.freeze([
@@ -246,6 +246,7 @@ export function importUpstream(upstream, { bundles, newKey }) {
     for (const [group, ref] of Object.entries(user.bundles)) {
         for (const id of Object.keys(bundleFields(bundles, group, ref) ?? {})) {
             if (!id.includes('/') || id === `${group}/name` || seen.has(id)) continue;
+            if (group === 'theme' && !THEME_FIELDS.includes(id.slice('theme/'.length))) continue;
             user.overrides[id] = APP_DEFAULT;
         }
     }

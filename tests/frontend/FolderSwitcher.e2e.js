@@ -54,15 +54,10 @@ async function createFolder(page, id, name, folderType) {
     });
 }
 
-/**
- * @param {import('@playwright/test').Page} page
- * @param {boolean} on
- */
-async function setFolders(page, on) {
-    const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
-        && response.request().postData()?.includes('bogus_folders'));
-    await page.evaluate(on => { $('#bogus_folders').prop('checked', on).trigger('input'); }, on);
-    await saved;
+/** @param {import('@playwright/test').Page} page */
+async function showTagBar(page) {
+    const toggle = page.locator('#rm_characters_block .rm_tag_filter .showTagList');
+    if (!(await toggle.evaluate(element => element.classList.contains('selected')))) await toggle.click();
 }
 
 /**
@@ -91,9 +86,12 @@ test.describe('folders', () => {
     test.setTimeout(120000);
     /** @type {string[]} */
     let made = [];
+    /** @type {{ id: string, folder_type: string }[]} */
+    let unfoldered = [];
 
     test.beforeEach(async ({ page }) => {
         made = [];
+        unfoldered = [];
         await loadApp(page);
         await openCharacterManagementDrawer(page);
     });
@@ -102,18 +100,77 @@ test.describe('folders', () => {
         await page.unrouteAll({ behavior: 'ignoreErrors' });
         await setSearchTerm(page, '').catch(() => {});
         for (const id of made) await api(page, '/api/tags/delete', { id });
-        if (await page.evaluate(() => $('#bogus_folders').prop('checked'))) await setFolders(page, false);
+        for (const { id, folder_type } of unfoldered) await api(page, '/api/tags/edit', { id, patch: { folder_type } });
     });
 
-    test('the folder pill only offers to turn folders on; with folders on it is gone', async ({ page }) => {
-        const pill = page.locator('#rm_characters_block .rm_tag_filter .tag.filterByFolder');
-        await expect(pill).toHaveCount(1);
-        await expect(pill.locator('.tag_name')).toHaveAttribute('title', /Enable 'Tags as Folder'/);
-        await setFolders(page, true);
-        await expect(pill).toHaveCount(0);
+    test('there is no "Tags as folders" setting and no "Show only folders" pill', async ({ page }) => {
+        await expect(page.locator('#bogus_folders')).toHaveCount(0);
+        expect(await page.evaluate(() => Object.hasOwn(window['stTest'].context().powerUserSettings, 'bogus_folders'))).toBe(false);
         await expect(page.locator('#rm_characters_block .rm_tag_filter .tag.filterByFavorites')).toHaveCount(1);
-        await setFolders(page, false);
-        await expect(pill).toHaveCount(1);
+        await expect(page.locator('#rm_characters_block .rm_tag_filter .tag.filterByFolder')).toHaveCount(0);
+    });
+
+    test('with no closed folder, the switcher stays hidden, and printing the list again neither lists folders nor redraws the tag bar', async ({ page }) => {
+        const stamp = Date.now();
+        const tagId = `plain-${stamp}`;
+        made.push(tagId);
+        await api(page, '/api/tags/create', {
+            tag: { id: tagId, name: `Plain ${stamp}`, folder_type: 'NONE', sort_order: -Date.now(), is_hidden_on_character_card: false, color: '', color2: '', create_date: Date.now() },
+        });
+        const card = await createCharacter(page, `NoFolder${stamp}`);
+        await api(page, '/api/tags/assign', { id: card, tagId });
+        for (const folderType of ['OPEN', 'CLOSED']) {
+            const { rows } = await api(page, '/api/tags/query', { filter: { folderType }, sort: { field: 'alphabetical' }, pageSize: 500 });
+            for (const tag of rows) {
+                unfoldered.push({ id: tag.id, folder_type: folderType });
+                await api(page, '/api/tags/edit', { id: tag.id, patch: { folder_type: 'NONE' } });
+            }
+        }
+
+        let folderLists = 0;
+        await page.route('**/api/tags/query', async route => {
+            if (route.request().postDataJSON()?.filter?.folderType !== 'CLOSED') return route.fallback();
+            folderLists++;
+            await route.fulfill({ json: { rows: [], cursor: null } });
+        });
+        await page.reload();
+        await loadApp(page);
+        await openCharacterManagementDrawer(page);
+        await showTagBar(page);
+        const pill = page.locator(`#rm_characters_block .rm_tag_filter .tag[id="${tagId}"]`);
+        await expect(pill).toBeVisible();
+        await expect.poll(() => folderLists).toBeGreaterThan(0);
+        await expect(page.locator('#character_folder_switcher')).toBeHidden();
+
+        await setSearchTerm(page, `NoFolder${stamp}`);
+        await expect(row(page, card)).toBeVisible();
+        await setSearchTerm(page, '');
+        await expect(pill).toBeVisible();
+
+        const listed = folderLists;
+        await pill.evaluate(element => { element['__drawnBefore'] = true; });
+        await page.evaluate(async () => (await import('/scripts/character-list.js')).printCharacters());
+        await page.evaluate(async () => (await import('/scripts/character-list.js')).printCharacters());
+        expect(folderLists).toBe(listed);
+        expect(await pill.evaluate(element => element['__drawnBefore'] === true)).toBe(true);
+        await expect(page.locator('#character_folder_switcher')).toBeHidden();
+        await expect(page.locator('#rm_characters_block .rm_tag_bogus_drilldown .tag')).toHaveCount(0);
+    });
+
+    test('a tag made a closed folder in Manage tags becomes a case of the switcher', async ({ page }) => {
+        const stamp = Date.now();
+        const tagId = `made-closed-${stamp}`;
+        made.push(tagId);
+        await createFolder(page, tagId, `Later ${stamp}`, 'OPEN');
+        const inside = await createCharacter(page, `Later${stamp}`);
+        await api(page, '/api/tags/assign', { id: inside, tagId });
+        await setSearchTerm(page, `Later${stamp}`);
+        await expect(row(page, inside)).toBeVisible();
+        await expect(caseChip(page, tagId)).toHaveCount(0);
+
+        await api(page, '/api/tags/edit', { id: tagId, patch: { folder_type: 'CLOSED' } });
+        await expect(caseChip(page, tagId)).toBeVisible();
+        await expect(row(page, inside)).toHaveCount(0);
     });
 
     test('a closed folder\'s characters show under its case, the rest under "No folder"', async ({ page }) => {
@@ -126,10 +183,6 @@ test.describe('folders', () => {
         await api(page, '/api/tags/assign', { id: inside, tagId: folderId });
 
         await setSearchTerm(page, `Switch${stamp}`);
-        await expect(row(page, inside)).toBeVisible();
-        await expect(page.locator('#character_folder_switcher')).toBeHidden();
-
-        await setFolders(page, true);
         await expect(caseChip(page, 'none')).toHaveClass(/current/);
         await expect(caseChip(page, folderId)).toBeVisible();
         await expect(row(page, outside)).toBeVisible();
@@ -165,7 +218,6 @@ test.describe('folders', () => {
         await api(page, '/api/tags/assign', { id: both, tagId: a });
         await api(page, '/api/tags/assign', { id: both, tagId: b });
         await setSearchTerm(page, `Twice${stamp}`);
-        await setFolders(page, true);
 
         await expect(row(page, both)).toHaveCount(0);
         await caseChip(page, a).click();
@@ -182,7 +234,6 @@ test.describe('folders', () => {
         const inside = await createCharacter(page, `Upstream${stamp}`);
         await api(page, '/api/tags/assign', { id: inside, tagId: folderId });
         await setSearchTerm(page, `Upstream${stamp}`);
-        await setFolders(page, true);
         await expect(caseChip(page, folderId)).toBeVisible();
 
         await page.evaluate(async id => (await import('/scripts/tags.js')).chooseBogusFolder(null, id), folderId);
@@ -202,7 +253,6 @@ test.describe('folders', () => {
         const inside = await createCharacter(page, `Folded${stamp}`);
         await api(page, '/api/tags/assign', { id: inside, tagId: ids[0] });
         await setSearchTerm(page, `Folded${stamp}`);
-        await setFolders(page, true);
 
         const button = page.locator('#character_folder_switcher .folder_case_button');
         await expect(button).toBeVisible();
@@ -228,7 +278,6 @@ test.describe('folders', () => {
         const inside = await createCharacter(page, `OpenView${stamp} In`);
         const outside = await createCharacter(page, `OpenView${stamp} Out`);
         await api(page, '/api/tags/assign', { id: inside, tagId: folderId });
-        await setFolders(page, true);
         await setSearchTerm(page, '');
 
         await page.locator('#character_view_picker').click();

@@ -163,11 +163,27 @@ test('KoboldAI with no preset: \'gui\' stays the choice, and none stated stays n
 });
 
 test('a field the settings lack stays the page\'s default, not the selected bundle\'s', () => {
-    assert.equal(Object.hasOwn(SHIPPED.power_user, 'bogus_folders'), false);
-    assert.equal(shippedBundles('theme', SHIPPED.power_user.theme).bogus_folders, true);
+    assert.equal(Object.hasOwn(SHIPPED.power_user, 'expand_message_actions'), false);
+    assert.equal(shippedBundles('theme', SHIPPED.power_user.theme).expand_message_actions, false);
     const { model, back } = roundTrip(SHIPPED);
-    assert.equal(Object.hasOwn(back.power_user, 'bogus_folders'), false);
-    assert.deepEqual(model.user.overrides['theme/bogus_folders'], { $default: true });
+    assert.equal(Object.hasOwn(back.power_user, 'expand_message_actions'), false);
+    assert.deepEqual(model.user.overrides['theme/expand_message_actions'], { $default: true });
+});
+
+test('"Tags as folders" is no longer a setting: dropped from the settings, and a theme holding it isn\'t read for it', () => {
+    const upstream = structuredClone(SHIPPED);
+    upstream.power_user.bogus_folders = true;
+    /** @type {import('./settings-compat.js').BundleFiles} */
+    const bundles = (group, name) => {
+        const file = shippedBundles(group, name);
+        return group === 'theme' && file ? { ...file, bogus_folders: true } : file;
+    };
+    const model = importUpstream(upstream, { bundles, newKey: keys() });
+    assert.ok(model.warnings.includes('power_user.bogus_folders is no longer read; dropped'));
+    assert.equal(Object.keys(model.user.overrides).some(id => id.endsWith('bogus_folders')), false);
+    const { settings } = assemble(JSON.parse(JSON.stringify(model)), { bundles });
+    assert.equal(Object.hasOwn(settings.power_user, 'bogus_folders'), false);
+    assert.deepEqual(unitOfPath(['power_user', 'bogus_folders']), { kind: 'ignored', path: 'power_user.bogus_folders' });
 });
 
 test('a context\'s closer levels: a character\'s preset and overrides win over the user\'s, the group\'s after its speaker\'s, the theme stays the reader\'s', () => {

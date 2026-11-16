@@ -116,7 +116,7 @@ function fullView(view) {
         group: typeof view?.group === 'boolean' ? view.group : undefined,
         ranges: view?.ranges && typeof view.ranges === 'object' ? view.ranges : undefined,
         sort: view?.sort && typeof view.sort === 'object' ? view.sort : current.sort,
-        folderCase: current.folderCase === null ? null : (typeof view?.folderCase === 'string' && view.folderCase ? view.folderCase : 'none'),
+        folderCase: typeof view?.folderCase === 'string' && view.folderCase ? view.folderCase : 'none',
     };
 }
 

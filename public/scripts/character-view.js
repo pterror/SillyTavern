@@ -7,7 +7,7 @@
  * @property {Record<string, { min?: number, max?: number }>} [ranges]
  * @property {boolean|undefined} group
  * @property {CharacterViewSort} sort
- * @property {string|null} folderCase
+ * @property {string} folderCase 'none', or the id of the closed folder shown
  */
 
 /**
@@ -109,7 +109,7 @@ export function viewToQueryState(view, { includeGroups = false } = {}) {
         sortTie: view.sort.field === 'search' ? view.sort.tie : undefined,
         includeGroups,
         group: view.group,
-        folder: view.folderCase ?? undefined,
+        folder: view.folderCase,
     };
 }
 
@@ -170,6 +170,6 @@ function viewKey(view) {
         fav: view.fav ?? null,
         group: view.group ?? null,
         sort: view.sort,
-        folderCase: view.folderCase ?? null,
+        folderCase: view.folderCase,
     };
 }

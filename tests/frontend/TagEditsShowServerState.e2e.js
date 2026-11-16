@@ -239,7 +239,6 @@ test.describe('Tag edits show what the server stored', () => {
         const id = `edit-folder-${Date.now()}`;
         await createTags(browser, [{ id }]);
         await loadApp(page);
-        await page.evaluate(() => { window['stTest'].context().powerUserSettings.bogus_folders = true; });
         await openTagManagement(page);
 
         const button = page.locator(`#tag_view_list .tag_view_item[id="${id}"] .tag_as_folder`);

@@ -286,7 +286,6 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
             return card;
         });
         await loadApp(page);
-        await page.evaluate(() => { $('#bogus_folders').prop('checked', true).trigger('input'); });
         await openBar(page);
         await expect(pill(page, ids[0])).toBeVisible();
         await expect(pill(page, folder)).toHaveCount(0);
@@ -300,11 +299,6 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         await page.evaluate(async () => (await import('/scripts/tags.js')).chooseBogusFolder($('#rm_characters_block .rm_tag_filter'), 'back'));
         await expect(page.locator(`#rm_characters_block .rm_tag_bogus_drilldown .tag[id="${folder}"]`)).toHaveCount(0);
         await expect.poll(() => stored(page, `CharacterList_tag_${folder}`)).toBe('UNDEFINED');
-
-        const saved = page.waitForResponse(response => response.url().endsWith('/api/settings/save-partial')
-            && response.request().postData()?.includes('bogus_folders'));
-        await page.evaluate(() => { $('#bogus_folders').prop('checked', false).trigger('input'); });
-        await saved;
     });
 
     test('clicking a filter keeps the tag\'s name with it, and clearing the filter drops the name', async ({ browser, page }) => {

@@ -741,19 +741,6 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
 
             await expectPage1Top(page);
         });
-
-        test('"Tags as folders"', async ({ page }) => {
-            const from = await toPage2Scrolled(page);
-
-            await page.evaluate(() => {
-                const checkbox = window['$']('#bogus_folders');
-                checkbox.prop('checked', !checkbox.prop('checked')).trigger('input');
-            });
-            await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
-            await waitForQuiet(log);
-
-            await expectPage1Top(page);
-        });
     });
 });
 

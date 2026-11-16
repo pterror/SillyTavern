@@ -10,7 +10,7 @@ function view(overrides = {}) {
         fav: undefined,
         group: undefined,
         sort: { field: 'name', order: 'asc' },
-        folderCase: null,
+        folderCase: 'none',
         ...overrides,
     };
 }
@@ -51,7 +51,7 @@ describe('character view', () => {
         expect(serializeSearchText({ text: '', conditions: [{ field: 'name', op: 'contains', value: '  ' }] })).toBe('');
     });
 
-    test('the request carries the search, tags, fav, group and sort, and the seed only for random', () => {
+    test('the request carries the search, tags, fav, group, sort and folder case, and the seed only for random', () => {
         const state = viewToQueryState(view({
             text: 'castle',
             conditions: [{ field: 'creator', op: 'contains', value: 'alice' }],
@@ -72,6 +72,7 @@ describe('character view', () => {
             randomSeed: undefined,
             includeGroups: true,
             group: false,
+            folder: 'none',
         });
         expect(viewToQueryState(view({ sort: { field: 'random', order: 'asc', seed: 42 } })).randomSeed).toBe(42);
     });

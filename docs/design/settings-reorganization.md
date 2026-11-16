@@ -58,7 +58,7 @@ connection, bypass status check (one flag per API family, honoured for a source 
 
 ## 5. Bundles holding the wrong things
 
-- The theme holds Lab Mode, Zen Sliders, Tags as Folders, Characters Hotswap, Click to Edit and the message-info
+- The theme holds Lab Mode, Zen Sliders, Characters Hotswap, Click to Edit and the message-info
   toggles: switching themes changes how the sampler panel and editing behave. Stream fade-in, smooth streaming,
   autocomplete style and the character list subheader are appearance but aren't in the theme.
 - A chat completion preset holds connection settings (applied with "bind to connection") and prompts.
