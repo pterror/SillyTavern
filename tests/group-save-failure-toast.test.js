@@ -181,6 +181,7 @@ jest.unstable_mockModule('../public/scripts/events.js', () => ({
 
 jest.unstable_mockModule('../public/scripts/chat-store.js', () => ({
     _setCurrentTarget: jest.fn(),
+    takeOpenings: jest.fn(),
     updateMessage: jest.fn(),
 }));
 

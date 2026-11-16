@@ -5,7 +5,8 @@ import zlib from 'node:zlib';
 import { textEdit } from './text-edit.js';
 import { baseOf, draftAfterSend, mergeDraft } from './draft-merge.js';
 import { META, TOP, decodeMessage, encodeMessage, messageRecords, speakerIdOf } from './chat-codec.js';
-import { resolveAvatars, withoutShownAvatar } from './avatar-refs.js';
+import { avatarRefString, resolveAvatars, withoutShownAvatar } from './avatar-refs.js';
+import { TYPE } from './library-codes.js';
 import { ITEMIZED_PROMPT_FLAG } from './prompt-itemization.js';
 import { jsonHash } from '../public/scripts/hash-utils.js';
 import { bookKey } from './world-info-keys.js';
@@ -212,14 +213,51 @@ export function storedForm(msg) {
 }
 
 /**
- * A tree's first message as it is written: one with a card greeting's text is that greeting, linked with the
- * greeting's id and the hash of the text it had; any other keeps the greeting it came from, unlinked.
+ * A card greeting a tree's first message offers: of the character `card` (a character's tree's own character, or a
+ * group's member), by its id.
+ * @typedef {{ card: bigint, id: number, text: string }} TreeGreeting
+ */
+
+/**
+ * The character whose card greetings an opening can be: its speaker's, else the tree's own (a user's opening in a
+ * character's tree). A group's tree is no character, so a user's opening there is no greeting.
+ * @param {bigint} tree
+ * @param {bigint | null} speaker the character the opening is stored as spoken by
+ * @returns {bigint}
+ */
+function openingCard(tree, speaker) {
+    return speaker ?? tree;
+}
+
+const GROUP_SPAN = 2n ** 32n;
+
+/**
+ * The group a tree keeps the openings from a card greeting in: the greeting's id + 1 for the tree's own character's,
+ * the character's id × 2³² + the greeting's id + 1 for another's (a group member's). Group 0 holds the openings from no
+ * greeting. Both ids are below 2³².
+ * @param {bigint} tree
+ * @param {bigint} card
+ * @param {number} id
+ * @returns {bigint}
+ */
+export function greetingGroup(tree, card, id) {
+    if (!Number.isInteger(id) || id < 0 || BigInt(id) + 1n >= GROUP_SPAN || card < 0n || card >= GROUP_SPAN) {
+        throw new RangeError(`greeting ${id} of character ${card} has no opening group`);
+    }
+    return (card === tree ? 0n : card * GROUP_SPAN) + BigInt(id) + 1n;
+}
+
+/**
+ * A tree's first message as it is written: one with the text of a card greeting of its character (`openingCard`) is
+ * that greeting, linked with the greeting's id and the hash of the text it had; any other keeps the greeting it came
+ * from, unlinked.
  * @param {Record<string, any>} content
- * @param {{ id: number, text: string }[]} greetings the card's greetings
+ * @param {TreeGreeting[]} greetings the tree's card greetings
+ * @param {bigint} card the character the opening's greetings are of
  * @returns {Record<string, any>}
  */
-export function linkedToCard(content, greetings) {
-    const same = typeof content?.mes === 'string' ? greetings.find(g => g.text === content.mes) : undefined;
+export function linkedToCard(content, greetings, card) {
+    const same = typeof content?.mes === 'string' ? greetings.find(g => g.card === card && g.text === content.mes) : undefined;
     const extra = { ...(content?.extra && typeof content.extra === 'object' ? content.extra : {}) };
     if (same) {
         extra.greeting_id = same.id;
@@ -275,13 +313,25 @@ function alternativesOf(msg) {
 }
 
 /**
+ * @param {Record<string, any> | null | undefined} o a message
+ * @returns {{ original_avatar?: string, force_avatar?: string }} the avatar it is drawn with, which an alternative of
+ *   another speaker's shows when it is swiped to
+ */
+function avatarOf(o) {
+    return {
+        ...(typeof o?.original_avatar === 'string' ? { original_avatar: o.original_avatar } : {}),
+        ...(typeof o?.force_avatar === 'string' ? { force_avatar: o.force_avatar } : {}),
+    };
+}
+
+/**
  * @param {string} nodeId
  * @param {Record<string, any>} o
  * @param {boolean} itemized
  */
 function alternativeEntry(nodeId, o, itemized) {
     /** @type {Record<string, any>} */
-    const entry = { node_id: nodeId, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user };
+    const entry = { node_id: nodeId, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user, ...avatarOf(o) };
     if (itemized) entry.extra = { ...(entry.extra && typeof entry.extra === 'object' ? entry.extra : {}), [ITEMIZED_PROMPT_FLAG]: true };
     return entry;
 }
@@ -292,7 +342,6 @@ function alternativeEntry(nodeId, o, itemized) {
  * @property {(ids: bigint[]) => Promise<Map<bigint, Speaker>>} speakers
  * @property {(avatars: string[]) => Promise<Map<string, Speaker>>} byAvatar
  * @property {(ids: bigint[]) => Promise<Map<bigint, { group: boolean, name: string, created: number }>>} owners
- * @property {(tree: bigint) => Promise<{ id: number, text: string }[]>} [greetings] the card greetings of a character's tree
  * @property {(card: bigint) => Promise<{ greetings: { id: number, text: string }[], defaultId: number | null, defaultEpoch: number } | null>} [greetingModel]
  *   a card's greetings with text, its default and the default's epoch
  * @property {(tree: bigint) => Promise<{ id: bigint, avatar: string }[]>} [members] a group tree's member cards, in order
@@ -343,16 +392,29 @@ function alternativeEntry(nodeId, o, itemized) {
  * @typedef {{ ok: true, preview?: true, drops?: Drops, copied?: Record<string, string> } | { ok: false, reason: string, drops?: Drops }} EditAnswer
  */
 
-/** @typedef {{ greetings: Record<string, any>[], ids: number[], defaultId: number | null, defaultEpoch: number }} CardGreetings */
+/**
+ * The card greetings a tree's first message offers (`cardGreetings`): a character's tree's card's, a group's tree's
+ * every member's, in member order, each card's in its order. Greeting k is `greetings[k]` (as the page shows it), of
+ * the character `cards[k]`, by its id `ids[k]`, the card's default epoch being `epochs[k]`. `defaultAt` is where the
+ * tree's default is: the default of its first character with greetings; null when that one has none.
+ * @typedef {{ greetings: Record<string, any>[], ids: number[], cards: bigint[], epochs: number[], defaultAt: number | null }} CardGreetings
+ */
 
-const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], defaultId: null, defaultEpoch: 0 });
-
-/** @typedef {{ node: bigint } | { greeting: number, epoch: number }} SameAlternative a stored alternative, or a card greeting with the card's default epoch */
+/** @type {CardGreetings} */
+const NO_GREETINGS = Object.freeze({ greetings: [], ids: [], cards: [], epochs: [], defaultAt: null });
 
 /**
- * A group of a tree's openings: its greeting group (the greeting's id + 1, or 0), its card greeting's position (null
- * for none or a deleted greeting), whether its first opening holds that greeting, how many it has and the first.
- * @typedef {{ group: number, card: number | null, held: boolean, count: number, first: bigint | null }} OpeningSegment
+ * A card greeting by its character and id
+ * @typedef {{ card: bigint, id: number }} GreetingRef
+ */
+
+/** @typedef {{ node: bigint } | { greeting: GreetingRef, epoch: number }} SameAlternative a stored alternative, or a card greeting with its card's default epoch */
+
+/**
+ * A group of a tree's openings: its greeting group (`greetingGroup`, or 0), its card greeting's place in
+ * `CardGreetings` (null for none, or a greeting gone from the card or of a character no longer a member), whether its
+ * first opening holds that greeting, how many it has and the first.
+ * @typedef {{ group: bigint, card: number | null, held: boolean, count: number, first: bigint | null }} OpeningSegment
  */
 
 /**
@@ -851,7 +913,7 @@ export class ChatEngine {
     async children(tree, parent) {
         if (parent === null) {
             const out = [];
-            for (const { group } of await this.store.chatRead('rootGroups', { tree })) out.push(...await this.listed(tree, null, Number(group)));
+            for (const { group } of await this.store.chatRead('rootGroups', { tree })) out.push(...await this.listed(tree, null, BigInt(group)));
             return out;
         }
         return this.listed(tree, parent, 0);
@@ -861,7 +923,7 @@ export class ChatEngine {
      * Every message of one list, in order: a message's replies, or one group of a tree's openings.
      * @param {bigint} tree
      * @param {bigint | null} parent
-     * @param {number} group
+     * @param {bigint | number} group
      * @returns {Promise<bigint[]>}
      */
     async listed(tree, parent, group) {
@@ -921,7 +983,7 @@ export class ChatEngine {
         if (!s) return null;
         const [here] = await this.store.chatRead('places', { ids: [id] });
         const from = Math.max(0, offset ?? 0);
-        const page = await this.store.chatRead('children', { tree: s.owner, ...(s.parent === null ? { group: Number(here.group) } : { parent: s.parent }), from: from + 1, limit: limit ?? Number(here.total) });
+        const page = await this.store.chatRead('children', { tree: s.owner, ...(s.parent === null ? { group: BigInt(here.group) } : { parent: s.parent }), from: from + 1, limit: limit ?? Number(here.total) });
         const window = page.ids;
         const stored = await this.stored(window);
         const decoded = await this.decoded(window.map(x => stored.get(x)));
@@ -941,46 +1003,49 @@ export class ChatEngine {
 
     /**
      * @param {bigint} tree
-     * @returns {Promise<(content: Record<string, any>) => Record<string, any>>} a tree's first message as it is written
+     * @returns {Promise<(content: Record<string, any>, speaker: bigint | null) => Record<string, any>>} a tree's first
+     *   message as it is written, given the character it is stored as spoken by
      */
     async startWriter(tree) {
-        const greetings = this.people.greetings ? await this.people.greetings(tree) : [];
-        return content => linkedToCard(content, greetings);
+        const greetings = ChatEngine.treeGreetings(await this.cardGreetings(tree));
+        return (content, speaker) => linkedToCard(content, greetings, openingCard(tree, speaker));
     }
 
     /**
      * Writes a tree's stored first messages again by the link rule, against the given card greetings.
      * @param {object} p
      * @param {bigint} p.tree a character's tree
-     * @param {{ id: number, text: string }[]} p.greetings
+     * @param {{ id: number, text: string }[]} p.greetings its character's
      * @param {Actor} p.actor
      * @param {(message: Record<string, any>) => boolean} [p.only] which of them; all when absent
      * @returns {Promise<number>} how many changed
      */
     async relinkStarts({ tree, greetings, actor, only = () => true }) {
+        const own = greetings.map(g => ({ card: tree, id: g.id, text: g.text }));
         const edits = [];
         for (const { message, stored } of await this.openings(tree)) {
             if (!only(message)) continue;
-            const extra = linkedToCard(message, greetings).extra;
+            const extra = linkedToCard(message, own, openingCard(tree, speakerIdOf(stored))).extra;
             if (JSON.stringify(extra) !== JSON.stringify(message?.extra ?? {})) edits.push({ node_id: this.externalId(stored), patch: { extra } });
         }
         if (!edits.length) return 0;
         const treeSpeaker = (await this.people.speakers([tree])).get(tree) ?? null;
-        const done = await this.editMessages({ tree, treeSpeaker, edits, actor, asStart: content => linkedToCard(content, greetings) });
+        const done = await this.editMessages({ tree, treeSpeaker, edits, actor, asStart: (content, speaker) => linkedToCard(content, own, openingCard(tree, speaker)) });
         return edits.length - done.refused.length;
     }
 
     /**
      * A tree's openings in card order, as segments: each card greeting's (the greeting itself unless an opening holds
-     * it, then the openings from it, in their list's order), then the openings from no greeting, then each deleted
-     * greeting's. One read of the tree's groups and one of each group's first opening.
+     * it, then the openings from it, in their list's order), then the openings from no greeting, then each other
+     * group's (a greeting deleted from its card, or of a character no longer a member), by group. One read of the
+     * tree's groups and one of each group's first opening.
      * @param {bigint} tree
      * @param {CardGreetings} card
      * @returns {Promise<OpeningSegment[]>}
      */
     async openingSegments(tree, card) {
-        const groups = /** @type {{ group: number, count: number, first: bigint | null }[]} */ (await this.store.chatRead('rootGroups', { tree }));
-        const byGroup = new Map(groups.map(g => [Number(g.group), g]));
+        const groups = /** @type {{ group: bigint, count: number, first: bigint | null }[]} */ (await this.store.chatRead('rootGroups', { tree }));
+        const byGroup = new Map(groups.map(g => [BigInt(g.group), g]));
         const firsts = groups.map(g => g.first).filter(id => id !== null);
         const stored = await this.stored(/** @type {bigint[]} */ (firsts));
         const decoded = await this.decoded(firsts.map(id => stored.get(/** @type {bigint} */ (id))));
@@ -988,16 +1053,17 @@ export class ChatEngine {
         /** @type {OpeningSegment[]} */
         const segments = [];
         card.ids.forEach((greetingId, k) => {
-            const g = byGroup.get(greetingId + 1);
-            byGroup.delete(greetingId + 1);
+            const group = greetingGroup(tree, card.cards[k], greetingId);
+            const g = byGroup.get(group);
+            byGroup.delete(group);
             const first = g?.first == null ? undefined : firstOf.get(g.first);
             const hash = hashGreetingText(card.greetings[k].mes);
             const held = first?.extra?.greeting_id === greetingId && first?.extra?.greeting_hash === hash;
-            segments.push({ group: greetingId + 1, card: k, held, count: Number(g?.count ?? 0), first: g?.first ?? null });
+            segments.push({ group, card: k, held, count: Number(g?.count ?? 0), first: g?.first ?? null });
         });
-        for (const g of [...byGroup.values()].sort((x, y) => (x.group === 0 ? -1 : y.group === 0 ? 1 : Number(x.group) - Number(y.group)))) {
-            segments.push({ group: Number(g.group), card: null, held: false, count: Number(g.count), first: g.first });
-        }
+        const rest = [...byGroup.values()].map(g => ({ ...g, group: BigInt(g.group) }));
+        rest.sort((x, y) => (x.group === y.group ? 0 : x.group === 0n ? -1 : y.group === 0n ? 1 : x.group < y.group ? -1 : 1));
+        for (const g of rest) segments.push({ group: g.group, card: null, held: false, count: Number(g.count), first: g.first });
         return segments;
     }
 
@@ -1006,9 +1072,10 @@ export class ChatEngine {
      * @param {bigint} p.tree
      * @param {Actor} p.actor
      * @param {{ offset?: number, limit?: number, unstored?: boolean }} [p.range] unstored: every card greeting no stored opening holds, each with its `index`
-     * @param {CardGreetings} [p.card]
+     * @param {CardGreetings} [p.card] the tree's (`cardGreetings`), when the caller has read them
      */
-    async openingAlternatives({ tree, actor, range = {}, card = NO_GREETINGS }) {
+    async openingAlternatives({ tree, actor, range = {}, card: given }) {
+        const card = given ?? await this.cardGreetings(tree);
         const segments = await this.openingSegments(tree, card);
         const slot = (/** @type {OpeningSegment} */ seg) => (seg.card !== null && !seg.held ? 1 : 0);
         const starts = [];
@@ -1025,12 +1092,12 @@ export class ChatEngine {
         if (lands !== null) {
             const shown = (await this.store.chatRead('path', { tree, at: lands }))[0];
             const [here] = shown === undefined ? [null] : await this.store.chatRead('places', { ids: [shown] });
-            const at = here === null ? -1 : segments.findIndex(seg => seg.group === Number(here.group));
+            const at = here === null ? -1 : segments.findIndex(seg => seg.group === BigInt(here.group));
             if (at >= 0) defaultIndex = starts[at] + slot(segments[at]) + Number(here.place) - 1;
         } else {
             const chosen = session === null ? null : await this.cardChoice(session, tree);
-            const kept = chosen !== null && chosen.epoch === card.defaultEpoch && card.ids.includes(chosen.id);
-            const k = card.ids.indexOf(kept ? /** @type {{ id: number }} */ (chosen).id : card.defaultId ?? -1);
+            const chosenAt = chosen === null ? -1 : ChatEngine.greetingAt(card, chosen);
+            const k = chosenAt >= 0 && chosen?.epoch === card.epochs[chosenAt] ? chosenAt : card.defaultAt ?? -1;
             const at = segments.findIndex(seg => seg.card === k);
             if (k >= 0 && at >= 0) defaultIndex = starts[at];
         }
@@ -1080,16 +1147,18 @@ export class ChatEngine {
     }
 
     /**
-     * Stored as the card's default epoch * 2^32 + the greeting's id + 1, 0 being the card's default; a choice holds
-     * until the card's default changes.
+     * Stored as the card's default epoch * 2^32 + the greeting's id + 1, 0 being the tree's default; a choice holds
+     * until its card's default changes. A choice of the tree's own character's greeting is stored as the tree's
+     * (`openingChoice`), another character's (a group member's) as that character's (`memberOpeningChoice`).
      * @param {bigint} session
      * @param {bigint} tree
-     * @returns {Promise<{ id: number, epoch: number } | null>} the chosen greeting; null for the default
+     * @returns {Promise<(GreetingRef & { epoch: number }) | null>} the chosen greeting; null for the default
      */
     async cardChoice(session, tree) {
-        const stored = await this.store.chatRead('openingChoice', { session, tree });
-        const value = stored === null || stored === undefined ? 0 : Number(stored);
-        return value === 0 ? null : { id: (value % EPOCH) - 1, epoch: Math.floor(value / EPOCH) };
+        const chosen = await this.store.chatRead('openingChosen', { session, tree });
+        const value = chosen === null || chosen === undefined ? 0 : Number(chosen.index);
+        if (value === 0) return null;
+        return { card: chosen.card === null ? tree : BigInt(chosen.card), id: (value % EPOCH) - 1, epoch: Math.floor(value / EPOCH) };
     }
 
     /**
@@ -1128,16 +1197,15 @@ export class ChatEngine {
             const ids = [];
             const now = this.now();
             let added = 0;
-            const asStart = await this.startWriter(tree);
+            const greetings = ChatEngine.treeGreetings(await this.cardGreetings(tree));
             const placed = await this.placer(place, user, null);
-            const greetings = this.people.greetings ? await this.people.greetings(tree) : [];
             for (const given of list) {
-                const content = asStart(given);
+                const speaker = await this.speakerFor(given, treeSpeaker);
+                const content = linkedToCard(given, greetings, openingCard(tree, speaker?.id ?? null));
                 if (!String(content?.mes ?? '').trim()) {
                     ids.push(null);
                     continue;
                 }
-                const speaker = await this.speakerFor(content, treeSpeaker);
                 const key = twinKey(content, speaker?.id ?? null);
                 const existing = byIdentity.get(key);
                 if (existing !== undefined) {
@@ -1148,7 +1216,7 @@ export class ChatEngine {
                 const time = now + added;
                 records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: null, owner: tree, time, session: null, user, sendKey: null }));
                 this.keyNew(records, id);
-                records.push(...('last' in place ? await this.rootPlacement(tree, id, content, greetings, user, null, false) : placed(id)));
+                records.push(...('last' in place ? await this.rootPlacement(tree, id, content, speaker?.id ?? null, greetings, user, null, false) : placed(id)));
                 byIdentity.set(key, id);
                 ids.push(id);
                 added++;
@@ -1199,9 +1267,9 @@ export class ChatEngine {
             const now = this.now();
             /** @type {Map<string, string> | null} */
             let state = null;
-            const asStart = cursor === null ? await this.startWriter(tree) : null;
+            const greetings = cursor === null ? ChatEngine.treeGreetings(await this.cardGreetings(tree)) : [];
             for (const [i, given] of contents.entries()) {
-                const content = cursor === null && asStart ? asStart(given) : given;
+                const content = cursor === null ? linkedToCard(given, greetings, openingCard(tree, (await this.speakerFor(given, treeSpeaker))?.id ?? null)) : given;
                 const key = keys[i];
                 const stored = key ? sentBy.get(key.toString('utf8')) ?? null : null;
                 if (stored !== null) {
@@ -1226,7 +1294,7 @@ export class ChatEngine {
                 const time = now + i;
                 records.push(...messageRecords(id, this.encoded(content, time, speaker), { parent: cursor, owner: tree, time, session, user, sendKey: key }));
                 this.keyNew(records, id);
-                if (i === 0 && after === null && 'last' in place) records.push(...await this.rootPlacement(tree, id, content, this.people.greetings ? await this.people.greetings(tree) : [], user, session, false));
+                if (i === 0 && after === null && 'last' in place) records.push(...await this.rootPlacement(tree, id, content, speaker?.id ?? null, greetings, user, session, false));
                 else if (i === 0) records.push(...placed(id));
                 for (const c of produced) {
                     /** @type {Record<string, unknown>} */
@@ -1260,27 +1328,62 @@ export class ChatEngine {
 
     /**
      * @param {bigint} tree
-     * @returns {Promise<CardGreetings>} the card greetings of a character's tree; none for a group's
+     * @returns {Promise<CardGreetings>} the card greetings the tree's first message offers: a character's tree's
+     *   card's, a group's tree's current members' in member order
      */
     async cardGreetings(tree) {
-        const model = this.people.greetingModel ? await this.people.greetingModel(tree) : null;
-        if (model === null) return NO_GREETINGS;
-        return {
-            greetings: model.greetings.map(g => ({ mes: g.text, extra: {} })),
-            ids: model.greetings.map(g => g.id),
-            defaultId: model.defaultId,
-            defaultEpoch: model.defaultEpoch,
-        };
+        if (!this.people.greetingModel) return NO_GREETINGS;
+        const group = (await this.people.owners([tree])).get(tree)?.group === true;
+        const characters = group ? (this.people.members ? (await this.people.members(tree)).map(m => m.id) : []) : [tree];
+        const speakers = await this.people.speakers(characters);
+        /** @type {CardGreetings} */
+        const card = { greetings: [], ids: [], cards: [], epochs: [], defaultAt: null };
+        let first = true;
+        for (const character of characters) {
+            const model = await this.people.greetingModel(character);
+            if (!model || model.greetings.length === 0) continue;
+            const speaker = speakers.get(character);
+            const drawn = character === tree || !speaker ? {} : { original_avatar: speaker.avatar, force_avatar: avatarRefString(TYPE.character, speaker.avatar) };
+            if (first) {
+                const at = model.greetings.findIndex(g => g.id === model.defaultId);
+                card.defaultAt = at < 0 ? null : card.ids.length + at;
+                first = false;
+            }
+            for (const g of model.greetings) {
+                card.greetings.push({ name: speaker?.name ?? '', is_user: false, is_system: false, mes: g.text, extra: {}, ...drawn });
+                card.ids.push(g.id);
+                card.cards.push(character);
+                card.epochs.push(model.defaultEpoch ?? 0);
+            }
+        }
+        return card;
+    }
+
+    /**
+     * @param {CardGreetings} card
+     * @returns {TreeGreeting[]}
+     */
+    static treeGreetings(card) {
+        return card.ids.map((id, k) => ({ card: card.cards[k], id, text: card.greetings[k].mes }));
+    }
+
+    /**
+     * @param {CardGreetings} card
+     * @param {GreetingRef} greeting
+     * @returns {number} its place among the card greetings; -1 when the tree offers no such greeting
+     */
+    static greetingAt(card, greeting) {
+        return card.ids.findIndex((id, k) => id === greeting.id && card.cards[k] === greeting.card);
     }
 
     /**
      * The alternative of a message, other than the one being edited, with exactly its text and its author
-     * (`authorOf`): a stored one, or at a character tree's root a card greeting no stored opening holds, whose author
-     * is the character.
+     * (`authorOf`): a stored one, or at a tree's root a card greeting no stored opening holds, whose author is its
+     * character.
      * @param {bigint} tree
      * @param {bigint | null} parent the message's parent; null for a first message
      * @param {{ text: string, author: string }} edited
-     * @param {{ node?: bigint, greeting?: number }} self the alternative being edited: its node, or the card greeting
+     * @param {{ node?: bigint, greeting?: GreetingRef }} self the alternative being edited: its node, or the card greeting
      * @returns {Promise<SameAlternative | null>}
      */
     async sameAlternative(tree, parent, { text, author }, self) {
@@ -1289,20 +1392,26 @@ export class ChatEngine {
         const decoded = await this.decoded(siblings.map(id => stored.get(id)));
         const at = decoded.findIndex((m, i) => m?.mes === text && authorOf(m, speakerIdOf(stored.get(siblings[i]))) === author);
         if (at >= 0) return { node: siblings[at] };
-        if (parent !== null || author !== authorOf({}, tree)) return null;
+        if (parent !== null) return null;
         const card = await this.cardGreetings(tree);
-        const k = card.greetings.findIndex((g, i) => g.mes === text && card.ids[i] !== self.greeting);
+        const isSelf = (/** @type {number} */ k) => self.greeting !== undefined && card.ids[k] === self.greeting.id && card.cards[k] === self.greeting.card;
+        const k = card.greetings.findIndex((g, i) => g.mes === text && authorOf({}, card.cards[i]) === author && !isSelf(i));
         if (k < 0) return null;
         const segment = (await this.openingSegments(tree, card)).find(seg => seg.card === k);
-        return segment?.held ? null : { greeting: card.ids[k], epoch: card.defaultEpoch };
+        return segment?.held ? null : { greeting: { card: card.cards[k], id: card.ids[k] }, epoch: card.epochs[k] };
     }
 
     /**
+     * @param {bigint} tree
      * @param {SameAlternative} same
-     * @returns {Promise<{ node_id: string } | { greeting_id: number }>}
+     * @returns {Promise<{ node_id: string } | { greeting_id: number, avatar?: string }>} a card greeting by its id, and
+     *   by its character's avatar when that is not the tree's own
      */
-    async sameNamed(same) {
-        return 'node' in same ? { node_id: /** @type {string} */ ((await this.externalIds([same.node]))[0]) } : { greeting_id: same.greeting };
+    async sameNamed(tree, same) {
+        if ('node' in same) return { node_id: /** @type {string} */ ((await this.externalIds([same.node]))[0]) };
+        if (same.greeting.card === tree) return { greeting_id: same.greeting.id };
+        const avatar = (await this.people.speakers([same.greeting.card])).get(same.greeting.card)?.avatar;
+        return { greeting_id: same.greeting.id, ...(avatar === undefined ? {} : { avatar }) };
     }
 
     /**
@@ -1329,7 +1438,7 @@ export class ChatEngine {
      * @param {Record<string, any>} p.content
      * @param {boolean} p.typing
      * @param {Actor} p.actor
-     * @returns {Promise<{ node_id: string } | { greeting_id: number } | null>} the alternative with that text
+     * @returns {Promise<{ node_id: string } | { greeting_id: number, avatar?: string } | null>} the alternative with that text
      */
     showSameAlternative({ tree, treeSpeaker, after, content, typing, actor }) {
         return this.serialized(tree, async () => {
@@ -1337,8 +1446,10 @@ export class ChatEngine {
             const parent = after === null ? null : (await this.messageOf(tree, after))?.id;
             if (parent === undefined) return null;
             const greetingId = content?.extra?.greeting_id;
-            const author = authorOf(content, (await this.speakerFor(content, treeSpeaker))?.id ?? null);
-            const same = await this.sameAlternative(tree, parent, { text: content.mes, author }, parent === null && Number.isInteger(greetingId) ? { greeting: greetingId } : {});
+            const speaker = (await this.speakerFor(content, treeSpeaker))?.id ?? null;
+            const author = authorOf(content, speaker);
+            const self = parent === null && Number.isInteger(greetingId) ? { greeting: { card: openingCard(tree, speaker), id: greetingId } } : {};
+            const same = await this.sameAlternative(tree, parent, { text: content.mes, author }, self);
             if (same === null) return null;
             if (!typing) {
                 const records = [];
@@ -1348,13 +1459,13 @@ export class ChatEngine {
                 await this.claimConversation(records, tree, actor, { user, session });
                 if (records.length) await this.store.commit(records);
             }
-            return this.sameNamed(same);
+            return this.sameNamed(tree, same);
         });
     }
 
     /**
      * What the text written in a chat will be sent after: the message the session landed on; at the root, the opening
-     * it shows, stored or a card greeting (a group's last member opening); with none, the root
+     * it shows, stored or a card greeting; with none, the root
      * @param {{ tree: bigint, actor: Actor }} p
      * @returns {Promise<DraftOwner>}
      */
@@ -1362,58 +1473,16 @@ export class ChatEngine {
         const { user, session } = await this.knownActorIds(actor);
         const lands = await this.store.chatRead('landing', { tree, ...(session === null ? {} : { session }), ...(user === null ? {} : { user }) });
         if (lands !== null) return { message: lands };
-        if ((await this.owner(tree)).group) {
-            const last = (await this.memberOpenings({ tree, actor })).at(-1);
-            return last ? { tree: last.card, greeting: last.greetingId } : { tree };
-        }
         const card = await this.cardGreetings(tree);
-        const [shown] = (await this.openingAlternatives({ tree, actor, range: { limit: 1 }, card })).alternatives;
+        const [shown] = /** @type {Record<string, any>[]} */ ((await this.openingAlternatives({ tree, actor, range: { limit: 1 }, card })).alternatives);
         if (typeof shown?.node_id === 'string') {
             const [id] = await this.messageIds([shown.node_id]);
             if (id !== null) return { message: id };
         }
-        return Number.isInteger(shown?.extra?.greeting_id) ? { tree, greeting: shown.extra.greeting_id } : { tree };
-    }
-
-    /**
-     * A group chat's openings at its root: of each member with a greeting, the one the session chose when the chat
-     * started, or the member's default when it chose none or its choice is gone
-     * @param {{ tree: bigint, actor: Actor }} p
-     * @returns {Promise<{ card: bigint, avatar: string, greetingId: number, text: string }[]>}
-     */
-    async memberOpenings({ tree, actor }) {
-        if (!this.people.members || !this.people.greetingModel) return [];
-        const { session } = await this.knownActorIds(actor);
-        const openings = [];
-        for (const member of await this.people.members(tree)) {
-            const model = await this.people.greetingModel(member.id);
-            if (!model || model.greetings.length === 0) continue;
-            const stored = session === null ? null : await this.store.chatRead('openingChoice', { session, tree, card: member.id });
-            const value = stored === null || stored === undefined ? 0 : Number(stored);
-            const chosen = value === 0 || Math.floor(value / EPOCH) !== model.defaultEpoch ? null : (value % EPOCH) - 1;
-            const greeting = model.greetings.find(g => g.id === chosen) ?? model.greetings.find(g => g.id === model.defaultId) ?? model.greetings[0];
-            openings.push({ card: member.id, avatar: member.avatar, greetingId: greeting.id, text: greeting.text });
-        }
-        return openings;
-    }
-
-    /**
-     * A choice of one greeting of each member, at random, for a group chat starting
-     * @param {bigint} tree
-     * @param {bigint} session
-     * @param {bigint} user
-     * @returns {Promise<object[]>}
-     */
-    async memberOpeningChoices(tree, session, user) {
-        if (!this.people.members || !this.people.greetingModel) return [];
-        const records = [];
-        for (const member of await this.people.members(tree)) {
-            const model = await this.people.greetingModel(member.id);
-            if (!model || model.greetings.length === 0) continue;
-            const greeting = model.greetings[Math.floor(Math.random() * model.greetings.length)];
-            records.push({ kind: 'memberOpeningChoice', session, user, tree, card: member.id, index: greetingChoice(greeting.id, model.defaultEpoch) });
-        }
-        return records;
+        if (!Number.isInteger(shown?.extra?.greeting_id)) return { tree };
+        const avatar = shown.original_avatar;
+        const speaker = typeof avatar === 'string' ? (await this.people.byAvatar([avatar])).get(avatar)?.id ?? null : null;
+        return { tree: openingCard(tree, speaker), greeting: shown.extra.greeting_id };
     }
 
     /**
@@ -1473,22 +1542,25 @@ export class ChatEngine {
     /**
      * Where a new or relinked opening goes in its greeting's group: the opening that holds the greeting goes first;
      * any other from it goes right after the greeting, which is after the one holding it if one does. One from no
-     * greeting goes last among those.
+     * greeting goes last among those. An opening's greeting is of its character (`openingCard`).
      * @param {bigint} tree
      * @param {bigint} id
      * @param {Record<string, any>} content
-     * @param {{ id: number, text: string }[]} greetings the card's
+     * @param {bigint | null} speaker the character it is stored as spoken by
+     * @param {TreeGreeting[]} greetings the tree's card greetings
      * @param {bigint} user
      * @param {bigint | null} session
      * @param {boolean} moving whether it is in a list already (a relink), so that even no greeting needs a record
      * @returns {Promise<object[]>}
      */
-    async rootPlacement(tree, id, content, greetings, user, session, moving) {
+    async rootPlacement(tree, id, content, speaker, greetings, user, session, moving) {
         const base = { kind: 'messagePlace', message: id, user, ...(session === null ? {} : { session }) };
         const greetingId = content?.extra?.greeting_id;
-        if (!Number.isInteger(greetingId) || (await this.owner(tree)).group) return moving ? [{ ...base, first: false, group: 0 }] : [];
-        const group = greetingId + 1;
-        const text = greetings.find(g => g.id === greetingId)?.text;
+        const card = openingCard(tree, speaker);
+        const own = greetings.filter(g => g.card === card);
+        if (!Number.isInteger(greetingId) || (card === tree && (await this.owner(tree)).group)) return moving ? [{ ...base, first: false, group: 0n }] : [];
+        const group = greetingGroup(tree, card, greetingId);
+        const text = own.find(g => g.id === greetingId)?.text;
         const holds = (/** @type {Record<string, any> | undefined} */ c) => text !== undefined && c?.extra?.greeting_id === greetingId && c?.extra?.greeting_hash === hashGreetingText(text);
         if (holds(content)) return [{ ...base, first: true, group }];
         const [first] = (await this.store.chatRead('children', { tree, group, limit: 1 })).ids;
@@ -1626,7 +1698,8 @@ export class ChatEngine {
      * @param {number} [p.author]
      * @param {string | null} [p.ref]
      * @param {Actor} p.actor
-     * @param {((content: Record<string, any>) => Record<string, any>) | null} [p.asStart] how a first message is written, in place of by the card as stored
+     * @param {((content: Record<string, any>, speaker: bigint | null) => Record<string, any>) | null} [p.asStart] how a
+     *   first message is written, given the character it is stored as spoken by, in place of by the card as stored
      */
     editMessages({ tree, treeSpeaker, edits, author = AUTHOR.user, ref = null, actor, asStart = null }) {
         const lorebooks = edits.flatMap(e => (Array.isArray(e.changes) ? e.changes : [])).filter(op => op?.key === WORLD_INFO && !op.variable).map(op => op.value);
@@ -1638,7 +1711,7 @@ export class ChatEngine {
             const decoded = new Map((await this.decoded([...stored.values()])).map((d, i) => [[...stored.keys()][i], d]));
             let applied = 0;
             const refused = [];
-            /** @type {{ node_id: string, same: { node_id: string } | { greeting_id: number } }[]} */
+            /** @type {{ node_id: string, same: { node_id: string } | { greeting_id: number, avatar?: string } }[]} */
             const shown = [];
             for (const [i, edit] of edits.entries()) {
                 const id = ids[i];
@@ -1649,7 +1722,7 @@ export class ChatEngine {
                 }
                 const now = /** @type {Record<string, any>} */ (decoded.get(id));
                 const patched = patchedContent(now, edit);
-                const next = patched !== null && s.parent === null ? (asStart ?? await this.startWriter(tree))(patched) : patched;
+                const next = patched !== null && s.parent === null ? (asStart ?? await this.startWriter(tree))(patched, (await this.speakerFor(patched, treeSpeaker))?.id ?? null) : patched;
                 if (next === null) {
                     refused.push({ node_id: edit.node_id, reason: 'no content' });
                     continue;
@@ -1678,10 +1751,10 @@ export class ChatEngine {
                 const same = typeof next.mes === 'string' && next.mes !== now.mes && !isToolTurn(next) ? await this.sameAlternative(tree, s.parent, { text: next.mes, author }, { node: id }) : null;
                 if (same !== null) {
                     if (edit.finished !== true || session === null) {
-                        refused.push({ node_id: edit.node_id, reason: 'an alternative with this text already exists', same: await this.sameNamed(same) });
+                        refused.push({ node_id: edit.node_id, reason: 'an alternative with this text already exists', same: await this.sameNamed(tree, same) });
                     } else {
                         records.push(...await this.showRecords(tree, s.parent, same, user, session));
-                        shown.push({ node_id: edit.node_id, same: await this.sameNamed(same) });
+                        shown.push({ node_id: edit.node_id, same: await this.sameNamed(tree, same) });
                     }
                     continue;
                 }
@@ -1693,7 +1766,7 @@ export class ChatEngine {
                 }
                 records.push(...changed);
                 if (s.parent === null && relinked(now, next)) {
-                    records.push(...await this.rootPlacement(tree, id, next, this.people.greetings ? await this.people.greetings(tree) : [], user, session, true));
+                    records.push(...await this.rootPlacement(tree, id, next, speaker?.id ?? null, ChatEngine.treeGreetings(await this.cardGreetings(tree)), user, session, true));
                 }
                 applied++;
             }
@@ -1749,20 +1822,20 @@ export class ChatEngine {
      * greeting itself when none does.
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {CardGreetings} p.card
-     * @param {number} p.greetingId
+     * @param {GreetingRef} p.greeting
      * @param {Actor} p.actor
      * @returns {Promise<{ ok: boolean, reason?: string }>}
      */
-    useCardGreeting({ tree, card, greetingId, actor }) {
+    useCardGreeting({ tree, greeting, actor }) {
         return this.serialized(tree, async () => {
-            const k = card.ids.indexOf(greetingId);
+            const card = await this.cardGreetings(tree);
+            const k = ChatEngine.greetingAt(card, greeting);
             if (k < 0) return { ok: false, reason: 'no such greeting' };
             const seg = (await this.openingSegments(tree, card)).find(x => x.card === k);
             if (seg?.held && seg.first !== null) {
                 await this.selectNow({ tree, node_id: (await this.externalIds([seg.first]))[0], actor });
             } else {
-                await this.chooseCardGreetingNow({ tree, greetingId, epoch: card.defaultEpoch, actor });
+                await this.chooseCardGreetingNow({ tree, greeting, epoch: card.epochs[k], actor });
             }
             return { ok: true };
         });
@@ -1820,27 +1893,27 @@ export class ChatEngine {
     /**
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {number | null} p.greetingId the chosen greeting's id; null for the card's default
-     * @param {number} [p.epoch] the card's default epoch
+     * @param {GreetingRef | null} p.greeting the chosen greeting; null for the tree's default
+     * @param {number} [p.epoch] its card's default epoch
      * @param {Actor} p.actor
      */
-    chooseCardGreeting({ tree, greetingId, epoch = 0, actor }) {
-        return this.serialized(tree, () => this.chooseCardGreetingNow({ tree, greetingId, epoch, actor }));
+    chooseCardGreeting({ tree, greeting, epoch = 0, actor }) {
+        return this.serialized(tree, () => this.chooseCardGreetingNow({ tree, greeting, epoch, actor }));
     }
 
     /**
      * chooseCardGreeting, inside a write already serialized on the tree
      * @param {object} p
      * @param {bigint} p.tree
-     * @param {number | null} p.greetingId
+     * @param {GreetingRef | null} p.greeting
      * @param {number} p.epoch
      * @param {Actor} p.actor
      */
-    async chooseCardGreetingNow({ tree, greetingId, epoch, actor }) {
+    async chooseCardGreetingNow({ tree, greeting, epoch, actor }) {
         const records = [];
         const { user, session } = await this.actorIds(actor, records);
         if (session === null) throw new Error('A greeting is chosen through a session');
-        const choice = await this.choiceRecords(tree, greetingId, epoch, user, session);
+        const choice = await this.choiceRecords(tree, greeting, epoch, user, session);
         if (!choice.length) return { ok: true };
         records.push(...choice);
         await this.claimConversation(records, tree, actor, { user, session });
@@ -1850,20 +1923,23 @@ export class ChatEngine {
 
     /**
      * @param {bigint} tree
-     * @param {number | null} greetingId
-     * @param {number} epoch
+     * @param {GreetingRef | null} greeting null for the tree's default
+     * @param {number} epoch its card's default epoch
      * @param {bigint} user
      * @param {bigint} session
      * @returns {Promise<object[]>} none when the session shows that greeting already
      */
-    async choiceRecords(tree, greetingId, epoch, user, session) {
+    async choiceRecords(tree, greeting, epoch, user, session) {
         const [now] = await this.store.chatRead('sessions', { ids: [session] });
         const atRoot = !!now && now.tree === tree && now.at === null;
         const chosen = now ? await this.cardChoice(session, tree) : null;
-        if (atRoot && (chosen === null ? greetingId === null : chosen.id === greetingId && chosen.epoch === epoch)) return [];
+        if (atRoot && (chosen === null ? greeting === null : greeting !== null && chosen.card === greeting.card && chosen.id === greeting.id && chosen.epoch === epoch)) return [];
+        const index = greetingChoice(greeting?.id ?? null, epoch);
         return [
             ...(atRoot ? [] : [{ kind: 'pointerRoot', session, user, tree, time: this.now() }]),
-            { kind: 'openingChoice', session, user, tree, index: greetingChoice(greetingId, epoch) },
+            greeting === null || greeting.card === tree
+                ? { kind: 'openingChoice', session, user, tree, index }
+                : { kind: 'memberOpeningChoice', session, user, tree, card: greeting.card, index },
         ];
     }
 
@@ -1881,7 +1957,7 @@ export class ChatEngine {
             if (!ids.length || (await this.owner(tree)).group) return 0;
             const stored = await this.stored(ids);
             const decoded = await this.decoded(ids.map(id => stored.get(id)));
-            const greetings = this.people.greetings ? await this.people.greetings(tree) : [];
+            const greetings = ChatEngine.treeGreetings(await this.cardGreetings(tree));
             const records = [];
             const user = await this.idOf(SPACE.user, actor.user, 'user', records);
             const holders = [];
@@ -1889,7 +1965,7 @@ export class ChatEngine {
             for (const [i, id] of ids.entries()) {
                 const extra = decoded[i]?.extra;
                 if (!Number.isInteger(extra?.greeting_id)) continue;
-                const group = extra.greeting_id + 1;
+                const group = greetingGroup(tree, tree, extra.greeting_id);
                 records.push({ kind: 'messagePlace', message: id, first: false, group, user });
                 moved++;
                 const text = greetings.find(g => g.id === extra.greeting_id)?.text;
@@ -2391,7 +2467,7 @@ export class ChatEngine {
                 if (here?.at !== target) records.push({ kind: 'pointerMove', session, user, target });
             } else {
                 if (here === null || here.at !== null) records.push({ kind: 'pointerRoot', session, user, tree, time: this.now() });
-                records.push(...(group ? await this.memberOpeningChoices(tree, session, user) : [{ kind: 'openingChoice', session, user, tree, index: 0 }]));
+                records.push({ kind: 'openingChoice', session, user, tree, index: 0 });
             }
             if (current !== null) records.push({ kind: 'currentChat', session, user, tree });
             const name = await freeName(chatNameAt(await this.owner(tree), this.now()), n => n === kept || this.nameTaken(tree, n, { session }));
@@ -2426,7 +2502,8 @@ export class ChatEngine {
             for (const msg of messages) {
                 const level = await this.level(tree, parent);
                 const { contents: given, selected } = alternativesOf(msg);
-                const contents = parent === null ? given.map(asStart) : given;
+                const contents = [];
+                for (const content of given) contents.push(parent === null ? asStart(content, (await this.speakerFor(content, treeSpeaker))?.id ?? null) : content);
                 /** @type {bigint | null} */
                 let pick = null;
                 for (const [k, content] of contents.entries()) {
@@ -2950,10 +3027,9 @@ export class ChatEngine {
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Actor} p.actor
-     * @param {boolean} [p.group]
      */
-    newChat({ tree, actor, group = false }) {
-        return group ? this.goTo({ tree, node_id: null, actor }) : this.chooseCardGreeting({ tree, greetingId: null, actor });
+    newChat({ tree, actor }) {
+        return this.chooseCardGreeting({ tree, greeting: null, actor });
     }
 
     /**
@@ -3261,7 +3337,7 @@ export class ChatEngine {
                     const o = decoded.get(x);
                     const extra = { ...(o.extra && typeof o.extra === 'object' && !Array.isArray(o.extra) ? o.extra : {}) };
                     if (all.get(x).itemized) extra[ITEMIZED_PROMPT_FLAG] = true;
-                    return { send_date: o.send_date, extra, name: o.name, is_user: !!o.is_user, node_id: this.externalId(all.get(x)) };
+                    return { send_date: o.send_date, extra, name: o.name, is_user: !!o.is_user, ...avatarOf(o), node_id: this.externalId(all.get(x)) };
                 });
                 msg.swipe_id = sibs.indexOf(id);
             }

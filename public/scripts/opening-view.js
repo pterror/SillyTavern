@@ -4,6 +4,8 @@
  * @property {string} [name]
  * @property {boolean} [is_user]
  * @property {boolean} [is_system]
+ * @property {string} [original_avatar] the character who says it, when it is not the chat's own (a group member)
+ * @property {string} [force_avatar] the avatar it is drawn with, with `original_avatar`
  * @property {string|number} [send_date]
  * @property {Record<string, unknown>} [extra]
  * @property {string|null} [node_id]
@@ -31,7 +33,7 @@
  * @typedef {object} ShownFirst
  * @property {Record<string, any>|undefined} first the page's first message
  * @property {number} count how many messages the page shows
- * @property {string} speaker the character's name
+ * @property {string} speaker the name of an alternative that names none
  * @property {string|number} sendDate
  * @property {(speaker: string|undefined, mes: string|undefined) => string} provisionalId
  * @property {(nodeId: unknown) => boolean} isStored
@@ -75,6 +77,8 @@ export function openingView(state, page) {
             name,
             is_user: !!alt.is_user,
             is_system: !!alt.is_system,
+            ...(typeof alt.original_avatar === 'string' ? { original_avatar: alt.original_avatar } : {}),
+            ...(typeof alt.force_avatar === 'string' ? { force_avatar: alt.force_avatar } : {}),
             node_id: page.isStored(alt.node_id) ? alt.node_id : page.provisionalId(name, alt.mes),
             greeting: alt.greeting ?? null,
         };
@@ -90,6 +94,8 @@ export function openingView(state, page) {
             name: shown.name,
             is_user: shown.is_user,
             is_system: shown.is_system,
+            ...(typeof shown.original_avatar === 'string' ? { original_avatar: shown.original_avatar } : {}),
+            ...(typeof shown.force_avatar === 'string' ? { force_avatar: shown.force_avatar } : {}),
             send_date: shown.send_date,
             mes: swipes[at],
             extra: shown.extra,

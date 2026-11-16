@@ -17,7 +17,7 @@ const { router } = await import('./chats.js');
 const { router: tokenizersRouter } = await import('./tokenizers-current.js');
 const { router: avatarsRouter } = await import('./avatars.js');
 const { writeAllSettings, readSettingsAtPaths } = await import('../settings-store.js');
-const { newSessionKey, chatNameAt, sessionTime } = await import('../chat-engine.js');
+const { newSessionKey, chatNameAt, sessionTime, greetingGroup } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
 const { TYPE } = await import('../library-engine.js');
 const { convertedUser, writeLibraryCard, seedMessages, sessionPath, treeOf, namedChat } = await import('../../tests/converted-user.fixture.js');
@@ -160,7 +160,7 @@ test('with no current chat and no bookmark, a character opens on the choices las
 test('a group opens on its current chat, or a named one, made current only when asked', async () => {
     await user.store.lib.writeGroup({ id: 'g1', name: 'Band', members: ['Rex.png'] });
     const c1 = newSessionKey();
-    await user.store.chats.newChat({ tree: await treeOf(user.store, { group: 'g1' }), actor: { user: 'u', session: c1 }, group: true });
+    await user.store.chats.newChat({ tree: await treeOf(user.store, { group: 'g1' }), actor: { user: 'u', session: c1 } });
     await user.store.chats.nameSession({ session: c1, name: 'c1', actor: { user: 'u', session: c1 } });
     await saveWholeChat({ group: 'g1' }, 'c2', [{ chat_metadata: {} }, message('group says')]);
     const current = await open({ group_id: 'g1' }, c1);
@@ -279,28 +279,31 @@ test('a chat opened by a tab answers the looks of its character, which a look ed
     assert.deepEqual(untabbed.body.looks, { styles: {}, things: {} });
 });
 
-test('a group chat started opens on one greeting of each member that has any, by its id', async () => {
+test('a group chat started opens on its first member\'s default, every member\'s greetings its alternatives', async () => {
     await writeCharacter('Mo.png', 'Mo', 'Mo here.', { alternateGreetings: ['Mo again.'] });
     await writeCharacter('Quiet.png', 'Quiet', '');
-    await user.store.lib.writeGroup({ id: 'g-fresh', name: 'Fresh band', members: ['Mo.png', 'Quiet.png'] });
+    await writeCharacter('Lu.png', 'Lu', 'Lu here.');
+    await user.store.lib.writeGroup({ id: 'g-fresh', name: 'Fresh band', members: ['Quiet.png', 'Mo.png', 'Lu.png'] });
     const tab = newSessionKey();
-    await user.store.chats.startChat({ tree: await treeOf(user.store, { group: 'g-fresh' }), actor: { user: 'u', session: tab }, group: true });
+    await user.store.chats.startChat({ tree: await treeOf(user.store, { group: 'g-fresh' }), actor: { user: 'u', session: tab } });
     const opened = await open({ group_id: 'g-fresh' }, tab);
-    const [pick, ...rest] = opened.body.group_openings;
-    assert.deepEqual(rest, [], 'a member with no greeting opens nothing');
-    assert.equal(pick.avatar, 'Mo.png');
+    assert.equal(opened.body.group_openings, undefined);
+    const { openings } = opened.body;
+    const listed = openings.alternatives.map((/** @type {any} */ a) => [a.name, a.original_avatar, a.mes, a.node_id]);
+    assert.deepEqual(listed, [['Mo', 'Mo.png', 'Mo here.', null], ['Mo', 'Mo.png', 'Mo again.', null], ['Lu', 'Lu.png', 'Lu here.', null]], 'a member with no greeting offers none');
+    assert.equal(openings.default_index, 0);
     const { greetings } = await user.store.lib.greetingModel('Mo.png');
-    assert.equal(greetings.find(g => g.id === pick.greeting_id)?.text, pick.text);
-    assert.deepEqual((await open({ group_id: 'g-fresh' }, newSessionKey())).body.group_openings, [{ avatar: 'Mo.png', greeting_id: greetings.find(g => g.text === 'Mo here.')?.id, text: 'Mo here.' }], 'a session that chose none shows each member\'s default');
+    assert.deepEqual(openings.alternatives.map((/** @type {any} */ a) => a.extra.greeting_id).slice(0, 2), greetings.map(g => g.id));
 });
 
-test('a group\'s opening keeps its member\'s greeting id out of the group\'s greeting groups', async () => {
+test('a group\'s opening is kept in its member\'s greeting\'s group', async () => {
     await writeCharacter('Ned.png', 'Ned', 'Ned here.', { alternateGreetings: ['Ned again.'] });
     await user.store.lib.writeGroup({ id: 'g-stored', name: 'Stored band', members: ['Ned.png'] });
     const tree = await treeOf(user.store, { group: 'g-stored' });
+    const [ned] = await user.store.lib.ids(TYPE.character, ['Ned.png']);
     await user.store.chats.appendMessages({
         tree, treeSpeaker: null, after: null, actor: { user: 'u', session: newSessionKey() },
         contents: [{ name: 'Ned', is_user: false, mes: 'Ned again.', send_date: 1, original_avatar: 'Ned.png', extra: { greeting_id: 1 } }],
     });
-    assert.deepEqual((await user.store.chats.store.chatRead('rootGroups', { tree })).map(g => g.group), [0]);
+    assert.deepEqual((await user.store.chats.store.chatRead('rootGroups', { tree })).map(g => g.group), [greetingGroup(tree, ned, 1)]);
 });

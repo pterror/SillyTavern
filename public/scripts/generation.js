@@ -397,7 +397,6 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
     const end = Math.min(lastMessageIndex + 1, chat.length);
     /** @type {RawActionWrites} */
     const writes = { node_id: null, type };
-    const inGroup = selected_group != null && selected_group !== '';
 
     let lastStored = -1;
     for (let i = end - 1; i >= 0; i--) {
@@ -413,15 +412,15 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
         if (chat[0].node_id == null || chat[0].node_id === '') {
             updateMessage(0, { node_id: provisionalNodeId(chat[0].name, chat[0].mes) });
         }
-        let openingEnd = 0;
-        while (openingEnd < end && isProvisionalNodeId(chat[openingEnd]?.node_id) && (inGroup || openingEnd === 0)) openingEnd++;
-        if (openingEnd > 0 && String(chat[0].mes ?? '').trim() !== '') {
+        if (isProvisionalNodeId(chat[0].node_id) && String(chat[0].mes ?? '').trim() !== '') {
             const speaker = getCurrentCharacter()?.name;
-            writes.opening = messagesWithRefs(0, openingEnd, message => ({
+            writes.opening = messagesWithRefs(0, 1, message => ({
                 name: message.name ?? speaker, is_user: message.is_user === true, is_system: message.is_system === true,
                 send_date: message.send_date ?? new Date().toISOString(), mes: message.mes, extra: message.extra ?? {},
+                ...(typeof message.original_avatar === 'string' ? { original_avatar: message.original_avatar } : {}),
+                ...(typeof message.force_avatar === 'string' ? { force_avatar: message.force_avatar } : {}),
             }));
-            from = openingEnd;
+            from = 1;
         }
     }
 

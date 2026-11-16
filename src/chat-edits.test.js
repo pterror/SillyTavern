@@ -182,11 +182,6 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await chats.newChat({ tree: t, actor: a });
         assert.deepEqual(await shown(a), []);
         await chats.select({ tree: t, node_id: id.g2, actor: a });
-        await chats.newChat({ tree: t, actor: a, group: true });
-        assert.deepEqual(await shown(a), []);
-        const [sid] = await chats.store.chatRead('ids', { space: 1, keys: [a.session] });
-        assert.equal(await chats.store.chatRead('openingChoice', { session: sid, tree: t }), null);
-        await chats.select({ tree: t, node_id: id.g2, actor: a });
         assert.deepEqual(await shown(a), ['g2', 'u9']);
         await chats.select({ tree: t, node_id: id.g, actor: a });
         assert.deepEqual(await shown(a), ['g', 'u1', 'b1', 'u2', 'b2']);

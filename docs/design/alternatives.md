@@ -13,9 +13,10 @@ rendered as chat renders it, read-only; an editor only for the greeting being ed
 Targets:
 - `{ message: <node id> }`: a stored chat message's alternatives (its siblings in the tree, the engine's
   `alternatives()`), in the tab's open chat.
-- `{ opening: true }`: the open chat's first message (a character's chat): its stored openings, then the card's
-  greetings no stored opening already is (the engine's `openingAlternatives()`, the order message 0's swipes have).
-  A stored opening whose text a card greeting has is marked with that greeting's card position.
+- `{ opening: true }`: the open chat's first message: its stored openings, then the card greetings no stored opening
+  already is (the engine's `openingAlternatives()`, the order message 0's swipes have; a group's are every current
+  member's, below). A stored opening whose text a card greeting has is marked with that greeting's card position (a
+  character's chat; a group's list has no card, so it has no card operations).
 - `{ greetings: <avatar> }`: a character's card greetings, in card order (the greetings button in character info).
   When the tab's open chat is this character's, each greeting also says where it is among the chat's openings, so it
   can be shown in the chat.
@@ -138,8 +139,28 @@ alternative.
 An opening whose text is a card greeting's but for whitespace is stored, and is not linked to that greeting
 (`greeting-ids.md`: the exact text only), so the greeting stays among the openings beside it.
 
-Not covered yet: a card greeting of a group chat's opening, edited while not stored (the page stores the group's
-openings together).
+## A group chat's first message
+
+A group chat has one first message, as a character's chat has: "every member's greetings in the first message"
+(owner, 2026-11-16). Its alternatives are its stored openings and the card greetings of every current member, in
+member order and each card in its order, that no stored opening already is; each card greeting is by its member (its
+name, avatar and macros are the member's). It is one implementation with a character's chat's
+(`ChatEngine.cardGreetings`: a character's tree offers its card's greetings, a group's tree its members'), so
+everything above holds for it: swiping, an edit of a greeting not stored stored as an opening by that member, the
+same text by the same author, linking by exact text, remembered choices, the list and its counter.
+
+- A new group chat shows its first member's default greeting (the first member with greetings; its first greeting
+  when its card has no default), as a character's new chat shows its card's default.
+- A stored opening records its member as its speaker (the page sends the greeting's `original_avatar`).
+- Members added or removed: the card greetings offered are the current members'. Stored openings stay: a removed
+  member's come after the members' greetings and the openings from no greeting, grouped by greeting, and go back
+  among its greetings if it is a member again. A session's choice of a removed member's greeting gives way to the
+  default.
+- Group chats stored before this kept their members' openings as a chain (the first member's at the root, each
+  next one under the one before), stored with no speaker. They are not rewritten: the chain's root is a stored
+  opening from no greeting (it has its greeting's id but no link, and no speaker), shown after the members' card
+  greetings among the first message's alternatives, and the rest of the chain stays as messages under it. A session
+  that was in the chain stays there.
 
 ## Creating a character
 

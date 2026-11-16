@@ -72,10 +72,9 @@ export async function appendUnderStart(chat, { contents, sendKeys = [], changes 
     openingIds.forEach((id, i) => pending.record({ ref: pending.refs[i], node_id: id }));
     if (pending.variables) pending.record({ ref: 'macro-variables', node_id: openingIds[openingIds.length - 1], variables: pending.variables });
     if (pending.metadata) pending.record({ ref: pending.metadata.ref, node_id: openingIds[openingIds.length - 1], integrity: session.actor().session });
-    if (chat.avatar !== null) {
-        const p = { store, tree, actor: session.reader(), avatar: chat.avatar };
-        const openings = chat.directories ? await (await import('./message-count-service.js')).countedOpeningState(chat.directories, p) : await openingState(p);
-        pending.record({ ref: 'openings', node_id: '', avatar: chat.avatar, openings });
-    }
+    const owner = chat.groupId === null ? { avatar: chat.avatar } : { groupId: chat.groupId };
+    const p = { store, tree, actor: session.reader(), owner };
+    const openings = chat.directories ? await (await import('./message-count-service.js')).countedOpeningState(chat.directories, p) : await openingState(p);
+    pending.record({ ref: 'openings', node_id: '', ...(chat.groupId === null ? { avatar: chat.avatar } : { group_id: chat.groupId }), openings });
     return { ...made, node_ids: made.node_ids.slice(openingContents.length) };
 }

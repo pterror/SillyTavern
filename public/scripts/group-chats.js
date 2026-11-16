@@ -23,7 +23,7 @@ import {
 } from './utils.js';
 import { normalizeFav } from './hash-utils.js';
 import { addLayer, bringChatForward } from './drawer-stack.js';
-import { RA_CountCharTokens, dragElement, getMessageTimeStamp } from './RossAscends-mods.js';
+import { RA_CountCharTokens, dragElement } from './RossAscends-mods.js';
 import { power_user, sortEntitiesList, invalidateGroupsFuseIndex } from './power-user.js';
 import { debounce_timeout } from './constants.js';
 import { getRandomSortSeed } from './random-sort.js';
@@ -33,9 +33,7 @@ import { checkCharactersExistOrNull } from './character-existence-check.js';
 import {
     sendSystemMessage,
     printMessages,
-    substituteParams,
     default_avatar,
-    addOneMessage,
     clearChat,
     Generate,
     select_rm_info,
@@ -52,7 +50,6 @@ import {
     showSwipeButtons,
     hideSwipeButtons,
     updateChatMetadata,
-    characterAvatar,
     characterThumbnail,
     setMenuType,
     menu_type,
@@ -85,8 +82,7 @@ import { getRequestHeaders } from './request-headers.js';
 import { charactersStore, holdCharacter, setCharacterId, setOpenGroupId } from './character-store.js';
 import { eventSource, event_types } from './events.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, heldTagsForIds, compareTagsForSort } from './tags.js';
-import { _setCurrentTarget } from './chat-store.js';
-import { provisionalNodeId } from './node-identity.js';
+import { _setCurrentTarget, takeOpenings } from './chat-store.js';
 import { FILTER_TYPES, FILTER_STATES, FilterHelper, isFilterState } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup } from './popup.js';
@@ -476,32 +472,15 @@ async function openGroupConversation(groupId, { chat: requested = null, makeCurr
 
     const data = Array.isArray(answer.messages) ? answer.messages : [];
     const metadata = answer.chat_metadata ?? {};
-    const freshChat = !metadata.tainted && !data.length;
 
-    if (group && Array.isArray(group.members) && freshChat) {
-        chat.splice(0, chat.length);
-        chatElement.find('.mes').remove();
-        for (const opening of answer.group_openings ?? []) {
-            const character = findGroupMemberCharacter(opening.avatar);
-            if (!character) {
-                continue;
-            }
-
-            const mes = groupOpening(character, opening);
-            if (!mes.mes) {
-                continue;
-            }
-
-            chat.push(mes);
-            await eventSource.emit(event_types.MESSAGE_RECEIVED, (chat.length - 1), 'first_message');
-            addOneMessage(mes);
-            await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, (chat.length - 1), 'first_message');
-        }
-    } else if (Array.isArray(data) && data.length) {
-        chat.splice(0, chat.length, ...data);
-        chat.forEach(ensureMessageMediaIsArray);
-        chatElement.find('.mes').remove();
-        await printMessages();
+    chat.splice(0, chat.length, ...data);
+    chat.forEach(ensureMessageMediaIsArray);
+    chatElement.find('.mes').remove();
+    await takeOpenings({ group_id: groupId }, answer, { render: false });
+    await printMessages();
+    if (!data.length && chat.length === 1) {
+        await eventSource.emit(event_types.MESSAGE_RECEIVED, 0, 'first_message');
+        await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, 0, 'first_message');
     }
     _snapshotMessages();
 
@@ -701,26 +680,6 @@ export function getGroupCharacterCardsLazy(groupId, characterAvatar) {
         mesExamples: () => baseChatReplace(mesExamplesOverride?.trim()) ||
             collectField('Example Messages', c => c.mes_example, x => !x.startsWith('<START>') ? `<START>\n${x}` : x),
     });
-}
-
-/**
- * A member's greeting, shown as an opening of a fresh group chat
- * @param {Character} character
- * @param {{ greeting_id: number, text: string }} opening
- * @returns {ChatMessage}
- */
-function groupOpening(character, opening) {
-    const mes = {};
-    mes.is_user = false;
-    mes.is_system = false;
-    mes.name = character.name;
-    mes.send_date = getMessageTimeStamp();
-    mes.original_avatar = character.avatar;
-    mes.extra = { 'gen_id': Date.now() * Math.random() * 1000000, greeting_id: opening.greeting_id };
-    mes.mes = substituteParams(opening.text.trim(), { name2Override: character.name });
-    Object.assign(mes, characterAvatar(character));
-    mes.node_id = provisionalNodeId(mes.name, mes.mes);
-    return mes;
 }
 
 function resetSelectedGroup() {

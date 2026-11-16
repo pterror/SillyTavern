@@ -271,6 +271,8 @@ import {
     chatOpReadyAlternativeDelete,
     chatOpDeleteAlternativeNode,
     takeOpenings,
+    openingsOwnerOf,
+    currentChatOwner,
     isComposedSlot,
     chatOpStoreComposed,
     followSameAlternative,
@@ -945,7 +947,7 @@ function setupCharacterChangeStream() {
                 return;
             }
             if (message?.type === 'openings') {
-                void takeOpenings(message.avatar, message);
+                void takeOpenings(openingsOwnerOf(message), message);
                 return;
             }
             if (message?.type === 'message-counts') {
@@ -5019,17 +5021,16 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
     }
 
     const isOpening = mesId === 0;
-    const character = isOpening ? getCurrentCharacter() : null;
-    if (isOpening && !character?.avatar) {
+    const owner = isOpening ? currentChatOwner() : null;
+    if (isOpening && !owner) {
         return false;
     }
     if (!isOpening && !isStoredNodeId(message.node_id)) {
         return false;
     }
 
-    const body = isOpening
-        ? { avatar_url: character.avatar }
-        : { node_id: message.node_id };
+    /** @type {Record<string, any>} */
+    const body = { ...(owner ?? { node_id: message.node_id }) };
     if (!all) {
         body.offset = Math.max(0, index - ALTERNATIVE_FETCH_WINDOW);
         body.limit = ALTERNATIVE_FETCH_WINDOW * 2 + 1;
@@ -5074,7 +5075,9 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
             extra: alt.extra ?? {},
             name: alt.name,
             is_user: alt.is_user,
-            node_id: alt.node_id ?? (isOpening ? provisionalNodeId(alt.name ?? character.name ?? message.name, alt.mes ?? '') : undefined),
+            ...(typeof alt.original_avatar === 'string' ? { original_avatar: alt.original_avatar } : {}),
+            ...(typeof alt.force_avatar === 'string' ? { force_avatar: alt.force_avatar } : {}),
+            node_id: alt.node_id ?? (isOpening ? provisionalNodeId(alt.name ?? getCurrentCharacter()?.name ?? message.name, alt.mes ?? '') : undefined),
         };
     });
 
@@ -5174,6 +5177,7 @@ function syncSwipeToMes(messageId = null, swipeId = null, targetMessage = null) 
         gen_started: targetSwipeInfo?.gen_started,
         gen_finished: targetSwipeInfo?.gen_finished,
         extra: structuredClone(targetSwipeInfo?.extra) ?? {},
+        ...swipeSpeaker(targetMessage, targetSwipeInfo),
     };
 
     if (isChatResident) {
@@ -5183,6 +5187,22 @@ function syncSwipeToMes(messageId = null, swipeId = null, targetMessage = null) 
     }
 
     return true;
+}
+
+/**
+ * Who an alternative is by, as its swipe info names it: its name, whether it is the user's, and the avatar it is drawn
+ * with. The server names the speaker of each stored alternative and card greeting; a swipe made on the page names none
+ * and is by the message's own speaker.
+ * @param {ChatMessage} message
+ * @param {Record<string, any> | undefined} info
+ * @returns {Partial<ChatMessage>}
+ */
+function swipeSpeaker(message, info) {
+    if (typeof info?.name !== 'string') return {};
+    const drawn = info.force_avatar === message.force_avatar
+        ? {}
+        : { force_avatar: info.force_avatar, force_avatar_url: undefined, force_avatar_url_still: undefined };
+    return { name: info.name, is_user: !!info.is_user, original_avatar: info.original_avatar, ...drawn };
 }
 
 export function getGeneratingApi() {
@@ -5604,8 +5624,6 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
  * @property {ChatMessage[]} messages
  * @property {import('./scripts/chat-store.js').OpeningsResponse|null} openings
  * @property {import('./scripts/chat-store.js').OpeningsResponse|null} card_openings
- * @property {{ avatar: string, greeting_id: number, text: string }[]} [group_openings] a fresh group chat's openings: a
- *   greeting of each member, by its id
  * @property {string[]} [chats]
  * @property {number} [date_last_chat]
  * @property {Group} [group] The whole group, when the open asked `with_group`.
@@ -5741,7 +5759,7 @@ async function openCharacterConversation({ chat: requested = null, makeCurrent =
 async function getChatResult({ openings = null } = {}) {
     const character = getCurrentCharacter();
     name2 = character.name;
-    await takeOpenings(character.avatar, openings, { render: false });
+    await takeOpenings({ avatar_url: character.avatar }, openings, { render: false });
     await printMessages();
     select_selected_character(character.avatar);
 
@@ -8166,7 +8184,7 @@ async function applyGreetingOpSuccess(character, result) {
         setGreetingPagerGreetings(character.avatar, result.greetings, result.defaultPosition, result.hashes);
     }
     run.character = character;
-    await takeOpenings(character.avatar, result.openings);
+    await takeOpenings({ avatar_url: character.avatar }, result.openings);
     refreshOpeningActions(chatElement.children('.mes[mesid="0"]'), 0);
 }
 

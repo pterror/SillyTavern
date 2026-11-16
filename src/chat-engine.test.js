@@ -325,25 +325,25 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
 for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm: loadEngine({ platform: null }).binding })) {
     test(`${kind}: a tree's openings follow their card greetings, linked when written; it shows where the session landed, else its chosen greeting, else the default`, async () => {
         const store = await engine.Store.open(path.join(root, `engine-shown-opening-${kind}`));
-        const chats = await ChatEngine.open(store, { ...ivyPeople, greetings: async () => [{ id: 5, text: 'Greeting 1' }, { id: 7, text: 'Greeting 2' }, { id: 9, text: 'Greeting 3' }] });
+        const chats = await ChatEngine.open(store, { ...ivyPeople, greetingModel: async () => ({ greetings: [{ id: 5, text: 'Greeting 1' }, { id: 7, text: 'Greeting 2' }, { id: 9, text: 'Greeting 3' }], defaultId: 7, defaultEpoch: 0 }) });
         const t = ivy.id;
         const g = n => ({ name: 'Ivy', is_user: false, is_system: false, send_date: `2025-10-10T10:0${n}:00.000Z`, mes: `Greeting ${n}`, extra: {} });
-        const cardOf = (texts, ids, defaultId, defaultEpoch = 0) => ({ greetings: texts.map((mes, i) => ({ ...g(i), mes })), ids, defaultId, defaultEpoch });
+        const cardOf = (texts, ids, defaultId, defaultEpoch = 0) => ({ greetings: texts.map((mes, i) => ({ ...g(i), mes })), ids, cards: ids.map(() => t), epochs: ids.map(() => defaultEpoch), defaultAt: defaultId === null ? null : ids.indexOf(defaultId) });
         const card = cardOf(['Greeting 1', 'Greeting 2', 'Greeting 3'], [5, 7, 9], 7);
         const shown = async (c = card, who = actor) => {
             const o = await chats.openingAlternatives({ tree: t, actor: who, card: c });
             return o.alternatives[o.default_index - o.offset]?.mes ?? null;
         };
 
-        assert.deepEqual(await chats.openingAlternatives({ tree: t, actor }), {
+        assert.deepEqual(await chats.openingAlternatives({ tree: t, actor, card: cardOf([], [], null) }), {
             has_saved_chats: false, total: 0, stored: 0, default_index: 0, offset: 0, alternatives: [],
         });
         assert.equal(await shown(), 'Greeting 2');
         assert.equal(await shown(cardOf(['Greeting 1', 'Greeting 2', 'Greeting 3'], [5, 7, 9], null)), 'Greeting 1');
 
-        await chats.chooseCardGreeting({ tree: t, greetingId: 9, actor });
+        await chats.chooseCardGreeting({ tree: t, greeting: { card: t, id: 9 }, actor });
         const [session] = await store.chatRead('ids', { space: 1, keys: [actor.session] });
-        assert.deepEqual(await chats.cardChoice(session, t), { id: 9, epoch: 0 });
+        assert.deepEqual(await chats.cardChoice(session, t), { card: t, id: 9, epoch: 0 });
         assert.equal(await shown(), 'Greeting 3');
         assert.equal(await shown(card, { user: actor.user }), 'Greeting 2');
         assert.equal(await shown(cardOf(['Greeting 3, edited', 'Greeting 1'], [9, 5], 5)), 'Greeting 3, edited');
@@ -399,7 +399,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
     test(`${kind}: the cutover's grouping moves each linked opening into its greeting's group in the order it had, the one holding the greeting first`, async () => {
         const store = await engine.Store.open(path.join(root, `engine-grouping-${kind}`));
         const greetings = [{ id: 5, text: 'Greeting 1' }];
-        const chats = await ChatEngine.open(store, { ...ivyPeople, greetings: async () => greetings });
+        const chats = await ChatEngine.open(store, { ...ivyPeople, greetingModel: async () => ({ greetings, defaultId: 5, defaultEpoch: 0 }) });
         const t = ivy.id;
         const said = (/** @type {string} */ mes, /** @type {Record<string, any>} */ extra = {}) => ({ name: 'Ivy', is_user: false, is_system: false, send_date: '2025-10-10T10:00:00.000Z', mes, extra });
         const ids = [];

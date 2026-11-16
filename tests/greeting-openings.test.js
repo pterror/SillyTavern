@@ -101,7 +101,7 @@ test('a greeting change answers with the character tree\'s openings, and a tab o
         expect((await post('create', { ch_name: 'Greeter', first_mes: '', file_name: 'Greeter' }, session)).status).toBe(200);
         const { chats, people } = user.store;
         const [tree] = await people.trees([{ avatar: 'Greeter.png' }]);
-        await chats.chooseCardGreeting({ tree, greetingId: null, actor: { user: user.user.profile.handle, session } });
+        await chats.chooseCardGreeting({ tree, greeting: null, actor: { user: user.user.profile.handle, session } });
 
         const added = await post('greetings/add', { avatar_url: 'Greeter.png', position: 0, expected_length: 0, text: 'Hi' }, session);
         expect(added.status).toBe(200);
@@ -131,7 +131,7 @@ test('a card greeting the session chose stays shown through the session\'s own c
     const { chats, people } = user.store;
     const [tree] = await people.trees([{ avatar: 'Chooser.png' }]);
     const { greetings } = await user.store.lib.greetingModel('Chooser.png');
-    await chats.chooseCardGreeting({ tree, greetingId: greetings[2].id, actor: { user: user.user.profile.handle, session } });
+    await chats.chooseCardGreeting({ tree, greeting: { card: tree, id: greetings[2].id }, actor: { user: user.user.profile.handle, session } });
 
     const deleted = await post('greetings/delete', { avatar_url: 'Chooser.png', position: 0, expected_hash: yo.body.hashes[0] }, session);
     expect(deleted.body.greetings).toEqual(['Yo', 'Hey']);
@@ -156,7 +156,7 @@ test('a card greeting a session chose stays shown through another session\'s add
     const { hashGreetingText } = await import('../src/greeting-ops.js');
     const [tree] = await people.trees([{ avatar: 'Shared.png' }]);
     const before = await lib.greetingModel('Shared.png');
-    await chats.chooseCardGreeting({ tree, greetingId: before.greetings[2].id, epoch: before.defaultEpoch, actor: { user: theirs.user, session: mine } });
+    await chats.chooseCardGreeting({ tree, greeting: { card: tree, id: before.greetings[2].id }, epoch: before.defaultEpoch, actor: { user: theirs.user, session: mine } });
     const elsewhere = (/** @type {any} */ change) => changeGreetings({ directories: user.directories, store: user.store, actor: theirs, avatar: 'Shared.png', change });
     const mineNow = async () => {
         const { openingState } = await import('../src/opening-state.js');
@@ -264,14 +264,14 @@ test('using a card greeting in the chat goes to the opening that holds it, with 
     });
     const card = await cardGreetingsOf(user.store, 'UseIt.png');
 
-    expect(await chats.useCardGreeting({ tree, card, greetingId: card.ids[0], actor })).toEqual({ ok: true });
+    expect(await chats.useCardGreeting({ tree, greeting: { card: tree, id: card.ids[0] }, actor })).toEqual({ ok: true });
     expect(await chats.landingOf(tree, actor)).toBeNull();
-    expect(await chats.cardChoice((await chats.knownActorIds(actor)).session, tree)).toEqual({ id: card.ids[0], epoch: card.defaultEpoch });
+    expect(await chats.cardChoice((await chats.knownActorIds(actor)).session, tree)).toEqual({ card: tree, id: card.ids[0], epoch: (await user.store.lib.greetingModel('UseIt.png')).defaultEpoch });
 
-    expect(await chats.useCardGreeting({ tree, card, greetingId: card.ids[1], actor })).toEqual({ ok: true });
+    expect(await chats.useCardGreeting({ tree, greeting: { card: tree, id: card.ids[1] }, actor })).toEqual({ ok: true });
     expect(await chats.landingOf(tree, actor)).toBe(written.node_ids[1]);
 
-    expect(await chats.useCardGreeting({ tree, card, greetingId: 99, actor })).toEqual({ ok: false, reason: 'no such greeting' });
+    expect(await chats.useCardGreeting({ tree, greeting: { card: tree, id: 99 }, actor })).toEqual({ ok: false, reason: 'no such greeting' });
 });
 
 test('each opening says the card greeting it is, by id and the hash of its current text, exactly while it is that greeting', async () => {

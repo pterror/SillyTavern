@@ -127,7 +127,7 @@ test('metadata keys are set and removed one by one, leaving the others', async (
     assert.equal('drop' in metadata, false);
 });
 
-test('a group chat with no stored greetings: its members\' greetings are stored in a row', async () => {
+test('a group chat with no stored opening: the one shown is stored, with the chat\'s metadata', async () => {
     const group = '1700000000001';
     const tree = await treeOf(user.store, { group });
     const session = newSessionKey();
@@ -136,15 +136,15 @@ test('a group chat with no stored greetings: its members\' greetings are stored 
     const response = fakeResponse();
     const written = await applyPageWrites(response, chat, {
         node_id: null,
-        opening: { refs: ['g1', 'g2'], messages: [{ name: 'Alice', is_user: false, mes: 'Ahoy.' }, { name: 'Bob', is_user: false, mes: 'Welcome.' }] },
+        opening: { refs: ['g1'], messages: [{ name: 'Alice', is_user: false, mes: 'Ahoy.' }] },
         page_metadata: { ref: 'gm', set: {}, unset: [] },
     });
-    assert.deepEqual((await pathTo({ group }, written.nodeId)).messages.map(m => m.mes), ['Ahoy.', 'Welcome.']);
-    assert.deepEqual(response.locals.storedMessages.map(s => s.ref), ['g1', 'g2', 'gm']);
-    assert.equal(response.locals.storedMessages[2].integrity, session);
+    assert.deepEqual((await pathTo({ group }, written.nodeId)).messages.map(m => m.mes), ['Ahoy.']);
+    assert.deepEqual(response.locals.storedMessages.map(s => s.ref), ['g1', 'gm']);
+    assert.equal(response.locals.storedMessages[1].integrity, session);
 });
 
-test('a group\'s greetings no one has answered wait for what goes under them, and are stored with it in one write', async () => {
+test('a group\'s opening no one has answered waits for what goes under it, and is stored with it in one write', async () => {
     const group = '1700000000001';
     const session = newSessionKey();
     const chat = await chatContext(fakeRequest(session), { group });
@@ -155,17 +155,17 @@ test('a group\'s greetings no one has answered wait for what goes under them, an
     try {
         const written = await applyPageWrites(response, chat, {
             node_id: null,
-            opening: { refs: ['w1', 'w2'], messages: [{ name: 'Alice', is_user: false, mes: 'Ahoy again.' }, { name: 'Bob', is_user: false, mes: 'Welcome again.' }] },
+            opening: { refs: ['w1'], messages: [{ name: 'Bob', is_user: false, mes: 'Welcome again.' }] },
             page_metadata: { ref: 'wm', set: {}, unset: [] },
         }, { waitForReply: true });
         assert.equal(written.nodeId, null);
         assert.equal(commits.filter(n => n > 0).length, 0, 'nothing is stored before what goes under them');
         const { storeUserMessage } = await import('./stored-messages.js');
         const userNode = await storeUserMessage(response, { chat, anchorNodeId: null, message: { name: 'Tester', is_user: true, mes: 'Hello all.', extra: {} }, ref: 'wu' });
-        assert.deepEqual(commits.filter(n => n > 0), [3], 'both greetings and the user message in one write');
-        assert.deepEqual((await pathTo({ group }, userNode)).messages.map(m => m.mes), ['Ahoy again.', 'Welcome again.', 'Hello all.']);
-        assert.deepEqual(response.locals.storedMessages.map(s => s.ref), ['w1', 'w2', 'wm', 'wu']);
-        assert.equal(response.locals.storedMessages[2].integrity, session);
+        assert.deepEqual(commits.filter(n => n > 0), [2], 'the opening and the user message in one write');
+        assert.deepEqual((await pathTo({ group }, userNode)).messages.map(m => m.mes), ['Welcome again.', 'Hello all.']);
+        assert.deepEqual(response.locals.storedMessages.map(s => s.ref), ['w1', 'wm', 'openings', 'wu'], 'the group\'s openings come back as a character chat\'s do');
+        assert.equal(response.locals.storedMessages[1].integrity, session);
     } finally {
         user.store.events.off('commit', listen);
     }

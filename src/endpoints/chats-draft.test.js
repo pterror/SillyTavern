@@ -15,7 +15,7 @@ setConfigFilePath(path.join(__dirname, '..', '..', 'config.yaml'));
 
 const { router } = await import('./chats.js');
 const { writeAllSettings } = await import('../settings-store.js');
-const { newSessionKey } = await import('../chat-engine.js');
+const { newSessionKey, greetingGroup } = await import('../chat-engine.js');
 const { SESSION_HEADER } = await import('../request-session.js');
 const { draftFrames } = await import('../chat-drafts.js');
 const { shownMacrosAnswer } = await import('../message-macros.js');
@@ -217,33 +217,32 @@ test('a chat showing nothing keeps its draft at the root; a draft after what the
     assert.equal(carried.body.draft.text, 'first words');
 });
 
-test('a group chat started opens on a greeting of each member it chose then, and its draft follows the last', async () => {
+test('a group chat started opens on its first member\'s default greeting, and its draft follows the greeting shown', async () => {
     await writeCharacter('Dee.png', 'Dee', 'Dee here.', ['Dee again.', 'Dee once more.']);
     await writeCharacter('Eve.png', 'Eve', 'Eve here.');
     await user.store.lib.writeGroup({ id: 'gd', name: 'Pair', members: ['Dee.png', 'Eve.png'] });
     const tab = newSessionKey();
     const started = await post('new', { group_id: 'gd' }, tab);
     assert.equal(started.status, 200);
-    const picks = started.body.opened.group_openings;
-    assert.deepEqual(picks.map(p => p.avatar), ['Dee.png', 'Eve.png']);
-    for (let i = 0; i < 5; i++) {
-        assert.deepEqual((await post('open', { group_id: 'gd' }, tab)).body.group_openings, picks, 'each open shows the openings chosen when the chat started');
-    }
-    const owner = { greeting: picks[1].greeting_id, avatar: 'Eve.png' };
+    const { openings } = started.body.opened;
+    assert.deepEqual(openings.alternatives.map((/** @type {any} */ a) => [a.original_avatar, a.mes]), [['Dee.png', 'Dee here.'], ['Dee.png', 'Dee again.'], ['Dee.png', 'Dee once more.'], ['Eve.png', 'Eve here.']]);
+    const shown = openings.alternatives[openings.default_index];
+    assert.equal(shown.mes, 'Dee here.');
+    const owner = { greeting: shown.extra.greeting_id, avatar: 'Dee.png' };
     assert.deepEqual(started.body.opened.draft, { owner, text: '' });
     await post('draft', { group_id: 'gd', owner, ...over('', 'hello both') }, tab);
     assert.deepEqual((await post('open', { group_id: 'gd' }, tab)).body.draft, { owner, text: 'hello both' });
 
-    const shown = picks.map(p => ({ name: p.avatar, is_user: false, mes: p.text, send_date: 1, original_avatar: p.avatar, extra: { greeting_id: p.greeting_id } }));
-    const sent = await post('message/append', { group_id: 'gd', opening: { messages: shown, refs: ['', ''] }, messages: [said('hello both')], send_keys: ['kg'], draft_sent: { ...owner, ...over('hello both', 'hello both') } }, tab);
+    const opening = { name: 'Dee', is_user: false, mes: shown.mes, send_date: 1, original_avatar: 'Dee.png', extra: { greeting_id: owner.greeting } };
+    const sent = await post('message/append', { group_id: 'gd', opening: { messages: [opening], refs: [''] }, messages: [said('hello both')], send_keys: ['kg'], draft_sent: { ...owner, ...over('hello both', 'hello both') } }, tab);
     assert.equal(sent.status, 200);
-    const [eve] = await user.store.lib.ids(0, ['Eve.png']);
-    assert.equal(await user.store.chats.draftOf({ tree: eve, greeting: owner.greeting }), '');
+    const [dee] = await user.store.lib.ids(0, ['Dee.png']);
+    assert.equal(await user.store.chats.draftOf({ tree: dee, greeting: owner.greeting }), '');
     const tree = await treeOf(user.store, { group: 'gd' });
-    const openings = await user.store.chats.store.chatRead('rootGroups', { tree });
-    assert.deepEqual(openings.map(g => g.group), [0], 'a member\'s greeting id is not the group\'s greeting group');
+    const groups = await user.store.chats.store.chatRead('rootGroups', { tree });
+    assert.deepEqual(groups.map(g => g.group), [greetingGroup(tree, dee, owner.greeting)], 'the opening is kept in its member\'s greeting\'s group');
     const session = await user.store.chats.sessionId(tab);
-    assert.equal(await user.store.chats.store.chatRead('openingChoice', { session, tree, card: eve }), null, 'the choice ends with the send');
+    assert.equal(await user.store.chats.store.chatRead('openingChosen', { session, tree }), null, 'the choice ends with the send');
 });
 
 test('saves of one greeting\'s draft from its own chat and a group chat at once are all kept', async () => {

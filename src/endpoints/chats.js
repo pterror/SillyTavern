@@ -16,7 +16,6 @@ import {
 import { triggerAutoSave } from './settings.js';
 import { readAllSettings, writeSettingsKeys } from '../settings-store.js';
 import { readUserSettings, settingsContextOf } from '../settings-reads.js';
-import { cardGreetingsOf } from '../opening-state.js';
 import { shownGreeting } from '../tab-views.js';
 import { hashGreetingText } from '../greeting-ops.js';
 import { applyPageWrites } from '../page-writes.js';
@@ -772,19 +771,10 @@ async function recordLastOpened(request, opened) {
 /**
  * @param {import('express').Request} request
  * @param {import('../chat-request.js').ChatContext} chat
- * @param {string} avatar
  */
-function openingsForPage(request, chat, avatar) {
-    return countedOpeningState(request.user.directories, { store: chat.store, tree: chat.tree, actor: chat.session.reader(), avatar, pageFacts: pageFactsOf(request) });
-}
-
-/**
- * @param {import('express').Request} request
- * @param {import('../chat-request.js').ChatContext} chat
- */
-async function openingsAnswerOf(request, chat) {
-    if (request.body.group_id) return {};
-    return openingsForPage(request, chat, String(request.body.avatar_url || ''));
+function openingsForPage(request, chat) {
+    const owner = chat.groupId === null ? { avatar: chat.avatar } : { groupId: chat.groupId };
+    return countedOpeningState(request.user.directories, { store: chat.store, tree: chat.tree, actor: chat.session.reader(), owner, pageFacts: pageFactsOf(request) });
 }
 
 /**
@@ -862,7 +852,7 @@ async function shownAnswer(request, response, chat, parent, same) {
         chat_metadata: loaded?.metadata,
         links: await chatLinks(request.user.directories, chat, messages, { metadata: loaded?.metadata }),
         ...await endAnswer(response, chat),
-        ...(parent === null ? await openingsAnswerOf(request, chat) : {}),
+        ...(parent === null ? await openingsForPage(request, chat) : {}),
     };
 }
 
@@ -914,15 +904,12 @@ async function openChatAnswer(request, response, body) {
     if (body.group_id) {
         const groupId = String(body.group_id);
         const stats = await chat.store.lib.chatStats([chat.tree]);
-        const groupOpenings = messages.length === 0 && !metadata.tainted ? await chats.memberOpenings({ tree: chat.tree, actor: chat.session.reader() }) : [];
         return {
             status: 200,
             answer: {
                 ...common,
-                group_openings: groupOpenings.map(o => ({ avatar: o.avatar, greeting_id: o.greetingId, text: o.text })),
+                ...await openingsForPage(request, chat),
                 ...await endAnswer(response, chat),
-                openings: null,
-                card_openings: null,
                 chats: (await chatListOf(chat)).map(r => r.file_id),
                 date_last_chat: stats.get(chat.tree)?.date_last_chat ?? 0,
                 ...(body.with_group === true ? { group: await wholeGroup() } : {}),
@@ -931,7 +918,7 @@ async function openChatAnswer(request, response, body) {
         };
     }
     const character = body.with_character === true ? await wholeCard() : null;
-    const openings = await openingsForPage(request, chat, String(avatar));
+    const openings = await openingsForPage(request, chat);
     return {
         status: 200,
         answer: {
@@ -1188,7 +1175,7 @@ router.post('/message/edit', validateAvatarUrlMiddleware, async function (reques
             const parent = before?.parent == null ? null : (await chat.store.chats.externalIds([before.parent]))[0];
             return response.send({ ok: true, shown: await shownAnswer(request, response, chat, parent, result.shown[0].same) });
         }
-        return response.send({ ok: true, message_counts: await storedMessageCounts(request, chat, [nodeId]), message_macros: await storedMessageMacros(request, chat, [nodeId]), links: await storedChatLinks(request.user.directories, chat, [nodeId]), ...(await touchesOpening(chat, [nodeId]) ? await openingsAnswerOf(request, chat) : {}) });
+        return response.send({ ok: true, message_counts: await storedMessageCounts(request, chat, [nodeId]), message_macros: await storedMessageMacros(request, chat, [nodeId]), links: await storedChatLinks(request.user.directories, chat, [nodeId]), ...(await touchesOpening(chat, [nodeId]) ? await openingsForPage(request, chat) : {}) });
     } catch (error) {
         console.error('Error editing message:', error);
         return response.status(500).send({ error: true });
@@ -1203,7 +1190,7 @@ router.post('/message/edit-batch', validateAvatarUrlMiddleware, async function (
         if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
         const result = await chat.store.chats.editMessages({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, edits, actor: chat.session.actor() });
         const ok = result.refused.length === 0;
-        const openings = await touchesOpening(chat, edits.map(e => e?.node_id)) ? await openingsAnswerOf(request, chat) : {};
+        const openings = await touchesOpening(chat, edits.map(e => e?.node_id)) ? await openingsForPage(request, chat) : {};
         const refusedIds = new Set(result.refused.map(r => r.node_id));
         const edited = edits.map(e => e?.node_id).filter(id => !refusedIds.has(id));
         const counts = await storedMessageCounts(request, chat, edited);
@@ -1229,7 +1216,7 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
             });
             if (!written) return;
             chat.session.answer(response, { moved: true });
-            return response.send({ ok: true, node_ids: written.pushedIds, stored: storedMessagesOf(response) ?? undefined, ...await endAnswer(response, chat), message_counts: await storedMessageCounts(request, chat, written.pushedIds), message_macros: await storedMessageMacros(request, chat, written.pushedIds), links: await storedChatLinks(request.user.directories, chat, written.pushedIds), ...await openingsAnswerOf(request, chat) });
+            return response.send({ ok: true, node_ids: written.pushedIds, stored: storedMessagesOf(response) ?? undefined, ...await endAnswer(response, chat), message_counts: await storedMessageCounts(request, chat, written.pushedIds), message_macros: await storedMessageMacros(request, chat, written.pushedIds), links: await storedChatLinks(request.user.directories, chat, written.pushedIds), ...await openingsForPage(request, chat) });
         }
         const contents = (Array.isArray(request.body.messages) ? request.body.messages : []).map(storedForm);
         if (request.body.typed === true && contents.length === 1) {
@@ -1252,9 +1239,7 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
         const limit = Number.isFinite(Number(request.body.limit)) ? Number(request.body.limit) : undefined;
         const chat = await chatOf(request);
         if (!chat) return response.status(404).send({ error: 'unknown chat' });
-        const avatar = request.body.group_id ? '' : String(request.body.avatar_url || '');
-        const card = avatar ? await cardGreetingsOf(chat.store, avatar) : undefined;
-        const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.session.reader(), range: { offset, limit }, ...(card ? { card } : {}) });
+        const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.session.reader(), range: { offset, limit } });
         await shapeSent(request, chat, { alternatives: openings.alternatives });
         return response.send(openings);
     } catch (error) {
@@ -1263,21 +1248,29 @@ router.post('/openings', validateAvatarUrlMiddleware, async function (request, r
     }
 });
 
+/**
+ * The chat's opening becomes a card greeting it offers: one of `greeting_avatar`'s (the chat's character's when
+ * absent) with the text `text`, at `index` among that card's greetings when given.
+ */
 router.post('/openings/choose', validateAvatarUrlMiddleware, async function (request, response) {
     try {
-        const avatar = String(request.body.avatar_url || '');
-        if (!avatar) return response.status(400).send({ error: 'avatar_url is required' });
+        const avatar = String(request.body.greeting_avatar || request.body.avatar_url || '');
+        if (!avatar) return response.status(400).send({ error: 'greeting_avatar or avatar_url is required' });
         const index = request.body.index;
-        if (!Number.isInteger(index) || index < 0) return response.status(400).send({ error: 'index must be a non-negative integer' });
-        const chat = await chatOf(request, { avatar_url: avatar });
+        if (index !== undefined && (!Number.isInteger(index) || index < 0)) return response.status(400).send({ error: 'index must be a non-negative integer' });
+        if (index === undefined && typeof request.body.text !== 'string') return response.status(400).send({ error: 'text or index is required' });
+        const chat = await chatOf(request);
         if (!chat) return response.status(404).send({ error: 'unknown chat' });
+        const [character] = await chat.store.lib.ids(TYPE.character, [avatar]);
+        const card = await chat.store.chats.cardGreetings(chat.tree);
+        if (character === null || !card.cards.includes(character)) return response.status(409).send({ error: 'no such greeting' });
         const { greetings, defaultEpoch } = await chat.store.lib.greetingModel(avatar);
         const text = typeof request.body.text === 'string' ? request.body.text : greetings[index]?.text;
-        const chosen = greetings[index]?.text === text ? greetings[index] : greetings.find(g => g.text === text);
+        const chosen = index !== undefined && greetings[index]?.text === text ? greetings[index] : greetings.find(g => g.text === text);
         if (!chosen) return response.status(409).send({ error: 'no such greeting' });
-        await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greetingId: chosen.id, epoch: defaultEpoch, actor: chat.session.actor() });
+        await chat.store.chats.chooseCardGreeting({ tree: chat.tree, greeting: { card: character, id: chosen.id }, epoch: defaultEpoch, actor: chat.session.actor() });
         chat.session.answer(response, { moved: true });
-        const openings = await openingsForPage(request, chat, avatar);
+        const openings = await openingsForPage(request, chat);
         return response.send({ ok: true, ...openings, ...await endAnswer(response, chat) });
     } catch (error) {
         console.error('Error recording the chosen opening:', error);
@@ -1296,7 +1289,7 @@ router.post('/openings/use-greeting', validateAvatarUrlMiddleware, async functio
         const { greetings } = await chat.store.lib.greetingModel(avatar);
         const greeting = position < greetings.length ? greetings[position] : null;
         if (greeting === null || hashGreetingText(greeting.text) !== expectedHash) return response.status(409).send({ ok: false, reason: 'the greeting changed' });
-        const used = await chat.store.chats.useCardGreeting({ tree: chat.tree, card: await cardGreetingsOf(chat.store, avatar), greetingId: greeting.id, actor: chat.session.actor() });
+        const used = await chat.store.chats.useCardGreeting({ tree: chat.tree, greeting: { card: chat.tree, id: greeting.id }, actor: chat.session.actor() });
         if (!used.ok) return response.status(409).send(used);
         chat.session.answer(response, { moved: true });
         const { answer } = await openChatAnswer(request, response, { avatar_url: avatar, send_keys: request.body.send_keys, parts: request.body.parts });
@@ -1330,7 +1323,7 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
         try {
             if (opening || s?.parent === null) {
                 const added = await chats.addOpenings({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, contents, place, actor });
-                return response.send({ ...added, ...await openingsAnswerOf(request, chat) });
+                return response.send({ ...added, ...await openingsForPage(request, chat) });
             }
             const [parent] = await chats.externalIds([(s?.parent)]);
             const nodeIds = [];
@@ -1414,7 +1407,7 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
         if (!chat) return response.status(409).send({ ok: false, reason: 'unknown chat' });
         let child = String(request.body.node_id || '');
         const openingMessages = request.body.opening?.messages;
-        if (!child && !request.body.group_id && Array.isArray(openingMessages) && openingMessages.length === 1) {
+        if (!child && Array.isArray(openingMessages) && openingMessages.length === 1) {
             const typing = request.body.typing === true;
             const same = await chat.store.chats.showSameAlternative({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after: null, content: storedForm(openingMessages[0]), typing, actor: chat.session.actor() });
             if (same !== null && typing) return response.status(409).send({ ok: false, reason: 'an alternative with this text already exists', same });
@@ -1445,7 +1438,7 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
             links: at === -1 ? undefined : await chatLinks(request.user.directories, chat, request.body.with_ancestry ? messages : messages.slice(at), { metadata: loaded?.metadata, adding: !request.body.with_ancestry }),
             stored: storedMessagesOf(response) ?? undefined,
             ...await endAnswer(response, chat),
-            ...(await touchesOpening(chat, [child]) ? await openingsAnswerOf(request, chat) : {}),
+            ...(await touchesOpening(chat, [child]) ? await openingsForPage(request, chat) : {}),
         });
     } catch (error) {
         console.error('Error selecting alternative:', error);

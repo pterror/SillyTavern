@@ -84,6 +84,11 @@ declare global {
         gen_finished?: MessageTimestamp;
         extra?: ChatMessageExtra;
         node_id?: string | null;
+        /** Who the alternative is by, when the server names it (`swipeSpeaker`). */
+        name?: string;
+        is_user?: boolean;
+        original_avatar?: string;
+        force_avatar?: string;
     }
 
     interface BaseMessageExtra {

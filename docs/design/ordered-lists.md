@@ -128,17 +128,22 @@ always see the list as it is.
 
 ## Openings and card greetings
 
-`greeting-ids.md` puts the openings in card order. Each card greeting comes first, followed by the openings stored
-from it. After every card greeting come the openings from no greeting, then the openings from deleted greetings.
+`greeting-ids.md` puts the openings in card order (a group's: its members in order, each card in its order). Each
+card greeting comes first, followed by the openings stored from it. After every card greeting come the openings from
+no greeting, then the openings from deleted greetings and from characters no longer members.
 
-- **A tree's openings are one list per greeting group:** `List::roots(tree, group)`, the group being the greeting's
-  id + 1, or 0 for none. `MESSAGE_GROUP (m)` keeps an opening's group (absent for 0), and `LIST_GROUPS (tree,
-  group)` the groups a tree has openings in. An opening goes into its group by a place: the server knows the group
-  when it stores or relinks an opening, from the `greeting_id` it is linked to.
-- **The card's order comes with the read.** The openings read (`openingSegments`) is given the card's greetings in
-  card order (`CardGreetings.ids`), as it already is. It reads the tree's groups (`rootGroups`: each group's count and
-  first opening, O(G)) and lays them out: each card greeting's group in card order, then group 0, then the groups of
-  deleted greetings by id. G is at most the card's greeting count plus the groups of deleted greetings.
+- **A tree's openings are one list per greeting group:** `List::roots(tree, group)`, the group being 0 for none, and
+  for a greeting (`greetingGroup`, `src/chat-engine.js`) its id + 1 when it is the tree's own character's, its
+  character's entity id × 2³² + its id + 1 when it is a group member's. Entity and greeting ids are below 2³²; the
+  server refuses a greeting group for one that isn't. `MESSAGE_GROUP (m)` keeps an opening's group (absent for 0), and
+  `LIST_GROUPS (tree, group)` the groups a tree has openings in. An opening goes into its group by a place: the server
+  knows the group when it stores or relinks an opening, from the `greeting_id` it is linked to and the character it is
+  stored as spoken by (`greeting-ids.md`, An opening's card greeting). Group numbers cross the binding as BigInts.
+- **The card's order comes with the read.** The openings read (`openingSegments`) is given the tree's card greetings
+  in order (`CardGreetings`: each greeting's id and character), as it already is. It reads the tree's groups
+  (`rootGroups`: each group's count and first opening, O(G)) and lays them out: each card greeting's group in order,
+  then group 0, then the other groups by number. G is at most the greeting count plus the groups of deleted greetings
+  and former members' greetings.
 - **The opening holding a greeting is first in its group.** So whether the card greeting itself is shown (no stored
   opening holds it) is one read of the group's first opening.
 - **Costs** (n openings in a group, G groups, L a page):

@@ -257,7 +257,7 @@ async function shownChatCounts(request, shown, counting) {
     const reader = chat.session.reader();
     const at = await chat.store.chats.landingOf(chat.tree, reader);
     const loaded = at === null ? null : await chat.store.chats.load({ tree: chat.tree, at, session: reader.session });
-    const openings = chat.avatar === null ? null : await openingState({ store: chat.store, tree: chat.tree, actor: reader, avatar: chat.avatar });
+    const openings = await openingState({ store: chat.store, tree: chat.tree, actor: reader });
     const { countForPage } = await import('../message-count-service.js');
     return countForPage(chat.store, counting, { messages: loaded?.messages ?? [], alternatives: openingAlternatives(openings) });
 }

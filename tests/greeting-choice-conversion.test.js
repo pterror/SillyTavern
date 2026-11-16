@@ -26,7 +26,7 @@ test('a choice remembered as a place on the card becomes the id of the greeting 
     const [p, q] = await user.store.people.trees([{ avatar: 'p.png' }, { avatar: 'q.png' }]);
     const sessions = ['0190a1b2-0000-7000-8000-0000000000a1', '0190a1b2-0000-7000-8000-0000000000a2', '0190a1b2-0000-7000-8000-0000000000a3'];
     for (const [session, tree] of [[sessions[0], p], [sessions[1], q], [sessions[2], p]]) {
-        await chats.chooseCardGreeting({ tree, greetingId: null, actor: { user: 'u', session } });
+        await chats.chooseCardGreeting({ tree, greeting: null, actor: { user: 'u', session } });
     }
     const ids = await lib.store.chatRead('ids', { space: 1, keys: sessions });
     const [u] = await lib.store.chatRead('ids', { space: 2, keys: ['u'] });
@@ -42,10 +42,10 @@ test('a choice remembered as a place on the card becomes the id of the greeting 
 
     const pModel = await lib.greetingModel('p.png');
     const qModel = await lib.greetingModel('q.png');
-    expect(await chats.cardChoice(ids[0], p)).toEqual({ id: pModel.greetings[1].id, epoch: 0 });
+    expect(await chats.cardChoice(ids[0], p)).toEqual({ card: p, id: pModel.greetings[1].id, epoch: 0 });
     expect(pModel.greetings[1].text).toBe('Third');
-    expect(await chats.cardChoice(ids[1], q)).toEqual({ id: qModel.greetings[1].id, epoch: 0 });
-    expect(await chats.cardChoice(ids[2], p)).toEqual({ id: pModel.greetings[0].id, epoch: 0 });
+    expect(await chats.cardChoice(ids[1], q)).toEqual({ card: q, id: qModel.greetings[1].id, epoch: 0 });
+    expect(await chats.cardChoice(ids[2], p)).toEqual({ card: p, id: pModel.greetings[0].id, epoch: 0 });
     expect(await order()).toEqual(before);
 });
 
@@ -100,7 +100,7 @@ test('every stored first message with a card greeting\'s exact text is linked to
     ];
     const { ChatEngine } = await import('../src/chat-engine.js');
     const { libraryPeople } = await import('../src/chat-people.js');
-    const before = await ChatEngine.open(lib.store, { ...user.store.people, greetings: undefined }, await lib.nextIds());
+    const before = await ChatEngine.open(lib.store, { ...user.store.people, greetingModel: undefined }, await lib.nextIds());
     for (const content of old) {
         await before.appendMessages({ tree, treeSpeaker: null, after: null, contents: [content], actor: { user: 'u' } });
     }
@@ -207,10 +207,10 @@ test('a card stored with the same greeting twice keeps the first copy, and what 
     expect((await lib.greetingModel('twice.png')).greetings.map(g => [g.id, g.text])).toEqual([[0, 'Same'], [1, 'Other'], [7, 'Same']]);
     const [tree] = await user.store.people.trees([{ avatar: 'twice.png' }]);
     const session = '0190a1b2-0000-7000-8000-0000000000b7';
-    await chats.chooseCardGreeting({ tree, greetingId: 7, actor: { user: 'u', session } });
+    await chats.chooseCardGreeting({ tree, greeting: { card: tree, id: 7 }, actor: { user: 'u', session } });
     await showGreeting(lib, session, 'twice.png', 7, 1);
     const { ChatEngine } = await import('../src/chat-engine.js');
-    const unlinked = await ChatEngine.open(lib.store, { ...user.store.people, greetings: undefined }, await lib.nextIds());
+    const unlinked = await ChatEngine.open(lib.store, { ...user.store.people, greetingModel: undefined }, await lib.nextIds());
     await unlinked.appendMessages({ tree, treeSpeaker: null, after: null, contents: [{ name: 'Twice', is_user: false, mes: 'Same', extra: { greeting_id: 7 } }], actor: { user: 'u' } });
 
     const { libraryPeople } = await import('../src/chat-people.js');
@@ -220,7 +220,7 @@ test('a card stored with the same greeting twice keeps the first copy, and what 
     expect(model.greetings.map(g => [g.id, g.text])).toEqual([[0, 'Same'], [1, 'Other']]);
     expect(model.defaultId).toBe(0);
     const [sid] = await lib.store.chatRead('ids', { space: 1, keys: [session] });
-    expect(await after.cardChoice(sid, tree)).toEqual({ id: 0, epoch: model.defaultEpoch });
+    expect(await after.cardChoice(sid, tree)).toEqual({ card: tree, id: 0, epoch: model.defaultEpoch });
     expect(await shownGreeting(lib, session, 'twice.png')).toBe(0);
     expect((await after.openings(tree)).map(o => o.message.extra.greeting_id)).toEqual([0]);
     expect(await convertDuplicateGreetings(lib, after, 'u', user.directories)).toBe(0);

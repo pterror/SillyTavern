@@ -319,7 +319,8 @@ async function chatOfTab(context) {
     const tree = BigInt(context.chat.tree);
     const [key] = await store.lib.store.libraryKeys([tree]);
     const avatar = key && key.type !== TYPE.group ? key.key : null;
-    return { store, tree, avatar, actor: { user: context.user.handle, session: context.session } };
+    const groupId = key && key.type === TYPE.group ? key.key : null;
+    return { store, tree, avatar, groupId, actor: { user: context.user.handle, session: context.session } };
 }
 
 /**
@@ -360,7 +361,7 @@ async function listedAlternatives(context, target) {
     if ('opening' in target) {
         if (!chat) return null;
         const card = chat.avatar ? await readCardGreetings(chat.store, chat.avatar) : null;
-        const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, ...(card ? { card } : {}) });
+        const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE });
         return {
             alternatives: openings.alternatives.map(alternativeOf),
             current: openings.total > 0 ? openings.default_index : null,
@@ -372,7 +373,7 @@ async function listedAlternatives(context, target) {
     const card = await readCardGreetings(store, target.greetings);
     if (!card) return null;
     const inChat = chat && chat.avatar === target.greetings
-        ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE, card })
+        ? await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE })
         : null;
     return {
         alternatives: card.texts.map(text => ({ nodeId: null, text, name: card.name, isUser: false, isSystem: false, date: null })),
@@ -394,7 +395,7 @@ async function withMacroValues(context, listed) {
     const wanted = listed.alternatives.map(a => ({ texts: [a.text], speaker: a.isUser ? null : a.name }));
     if (!wanted.some(each => macrosIn(each.texts[0]).length > 0)) return listed;
     const chat = await chatOfTab(context);
-    const owner = { avatar: listed.card?.avatar ?? chat?.avatar ?? null, groupId: null, pageFacts: undefined };
+    const owner = listed.card ? { avatar: listed.card.avatar, groupId: null, pageFacts: undefined } : { avatar: chat?.avatar ?? null, groupId: chat?.groupId ?? null, pageFacts: undefined };
     const values = await macroValuesOf(directoriesOf(context.user), owner, wanted);
     return { ...listed, alternatives: listed.alternatives.map((a, i) => ({ ...a, macros: values[i] })) };
 }

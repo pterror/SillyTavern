@@ -1205,7 +1205,7 @@ export async function changeGreetings({ directories, store, actor, avatar, chang
     const result = await applyGreetingOperation(directories, avatar, greetingOperation(change));
     const [tree] = actor === null ? [null] : await store.people.trees([{ avatar }]);
     if (!result.ok || tree === null || tree === undefined || actor === null) return { result, opening: null };
-    return { result, opening: await countedOpeningState(directories, { store, tree, actor, avatar }) };
+    return { result, opening: await countedOpeningState(directories, { store, tree, actor, owner: { avatar } }) };
 }
 
 /**
@@ -2318,14 +2318,17 @@ async function tabStreamSession(request, store, send) {
     let openingsPushed = null;
     const pushOpenings = async (/** @type {any[]} */ records) => {
         const here = await chats.pointer(session);
-        if (here === null || !records.some(r => r.entity === here.tree)) return;
+        if (here === null) return;
         const owner = await ownerOf(here.tree);
-        if (!owner || !('avatar' in owner)) return;
-        const openings = await countedOpeningState(request.user.directories, { store, tree: here.tree, actor: { user: request.user.profile.handle, session }, avatar: owner.avatar, pageFacts: pageFactsOf(request) });
+        if (!owner) return;
+        const cards = 'group' in owner ? [here.tree, ...(await store.people.members(here.tree)).map(m => m.id)] : [here.tree];
+        if (!records.some(r => cards.includes(r.entity))) return;
+        const named = 'group' in owner ? { group_id: owner.group } : { avatar: owner.avatar };
+        const openings = await countedOpeningState(request.user.directories, { store, tree: here.tree, actor: { user: request.user.profile.handle, session }, owner: 'group' in owner ? { groupId: owner.group } : { avatar: owner.avatar }, pageFacts: pageFactsOf(request) });
         const json = JSON.stringify(openings);
         if (openingsPushed?.tree === here.tree && openingsPushed.json === json) return;
         openingsPushed = { tree: here.tree, json };
-        send({ type: 'openings', avatar: owner.avatar, ...openings });
+        send({ type: 'openings', ...named, ...openings });
     };
     const pushDrafts = async (/** @type {any[]} */ records) => {
         if (!records.some(r => r.kind === 'draftValue' || r.kind === 'draftEdit')) return;

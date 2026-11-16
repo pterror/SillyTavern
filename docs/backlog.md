@@ -67,7 +67,6 @@ Drawers / UI
 - Plain-language pass over all UI text.
 - Tree editing UI (insert, cut, delete, branch or in place); real deletion in the tree. `/cut` comes in both variants ("the answer is both", owner, 2026-10-11T01:32:45); only cutting from this path, copying what's shared, exists (`cutFromPath`, `src/chat-engine.js:1514`).
 - Branch navigation goes; better bookmark navigation needs its own design: "yeah drop this branch nav bs. if we need better bookmark nav, that needs explicit design" (owner, 2026-09-25T16:55:25). `extra.branches` is still written (`src/chat-engine.js:2506`, `public/scripts/bookmarks.js:267-269`).
-- Group greeting selection: one swipeable turn of all members' greetings.
 - Greeting summaries / taglines ("think a tagline but for greetings", owner, 2026-09-19T22:37:17); where they're stored is not decided.
 - Renaming a character from a pen icon / double click on the name, not the dropdown.
 - Tooltips starting with "[character]"; long tags needing tooltips; favorite star clipping into the card border.

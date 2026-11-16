@@ -74,7 +74,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true, b
     let payload = { messages: [] };
     if (!unstored) {
         const move = moveChatBox({ chat: openChat(), owner: atEnd ? undefined : null });
-        payload = await askSelect({ avatar_url: avatar, node_id: targetNodeId, chat_name: getCurrentChatId(), leaving: move.leaving });
+        payload = await askSelect({ ...openChat(), node_id: targetNodeId, chat_name: getCurrentChatId(), leaving: move.leaving });
         if (payload === null) {
             move.undo();
         } else {
@@ -83,7 +83,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true, b
             if (avatar != null) _setCurrentTarget(getCurrentChatId() ?? '', null);
             move.arrive(payload.draft);
         }
-    } else if (mesId === 0 && !await rememberCardOpening(message.swipes?.[swipeId])) {
+    } else if (mesId === 0 && !await rememberCardOpening(message.swipes?.[swipeId], message.swipe_info?.[swipeId]?.original_avatar)) {
         payload = null;
     }
 

@@ -122,8 +122,8 @@ export function adoptStored(stored) {
             _globalVariablesListener(entry.global_variables);
             continue;
         }
-        if (entry.openings && typeof entry.avatar === 'string') {
-            void takeOpenings(entry.avatar, entry.openings);
+        if (entry.openings && openingsOwnerOf(entry)) {
+            void takeOpenings(openingsOwnerOf(entry), entry.openings);
             continue;
         }
         if (entry.metadata_not_saved === true) {
@@ -450,45 +450,33 @@ export function _setCurrentTarget(chatId, integrity = null, owner = null) {
  * @returns {{ opening: { refs: string[], messages: object[] }, page_metadata?: object } | null}
  */
 export function openingForRequest(mesId) {
-    if (!isProvisionalNodeId(_chatAt(mesId)?.node_id)) return null;
-    const inGroup = selected_group != null && selected_group !== '';
-    const character = getCurrentCharacter();
-    if (!inGroup && (character?.avatar == null || character.avatar === '')) return null;
-    let from = mesId;
-    let to = mesId + 1;
-    if (inGroup) {
-        from = 0;
-        to = 0;
-        while (to < chat.length && isProvisionalNodeId(_chatAt(to)?.node_id)) to++;
-    }
-    if (String(_chatAt(from)?.mes ?? '').trim() === '') return null;
+    const shown = _chatAt(mesId);
+    if (!shown || !isProvisionalNodeId(shown.node_id)) return null;
+    const owner = _currentOwner();
+    if (!owner) return null;
+    if (String(shown.mes ?? '').trim() === '') return null;
 
-    /** @type {string[]} */
-    const refs = [];
-    /** @type {object[]} */
-    const messages = [];
-    for (let i = from; i < to; i++) {
-        const shown = _chatAt(i);
-        let ref = storeRefOf(shown);
-        if (ref === undefined) {
-            ref = uuidv4();
-            setStoreRef(shown, ref);
-        }
-        _openingsSent.set(ref, JSON.parse(JSON.stringify(shown)));
-        refs.push(ref);
-        messages.push({
-            name: shown.name ?? character?.name,
-            is_user: shown.is_user === true,
-            is_system: shown.is_system === true,
-            send_date: shown.send_date ?? getMessageTimeStamp(),
-            mes: shown.mes,
-            extra: shown.extra ?? {},
-        });
+    let ref = storeRefOf(shown);
+    if (ref === undefined) {
+        ref = uuidv4();
+        setStoreRef(shown, ref);
     }
-    if (!inGroup) return { opening: { refs, messages } };
+    _openingsSent.set(ref, JSON.parse(JSON.stringify(shown)));
+    const message = {
+        name: shown.name ?? getCurrentCharacter()?.name,
+        is_user: shown.is_user === true,
+        is_system: shown.is_system === true,
+        send_date: shown.send_date ?? getMessageTimeStamp(),
+        mes: shown.mes,
+        extra: shown.extra ?? {},
+        ...(typeof shown.original_avatar === 'string' ? { original_avatar: shown.original_avatar } : {}),
+        ...(typeof shown.force_avatar === 'string' ? { force_avatar: shown.force_avatar } : {}),
+    };
+    const opening = { refs: [ref], messages: [message] };
+    if ('avatar_url' in owner) return { opening };
     const metadataRef = uuidv4();
     _openingMetadataRefs.add(metadataRef);
-    return { opening: { refs, messages }, page_metadata: { ref: metadataRef, target: null, set: {}, unset: [] } };
+    return { opening, page_metadata: { ref: metadataRef, target: null, set: {}, unset: [] } };
 }
 
 /**
@@ -517,8 +505,7 @@ async function _storeOpening(mesId, { typing }) {
     if (!message) return null;
     if (isStoredNodeId(message.node_id)) return { node: message.node_id };
 
-    const inGroup = selected_group != null && selected_group !== '';
-    const provisional = inGroup ? _chatAt(0)?.node_id : message.node_id;
+    const provisional = message.node_id;
     const flight = _openingRowInFlight.get(provisional);
     if (flight) {
         const came = await flight.done;
@@ -526,14 +513,15 @@ async function _storeOpening(mesId, { typing }) {
         return _storeOpening(mesId, { typing });
     }
     const request = openingForRequest(mesId);
-    if (!request) return null;
+    const owner = _currentOwner();
+    if (!request || !owner) return null;
     /** @type {Promise<'answered' | 'shown' | 'same'>} */
     const done = (async () => {
         const response = await fetch('/api/chats/message/select', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
-                ...(inGroup ? { group_id: selected_group } : { avatar_url: getCurrentCharacter()?.avatar }),
+                ...owner,
                 ...request,
                 ...(typing ? { typing: true } : {}),
             }),
@@ -547,7 +535,7 @@ async function _storeOpening(mesId, { typing }) {
         if (!response.ok) return 'answered';
         adoptStored(answer?.stored);
         takeChatLinks(answer?.links);
-        if (!inGroup) await takeOpenings(getCurrentCharacter()?.avatar, answer);
+        await takeOpenings(owner, answer);
         return 'answered';
     })().catch(error => {
         console.warn('[greetings] Could not give this greeting a row:', error);
@@ -584,7 +572,7 @@ export async function followSameAlternative(mesId, shown) {
     for (const message of chat.slice(mesId)) {
         if (isStoredNodeId(message.node_id)) markStoredAs(message.node_id, message);
     }
-    if (owner && 'avatar_url' in owner) await takeOpenings(owner.avatar_url, shown, { render: false });
+    if (owner) await takeOpenings(owner, shown, { render: false });
     takeChatLinks(shown.links);
     if (shown.chat_metadata) (await import('./metadata-store.js')).takeServerState(shown.chat_metadata);
     if (owner) arriveChatBox(owner, shown.draft);
@@ -603,27 +591,29 @@ function _noticeSameAlternative(place) {
 }
 
 /**
- * Asks the server to remember the card greeting `text` as the chat's opening, which the page shows already: the chat
- * box moves to it as it is asked (`moveChatBox`)
+ * Asks the server to remember the card greeting `text` of the character `avatar` as the chat's opening, which the page
+ * shows already: the chat box moves to it as it is asked (`moveChatBox`)
  * @param {string} text
+ * @param {string | undefined} avatar the greeting's character; the chat's character when none
  * @returns {Promise<boolean>} false when the server didn't take it
  */
-export async function rememberCardOpening(text) {
-    const character = getCurrentCharacter();
-    if ((selected_group != null && selected_group !== '') || character?.avatar == null || character.avatar === '' || typeof text !== 'string' || text.length === 0) return true;
+export async function rememberCardOpening(text, avatar) {
+    const owner = _currentOwner();
+    if (!owner || typeof text !== 'string' || text.length === 0) return true;
+    const character = typeof avatar === 'string' && avatar !== '' ? charactersStore.get(avatar) : getCurrentCharacter();
+    if (character?.avatar == null || character.avatar === '') return true;
     const index = cardToGreetingsModel(character).greetings.indexOf(text);
-    if (index < 0) return true;
-    const move = moveChatBox({ chat: { avatar_url: character.avatar } });
+    const move = moveChatBox({ chat: owner });
     try {
         const response = await fetch('/api/chats/openings/choose', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: character.avatar, text, index, leaving: move.leaving }),
+            body: JSON.stringify({ ...owner, greeting_avatar: character.avatar, text, ...(index < 0 ? {} : { index }), leaving: move.leaving }),
         });
         if (!response.ok) throw new Error(`/api/chats/openings/choose responded ${response.status}`);
         const answer = await response.json().catch(() => null);
         chatBoxLeft(answer?.left);
-        await takeOpenings(character.avatar, answer);
+        await takeOpenings(owner, answer);
         move.arrive(answer?.draft);
         return true;
     } catch (error) {
@@ -634,20 +624,40 @@ export async function rememberCardOpening(text) {
 }
 
 /**
- * @param {string|null|undefined} avatar the character whose tree the openings are
+ * @param {{ avatar_url: string } | { group_id: string } | null | undefined} a
+ * @param {{ avatar_url: string } | { group_id: string } | null | undefined} b
+ * @returns {boolean} whether both name the same chat's owner
+ */
+function sameOwner(a, b) {
+    if (!a || !b) return false;
+    return 'avatar_url' in a ? 'avatar_url' in b && a.avatar_url === b.avatar_url : 'group_id' in b && a.group_id === b.group_id;
+}
+
+/**
+ * @param {unknown} named an answer or push naming the chat its openings are of: `avatar` or `group_id`
+ * @returns {{ avatar_url: string } | { group_id: string } | null}
+ */
+export function openingsOwnerOf(named) {
+    const n = /** @type {{ avatar?: unknown, group_id?: unknown } | null} */ (named && typeof named === 'object' ? named : null);
+    if (typeof n?.group_id === 'string' && n.group_id !== '') return { group_id: n.group_id };
+    if (typeof n?.avatar === 'string' && n.avatar !== '') return { avatar_url: n.avatar };
+    return null;
+}
+
+/**
+ * @param {{ avatar_url: string } | { group_id: string } | null | undefined} owner the chat whose tree the openings are
  * @param {unknown} answer an answer carrying `openings` and `card_openings`
  * @param {{ render?: boolean }} [options]
  */
-export async function takeOpenings(avatar, answer, { render = true } = {}) {
+export async function takeOpenings(owner, answer, { render = true } = {}) {
     if (!answer || typeof answer !== 'object' || !('openings' in answer)) return;
-    if (selected_group != null && selected_group !== '') return;
-    const character = getCurrentCharacter();
-    if (character?.avatar == null || character.avatar === '' || character.avatar !== avatar) return;
+    if (!sameOwner(owner, _currentOwner())) return;
+    const character = 'avatar_url' in /** @type {object} */ (owner) ? getCurrentCharacter() : null;
     const state = /** @type {import('./opening-view.js').OpeningState} */ (answer);
     const view = openingView({ openings: state.openings, card_openings: state.card_openings ?? null }, {
         first: _chatAt(0),
         count: chat.length,
-        speaker: character.name,
+        speaker: character?.name ?? '',
         sendDate: getMessageTimeStamp(),
         provisionalId: provisionalNodeId,
         isStored: isStoredNodeId,
@@ -770,7 +780,7 @@ async function _chatOpPost(path, body, silent = false) {
     takeMessageCounts(answer?.message_counts);
     takeMessageMacros(answer?.message_macros);
     takeChatLinks(answer?.links);
-    if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
+    await takeOpenings(owner, answer);
     return answer;
 }
 
@@ -807,7 +817,7 @@ async function _chatOpPostAnswering(path, body, answered) {
     takeMessageCounts(answer?.message_counts);
     takeMessageMacros(answer?.message_macros);
     takeChatLinks(answer?.links);
-    if ('avatar_url' in owner) await takeOpenings(owner.avatar_url, answer);
+    await takeOpenings(owner, answer);
     return answer;
 }
 

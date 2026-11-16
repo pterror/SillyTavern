@@ -57,12 +57,6 @@ export function libraryPeople(lib) {
             });
             return out;
         },
-        /** @param {bigint} tree */
-        async greetings(tree) {
-            const [e] = await lib.entities([tree]);
-            if (!e || e.type !== TYPE.character) return [];
-            return greetingModelOf(e).greetings.filter(g => g.text !== '');
-        },
         /** @param {bigint} card */
         async greetingModel(card) {
             const [e] = await lib.entities([card]);
