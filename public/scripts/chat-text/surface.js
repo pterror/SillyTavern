@@ -1,9 +1,10 @@
-import { GFM, htmlInMarkdown, markdownParser, reader } from '../../lib.js';
+import { GFM, markdownParser, reader } from '../../lib.js';
 import { EMOJIS } from '../emojis.js';
 import { handledInside } from '../interactive-content.js';
 import { fadeIn } from './fade-in.js';
 import { chatMarkdownExtensions } from './grammar.js';
 import { codeHighlighting } from './highlight.js';
+import { htmlInChatText } from './html-text.js';
 import { chatLook } from './look.js';
 
 /**
@@ -41,7 +42,7 @@ export function grammarOf(options) {
     if (!grammar) {
         grammar = markdownParser.configure([
             GFM,
-            ...(options.encodeTags ? [] : [htmlInMarkdown]),
+            ...(options.encodeTags ? [] : [htmlInChatText]),
             ...chatMarkdownExtensions({ ...options, emojis: EMOJIS }),
         ]);
         grammars.set(key, grammar);

@@ -13,11 +13,12 @@ jest.unstable_mockModule('../public/lib.js', async () => {
     const { default: hljs } = await import('highlight.js');
     const { reader } = await import('@pterror/interact-editor/reader');
     const { GFM, parser: markdownParser } = await import('@lezer/markdown');
-    const { htmlInMarkdown } = await import('@pterror/interact-markdown/html-in-markdown');
+    const { NodeType, Parser, Tree, parseMixed } = await import('@lezer/common');
+    const { parser: htmlParser } = await import('@lezer/html');
     const { definitionOf, gfmLook, htmlLook, markdownLook } = await import('@pterror/interact-markdown/look');
     return {
         DOMPurify: createDOMPurify(/** @type {any} */ (window)), css, hljs, reader,
-        markdownParser, GFM, htmlInMarkdown, markdownLook, gfmLook, htmlLook, definitionOf,
+        markdownParser, GFM, htmlParser, parseMixed, Parser, Tree, NodeType, markdownLook, gfmLook, htmlLook, definitionOf,
     };
 });
 /** @type {import('../public/scripts/macro-pill.js').Translate} */
@@ -130,6 +131,15 @@ describe('chat text, read', () => {
     test('draws an HTML block with HTML whitespace, and one with a markdown attribute with markdown inside', () => {
         expect(drawn('<div class="k">\n\n  <i>x</i>\n\n</div>')).toBe('<div class="html-block"><div class="custom-k">\n  <i>x</i>\n</div></div>');
         expect(drawn('<div markdown="1">\n*hi*\n</div>')).toBe('<div><p><em>hi</em></p></div>');
+    });
+
+    test('draws a macro in an HTML block as its value, as text, and one in an attribute as written', () => {
+        const values = { '{{user}}': '<b>Ann</b>', '{{char}}': 'Bo' };
+        expect(drawn('<div class="k">Hi {{user}}, <i>{{char}}</i>.</div>', { values })).toBe(
+            '<div class="html-block"><div class="custom-k">Hi <span class="macro-pill macro-pill-mention macro-value" data-macro-name="user" data-macro-source="{{user}}">&lt;b&gt;Ann&lt;/b&gt;</span>, '
+            + '<i><span class="macro-pill macro-pill-mention macro-value" data-macro-name="char" data-macro-source="{{char}}">Bo</span></i>.</div></div>',
+        );
+        expect(drawn('<div title="{{user}}">x</div>', { values })).toBe('<div class="html-block"><div title="{{user}}">x</div></div>');
     });
 
     test('draws the HTML after a comment on its line', () => {

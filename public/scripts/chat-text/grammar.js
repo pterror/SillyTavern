@@ -346,6 +346,50 @@ const DialogueQuotes = {
 const BLOCK_TAG = /^\s*(?:#|\/(?!\/)|else(?![\w-]))/u;
 
 /**
+ * @param {(pos: number) => number} char the character code at a position
+ * @param {number} from where `{{` starts
+ * @param {number} end where the text ends
+ * @returns {number} where the macro starting there ends, nested ones included; -1 when none does before a blank line
+ */
+function macroEnd(char, from, end) {
+    let depth = 0;
+    for (let pos = from; pos < end - 1; pos++) {
+        const a = char(pos);
+        const b = char(pos + 1);
+        if (a === 123 && b === 123) {
+            depth++;
+            pos++;
+        } else if (a === 125 && b === 125) {
+            depth--;
+            pos++;
+            if (depth === 0) return pos + 1;
+        } else if (a === 10 && depth > 0 && b === 10) {
+            return -1;
+        }
+    }
+    return -1;
+}
+
+/**
+ * @param {string} text
+ * @returns {{ from: number, to: number, blockTag: boolean }[]} the macros in a text with no markdown in it, in order
+ */
+export function macroSpans(text) {
+    /** @type {{ from: number, to: number, blockTag: boolean }[]} */
+    const spans = [];
+    for (let from = text.indexOf('{{'); from >= 0; from = text.indexOf('{{', from)) {
+        const to = macroEnd(pos => text.charCodeAt(pos), from, text.length);
+        if (to < 0) {
+            from += 2;
+            continue;
+        }
+        spans.push({ from, to, blockTag: BLOCK_TAG.test(text.slice(from + 2, to - 2)) });
+        from = to;
+    }
+    return spans;
+}
+
+/**
  * `{{…}}`, nested ones included, as one `Macro` with its two `MacroMark`s; a Handlebars block's opening, `else` and
  * closing tags as `MacroBlockTag`s, which hold no value
  * @type {MarkdownConfig}
@@ -356,29 +400,13 @@ const Macros = {
         name: 'Macro',
         parse(cx, next, absPos) {
             if (next !== 123 || cx.char(absPos + 1) !== 123) return -1;
-            let depth = 0;
-            for (let pos = absPos; pos < cx.end - 1; pos++) {
-                const a = cx.char(pos);
-                const b = cx.char(pos + 1);
-                if (a === 123 && b === 123) {
-                    depth++;
-                    pos++;
-                } else if (a === 125 && b === 125) {
-                    depth--;
-                    pos++;
-                    if (depth === 0) {
-                        const end = pos + 1;
-                        const name = BLOCK_TAG.test(cx.slice(absPos + 2, end - 2)) ? 'MacroBlockTag' : 'Macro';
-                        return cx.addElement(cx.elt(name, absPos, end, [
-                            cx.elt('MacroMark', absPos, absPos + 2),
-                            cx.elt('MacroMark', end - 2, end),
-                        ]));
-                    }
-                } else if (a === 10 && depth > 0 && cx.char(pos + 1) === 10) {
-                    return -1;
-                }
-            }
-            return -1;
+            const end = macroEnd(pos => cx.char(pos), absPos, cx.end);
+            if (end < 0) return -1;
+            const name = BLOCK_TAG.test(cx.slice(absPos + 2, end - 2)) ? 'MacroBlockTag' : 'Macro';
+            return cx.addElement(cx.elt(name, absPos, end, [
+                cx.elt('MacroMark', absPos, absPos + 2),
+                cx.elt('MacroMark', end - 2, end),
+            ]));
         },
         before: 'Escape',
     }],
