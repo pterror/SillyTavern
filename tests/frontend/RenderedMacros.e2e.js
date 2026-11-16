@@ -81,6 +81,28 @@ async function openGroup(page, avatars) {
  */
 const shown = (page, mesId) => page.locator(`#chat .mes[mesid="${mesId}"] .mes_text`);
 
+test('code draws macros as values and the editor resolves a macro typed inside code', async ({ page }) => {
+    const s = stamp();
+    const name = `Code ${s}`;
+    const avatar = await createCharacter(page, name, ['```text\n**literal** {{user}}\n```']);
+    await openCharacter(page, avatar);
+    await usePersona(page, `Ann ${s}`);
+    const text = shown(page, 0);
+    await expect(text.locator('code .macro-value')).toHaveText(`Ann ${s}`);
+    await expect(text).toContainText('**literal**');
+    await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
+    const content = page.locator('#chat .mes[mesid="0"] .cm-content');
+    await content.click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('End');
+    await page.keyboard.type(' {{char}}');
+    await page.keyboard.press('Home');
+    await expect(content.locator('[data-macro-name="char"]')).toHaveText(name);
+    await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
+    await expect(text.locator('code [data-macro-name="char"]')).toHaveText(name);
+});
+
 test('a card greeting swiped to after a persona switch draws the persona now', async ({ page }) => {
     const s = stamp();
     const avatar = await createCharacter(page, `Greeter ${s}`, ['Hi {{user}}.', 'Bye {{user}}.']);

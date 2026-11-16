@@ -1,4 +1,4 @@
-import { lookChanged, state as cmState, syntaxTree, view as cmView } from '../../live-editor-lib.js';
+import { lookChanged, state as cmState, syntaxTree, view as cmView, walk } from '../../live-editor-lib.js';
 import { macroPersonCard, macroPill, macroPillContent, macroTooltipAttributes } from '../macro-pill.js';
 import { withFilledAbout } from '../safe-macros.js';
 
@@ -282,14 +282,10 @@ export function macroValueRequests({ values, wanted, redraw }) {
          */
         collect(from, to) {
             const { state } = this.view;
-            syntaxTree(state).iterate({
-                from,
-                to,
-                enter: (node) => {
-                    if (node.name !== 'Macro') return;
-                    this.sources.add(state.sliceDoc(node.from, node.to));
-                    return false;
-                },
+            walk(syntaxTree(state).topNode, from, to, node => {
+                if (node.name !== 'Macro') return true;
+                this.sources.add(state.sliceDoc(node.from, node.to));
+                return false;
             });
         }
 
@@ -298,12 +294,10 @@ export function macroValueRequests({ values, wanted, redraw }) {
             const { state } = this.view;
             /** @type {Set<string>} */
             const written = new Set();
-            syntaxTree(state).iterate({
-                enter: (node) => {
-                    if (node.name !== 'Macro') return;
-                    written.add(state.sliceDoc(node.from, node.to));
-                    return false;
-                },
+            walk(syntaxTree(state).topNode, 0, state.doc.length, node => {
+                if (node.name !== 'Macro') return true;
+                written.add(state.sliceDoc(node.from, node.to));
+                return false;
             });
             return [...written];
         }

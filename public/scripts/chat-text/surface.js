@@ -6,6 +6,7 @@ import { chatMarkdownExtensions } from './grammar.js';
 import { codeHighlighting } from './highlight.js';
 import { htmlInChatText } from './html-text.js';
 import { chatLook } from './look.js';
+import { macrosInCode } from './macro-text.js';
 
 /**
  * @typedef {import('@pterror/interact-editor/reader').Overlay} Overlay
@@ -42,6 +43,7 @@ export function grammarOf(options) {
     if (!grammar) {
         grammar = markdownParser.configure([
             GFM,
+            macrosInCode,
             ...(options.encodeTags ? [] : [htmlInChatText]),
             ...chatMarkdownExtensions({ ...options, emojis: EMOJIS }),
         ]);

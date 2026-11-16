@@ -1,34 +1,10 @@
-import { htmlParser, markdownParser, parseMixed } from '../../lib.js';
-import { Macros } from './grammar.js';
+import { htmlParser, parseMixed } from '../../lib.js';
+import { macroText } from './macro-text.js';
 
 /**
  * @typedef {import('@lezer/markdown').MarkdownConfig} MarkdownConfig
  * @typedef {import('@lezer/common').SyntaxNode} SyntaxNode
  */
-
-/**
- * HTML text uses the Markdown grammar's macro rule. Other Markdown syntax stays literal unless the enclosing
- * element asks for Markdown. HTMLText has no paragraph wrapper, preserving the element's HTML structure.
- * @type {MarkdownConfig}
- */
-const htmlText = {
-    defineNodes: ['HTMLText'],
-    remove: ['Escape', 'Entity', 'InlineCode', 'HTMLTag', 'Emphasis', 'HardBreak', 'Link', 'Image', 'Autolink'],
-    parseBlock: [{
-        name: 'HTMLText',
-        parse(cx, line) {
-            const from = cx.lineStart;
-            let to = from + line.text.length;
-            while (cx.nextLine()) to = cx.lineStart + line.text.length;
-            // @ts-ignore input is a BlockContext field the published types leave out.
-            cx.addElement(cx.elt('HTMLText', from, to, cx.parser.parseInline(cx.input.read(from, to), from)));
-            return true;
-        },
-        before: 'LinkReference',
-    }],
-};
-
-const macroText = markdownParser.configure([Macros, htmlText]);
 
 const html = htmlParser.configure({
     wrap: parseMixed(node => (node.name === 'Text' && node.from < node.to ? { parser: macroText } : null)),

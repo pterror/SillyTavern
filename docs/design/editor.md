@@ -100,6 +100,8 @@ The screen shows the stored text.
 - A macro in an HTML block's text is a macro (`public/scripts/chat-text/html-text.js`), drawn as its value inserted as
   text. HTML text uses the Markdown parser's same macro rule, with other Markdown syntax disabled; there is no
   separate macro scanner or hand-built macro tree. One in a tag's attribute is drawn as written.
+- Macros in fenced code blocks, indented code blocks and inline code use that same macro rule too. Other code stays
+  literal, and macro values are inserted as text.
 - A value only known when sent (`{{random}}`, `{{roll}}`, `{{input}}`) is drawn as what it is; the prompt fills it in
   each time it is sent, as it fills the rest.
 - Passes that exist only because HTML is edited as a string go: `align*` to `$$`, `&amp;` in code, removing every

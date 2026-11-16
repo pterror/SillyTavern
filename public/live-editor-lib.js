@@ -4,6 +4,7 @@ export * as commands from '@codemirror/commands';
 export * as search from '@codemirror/search';
 export * as autocomplete from '@codemirror/autocomplete';
 export { syntaxTree } from '@codemirror/language';
+export { walk } from '@pterror/interact-editor/walk';
 export { textEditor } from '@pterror/interact-editor/text-editor';
 export { lookChanged, lookDecorations } from '@pterror/interact-editor/decorations';
 export { grammarLanguage } from '@pterror/interact-editor/grammar-language';

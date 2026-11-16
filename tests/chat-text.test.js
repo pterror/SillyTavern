@@ -75,6 +75,21 @@ function drawn(text, options) {
 }
 
 describe('chat text, read', () => {
+    test.each([
+        '```text\n**literal** {{user}}\n```',
+        '~~~text\n**literal** {{user}}\n~~~',
+        '    **literal** {{user}}',
+        '`**literal** {{user}}`',
+        '``**literal** {{user}}``',
+    ])('draws macros inside code through the shared grammar: %s', source => {
+        for (const encodeTags of [false, true]) {
+            const element = surface.drawnText(source, setup({ values: { '{{user}}': '<b>Ann</b>' }, grammar: { encodeTags } }));
+            expect(element.querySelector('code .macro-value')?.textContent).toBe('<b>Ann</b>');
+            expect(element.textContent).toContain('**literal**');
+            expect(element.querySelector('b, strong')).toBeNull();
+        }
+    });
+
     test('draws the text as written: a single line break stays one, nothing is trimmed', () => {
         expect(drawn('one\ntwo')).toBe('<p>one\ntwo</p>');
         expect(drawn('a\n\nb')).toBe('<p>a</p><p>b</p>');
