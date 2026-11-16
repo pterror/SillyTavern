@@ -29,7 +29,7 @@ import {
 import { drawnText, editPosition } from './chat-text/surface.js';
 import { expandedEditor } from './text-box-editor.js';
 import { cardTextSetup } from './message-text.js';
-import { fetchMacroValues, macroValuesOf } from './macro-values.js';
+import { fetchMacroValues, MacroValues } from './macro-values.js';
 import { initImageLightbox, onLightboxImageClick } from './image-lightbox.js';
 import { openEditorLayer } from './editor-layer.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -608,7 +608,8 @@ async function getStyleContentsFromMarkdown(text) {
         return '';
     }
 
-    const values = await macroValuesOf(text, openChatMacroScope());
+    const values = new MacroValues(openChatMacroScope);
+    await values.want(text);
     const drawn = drawnText(text, cardTextSetup('notes', { values, person: () => null }));
     return Array.from(drawn.querySelectorAll('style'))
         .filter(s => s.textContent.trim().length > 0)

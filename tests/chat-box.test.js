@@ -312,6 +312,7 @@ describe('the chat box\'s drafts', () => {
     /** @type {import('../public/scripts/chat-box-ends.js').DraftOwner} */
     let end = { message: '1' };
     /** @type {{ avatar_url: string } | { group_id: string } | null} */
+    /** @type {Record<string, string>} */
     let open = { avatar_url: 'Ada.png' };
     const storage = memoryStorage();
     const copies = () => boxCopies(storage);
@@ -327,7 +328,7 @@ describe('the chat box\'s drafts', () => {
 
     beforeAll(async () => {
         globalThis.localStorage = /** @type {any} */ (storage);
-        await box.initChatBox(/** @type {any} */ ({ chat: () => open, endOwner: () => end, setup: () => ({}), macroScope: () => ({}) }));
+        await box.initChatBox(/** @type {any} */ ({ chat: () => open, endOwner: () => end, setup: () => ({}), macroScope: () => open }));
     });
 
     test('text written before any chat is open stays when one opens, and is copied for it', async () => {
@@ -462,7 +463,9 @@ describe('the chat box\'s drafts', () => {
         expect(box.chatBoxText()).toBe('at the root, edited');
     });
 
-    test('its macros are drawn with the values the server sent with its text; one it sent none for, as written', async () => {
+    test('its macros are drawn with the person\'s values in the open chat: those its draft came with, and those an answer carries', async () => {
+        const { takeMacroValues } = await import('../public/scripts/macro-values.js');
+        open = { group_id: 'mac' };
         box.arriveChatBox({ group_id: 'mac' }, { owner: { root: true }, text: 'Hi {{char}}, {{input}}', macro_values: { '{{char}}': 'Mac', '{{input}}': null } });
         await settle();
         expect(shown.macroValue('{{char}}')).toBe('Mac');
@@ -470,12 +473,10 @@ describe('the chat box\'s drafts', () => {
         shown.type(' {{user}}');
         await settle();
         expect(shown.macroValue('{{user}}')).toBeUndefined();
-        expect(box.chatBoxMacros()).toEqual(['{{char}}', '{{input}}', '{{user}}']);
-        const before = shown.redrawn;
-        box.takeChatBoxMacros({ '{{user}}': 'Me' });
-        expect(shown.redrawn).toBe(before + 1);
+        takeMacroValues({ group_id: 'mac' }, [{ speaker: null, values: { '{{user}}': 'Me' } }, { speaker: 'Mac', values: { '{{user}}': 'Not the box\'s' } }]);
         expect(shown.macroValue('{{user}}')).toBe('Me');
         expect(shown.macroValue('{{char}}')).toBe('Mac');
+        open = { group_id: 'mac2' };
         box.arriveChatBox({ group_id: 'mac2' }, { owner: { root: true }, text: '' });
         expect(shown.macroValue('{{char}}')).toBeUndefined();
         await settle();

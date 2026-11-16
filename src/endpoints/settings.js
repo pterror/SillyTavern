@@ -306,7 +306,7 @@ router.post('/save', async function (request, response) {
  * @param {unknown} expectedHashes The hashes of the values the page changed, by the same keys.
  * @param {unknown} [shown] The macros the page draws in the open chat's messages, whose values the answer carries as
  *   the changed settings fill them in: `{ avatar_url, group_id, at, items: [{ node, speaker, sources }] }`.
- * @returns {Promise<{ status: 200, answer: { result: 'ok', settingsHash: number, keyHashes: Record<string, number>, shown_counts?: object, card_token_counts?: object, message_macros?: object } } | { status: 400 | 409, answer: Record<string, unknown> }>}
+ * @returns {Promise<{ status: 200, answer: { result: 'ok', settingsHash: number, keyHashes: Record<string, number>, shown_counts?: object, card_token_counts?: object, macro_values?: object[] } } | { status: 400 | 409, answer: Record<string, unknown> }>}
  */
 export async function applySettingsChanges(request, sent, expectedHashes, shown) {
     const directories = request.user.directories;

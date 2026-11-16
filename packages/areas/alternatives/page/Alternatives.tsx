@@ -24,10 +24,16 @@ export type EditorOf = {
 };
 
 export type OldPage = {
-    reader(item: { name: string; role: Item['role']; macros: Item['macros'] }, mesId: number | null): ShownText;
+    /** card: the card whose greetings the list is, which the item's macros are filled in from; none for a chat's list */
+    reader(
+        item: { name: string; role: Item['role']; macros: Item['macros'] },
+        mesId: number | null,
+        card: string | null,
+    ): ShownText;
     editor(
         item: { name: string; role: Item['role']; macros: Item['macros'] },
         mesId: number | null,
+        card: string | null,
         text: string,
         changed: () => void,
     ): EditorOf;
@@ -95,6 +101,7 @@ function Dialog(props: {
     const { client, commands, focusActions, t } = useUi();
     const key = keyOf(props.look.target);
     const greetingsList = 'greetings' in props.look.target;
+    const valuesCard = 'greetings' in props.look.target ? props.look.target.greetings : null;
     const mesId = props.look.mesId;
 
     const isOurs = (list: ListView | undefined) => !!list?.target && keyOf(list.target) === key;
@@ -168,7 +175,7 @@ function Dialog(props: {
         const spans = spansOf(row.item.id);
         const want = `${row.item.text}\u0000${spans?.join(',') ?? ''}`;
         if (row.painted === want) return;
-        row.shown ??= props.old.reader(row.item, mesId);
+        row.shown ??= props.old.reader(row.item, mesId, valuesCard);
         row.shown.show(row.item.text, spans);
         if (row.body.firstChild !== row.shown.element) row.body.replaceChildren(row.shown.element);
         row.painted = want;
@@ -816,7 +823,9 @@ function Dialog(props: {
                                     <Show when={editing()?.id === item.id ? editing() : null}>
                                         {(edit) => (
                                             <Editor
-                                                make={(changed) => props.old.editor(item, mesId, item.text, changed)}
+                                                make={(changed) =>
+                                                    props.old.editor(item, mesId, valuesCard, item.text, changed)
+                                                }
                                                 at={edit().at}
                                                 same={sameAt(item.id)}
                                                 onSave={(text) => void save(item, text)}

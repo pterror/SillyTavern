@@ -1279,7 +1279,7 @@ function setReasoningEventHandlers() {
 
         const { chatEditor } = await loadChatEditor();
         if (!holder.isConnected) return;
-        const { setup, macroValue, macroValues, speaker } = messageEditorSetup(reasoningBlock[0], message, 'reasoning');
+        const { setup, macroValue, macroValues, speaker } = messageEditorSetup(message, 'reasoning');
         /** @type {import('./chat-text/editor.js').ChatEditor} */
         const editor = chatEditor({
             parent: holder,

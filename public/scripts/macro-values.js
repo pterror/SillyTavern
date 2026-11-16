@@ -5,11 +5,11 @@ import { macrosIn, mentionAboutMacro } from './safe-macros.js';
 let pageMacroFacts = () => ({});
 
 /**
- * @typedef {{ keys: Record<string, any>, expectedHashes: Record<string, number> }} SettingsChanges
+ * @typedef {{ keys: Record<string, any>, expectedHashes: Record<string, number>, shown?: { avatar_url?: string, group_id?: string } }} SettingsChanges
  * @typedef {object} SettingsCarrier the page's settings changes the server hasn't been sent, which a request for values
  *   carries so the values are filled in from the settings as the page has them
  * @property {() => SettingsChanges | undefined} take
- * @property {(answer: any, sent: Record<string, any>) => Promise<void>} saved
+ * @property {(answer: any, sent: Record<string, any>, shown?: MacroScope) => Promise<void>} saved
  * @property {(conflictingKeys?: string[]) => Promise<void>} conflicted
  * @property {(changes: SettingsChanges) => void} returned
  */
@@ -89,7 +89,7 @@ async function send(batch) {
         const answer = await response.json().catch(() => null);
         if (changes) {
             const saved = settingsSavedOf(response);
-            if (saved) await settingsCarrier.saved(saved, changes.keys);
+            if (saved) await settingsCarrier.saved(saved, changes.keys, changes.shown);
             else if (answer?.settings_not_saved) await settingsCarrier.conflicted(answer.conflictingKeys ?? undefined);
             else settingsCarrier.returned(changes);
         }
@@ -124,40 +124,231 @@ export async function fetchMacroValues(macros, scope, { all = false } = {}) {
     return values.slice(start, start + macros.length);
 }
 
+/**
+ * The values of a scope's macros: what every text drawn in the scope (a message, its editor, an alternative, a preview,
+ * the chat box) draws its macros with
+ * @typedef {object} HeldScope
+ * @property {MacroScope} scope as it was last asked with
+ * @property {Map<string, string | null>} values each macro's value, by its source; null when only known when sent
+ * @property {Map<string, Promise<void>>} asked the macros asked for and not answered yet
+ * @property {number} version how many times its values changed, for setups to tell drawings with older values
+ * @property {object} epoch what an answer to a question must still be asked under to be taken
+ */
+
+/**
+ * The page's values of macros, by scope. A scope is the chat or card the values are filled in from and the speaker
+ * (`name2`, none for the person); where the chat is read up to (`at`) is the latest when asked, not part of the scope.
+ * @type {Map<string, HeldScope>}
+ */
+const held = new Map();
+
+/** @type {() => void} */
+let heard = () => {};
+let hearing = false;
+
+/**
+ * @param {() => void} listener hears, once after a run of changes, that the values of some scope changed
+ */
+export function onMacroValuesChanged(listener) {
+    heard = listener;
+}
+
+function changed() {
+    if (hearing) return;
+    hearing = true;
+    queueMicrotask(() => {
+        hearing = false;
+        heard();
+    });
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+const named = value => (typeof value === 'string' && value !== '' ? value : null);
+
+/**
+ * @param {MacroScope} scope
+ * @returns {string}
+ */
+export function macroScopeKey(scope) {
+    return JSON.stringify([named(scope.avatar_url), named(scope.group_id), typeof scope.name2 === 'string' ? scope.name2 : null]);
+}
+
+/**
+ * @param {MacroScope} scope
+ * @returns {HeldScope}
+ */
+function heldScope(scope) {
+    const key = macroScopeKey(scope);
+    let entry = held.get(key);
+    if (!entry) {
+        entry = { scope, values: new Map(), asked: new Map(), version: 0, epoch: {} };
+        held.set(key, entry);
+    }
+    entry.scope = scope;
+    return entry;
+}
+
+/**
+ * @param {HeldScope} entry
+ * @param {[string, string | null][]} values
+ */
+function learn(entry, values) {
+    let any = false;
+    for (const [source, value] of values) {
+        if (entry.values.get(source) === value && entry.values.has(source)) continue;
+        entry.values.set(source, value);
+        any = true;
+    }
+    if (!any) return false;
+    entry.version += 1;
+    changed();
+    return true;
+}
+
+/**
+ * @param {unknown} values
+ * @returns {[string, string | null][]}
+ */
+function valuesIn(values) {
+    if (!values || typeof values !== 'object' || Array.isArray(values)) return [];
+    return Object.entries(values).flatMap(([source, value]) => (typeof value === 'string' || value === null ? [[source, value]] : []));
+}
+
+/**
+ * @param {MacroScope} scope
+ * @returns {number} how many times the scope's values changed: a drawing made with an older number is drawn again
+ */
+function macroValuesVersion(scope) {
+    return held.get(macroScopeKey(scope))?.version ?? 0;
+}
+
+/**
+ * @typedef {{ speaker: string | null, values: Record<string, string | null> }} ScopeValues the values of the macros a
+ *   speaker's texts draw, as an answer carries them: for the person when the speaker is null
+ */
+
+/**
+ * @param {MacroScope} owner
+ * @param {string | null} speaker
+ * @returns {MacroScope}
+ */
+const speakerScope = (owner, speaker) => {
+    const rest = { ...owner };
+    delete rest.name2;
+    return speaker === null ? rest : { ...rest, name2: speaker };
+};
+
+/**
+ * Takes the values of macros an answer carries, for the chat or card it answers about
+ * @param {MacroScope} owner the chat or card: `avatar_url` or `group_id`
+ * @param {unknown} answered the answer's `ScopeValues` list
+ */
+export function takeMacroValues(owner, answered) {
+    if (!Array.isArray(answered)) return;
+    for (const each of answered) {
+        if (!each || typeof each !== 'object' || (each.speaker !== null && typeof each.speaker !== 'string')) continue;
+        const values = valuesIn(each.values);
+        if (values.length) learn(heldScope(speakerScope(owner, each.speaker)), values);
+    }
+}
+
+/**
+ * Takes the values of macros a text in a scope came with
+ * @param {MacroScope} scope
+ * @param {unknown} values each macro's source to its value
+ */
+export function takeScopeMacroValues(scope, values) {
+    const taken = valuesIn(values);
+    if (taken.length) learn(heldScope(scope), taken);
+}
+
+/**
+ * The macros the page holds values of for a chat, by speaker, for an action that may change them to be answered with
+ * their values now
+ * @param {MacroScope} owner the chat: `avatar_url` or `group_id`
+ * @returns {{ speaker: string | null, sources: string[] }[]}
+ */
+export function heldMacroSources(owner) {
+    const chat = macroScopeKey(speakerScope(owner, null));
+    return [...held.values()].flatMap((entry) => {
+        if (macroScopeKey(speakerScope(entry.scope, null)) !== chat || entry.values.size === 0) return [];
+        return [{ speaker: typeof entry.scope.name2 === 'string' ? entry.scope.name2 : null, sources: [...entry.values.keys()] }];
+    });
+}
+
+/**
+ * Takes an answer to an action that may have changed every value, carrying the values of the macros the page held for
+ * the chat (`heldMacroSources`). Those are replaced; every other scope's values are dropped, to be asked for again where
+ * they are drawn. A question asked before is answered into nothing.
+ * @param {MacroScope | null} owner the chat the held macros were listed for; none drops every scope's
+ * @param {unknown} answered the answer's `ScopeValues` list
+ */
+export function replaceMacroValues(owner, answered) {
+    /** @type {Map<string, { scope: MacroScope, values: Map<string, string | null> }>} */
+    const fresh = new Map();
+    for (const each of owner && Array.isArray(answered) ? answered : []) {
+        if (!each || typeof each !== 'object' || (each.speaker !== null && typeof each.speaker !== 'string')) continue;
+        const scope = speakerScope(/** @type {MacroScope} */ (owner), each.speaker);
+        fresh.set(macroScopeKey(scope), { scope, values: new Map(valuesIn(each.values)) });
+    }
+    let any = false;
+    for (const [key, entry] of held) {
+        if (entry.asked.size) any = true;
+        entry.asked = new Map();
+        entry.epoch = {};
+        const values = fresh.get(key)?.values ?? new Map();
+        fresh.delete(key);
+        if (values.size === entry.values.size && [...values].every(([source, value]) => entry.values.has(source) && entry.values.get(source) === value)) continue;
+        entry.values = values;
+        entry.version += 1;
+        any = true;
+    }
+    for (const [key, { scope, values }] of fresh) {
+        held.set(key, { scope, values, asked: new Map(), version: 1, epoch: {} });
+        any = true;
+    }
+    if (any) changed();
+}
+
+/**
+ * A scope's macros' values, as every text drawn in it reads them. One asked for that isn't known is asked of the server
+ * with the others asked for in the same moment.
+ */
 export class MacroValues {
-    /** @param {() => MacroScope} scope */
+    /** @param {() => MacroScope} scope the scope as it is now, `at` included */
     constructor(scope) {
         this.scope = scope;
-        /** @type {Map<string, string | null>} */
-        this.values = new Map();
-        /** @type {Map<string, Promise<void>>} */
-        this.asked = new Map();
-        this.scopeKey = '';
-    }
-
-    /** @returns {MacroScope} */
-    currentScope() {
-        const scope = this.scope();
-        const key = JSON.stringify(scope);
-        if (key !== this.scopeKey) {
-            this.scopeKey = key;
-            this.values = new Map();
-            this.asked = new Map();
-        }
-        return scope;
     }
 
     /**
      * @param {string} source
-     * @returns {string | null | undefined}
+     * @returns {string | null | undefined} undefined while it isn't known
      */
     get(source) {
-        this.currentScope();
-        return this.values.get(source);
+        return held.get(macroScopeKey(this.scope()))?.values.get(source);
     }
 
     get valueOf() {
         return (/** @type {string} */ source) => this.get(source);
+    }
+
+    /**
+     * The value of a macro a text being drawn shows: one not known is asked for, and the text drawn again when it comes
+     * @param {string} source
+     * @returns {string | null | undefined}
+     */
+    read(source) {
+        const value = this.get(source);
+        if (value === undefined) void this.wantMacros([source]);
+        return value;
+    }
+
+    /** @returns {number} */
+    version() {
+        return macroValuesVersion(this.scope());
     }
 
     /**
@@ -170,54 +361,41 @@ export class MacroValues {
 
     /**
      * @param {string[]} sources
-     * @returns {Promise<boolean>}
+     * @returns {Promise<boolean>} whether values were learned
      */
     async wantMacros(sources) {
-        sources = [...sources, ...sources.map(source => mentionAboutMacro(/^\{\{\s*([^\s:{}]+)\s*\}\}$/.exec(source)?.[1] ?? '')).filter(Boolean)];
-        const scope = this.currentScope();
-        const { values: learned, asked } = this;
-        const missing = [...new Set(sources)].filter(source => !this.values.has(source) && !this.asked.has(source));
-        const waiting = [...new Set(sources)].map(source => this.asked.get(source)).filter(Boolean);
+        sources = [...new Set([...sources, ...sources.map(source => mentionAboutMacro(/^\{\{\s*([^\s:{}]+)\s*\}\}$/.exec(source)?.[1] ?? '')).filter(Boolean)])];
+        const scope = this.scope();
+        const entry = heldScope(scope);
+        const missing = sources.filter(source => !entry.values.has(source) && !entry.asked.has(source));
+        const waiting = sources.map(source => entry.asked.get(source)).filter(Boolean);
+        let learned = false;
         if (missing.length > 0) {
+            const { epoch } = entry;
             const asking = fetchMacroValues(missing, scope).then((values) => {
-                missing.forEach((source, i) => {
-                    learned.set(source, values[i]);
-                    asked.delete(source);
-                });
+                if (entry.epoch !== epoch) return;
+                for (const source of missing) entry.asked.delete(source);
+                learned = learn(entry, missing.map((source, i) => [source, values[i]]));
             });
-            for (const source of missing) asked.set(source, asking);
+            for (const source of missing) entry.asked.set(source, asking);
             waiting.push(asking);
         }
         await Promise.all(waiting);
-        return missing.length > 0 && learned === this.values;
+        return learned;
     }
 
     /**
-     * @returns {Promise<boolean>}
+     * Asks for the values known again, since an edit may have changed them
+     * @returns {Promise<boolean>} whether any changed
      */
     async refresh() {
-        const scope = this.currentScope();
-        const known = this.values;
-        const sources = [...known.keys()];
-        if (sources.length === 0) return false;
+        const scope = this.scope();
+        const entry = held.get(macroScopeKey(scope));
+        const sources = entry ? [...entry.values.keys()] : [];
+        if (!entry || sources.length === 0) return false;
+        const { epoch } = entry;
         const values = await fetchMacroValues(sources, scope);
-        if (known !== this.values) return false;
-        let changed = false;
-        sources.forEach((source, i) => {
-            if (known.get(source) !== values[i]) changed = true;
-            known.set(source, values[i]);
-        });
-        return changed;
+        if (entry.epoch !== epoch) return false;
+        return learn(entry, sources.map((source, i) => [source, values[i]]));
     }
-}
-
-/**
- * @param {string} text
- * @param {MacroScope} scope
- * @returns {Promise<MacroValues>}
- */
-export async function macroValuesOf(text, scope) {
-    const values = new MacroValues(() => scope);
-    await values.want(text);
-    return values;
 }

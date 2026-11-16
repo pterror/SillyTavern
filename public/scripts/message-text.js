@@ -4,8 +4,8 @@ import { loadChatEditor } from './chat-text/editors.js';
 import { macroValuePieces } from './chat-text/macros.js';
 import { chatHtmlPolicy } from './chat-text/policy.js';
 import { drawnText, showText, stopText, textReader } from './chat-text/surface.js';
-import { MacroValues } from './macro-values.js';
-import { macrosIn, withFilledAbout } from './safe-macros.js';
+import { heldMacroSources, MacroValues, macroScopeKey } from './macro-values.js';
+import { withFilledAbout } from './safe-macros.js';
 
 /**
  * @typedef {import('./chat-text/surface.js').TextSetup} TextSetup
@@ -15,7 +15,8 @@ import { macrosIn, withFilledAbout } from './safe-macros.js';
  * What drawing the chat's text reads from the page
  * @typedef {object} MessageTextPage
  * @property {() => Record<string, any>} settings the settings text is drawn by (`power_user`)
- * @property {() => import('./macro-values.js').MacroScope} macroScope the open chat's
+ * @property {() => import('./macro-values.js').MacroScope | null} chatScope the open chat's macros are filled in from:
+ *   its character or group, and where it is read up to; none with no chat open
  * @property {(macroName: string, options: { name?: string }) => import('./macro-pill.js').MacroPerson | null} macroPerson
  * @property {(text: string) => string} substituteParams for settings that hold macros
  * @property {string} systemName the name the app's own messages are from
@@ -71,33 +72,49 @@ function grammarOptions(dialogueQuotes) {
 }
 
 /**
+ * @param {string | null} speaker null for the person
+ * @returns {MacroValues} the values of the macros of the open chat's texts from the speaker
+ */
+export function chatMacroValues(speaker) {
+    return new MacroValues(() => {
+        const scope = page.chatScope() ?? {};
+        return speaker === null ? scope : { ...scope, name2: speaker };
+    });
+}
+
+/**
+ * @param {MacroValues} values
+ * @returns {import('./chat-text/macros.js').MacroValueSource} the values as a text being drawn reads them: one not known
+ *   is asked for
+ */
+const drawnValues = values => ({ get: source => values.read(source) });
+
+/**
+ * @param {MacroValues} values
+ * @returns {string} what tells drawings with these values from drawings with others
+ */
+const valuesKey = values => `${macroScopeKey(values.scope())}#${values.version()}`;
+
+/**
  * @param {string | null} speaker
  * @param {string} kind
- * @param {() => Record<string, string | null> | undefined} valuesOf the values of the text's macros, as the server sent
- *   them with it
+ * @param {MacroValues} values the values of the text's macros
  * @param {Element | null} [loreIn] the message's text element, for its lore marks and the names it writes; none for
  *   text without them
  * @returns {TextSetup}
  */
-function chatSetup(speaker, kind, valuesOf, loreIn = null) {
+function chatSetup(speaker, kind, values, loreIn = null) {
     const grammar = grammarOptions(true);
-    /** @type {import('./chat-text/macros.js').MacroValueSource} */
-    const values = { get: source => valuesOf()?.[source] };
+    const drawn = drawnValues(values);
     return {
-        key: JSON.stringify([kind, speaker, grammar]),
+        key: JSON.stringify([kind, speaker, grammar, valuesKey(values)]),
         grammar,
         html: MESSAGE_POLICY,
-        macro: macroValuePieces(values, name => withFilledAbout(page.macroPerson(name, { name: speaker ?? '' }), name, values.get), page.t),
+        macro: macroValuePieces(drawn, name => withFilledAbout(page.macroPerson(name, { name: speaker ?? '' }), name, drawn.get), page.t),
         ...(loreIn ? { overlays: () => [page.loreMarks(loreIn, () => messageShownIn(loreIn)), page.chatLinks(loreIn, () => messageShownIn(loreIn))] } : {}),
-        now: () => chatSetup(speaker, kind, valuesOf, loreIn),
+        now: () => chatSetup(speaker, kind, values, loreIn),
     };
 }
-
-/**
- * @param {Element} element an element of a message
- * @returns {() => Record<string, string | null> | undefined} the values of its macros, as the chat has them now
- */
-const valuesIn = element => () => messageShownIn(element)?.extra?.macro_values;
 
 /** @type {WeakMap<Element, ChatMessage>} */
 const shownMessages = new WeakMap();
@@ -132,7 +149,7 @@ export function showMessageText(element, message, { fade = false } = {}) {
         return;
     }
     shownMessages.set(element, message);
-    showText(element, text, chatSetup(speakerOf(message), 'message', valuesIn(element), element), { fade });
+    showText(element, text, chatSetup(speakerOf(message), 'message', chatMacroValues(speakerOf(message)), element), { fade });
 }
 
 /** @type {WeakMap<Element, { redraw: () => void }>} the editor open on a message's text or reasoning element */
@@ -150,7 +167,7 @@ export function editingIn(element, editor) {
 }
 
 /**
- * Draws a message's text again, from scratch, for when its macros' values changed; in an editor open in it, its macros
+ * Draws a message's text again, from scratch; in an editor open in it, its macros
  * @param {Element} element the message's `.mes_text`
  * @param {ChatMessage} message
  */
@@ -173,7 +190,7 @@ export function redrawMessageText(element, message) {
  */
 export function showReasoningText(element, message, reasoning, { fade = false } = {}) {
     openEditors.get(element)?.redraw();
-    showText(element, reasoning, chatSetup(speakerOf(message), 'reasoning', valuesIn(element)), { fade });
+    showText(element, reasoning, chatSetup(speakerOf(message), 'reasoning', chatMacroValues(speakerOf(message))), { fade });
 }
 
 /**
@@ -181,12 +198,12 @@ export function showReasoningText(element, message, reasoning, { fade = false } 
  * @param {object} options
  * @param {string} options.name the speaker
  * @param {boolean} options.isUser
- * @param {() => Record<string, string | null> | null | undefined} options.macros the values of its macros, as the list has them
+ * @param {MacroValues} options.values the values of its macros
  * @param {string} options.text
  * @param {() => void} options.changed hears each edit
  * @returns {{ element: HTMLElement, text: () => string, focus: (at?: number) => void, stop: () => void }}
  */
-export function alternativeEditor({ name, isUser, macros, text, changed }) {
+export function alternativeEditor({ name, isUser, values, text, changed }) {
     const element = document.createElement('div');
     let current = text;
     let stopped = false;
@@ -205,8 +222,9 @@ export function alternativeEditor({ name, isUser, macros, text, changed }) {
         if (stopped) return;
         editor = chatEditor({
             parent: element,
-            setup: chatSetup(isUser ? null : name, 'alternative', () => macros() ?? undefined),
-            macroValue: source => macros()?.[source],
+            setup: chatSetup(isUser ? null : name, 'alternative', values),
+            macroValue: values.valueOf,
+            macroValues: values,
             speaker: isUser ? '' : name,
             initial: text,
             edited: (now) => {
@@ -237,15 +255,16 @@ export function alternativeEditor({ name, isUser, macros, text, changed }) {
 /**
  * Shows the bias of a message's reply in its bias line
  * @param {Element} element the message's `.mes_bias`
+ * @param {ChatMessage} message
  * @param {string} bias
  */
-export function showBiasText(element, bias) {
+export function showBiasText(element, message, bias) {
     if (!bias) {
         stopText(element);
         element.replaceChildren();
         return;
     }
-    showText(element, bias, chatSetup(null, 'bias', valuesIn(element)));
+    showText(element, bias, chatSetup(speakerOf(message), 'bias', chatMacroValues(speakerOf(message))));
 }
 
 /**
@@ -255,16 +274,15 @@ export function showBiasText(element, bias) {
  * @returns {HTMLElement}
  */
 export function drawnMessageText(text, { name, isUser }) {
-    return drawnText(text, chatSetup(isUser ? null : name, 'message', () => undefined));
+    return drawnText(text, chatSetup(isUser ? null : name, 'message', chatMacroValues(isUser ? null : name)));
 }
 
 /**
  * An alternative of a message drawn for the list of alternatives, the parts a search matched marked
- * @param {{ name: string, isUser: boolean, macros: () => Record<string, string | null> | null | undefined }} alternative
- *   macros: the values of its macros, as the list has them
+ * @param {{ name: string, isUser: boolean, values: MacroValues }} alternative values: the values of its macros
  * @returns {{ element: HTMLElement, show: (text: string, matches: readonly number[] | null) => void, stop: () => void }}
  */
-export function alternativeReader({ name, isUser, macros }) {
+export function alternativeReader({ name, isUser, values }) {
     /** @type {readonly number[] | null} */
     let matches = null;
     /** @type {Set<() => void>} */
@@ -283,7 +301,7 @@ export function alternativeReader({ name, isUser, macros }) {
         },
     };
     /** @returns {TextSetup} */
-    const setupNow = () => ({ ...chatSetup(isUser ? null : name, 'alternative', () => macros() ?? undefined), overlays: () => [search], now: setupNow });
+    const setupNow = () => ({ ...chatSetup(isUser ? null : name, 'alternative', values), overlays: () => [search], now: setupNow });
     const shown = textReader(setupNow());
     return {
         element: shown.element,
@@ -302,34 +320,33 @@ export function alternativeReader({ name, isUser, macros }) {
  * with HTML and their styles limited to the given scope, the rest with HTML shown as text and markdown's links and
  * images drawn
  * @param {'greeting' | 'notes' | 'literal'} kind
- * @param {{ values: import('./chat-text/macros.js').MacroValueSource & { valueOf: import('./safe-macros.js').MacroValueOf }, person: (macroName: string) => import('./macro-pill.js').MacroPerson | null, styleScope?: string }} options
+ * @param {{ values: MacroValues, person: (macroName: string) => import('./macro-pill.js').MacroPerson | null, styleScope?: string }} options
  * @returns {TextSetup}
  */
 export function cardTextSetup(kind, { values, person, styleScope = '' }) {
-    const macro = macroValuePieces(values, name => withFilledAbout(person(name), name, values.valueOf), page.t);
+    const drawn = drawnValues(values);
+    const macro = macroValuePieces(drawn, name => withFilledAbout(person(name), name, drawn.get), page.t);
+    const now = () => cardTextSetup(kind, { values, person, styleScope });
     if (kind === 'greeting') {
         const grammar = grammarOptions(true);
-        return { key: JSON.stringify([kind, grammar]), grammar, html: MESSAGE_POLICY, macro, now: () => cardTextSetup(kind, { values, person, styleScope }) };
+        return { key: JSON.stringify([kind, grammar, valuesKey(values)]), grammar, html: MESSAGE_POLICY, macro, now };
     }
     if (kind === 'notes') {
-        return { key: JSON.stringify([kind, styleScope]), grammar: {}, html: policyFor(styleScope), macro };
+        return { key: JSON.stringify([kind, styleScope, valuesKey(values)]), grammar: {}, html: policyFor(styleScope), macro, now };
     }
-    return { key: kind, grammar: { encodeTags: true }, html: MESSAGE_POLICY, macro };
+    return { key: JSON.stringify([kind, valuesKey(values)]), grammar: { encodeTags: true }, html: MESSAGE_POLICY, macro, now };
 }
 
 /**
- * The macros the open chat draws, for an action that may change their values to be answered with them: its messages',
- * and the chat box's
- * @param {string[]} box the macros in the chat box
- * @returns {{ avatar_url?: string, group_id?: string, at?: string | null, items: { node: string, speaker: string | null, sources: string[] }[], box?: string[] } | undefined}
+ * The macros the page holds values of for the open chat, for an action that may change their values to be answered
+ * with them (`replaceMacroValues`)
+ * @returns {{ avatar_url?: string, group_id?: string, at?: string | null, scopes: { speaker: string | null, sources: string[] }[] } | undefined}
  */
-export function shownMessageMacros(box) {
-    const items = chat.flatMap((message) => {
-        if (!message || typeof message.node_id !== 'string' || isAppMessage(message)) return [];
-        const sources = [message.mes, message.extra?.reasoning, message.extra?.bias].flatMap(text => (typeof text === 'string' ? macrosIn(text) : []));
-        return sources.length ? [{ node: message.node_id, speaker: speakerOf(message), sources: [...new Set(sources)] }] : [];
-    });
-    return items.length || box.length ? { ...page.macroScope(), items, ...(box.length ? { box } : {}) } : undefined;
+export function shownMessageMacros() {
+    const scope = page.chatScope();
+    if (!scope) return undefined;
+    const scopes = heldMacroSources(scope);
+    return scopes.length ? { ...scope, scopes } : undefined;
 }
 
 /**
@@ -343,35 +360,23 @@ export function messageStyles(message) {
 }
 
 /**
- * How the chat box draws what is written in it: as the person's message will be drawn, its macros' values those the
- * server sent with its text
- * @param {() => Record<string, string | null> | undefined} valuesOf
+ * How the chat box draws what is written in it: as the person's message will be drawn
+ * @param {MacroValues} values the values of its macros
  * @returns {TextSetup}
  */
-export function chatBoxSetup(valuesOf) {
-    return chatSetup(null, 'chat-box', valuesOf);
+export function chatBoxSetup(values) {
+    return chatSetup(null, 'chat-box', values);
 }
 
 /**
- * How a message's text, or its reasoning, is drawn in an editor opened in it: as the message draws it, its macros'
- * values those the chat has for the message now
- * @param {Element} element the message's text or reasoning element
+ * How a message's text, or its reasoning, is drawn in an editor opened in it: as the message draws it, with the values
+ * the message is drawn with
  * @param {ChatMessage} message
  * @param {'message' | 'reasoning'} kind
  * @returns {{ setup: TextSetup, macroValue: (source: string) => string | null | undefined, macroValues: MacroValues, speaker: string }}
- *   the values of macros typed in the edit are asked for with `macroValues`
  */
-export function messageEditorSetup(element, message, kind) {
-    const valuesOf = valuesIn(element);
+export function messageEditorSetup(message, kind) {
     const speaker = speakerOf(message);
-    const typed = new MacroValues(() => ({ ...page.macroScope(), ...(speaker === null ? {} : { name2: speaker }) }));
-    return {
-        setup: chatSetup(speaker, kind, valuesOf),
-        macroValue: (source) => {
-            const values = valuesOf();
-            return values && Object.hasOwn(values, source) ? values[source] : typed.get(source);
-        },
-        macroValues: typed,
-        speaker: speaker ?? '',
-    };
+    const values = chatMacroValues(speaker);
+    return { setup: chatSetup(speaker, kind, values), macroValue: values.valueOf, macroValues: values, speaker: speaker ?? '' };
 }

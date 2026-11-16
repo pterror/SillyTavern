@@ -4,7 +4,8 @@ import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { power_user } from './power-user.js';
 import { getTokenizerState } from './tokenizers.js';
 import { copyText, timestampToMoment } from './utils.js';
-import { alternativeEditor, alternativeReader } from './message-text.js';
+import { alternativeEditor, alternativeReader, chatMacroValues } from './message-text.js';
+import { MacroValues, takeScopeMacroValues } from './macro-values.js';
 import { isStoredNodeId } from './node-identity.js';
 import { newUi } from './new-ui-page.js';
 import { editPosition } from './chat-text/surface.js';
@@ -61,13 +62,26 @@ async function go(messageId, index) {
     await swipe(null, direction, { source: SWIPE_SOURCE.SWIPE_PICKER, forceMesId: messageId, forceSwipeId: index });
 }
 
+/**
+ * The values of a listed alternative's macros: its speaker's in the card the list is of, or in the open chat; the item
+ * came with those it draws
+ * @param {{ name: string, role: string, macros: Record<string, string | null> | null }} item
+ * @param {string | null} card
+ * @returns {MacroValues}
+ */
+function itemValues(item, card) {
+    const values = card === null ? chatMacroValues(item.role === 'user' ? null : item.name) : new MacroValues(() => (item.role === 'user' ? { avatar_url: card } : { avatar_url: card, name2: item.name }));
+    takeScopeMacroValues(values.scope(), item.macros);
+    return values;
+}
+
 /** @type {import('/ui/entry.js').StartOptions['alternatives']} */
 export const alternativesOldPage = {
-    reader(item) {
-        return alternativeReader({ name: item.name, isUser: item.role === 'user', macros: () => item.macros });
+    reader(item, _messageId, card) {
+        return alternativeReader({ name: item.name, isUser: item.role === 'user', values: itemValues(item, card) });
     },
-    editor(item, _messageId, text, changed) {
-        return alternativeEditor({ name: item.name, isUser: item.role === 'user', macros: () => item.macros, text, changed });
+    editor(item, _messageId, card, text, changed) {
+        return alternativeEditor({ name: item.name, isUser: item.role === 'user', values: itemValues(item, card), text, changed });
     },
     date: value => timestampToMoment(value).format('lll'),
     tokenizer: () => getTokenizerState(),

@@ -53,7 +53,7 @@ import { textMatches } from './text-matches.js';
 import { getEngine } from '../engine/load.js';
 import { hashGreetingText } from './greeting-ops.js';
 import { macrosIn } from '../public/scripts/safe-macros.js';
-import { macroValuesOf } from './message-macros.js';
+import { scopeMacroValues } from './message-macros.js';
 
 /** @typedef {import('@st/server-ui').User} User */
 /** @typedef {import('@st/server-ui').ViewContext} ViewContext */
@@ -425,8 +425,8 @@ async function withMacroValues(context, target, listed) {
     if (!wanted.some(each => macrosIn(each.texts[0]).length > 0)) return listed;
     const chat = await chatOfTab(context);
     const owner = 'greetings' in target ? { avatar: target.greetings, groupId: null, pageFacts: undefined } : { avatar: chat?.avatar ?? null, groupId: chat?.groupId ?? null, pageFacts: undefined };
-    const values = await macroValuesOf(directoriesOf(context.user), owner, wanted);
-    return { ...listed, alternatives: listed.alternatives.map((a, i) => ({ ...a, macros: values[i] })) };
+    const bySpeaker = new Map((await scopeMacroValues(directoriesOf(context.user), owner, wanted)).map(each => [each.speaker, each.values]));
+    return { ...listed, alternatives: listed.alternatives.map((a, i) => ({ ...a, macros: bySpeaker.get(wanted[i].speaker) ?? {} })) };
 }
 
 /** @type {import('@st/alternatives/server').Ports} */

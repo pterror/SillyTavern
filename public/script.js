@@ -207,12 +207,12 @@ import { loader } from './scripts/action-loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { embedMessageFile, hideChatMessageRange, hasPendingFileAttachment, populateFileAttachment, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, creatorNotesStyleScope, warnExternalMediaBlocked, initChatUtilities, addDOMPurifyHooks, initMessageMediaVolume, showMediaLightbox } from './scripts/chats.js';
-import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxMacros, chatBoxMoveRefused, chatBoxText, focusChatBox, forgetChatBoxChat, giveBackChatBoxText, initChatBox, moveChatBox, takeChatBoxMacros, takeChatBoxPush, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
+import { arriveChatBox, chatBoxFollowEnd, chatBoxLeft, chatBoxMoveRefused, chatBoxText, focusChatBox, forgetChatBoxChat, giveBackChatBoxText, initChatBox, moveChatBox, takeChatBoxPush, takeChatBoxText, writeChatBox } from './scripts/chat-box.js';
 import { endOwnerOf } from './scripts/chat-box-ends.js';
 import { chatBoxSetup } from './scripts/message-text.js';
 import { initChatEditors, loadChatEditor } from './scripts/chat-text/editors.js';
 import { initTextBoxes, textBoxesIn } from './scripts/text-box-editor.js';
-import { readerSelection } from './scripts/chat-text/surface.js';
+import { readerSelection, textSettingsChanged } from './scripts/chat-text/surface.js';
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, discardFieldEdit, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
 import { pagerSelection, selectedGreetingIndex } from './scripts/greeting-pager-selection.js';
@@ -258,7 +258,7 @@ import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder, pageMacroFacts } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { editingIn, initMessageText, messageEditorSetup, redrawMessageText, shownMessageMacros, showBiasText, showMessageText } from './scripts/message-text.js';
-import { setSettingsCarrier } from './scripts/macro-values.js';
+import { onMacroValuesChanged, replaceMacroValues, setSettingsCarrier, takeMacroValues } from './scripts/macro-values.js';
 import {
     updateMessage,
     updateIn,
@@ -287,7 +287,6 @@ import {
     claimPushedCounts,
     hasCountOf,
     takePushedMessageCounts,
-    takeMessageMacros,
 } from './scripts/chat-store.js';
 export {
     updateMessage,
@@ -302,7 +301,7 @@ export {
 };
 import { isStoredNodeId, isProvisionalNodeId, unstoredGreetingNodeId, composedOpeningNodeId } from './scripts/node-identity.js';
 export { isStoredNodeId, isProvisionalNodeId, unstoredGreetingNodeId, composedOpeningNodeId };
-import { saveMetadata, _resetMetadataSaveSnapshot, takePushedState, openChatMacroScope, cancelDebouncedMetadataSave } from './scripts/metadata-store.js';
+import { saveMetadata, _resetMetadataSaveSnapshot, takePushedState, openChatMacroScope, chatMacroScope, cancelDebouncedMetadataSave } from './scripts/metadata-store.js';
 export { openChatMacroScope };
 export { saveMetadata };
 import { switchToNode, switchToAlternativePath } from './scripts/node-navigation.js';
@@ -641,7 +640,8 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
         if (mapping.v1) setAtPath(mergeData, mapping.v1, converted.value);
         setAtPath(mergeData, mapping.v2, converted.value);
         mergeData._loadedFieldHashes = { [mapping.v2]: chain.hash };
-        if (avatar === getCurrentCharacter()?.avatar) mergeData.shown_macros = shownMessageMacros(chatBoxMacros());
+        const shownMacros = avatar === getCurrentCharacter()?.avatar ? shownMessageMacros() : undefined;
+        if (shownMacros) mergeData.shown_macros = shownMacros;
 
         try {
             const fetchResult = await fetch('/api/characters/merge-attributes', {
@@ -695,8 +695,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                     const payload = await fetchResult.json();
                     savedHash = payload?.hashes?.[mapping.v2];
                     savedCounts = payload?.card_token_counts ?? null;
-                    takeMessageMacros(payload?.message_macros);
-                    takeChatBoxMacros(payload?.box_macros);
+                    if (avatar === getCurrentCharacter()?.avatar) replaceMacroValues(shownMacros ?? null, payload?.macro_values);
                 } catch { /* no body, or not JSON - the fallback below covers it */ }
             }
 
@@ -1259,9 +1258,10 @@ async function firstLoadInit() {
         const { chatId, firstDisplayedMessageId, isMobile, utcOffset, lastGenerationType } = pageMacroFacts();
         return { chatId, firstDisplayedMessageId, isMobile, utcOffset, lastGenerationType };
     });
+    onMacroValuesChanged(textSettingsChanged);
     initMessageText({
         settings: () => power_user,
-        macroScope: openChatMacroScope,
+        chatScope: chatMacroScope,
         macroPerson,
         substituteParams: text => substituteParams(text),
         systemName: systemUserName,
@@ -1423,7 +1423,7 @@ async function firstLoadInit() {
         },
         endOwner: () => endOwnerOf(chat, selected_group ? null : getCurrentCharacter()?.avatar ?? null),
         setup: chatBoxSetup,
-        macroScope: openChatMacroScope,
+        macroScope: () => chatMacroScope() ?? {},
         label: t`Message`,
         slashParser: chatBoxSlashParser,
         slashWanted: slashSuggestionsWanted,
@@ -2806,7 +2806,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     renderMessageCount(messageElement, mes);
     mes.title && messageElement.attr('title', mes.title);
 
-    showBiasText(messageElement.find('.mes_bias')[0], String(mes.extra?.bias ?? ''));
+    showBiasText(messageElement.find('.mes_bias')[0], mes, String(mes.extra?.bias ?? ''));
 
     updateReasoningUI(messageElement);
 
@@ -5056,6 +5056,9 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
         return false;
     }
 
+    const valuesOwner = currentChatOwner();
+    if (valuesOwner) takeMacroValues(valuesOwner, payload.macro_values);
+
     const current = chat[mesId];
     if (!current || current.node_id !== message.node_id || !Array.isArray(current.swipes)) {
         return false;
@@ -5638,6 +5641,7 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
  * @property {unknown} [left] what became of the drafts the request carried (`chatBoxLeft`)
  * @property {import('@st/protocol/looks').Looks} [looks] The looks of the chat's speakers' names.
  * @property {import('./scripts/chat-links.js').ChatLinks} [links] Where its messages write names of entries.
+ * @property {import('./scripts/macro-values.js').ScopeValues[]} [macro_values] The values of the macros its messages draw.
  */
 
 /**
@@ -5706,6 +5710,7 @@ export function takeChatOpenAnswer(body, answer) {
     takeChatOpenParts(answer.chat, answer.parts);
     takeViews(answer.ui_views);
     if (answer.looks) holdLooks(CHAT_LOOKS, answer.looks);
+    takeMacroValues(body.group_id ? { group_id: body.group_id } : { avatar_url: body.avatar_url }, answer.macro_values);
     takeChatLinks(answer.links, { replace: true });
     forgetStoredSends(chatOpenOwner(body), Array.isArray(answer.stored_sends) ? answer.stored_sends : []);
     setActiveCharacter(answer.active_character);
@@ -6264,7 +6269,7 @@ export function takePendingSettingsChanges() {
     const dirtyKeys = full ? Object.keys(payload) : [...pendingSettingsKeys];
     pendingSettingsKeys.clear();
     const changes = partialChangesOf(payload, dirtyKeys);
-    return changes ? { ...changes, shown: shownMessageMacros(chatBoxMacros()) } : undefined;
+    return changes ? { ...changes, shown: shownMessageMacros() } : undefined;
 }
 
 /**
@@ -6277,12 +6282,13 @@ export function returnPendingSettingsChanges(changes) {
 
 /**
  * Takes the server's answer to settings changes it applied, as a save's or an action's that carried them.
- * @param {{ keyHashes?: Record<string, number>, settingsHash?: number, shown_counts?: any, card_token_counts?: any, message_macros?: any, box_macros?: any }} answer
+ * @param {{ keyHashes?: Record<string, number>, settingsHash?: number, shown_counts?: any, card_token_counts?: any, macro_values?: any }} answer
  * @param {Record<string, any>} sent The changes as they were sent, by key.
+ * @param {import('./scripts/macro-values.js').MacroScope} [shown] the chat the macros the changes carried were listed
+ *   for (`shownMessageMacros`)
  */
-export async function noteSettingsChangesSaved(answer, sent) {
-    takeMessageMacros(answer.message_macros);
-    takeChatBoxMacros(answer.box_macros);
+export async function noteSettingsChangesSaved(answer, sent, shown) {
+    replaceMacroValues(shown ?? null, answer.macro_values);
     if (!takeServerKeyHashes(answer.keyHashes, Object.keys(sent).map(key => key.split('.')[0]))) {
         for (const [key, value] of Object.entries(sent)) {
             seedSettingsHashes(value, key);
@@ -6326,12 +6332,13 @@ async function performSave({ full }) {
             return;
         }
         const { keys: partialPayload, expectedHashes } = changes;
+        const shown = shownMessageMacros();
 
         try {
             const result = await fetch('/api/settings/save-partial', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ keys: partialPayload, expectedHashes, shown_macros: shownMessageMacros(chatBoxMacros()) }),
+                body: JSON.stringify({ keys: partialPayload, expectedHashes, shown_macros: shown }),
                 cache: 'no-cache',
             });
 
@@ -6345,7 +6352,7 @@ async function performSave({ full }) {
                 throw new Error(`Failed to save partial settings: ${result.statusText}`);
             }
 
-            await noteSettingsChangesSaved(await result.json().catch(() => ({})), partialPayload);
+            await noteSettingsChangesSaved(await result.json().catch(() => ({})), partialPayload, shown);
         } catch (error) {
             console.error('Error saving settings:', error);
             toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Settings could not be saved`);
@@ -6552,7 +6559,7 @@ async function uploadEditorImage(file) {
 function messageEditAuto(mesId, text) {
     if (!editingWhatWasOpened()) return;
     const { mesBlock, mes } = applyMessageEdit(mesId, text);
-    showBiasText(mesBlock.find('.mes_bias')[0], String(mes.extra?.bias ?? ''));
+    showBiasText(mesBlock.find('.mes_bias')[0], mes, String(mes.extra?.bias ?? ''));
     messageEditAutoSaveDebounced();
 }
 
@@ -6668,7 +6675,7 @@ export async function messageEdit(editMessageId, place, reasoningAt) {
 
     const text = String(editMessage.mes ?? '');
     stopMessageEditor();
-    const { setup, macroValue, macroValues, speaker } = messageEditorSetup(messageText[0], editMessage, 'message');
+    const { setup, macroValue, macroValues, speaker } = messageEditorSetup(editMessage, 'message');
     const editor = chatEditor({
         parent: messageText[0],
         setup,
@@ -6802,7 +6809,7 @@ async function messageEditDone(div) {
     mesBlock.find('.mes_edit_buttons').css('display', 'none');
     mesBlock.find('.mes_buttons').css('display', '');
     showMessageText(mesBlock.find('.mes_text')[0], mes);
-    showBiasText(mesBlock.find('.mes_bias')[0], String(mes.extra?.bias ?? ''));
+    showBiasText(mesBlock.find('.mes_bias')[0], mes, String(mes.extra?.bias ?? ''));
     renderMessageCount(div.closest('.mes'), chat[this_edit_mes_id] ?? mes);
     appendMediaToMessage(mes, div.closest('.mes'));
     addCopyToCodeBlocks(div.closest('.mes'));

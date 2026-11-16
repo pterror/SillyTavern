@@ -1,3 +1,4 @@
+import { takeMacroValues } from './macro-values.js';
 import { getCurrentChatId, getCurrentCharacter,
     redisplayChat, updateViewMessageIds, refreshSwipeButtons,
 } from '../script.js';
@@ -29,7 +30,7 @@ function openChat() {
 }
 
 /**
- * @typedef {{ messages?: ChatMessage[], ancestry?: ChatMessage[], draft?: import('./chat-box.js').Draft, left?: unknown, links?: unknown, chat_metadata?: ChatMetadata }} SelectAnswer
+ * @typedef {{ messages?: ChatMessage[], ancestry?: ChatMessage[], draft?: import('./chat-box.js').Draft, left?: unknown, links?: unknown, macro_values?: unknown, chat_metadata?: ChatMetadata }} SelectAnswer
  */
 
 /**
@@ -89,6 +90,7 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true, b
         asked = await askSwitch('/api/chats/message/select', { ...openChat(), node_id: targetNodeId, chat_name: getCurrentChatId(), leaving: move.leaving });
         if ('answer' in asked) {
             chatBoxLeft(asked.answer.left);
+            takeMacroValues(openChat(), asked.answer.macro_values);
             takeChatLinks(asked.answer.links);
             if (avatar != null) _setCurrentTarget(getCurrentChatId() ?? '', null);
             move.arrive(asked.answer.draft);
@@ -150,6 +152,7 @@ async function _persistNodeSelection(targetNodeId) {
         _setCurrentTarget(getCurrentChatId() ?? '', null);
         const answer = await response.json();
         chatBoxLeft(answer.left);
+        takeMacroValues({ avatar_url: avatar }, answer.macro_values);
         takeChatLinks(answer.links);
         await takeStateFrom(answer);
         move.arrive(answer.draft);
@@ -194,6 +197,7 @@ export async function switchToNode(targetNodeId) {
         chatBoxLeft(answer?.left);
         ancestry = answer?.ancestry;
         below = answer?.messages ?? [];
+        takeMacroValues({ avatar_url: avatar }, answer?.macro_values);
         takeChatLinks(answer?.links, { replace: true });
         _setCurrentTarget(getCurrentChatId() ?? '', null);
         await takeStateFrom(answer);

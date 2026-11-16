@@ -1,6 +1,6 @@
 import { storedForm } from './chat-engine.js';
 import { macrosIn } from '../public/scripts/safe-macros.js';
-import { MACRO_VALUES, macroValuesOf } from './message-macros.js';
+import { scopeMacroValues } from './message-macros.js';
 import { appendUnderStart } from './pending-opening.js';
 import { recordGenerationPersisted } from './generation-stop.js';
 import { finishReply } from './reply-reasoning.js';
@@ -83,7 +83,7 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
     return result;
 }
 
-/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra'] & { token_count?: number, text_token_count?: number, macro_values?: Record<string, string | null> }, links?: import('./chat-links.js').ChatLinks, macros?: Record<string, Record<string, string | null>>}} StoredReply */
+/** @typedef {{node_id: string, mes: string, extra: ReturnType<typeof finishReply>['extra'] & { token_count?: number, text_token_count?: number }, links?: import('./chat-links.js').ChatLinks, macro_values?: import('./message-macros.js').ScopeValues[]}} StoredReply */
 
 /**
  * @param {object} body
@@ -92,7 +92,7 @@ export async function persistAssistantReply(pending, generatedText, answer = {})
 export function attachStoredReply(body, persisted) {
     if (!persisted || !body || typeof body !== 'object') return;
     body.assistant_node_id = persisted.node_id;
-    body.assistant_message = { mes: persisted.mes, extra: persisted.extra, ...(persisted.macros ? { macros: persisted.macros } : {}) };
+    body.assistant_message = { mes: persisted.mes, extra: persisted.extra, ...(persisted.macro_values ? { macro_values: persisted.macro_values } : {}) };
     if (persisted.links) body.assistant_links = persisted.links;
 }
 
@@ -195,8 +195,7 @@ async function persistReply(pending, generatedText) {
 }
 
 /**
- * The values of the macros the reply draws, in its extra, and the sent message's, by its node, for the page to draw
- * them with
+ * The values of the macros the reply and the sent message draw, for the page to draw them with
  * @param {{ chat: import('./chat-request.js').ChatContext, directories?: import('./users.js').UserDirectoryList, name2?: string, sentNodeId?: string | null, pageFacts?: unknown }} pending
  * @param {StoredReply} reply
  * @returns {Promise<StoredReply>}
@@ -213,12 +212,7 @@ async function withReplyMacros(pending, reply) {
         ];
         if (!wanted.some(each => each.texts.some(text => macrosIn(text).length > 0))) return reply;
         const owner = { avatar: pending.chat.avatar, groupId: pending.chat.groupId, chat: pending.chat, at: reply.node_id, pageFacts: pending.pageFacts };
-        const [own, ofSent] = await macroValuesOf(directories, owner, wanted);
-        return {
-            ...reply,
-            extra: { ...reply.extra, ...(Object.keys(own).length ? { [MACRO_VALUES]: own } : {}) },
-            ...(sent && ofSent && Object.keys(ofSent).length ? { macros: { [/** @type {string} */ (pending.sentNodeId)]: ofSent } } : {}),
-        };
+        return { ...reply, macro_values: await scopeMacroValues(directories, owner, wanted) };
     } catch (error) {
         console.warn('Could not fill in the macros of the stored reply:', error);
         return reply;

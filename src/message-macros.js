@@ -3,10 +3,11 @@ import { chatContext } from './chat-request.js';
 import { pageFactsOf } from './macro-facts.js';
 
 /**
- * A message's macros, filled in for the page, travel with the message: `extra.macro_values`, each macro's source to
- * its value, or null for one only known when sent. It is derived, never stored.
+ * The values of the macros of texts the page draws, as an answer carries them: by the speaker the texts are from, each
+ * macro's source to its value, null for one only known when sent. They are the scope's (the chat or card the answer is
+ * about and the speaker), not any one text's, and derived, never stored.
+ * @typedef {{ speaker: string | null, values: Record<string, string | null> }} ScopeValues
  */
-export const MACRO_VALUES = 'macro_values';
 
 /**
  * @typedef {object} MacroOwner
@@ -18,8 +19,8 @@ export const MACRO_VALUES = 'macro_values';
  */
 
 /**
- * A text the page draws and the speaker its macros are filled in for: null for the user
- * @typedef {{ holder: Record<string, any>, texts: string[], speaker: string | null }} Shown
+ * Texts the page draws and the speaker their macros are filled in for: null for the user
+ * @typedef {{ texts: string[], speaker: string | null }} Shown
  */
 
 /**
@@ -50,17 +51,17 @@ function shownOf({ messages = [], alternatives = [] }) {
     const shown = [];
     for (const message of messages) {
         if (!message || typeof message !== 'object') continue;
-        shown.push({ holder: message, texts: [String(message.mes ?? ''), ...drawnExtras(extraOf(message.extra))], speaker: speakerOf(message) });
+        shown.push({ texts: [String(message.mes ?? ''), ...drawnExtras(extraOf(message.extra))], speaker: speakerOf(message) });
         if (!Array.isArray(message.swipes) || !Array.isArray(message.swipe_info)) continue;
         message.swipe_info.forEach((/** @type {any} */ info, /** @type {number} */ k) => {
             const text = message.swipes[k];
             if (!info || typeof info !== 'object' || typeof text !== 'string') return;
-            shown.push({ holder: info, texts: [text, ...drawnExtras(extraOf(info.extra))], speaker: speakerOf({ ...message, ...info }) });
+            shown.push({ texts: [text, ...drawnExtras(extraOf(info.extra))], speaker: speakerOf({ ...message, ...info }) });
         });
     }
     for (const alternative of alternatives) {
         if (!alternative || typeof alternative !== 'object') continue;
-        shown.push({ holder: alternative, texts: [String(alternative.mes ?? ''), ...drawnExtras(extraOf(alternative.extra))], speaker: speakerOf(alternative) });
+        shown.push({ texts: [String(alternative.mes ?? ''), ...drawnExtras(extraOf(alternative.extra))], speaker: speakerOf(alternative) });
     }
     return shown;
 }
@@ -82,68 +83,40 @@ function withMentionAbouts(sources) {
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {MacroOwner} owner
  * @param {{ texts: string[], speaker: string | null }[]} wanted
- * @returns {Promise<Record<string, string | null>[]>} each text group's macros and their values, in order
+ * @returns {Promise<ScopeValues[]>} for each speaker with macros in its texts
  */
-export async function macroValuesOf(directories, owner, wanted) {
-    const sources = wanted.map(({ texts }) => withMentionAbouts(texts.flatMap(text => macrosIn(text))));
+export async function scopeMacroValues(directories, owner, wanted) {
     /** @type {Map<string | null, Set<string>>} */
     const bySpeaker = new Map();
-    wanted.forEach(({ speaker }, i) => {
-        if (!sources[i].length) return;
+    for (const { texts, speaker } of wanted) {
+        const sources = texts.flatMap(text => macrosIn(text));
+        if (!sources.length) continue;
         const set = bySpeaker.get(speaker) ?? new Set();
-        for (const source of sources[i]) set.add(source);
+        for (const source of withMentionAbouts(sources)) set.add(source);
         bySpeaker.set(speaker, set);
-    });
-    /** @type {Map<string | null, Map<string, string | null>>} */
-    const values = new Map();
+    }
+    if (!bySpeaker.size) return [];
+    const { macroValuesIn } = await import('./endpoints/macros.js');
+    /** @type {ScopeValues[]} */
+    const answered = [];
     for (const [speaker, set] of bySpeaker) {
         const list = [...set];
-        const { macroValuesIn } = await import('./endpoints/macros.js');
         const filled = await macroValuesIn(directories, { ...owner, name2: speaker }, list);
-        values.set(speaker, new Map(list.map((source, i) => [source, filled[i]])));
+        answered.push({ speaker, values: Object.fromEntries(list.map((source, i) => [source, INPUT.test(source) ? null : filled[i] ?? null])) });
     }
-    return wanted.map(({ speaker }, i) => Object.fromEntries(sources[i].map(source => [source, INPUT.test(source) ? null : values.get(speaker)?.get(source) ?? null])));
+    return answered;
 }
 
 /**
- * Puts the values of the macros each sent message, alternative and opening draws into it, for the page
+ * The values of the macros each sent message, alternative and opening draws
  * @param {import('./users.js').UserDirectoryList} directories
  * @param {MacroOwner} owner
  * @param {import('./message-counts.js').CountSources} sources
- * @returns {Promise<void>}
+ * @returns {Promise<ScopeValues[] | undefined>} none when they draw none
  */
-export async function fillSentMacros(directories, owner, sources) {
-    const shown = shownOf(sources).filter(each => each.texts.some(text => macrosIn(text).length > 0));
-    for (const each of shownOf(sources)) {
-        if (!shown.includes(each) && each.holder.extra && MACRO_VALUES in each.holder.extra) {
-            each.holder.extra = { ...each.holder.extra };
-            delete each.holder.extra[MACRO_VALUES];
-        }
-    }
-    if (!shown.length) return;
-    const filled = await macroValuesOf(directories, owner, shown);
-    shown.forEach((each, i) => {
-        each.holder.extra = { ...extraOf(each.holder.extra), [MACRO_VALUES]: filled[i] };
-    });
-}
-
-/**
- * The values of the macros the page shows, as it lists them, for an answer to an action that may have changed them
- * @param {import('./users.js').UserDirectoryList} directories
- * @param {MacroOwner} owner
- * @param {unknown} shown the page's list: `[{ node, speaker, sources }]`
- * @returns {Promise<Record<string, Record<string, string | null>> | undefined>} by node
- */
-export async function shownMacroValues(directories, owner, shown) {
-    if (!Array.isArray(shown)) return undefined;
-    const wanted = shown.filter(each => typeof each?.node === 'string' && Array.isArray(each.sources)).slice(0, 1000).map(each => ({
-        node: String(each.node),
-        speaker: typeof each.speaker === 'string' ? each.speaker : null,
-        texts: each.sources.filter((/** @type {unknown} */ source) => typeof source === 'string').slice(0, 1000),
-    }));
-    if (!wanted.length) return undefined;
-    const filled = await macroValuesOf(directories, owner, wanted);
-    return Object.fromEntries(wanted.map((each, i) => [each.node, filled[i]]));
+export async function sentMacroValues(directories, owner, sources) {
+    const answered = await scopeMacroValues(directories, owner, shownOf(sources));
+    return answered.length ? answered : undefined;
 }
 
 /**
@@ -163,16 +136,13 @@ export function chatMacroOwner(request, chat, messages = []) {
  * @param {import('express').Request} request
  * @param {import('./chat-request.js').ChatContext} chat
  * @param {unknown[]} nodeIds
- * @returns {Promise<Record<string, Record<string, string | null>> | undefined>} by node, only those with macros
+ * @returns {Promise<ScopeValues[] | undefined>} none when they draw none
  */
 export async function storedMessageMacros(request, chat, nodeIds) {
     const ids = [...new Set(nodeIds.filter(id => typeof id === 'string' && id !== ''))].map(String);
     const shown = await Promise.all(ids.map(id => chat.store.chats.shownMessage(chat.tree, id)));
-    const wanted = shown.flatMap((message, i) => (message ? [{ node: ids[i], texts: [String(message.mes ?? ''), ...drawnExtras(extraOf(message.extra))], speaker: speakerOf(message) }] : []))
-        .filter(each => each.texts.some(text => macrosIn(text).length > 0));
-    if (!wanted.length) return undefined;
-    const filled = await macroValuesOf(request.user.directories, chatMacroOwner(request, chat), wanted);
-    return Object.fromEntries(wanted.map((each, i) => [each.node, filled[i]]));
+    const messages = shown.filter(message => message !== null && message !== undefined);
+    return sentMacroValues(request.user.directories, chatMacroOwner(request, chat), { messages });
 }
 
 /**
@@ -183,8 +153,8 @@ export async function storedMessageMacros(request, chat, nodeIds) {
  * @returns {Promise<Record<string, string | null>>}
  */
 async function boxMacroValues(request, chat, sources) {
-    const [values] = await macroValuesOf(request.user.directories, chatMacroOwner(request, chat), [{ texts: sources, speaker: null }]);
-    return values;
+    const [answered] = await scopeMacroValues(request.user.directories, chatMacroOwner(request, chat), [{ texts: sources, speaker: null }]);
+    return answered?.values ?? {};
 }
 
 /**
@@ -197,30 +167,30 @@ async function boxMacroValues(request, chat, sources) {
 export async function draftWithMacros(request, chat, draft) {
     const sources = draft ? macrosIn(draft.text) : [];
     if (!draft || !sources.length) return draft;
-    return { ...draft, [MACRO_VALUES]: await boxMacroValues(request, chat, sources) };
+    return { ...draft, macro_values: await boxMacroValues(request, chat, sources) };
 }
 
 /**
- * The answer's part for an action that may have changed the values of the macros the page shows: their values now,
- * the messages' by node and the chat box's
+ * The answer's part for an action that may have changed the values of every macro the page holds: their values now
  * @param {import('express').Request} request
- * @param {unknown} shown the macros the page shows, as `shownMessageMacros` lists them (page)
- * @returns {Promise<{ message_macros?: Record<string, Record<string, string | null>>, box_macros?: Record<string, string | null> }>}
+ * @param {unknown} shown the macros the page holds values of for the open chat, as `shownMessageMacros` lists them
+ *   (page): `{ avatar_url | group_id, at, scopes: [{ speaker, sources }] }`
+ * @returns {Promise<{ macro_values?: ScopeValues[] }>}
  */
 export async function shownMacrosAnswer(request, shown) {
     if (!shown || typeof shown !== 'object') return {};
-    const { avatar_url: avatarUrl, group_id: groupIdOf, at, items, box } = /** @type {Record<string, unknown>} */ (shown);
+    const { avatar_url: avatarUrl, group_id: groupIdOf, at, scopes } = /** @type {Record<string, unknown>} */ (shown);
     const avatar = typeof avatarUrl === 'string' && avatarUrl !== '' ? avatarUrl : null;
     const groupId = typeof groupIdOf === 'string' && groupIdOf !== '' ? groupIdOf : null;
-    if (avatar === null && groupId === null) return {};
+    if ((avatar === null && groupId === null) || !Array.isArray(scopes)) return {};
+    const wanted = scopes.filter(each => Array.isArray(each?.sources)).slice(0, 1000).map(each => ({
+        speaker: typeof each.speaker === 'string' ? each.speaker : null,
+        texts: each.sources.filter((/** @type {unknown} */ source) => typeof source === 'string').slice(0, 1000),
+    }));
     try {
         const chat = await chatContext(request, { avatar, group: groupId });
-        const values = await shownMacroValues(request.user.directories, { avatar, groupId, chat, at: typeof at === 'string' && at !== '' ? at : null, pageFacts: pageFactsOf(request) }, items);
-        const inBox = Array.isArray(box) ? box.filter(source => typeof source === 'string').slice(0, 1000) : [];
-        return {
-            ...(values ? { message_macros: values } : {}),
-            ...(inBox.length && chat ? { box_macros: await boxMacroValues(request, chat, inBox) } : {}),
-        };
+        const answered = await scopeMacroValues(request.user.directories, { avatar, groupId, chat, at: typeof at === 'string' && at !== '' ? at : null, pageFacts: pageFactsOf(request) }, wanted);
+        return { macro_values: answered };
     } catch (error) {
         console.warn('Could not fill in the macros the page shows:', error);
         return {};

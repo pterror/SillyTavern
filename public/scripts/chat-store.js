@@ -15,6 +15,7 @@ import { countedTextHash } from './counted-text.js';
 import { arriveChatBox, chatBoxFollowCut, chatBoxLeft, moveChatBox } from './chat-box.js';
 import { takeChatLinks } from './chat-links.js';
 import { askSwitch } from './switch-answer.js';
+import { takeMacroValues } from './macro-values.js';
 
 /**
  * @param {number} i
@@ -273,39 +274,6 @@ export function takeMessageCounts(records) {
     claimPushedCounts();
 }
 
-/**
- * Takes the values of the macros messages draw, as an answer carries them, and draws those messages again where
- * they changed
- * @param {unknown} records the values, by node: each macro's source to its value
- */
-export function takeMessageMacros(records) {
-    if (!records || typeof records !== 'object') return;
-    const byNode = /** @type {Record<string, Record<string, string | null>>} */ (records);
-    const take = (/** @type {unknown} */ nodeId, /** @type {Record<string, any>} */ extra) => {
-        const values = typeof nodeId === 'string' && Object.hasOwn(byNode, nodeId) ? byNode[nodeId] : null;
-        if (!values || typeof values !== 'object' || JSON.stringify(values) === JSON.stringify(extra.macro_values)) return null;
-        return { ...extra, macro_values: values };
-    };
-    for (const mesId of chat.keys()) {
-        const old = _chatAt(mesId);
-        if (!old) continue;
-        /** @type {Partial<ChatMessage>} */
-        const updates = {};
-        const own = take(old.node_id, old.extra ?? {});
-        if (own) updates.extra = own;
-        const infos = /** @type {any[] | undefined} */ (old.swipe_info);
-        if (Array.isArray(infos)) {
-            const changed = infos.map(info => (info ? take(info.node_id, info.extra ?? {}) : null));
-            if (changed.some(Boolean)) updates.swipe_info = infos.map((info, k) => (changed[k] ? { ...info, extra: changed[k] } : info));
-        }
-        if (!Object.keys(updates).length) continue;
-        const wasClean = isAsStored(old);
-        const updated = updateMessage(mesId, updates);
-        if (wasClean && updated && typeof old.node_id === 'string') markStoredAs(old.node_id, updated);
-        if (updated && own) updateMessageBlock(mesId, updated);
-    }
-}
-
 const UNCLAIMED_COUNTS_MAX = 1000;
 /** @type {Map<string, { node_id: string, hash: number, key: string, count: number }>} */
 const _unclaimedCounts = new Map();
@@ -535,6 +503,7 @@ async function _storeOpening(mesId, { typing }) {
         }
         if (!response.ok) return 'answered';
         adoptStored(answer?.stored);
+        takeMacroValues(owner, answer?.macro_values);
         takeChatLinks(answer?.links);
         await takeOpenings(owner, answer);
         return 'answered';
@@ -574,6 +543,7 @@ export async function followSameAlternative(mesId, shown) {
         if (isStoredNodeId(message.node_id)) markStoredAs(message.node_id, message);
     }
     if (owner) await takeOpenings(owner, shown, { render: false });
+    if (owner) takeMacroValues(owner, shown.macro_values);
     takeChatLinks(shown.links);
     if (shown.chat_metadata) (await import('./metadata-store.js')).takeServerState(shown.chat_metadata);
     if (owner) arriveChatBox(owner, shown.draft);
@@ -642,6 +612,7 @@ export function openingsOwnerOf(named) {
  */
 export async function takeOpenings(owner, answer, { render = true } = {}) {
     if (!answer || typeof answer !== 'object' || !('openings' in answer)) return;
+    if (owner) takeMacroValues(owner, /** @type {{ opening_macros?: unknown }} */ (answer).opening_macros);
     if (!sameOwner(owner, _currentOwner())) return;
     const character = 'avatar_url' in /** @type {object} */ (owner) ? getCurrentCharacter() : null;
     const avatar = owner && 'avatar_url' in owner ? owner.avatar_url : null;
@@ -770,7 +741,7 @@ async function _chatOpPost(path, body, silent = false) {
     }
     adoptStored(answer?.stored);
     takeMessageCounts(answer?.message_counts);
-    takeMessageMacros(answer?.message_macros);
+    takeMacroValues(owner, answer?.macro_values);
     takeChatLinks(answer?.links);
     await takeOpenings(owner, answer);
     return answer;
@@ -807,7 +778,7 @@ async function _chatOpPostAnswering(path, body, answered) {
     }
     adoptStored(answer?.stored);
     takeMessageCounts(answer?.message_counts);
-    takeMessageMacros(answer?.message_macros);
+    takeMacroValues(owner, answer?.macro_values);
     takeChatLinks(answer?.links);
     await takeOpenings(owner, answer);
     return answer;
@@ -841,7 +812,7 @@ function _messageContent(msg, text = msg.mes) {
     return content;
 }
 
-const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count', 'token_count_hash', 'token_count_key', 'token_count_waiting', 'text_token_count', 'macro_values'];
+const DERIVED_EXTRA = ['branches', 'bookmark_link', ITEMIZED_PROMPT_FLAG, 'token_count', 'token_count_hash', 'token_count_key', 'token_count_waiting', 'text_token_count'];
 
 /**
  * @param {unknown} extra

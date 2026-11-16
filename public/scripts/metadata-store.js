@@ -95,6 +95,15 @@ function openPosition() {
 }
 
 /**
+ * What the open chat's texts fill their macros in from: its character or group, read up to where it is open
+ * @returns {import('./macro-values.js').MacroScope | null} none with no chat open
+ */
+export function chatMacroScope() {
+    const owner = openOwner();
+    return owner ? { ...owner, at: openPosition() } : null;
+}
+
+/**
  * @returns {import('./macro-values.js').MacroScope}
  */
 export function openChatMacroScope() {
