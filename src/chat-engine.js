@@ -4,7 +4,7 @@ import zlib from 'node:zlib';
 
 import { textEdit } from './text-edit.js';
 import { baseOf, draftAfterSend, mergeDraft } from './draft-merge.js';
-import { META, TOP, decodeMessage, encodeMessage, messageRecords } from './chat-codec.js';
+import { META, TOP, decodeMessage, encodeMessage, messageRecords, speakerIdOf } from './chat-codec.js';
 import { resolveAvatars, withoutShownAvatar } from './avatar-refs.js';
 import { ITEMIZED_PROMPT_FLAG } from './prompt-itemization.js';
 import { jsonHash } from '../public/scripts/hash-utils.js';
@@ -177,6 +177,16 @@ function patchedContent(now, edit) {
 function identityOf(m) {
     const speaker = m?.is_user ? `u\u0001${m?.persona ?? m?.name ?? ''}` : `c\u0001${m?.name ?? ''}`;
     return `${speaker}\u0000${m?.mes ?? ''}`;
+}
+
+/**
+ * Who wrote a message: for a user message the persona it was sent as (`persona`, the persona's avatar key; a message
+ * that records none is one author), for any other the character it is spoken as
+ * @param {Record<string, any>} m
+ * @param {bigint | null} speaker the message's speaker id: stored (`speakerIdOf`) or as it will be stored (`speakerFor`)
+ */
+function authorOf(m, speaker) {
+    return m?.is_user === true ? `u\u0001${typeof m.persona === 'string' ? m.persona : ''}` : `c\u0001${speaker ?? ''}`;
 }
 
 /**
@@ -799,9 +809,8 @@ export class ChatEngine {
         const speakerIds = new Set();
         for (const s of stored) {
             if (s.speaker !== null) speakerIds.add(s.speaker);
-            const over = s.values.find(v => v.field === META.speaker);
-            const overId = over ? JSON.parse(over.json) : null;
-            if (overId !== null) speakerIds.add(BigInt(overId));
+            const id = speakerIdOf(s);
+            if (id !== null) speakerIds.add(id);
         }
         const speakers = speakerIds.size ? await this.people.speakers([...speakerIds]) : new Map();
         const messages = stored.map(s => JSON.parse(decodeMessage(s, id => speakers.get(id) ?? null)));
@@ -1242,21 +1251,22 @@ export class ChatEngine {
     }
 
     /**
-     * The alternative of a message, other than the one being edited, whose text is exactly `text`: a stored one, or at
-     * a character tree's root a card greeting no stored opening holds.
+     * The alternative of a message, other than the one being edited, with exactly its text and its author
+     * (`authorOf`): a stored one, or at a character tree's root a card greeting no stored opening holds, whose author
+     * is the character.
      * @param {bigint} tree
      * @param {bigint | null} parent the message's parent; null for a first message
-     * @param {string} text
+     * @param {{ text: string, author: string }} edited
      * @param {{ node?: bigint, greeting?: number }} self the alternative being edited: its node, or the card greeting
      * @returns {Promise<SameAlternative | null>}
      */
-    async sameAlternative(tree, parent, text, self) {
+    async sameAlternative(tree, parent, { text, author }, self) {
         const siblings = (await this.children(tree, parent)).filter(id => id !== self.node);
         const stored = await this.stored(siblings);
         const decoded = await this.decoded(siblings.map(id => stored.get(id)));
-        const at = decoded.findIndex(m => m?.mes === text);
+        const at = decoded.findIndex((m, i) => m?.mes === text && authorOf(m, speakerIdOf(stored.get(siblings[i]))) === author);
         if (at >= 0) return { node: siblings[at] };
-        if (parent !== null) return null;
+        if (parent !== null || author !== authorOf({}, tree)) return null;
         const card = await this.cardGreetings(tree);
         const k = card.greetings.findIndex((g, i) => g.mes === text && card.ids[i] !== self.greeting);
         if (k < 0) return null;
@@ -1291,19 +1301,21 @@ export class ChatEngine {
      * `typing`, the session stays where it is.
      * @param {object} p
      * @param {bigint} p.tree
+     * @param {Speaker | null} p.treeSpeaker
      * @param {string | null} p.after
      * @param {Record<string, any>} p.content
      * @param {boolean} p.typing
      * @param {Actor} p.actor
      * @returns {Promise<{ node_id: string } | { greeting_id: number } | null>} the alternative with that text
      */
-    showSameAlternative({ tree, after, content, typing, actor }) {
+    showSameAlternative({ tree, treeSpeaker, after, content, typing, actor }) {
         return this.serialized(tree, async () => {
             if (typeof content?.mes !== 'string') return null;
             const parent = after === null ? null : (await this.messageOf(tree, after))?.id;
             if (parent === undefined) return null;
             const greetingId = content?.extra?.greeting_id;
-            const same = await this.sameAlternative(tree, parent, content.mes, parent === null && Number.isInteger(greetingId) ? { greeting: greetingId } : {});
+            const author = authorOf(content, (await this.speakerFor(content, treeSpeaker))?.id ?? null);
+            const same = await this.sameAlternative(tree, parent, { text: content.mes, author }, parent === null && Number.isInteger(greetingId) ? { greeting: greetingId } : {});
             if (same === null) return null;
             if (!typing) {
                 const records = [];
@@ -1636,7 +1648,9 @@ export class ChatEngine {
                     refused.push({ node_id: edit.node_id, reason: 'refused to blank stored text' });
                     continue;
                 }
-                const same = typeof next.mes === 'string' && next.mes !== now.mes && !isToolTurn(next) ? await this.sameAlternative(tree, s.parent, next.mes, { node: id }) : null;
+                const speaker = await this.speakerFor(next, treeSpeaker);
+                const author = authorOf(next, speaker?.id ?? null);
+                const same = typeof next.mes === 'string' && next.mes !== now.mes && !isToolTurn(next) ? await this.sameAlternative(tree, s.parent, { text: next.mes, author }, { node: id }) : null;
                 if (same !== null) {
                     if (edit.finished !== true || session === null) {
                         refused.push({ node_id: edit.node_id, reason: 'an alternative with this text already exists', same: await this.sameNamed(same) });
@@ -1647,7 +1661,6 @@ export class ChatEngine {
                     continue;
                 }
                 await recordProduced();
-                const speaker = await this.speakerFor(next, treeSpeaker);
                 const changed = this.editRecords(s, next, speaker);
                 for (const r of changed) {
                     if (session !== null) Object.assign(r, { session, user });

@@ -379,4 +379,32 @@ test.describe('an edit that becomes the text of another alternative', () => {
         expect(await notices(page)).not.toContain('same as alternative');
         await expectNoWarnings(page);
     });
+    test('a message by another persona with the same name and text is another alternative: the edit stays', async ({ page }) => {
+        const s = stamp();
+        const avatar = await createCharacter(page, `SameAuthor-${s}`, [`Hello ${s}`]);
+        await openCharacter(page, avatar);
+        await chatWithReplies(page, avatar, [`Two days ${s}`, `Three days ${s}`], `Fine ${s}`);
+        const question = (await message(page, 1)).node_id;
+        const other = `Far ${s}`;
+        await page.evaluate(async ({ avatar, question, other, s }) => {
+            // @ts-ignore
+            const context = stTest.context();
+            const body = { avatar_url: avatar, sibling_node_id: question, contents: [{ name: 'User', is_user: true, persona: `other-${s}.png`, mes: other, send_date: new Date().toISOString(), extra: {} }] };
+            const response = await fetch('/api/chats/message/alternative', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify(body) });
+            if (!response.ok) throw new Error(`alternative failed: ${response.status}`);
+        }, { avatar, question, other, s });
+        expect(await storedAlternatives(page, question)).toEqual(['How far is it?', other]);
+
+        const saved = answerOf(page, '/api/chats/message/edit');
+        const asked = page.locator('#chat .mes[mesid="1"]');
+        await asked.locator('.mes_edit').dispatchEvent('click');
+        await page.locator('.mes_editor .cm-content').fill(other);
+        await asked.locator('.mes_edit_done').dispatchEvent('click');
+        expect((await saved).ok()).toBe(true);
+        await expect.poll(() => storedAlternatives(page, question), { timeout: 10000 }).toEqual([other, other]);
+        expect((await message(page, 1)).node_id).toBe(question);
+        expect(await shownTexts(page)).toEqual([`Hello ${s}`, other, `Two days ${s}`]);
+        expect(await notices(page)).not.toContain('same as alternative');
+        await expectNoWarnings(page);
+    });
 });

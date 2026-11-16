@@ -107,7 +107,11 @@ Its number, the counter and a typed number are a rank and a select in the list, 
 
 "An edit that becomes identical to an existing greeting or swipe goes to that one, with no duplicate", for every
 message: a reply's alternatives are its siblings; a first message's are the stored openings and the card greetings no
-stored opening holds. Identical is the exact text, whitespace included; the speaker doesn't count.
+stored opening holds. Identical is the exact text, whitespace included, by the same author (owner, 2026-11-16): who
+wrote it, a user message's persona by its avatar key (`persona`; a message that records none is one author), any
+other's character by its id (the speaker stored with it, or for the edit the one it is stored as). Names never count:
+two personas or two characters with one name are two authors. A card greeting's author is its character, so a user's
+opening, or another character's, with a greeting's text is not that greeting.
 
 The server decides (`sameAlternative`, `src/chat-engine.js`), in the request that saves the edit: an edit of a stored
 message (`/api/chats/message/edit`); of a card greeting not stored, which is stored as an opening

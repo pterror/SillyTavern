@@ -291,6 +291,16 @@ export function encodeMessage(message, time, speaker) {
 
 /**
  * @param {Stored} stored
+ * @returns {bigint | null} the character a stored message is spoken as
+ */
+export function speakerIdOf(stored) {
+    const over = stored.values.find(v => v.field === META.speaker);
+    const id = over ? JSON.parse(over.json) : stored.speaker;
+    return id === null || id === undefined ? null : BigInt(id);
+}
+
+/**
+ * @param {Stored} stored
  * @param {(id: bigint) => Speaker | null} speakerOf
  * @returns {string}
  */
@@ -301,8 +311,8 @@ export function decodeMessage(stored, speakerOf) {
     const times = new Map(stored.times.map(t => [t.field, t.delta]));
     const text = stored.texts.find(t => t.field === TOP.mes)?.text;
     const flags = values.has(META.flags) ? Number(JSON.parse(/** @type {string} */ (values.get(META.flags)))) : stored.flags;
-    const speakerId = values.has(META.speaker) ? JSON.parse(/** @type {string} */ (values.get(META.speaker))) : stored.speaker;
-    const speaker = speakerId === null || speakerId === undefined ? null : speakerOf(BigInt(speakerId));
+    const speakerId = speakerIdOf(stored);
+    const speaker = speakerId === null ? null : speakerOf(speakerId);
     const state = (/** @type {number} */ shift) => (flags >>> shift) & 3;
     const bit = (/** @type {number} */ shift) => (flags >>> shift) & 1;
     /** @type {Map<string, string>} */

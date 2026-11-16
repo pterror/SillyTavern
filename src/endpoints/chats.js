@@ -1233,7 +1233,7 @@ router.post('/message/append', validateAvatarUrlMiddleware, async function (requ
         }
         const contents = (Array.isArray(request.body.messages) ? request.body.messages : []).map(storedForm);
         if (request.body.typed === true && contents.length === 1) {
-            const same = await chat.store.chats.showSameAlternative({ tree: chat.tree, after, content: contents[0], typing: false, actor: chat.session.actor() });
+            const same = await chat.store.chats.showSameAlternative({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, content: contents[0], typing: false, actor: chat.session.actor() });
             if (same !== null) return response.send({ ok: true, shown: await shownAnswer(request, response, chat, after, same) });
         }
         const sendKeys = Array.isArray(request.body.send_keys) ? request.body.send_keys : [];
@@ -1324,7 +1324,7 @@ router.post('/message/alternative', validateAvatarUrlMiddleware, async function 
         const actor = { user: chat.session.actor().user };
         if (request.body.typed === true && contents.length === 1) {
             const after = opening || s?.parent == null ? null : (await chats.externalIds([s.parent]))[0];
-            const same = await chats.showSameAlternative({ tree: chat.tree, after, content: contents[0], typing: false, actor: chat.session.actor() });
+            const same = await chats.showSameAlternative({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after, content: contents[0], typing: false, actor: chat.session.actor() });
             if (same !== null) return response.send({ ok: true, shown: await shownAnswer(request, response, chat, after, same) });
         }
         try {
@@ -1416,7 +1416,7 @@ router.post('/message/select', validateAvatarUrlMiddleware, async function (requ
         const openingMessages = request.body.opening?.messages;
         if (!child && !request.body.group_id && Array.isArray(openingMessages) && openingMessages.length === 1) {
             const typing = request.body.typing === true;
-            const same = await chat.store.chats.showSameAlternative({ tree: chat.tree, after: null, content: storedForm(openingMessages[0]), typing, actor: chat.session.actor() });
+            const same = await chat.store.chats.showSameAlternative({ tree: chat.tree, treeSpeaker: chat.treeSpeaker, after: null, content: storedForm(openingMessages[0]), typing, actor: chat.session.actor() });
             if (same !== null && typing) return response.status(409).send({ ok: false, reason: 'an alternative with this text already exists', same });
             if (same !== null) return response.send({ ok: true, shown: await shownAnswer(request, response, chat, null, same) });
         }

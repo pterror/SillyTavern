@@ -13,10 +13,12 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-same-alternative-test-'
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 const ivy = { id: 2n, name: 'Ivy', avatar: 'ivy.png' };
+const rowan = { id: 3n, name: 'Ivy', avatar: 'rowan.png' };
+const cast = [ivy, rowan];
 const greetings = [{ id: 5, text: 'Greeting 1' }, { id: 7, text: 'Greeting 2' }, { id: 9, text: 'Greeting 3' }];
 const people = {
-    speakers: async (/** @type {bigint[]} */ ids) => new Map(ids.filter(id => id === ivy.id).map(id => [id, ivy])),
-    byAvatar: async (/** @type {string[]} */ avatars) => new Map(avatars.filter(a => a === ivy.avatar).map(a => [a, ivy])),
+    speakers: async (/** @type {bigint[]} */ ids) => new Map(cast.filter(c => ids.includes(c.id)).map(c => [c.id, c])),
+    byAvatar: async (/** @type {string[]} */ avatars) => new Map(cast.filter(c => avatars.includes(c.avatar)).map(c => [c.avatar, c])),
     greetings: async () => greetings,
     greetingModel: async () => ({ greetings, defaultId: 5, defaultEpoch: 0 }),
 };
@@ -84,8 +86,8 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         }
 
         await chats.select({ tree: t, node_id: id.b1x, actor: a });
-        assert.equal(await chats.showSameAlternative({ tree: t, after: id.u1, content: said('b1!'), typing: false, actor: a }), null);
-        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: id.u1, content: said('b1'), typing: false, actor: a }), { node_id: id.b1 }, 'a new alternative typed with a reply\'s text is that reply');
+        assert.equal(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: id.u1, content: said('b1!'), typing: false, actor: a }), null);
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: id.u1, content: said('b1'), typing: false, actor: a }), { node_id: id.b1 }, 'a new alternative typed with a reply\'s text is that reply');
         assert.deepEqual(await shown(), ['g', 'u1', 'b1', 'u2']);
         assert.equal((await chats.children(t, (await chats.messageIds([id.u1]))[0])).length, 2);
         await store.close();
@@ -137,22 +139,58 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const count = async () => (await chats.children(t, null)).length;
         const from = (/** @type {number} */ greetingId, /** @type {string} */ mes) => said(mes, { greeting_id: greetingId });
 
-        assert.equal(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Greeting 1'), typing: false, actor: a }), null, 'a greeting unedited is itself');
-        assert.equal(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Own A '), typing: false, actor: a }), null);
-        assert.equal(await chats.showSameAlternative({ tree: t, after: null, content: from(5, ' Greeting 2'), typing: false, actor: a }), null);
+        assert.equal(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: null, content: from(5, 'Greeting 1'), typing: false, actor: a }), null, 'a greeting unedited is itself');
+        assert.equal(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: null, content: from(5, 'Own A '), typing: false, actor: a }), null);
+        assert.equal(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: null, content: from(5, ' Greeting 2'), typing: false, actor: a }), null);
 
-        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Own A'), typing: true, actor: a }), { node_id: id['Own A'] });
-        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Greeting 2'), typing: true, actor: a }), { greeting_id: 7 });
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: null, content: from(5, 'Own A'), typing: true, actor: a }), { node_id: id['Own A'] });
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: null, content: from(5, 'Greeting 2'), typing: true, actor: a }), { greeting_id: 7 });
         assert.deepEqual(await shown(), ['Own A'], 'while typed, the session stays');
 
-        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Greeting 2'), typing: false, actor: a }), { greeting_id: 7 });
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: null, content: from(5, 'Greeting 2'), typing: false, actor: a }), { greeting_id: 7 });
         assert.deepEqual([await shown(), await chosen()], [[], { id: 7, epoch: 0 }]);
-        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(9, 'Own A'), typing: false, actor: a }), { node_id: id['Own A'] });
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: null, content: from(9, 'Own A'), typing: false, actor: a }), { node_id: id['Own A'] });
         assert.deepEqual(await shown(), ['Own A']);
         assert.equal(await count(), 1, 'nothing is stored');
 
         await send(null, [said('Greeting 3', { greeting_id: 9 })]);
-        assert.deepEqual(await chats.showSameAlternative({ tree: t, after: null, content: from(5, 'Greeting 3'), typing: false, actor: a }), { node_id: id['Greeting 3'] }, 'a greeting held by a stored opening is that opening');
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: null, content: from(5, 'Greeting 3'), typing: false, actor: a }), { node_id: id['Greeting 3'] }, 'a greeting held by a stored opening is that opening');
+        await store.close();
+    });
+    test(`${kind}: an edit with another alternative's text by another author stays an edit: a persona by its avatar key, a character by its id, never by name`, async () => {
+        const { store, chats, t, id, send, shown, textOf, edit } = await fresh(engine);
+        const as = (/** @type {string} */ mes, /** @type {Record<string, any>} */ who) => ({ ...said(mes), ...who });
+        await send(null, ['g']);
+        await send('g', [as('hi', { is_user: true, name: 'You', persona: 'a.png' })]);
+        await send('g', [as('hi there', { is_user: true, name: 'You', persona: 'b.png' })]);
+        await send('g', [as('hello', { is_user: true, name: 'You', persona: 'a.png' })]);
+        assert.deepEqual(await shown(), ['g', 'hello']);
+
+        const otherPersona = await edit(id['hi there'], 'hi');
+        assert.deepEqual([otherPersona.applied, otherPersona.shown], [1, []], 'a persona with the same name is another author');
+        assert.equal(await textOf(id['hi there']), 'hi');
+        const samePersona = await edit(id.hello, 'hi');
+        assert.deepEqual(samePersona.shown, [{ node_id: id.hello, same: { node_id: id.hi } }]);
+        assert.deepEqual(await shown(), ['g', 'hi']);
+
+        await send('hi', [as('b1', { original_avatar: rowan.avatar }), 'b2']);
+        const otherCharacter = await edit(id.b2, 'b1');
+        assert.deepEqual([otherCharacter.applied, otherCharacter.shown], [1, []], 'a character with the same name is another author');
+        assert.equal(await textOf(id.b2), 'b1');
+        assert.equal(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: id.hi, content: said('b1'), typing: false, actor: a }), null);
+        assert.deepEqual(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: id.hi, content: as('b1', { original_avatar: rowan.avatar }), typing: false, actor: a }), { node_id: id.b1 });
+        await store.close();
+    });
+
+    test(`${kind}: a card greeting's author is the character: a user's opening with its text, or another character's, stays an edit`, async () => {
+        const { store, chats, t, id, send, shown, textOf, edit, chosen } = await fresh(engine);
+        await send(null, [{ ...said('Mine'), is_user: true, name: 'You', persona: 'a.png' }]);
+        await send(null, [{ ...said('Theirs'), original_avatar: rowan.avatar }]);
+        assert.deepEqual([(await edit(id.Mine, 'Greeting 2')).shown, await textOf(id.Mine)], [[], 'Greeting 2']);
+        assert.deepEqual([(await edit(id.Theirs, 'Greeting 3')).shown, await textOf(id.Theirs)], [[], 'Greeting 3']);
+        assert.equal(await chats.showSameAlternative({ tree: t, treeSpeaker: ivy, after: null, content: { ...said('Greeting 2', { greeting_id: 5 }), is_user: true, persona: 'b.png' }, typing: false, actor: a }), null);
+        assert.deepEqual(await shown(), ['Greeting 3'], 'the session stays on the edited opening');
+        assert.equal(await chosen(), null);
         await store.close();
     });
 }
