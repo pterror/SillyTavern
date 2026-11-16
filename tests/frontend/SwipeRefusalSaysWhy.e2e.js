@@ -126,6 +126,9 @@ async function swipeTo(page, mesId, swipeId, { answered = true } = {}) {
     return response ? { status: response.status(), body: await response.json().catch(() => null) } : null;
 }
 
+/** @param {{ status: number, body: unknown }} answer */
+const answerOf = answer => (answer.status === 200 ? '200' : `${answer.status} ${JSON.stringify(answer.body)}`);
+
 const notSaved = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#toast-container .toast-warning', { hasText: 'Not saved' });
 
 test.describe('a switch to an alternative the server didn\'t save says why', () => {
@@ -172,7 +175,7 @@ test.describe('a switch to an alternative the server didn\'t save says why', () 
         const avatar = await createCharacter(page, `Gone-${s}`, g);
         await openCharacter(page, avatar);
         const other = await otherTab(page);
-        expect((await post(other, '/api/characters/greetings/delete', { avatar_url: avatar, position: 2, expected_hash: hashGreetingText(g[2]) })).status).toBe(200);
+        expect(answerOf(await post(other, '/api/characters/greetings/delete', { avatar_url: avatar, greeting_id: 2, expected_hash: hashGreetingText(g[2]) }))).toBe('200');
         await other.close();
 
         const answer = await swipeTo(page, 0, 2);
@@ -187,7 +190,7 @@ test.describe('a switch to an alternative the server didn\'t save says why', () 
         const avatar = await createCharacter(page, `Changed-${s}`, g);
         await openCharacter(page, avatar);
         const other = await otherTab(page);
-        expect((await post(other, '/api/characters/greetings/edit', { avatar_url: avatar, position: 1, expected_hash: hashGreetingText(g[1]), text: `One edited ${s}` })).status).toBe(200);
+        expect(answerOf(await post(other, '/api/characters/greetings/edit', { avatar_url: avatar, greeting_id: 1, expected_hash: hashGreetingText(g[1]), text: `One edited ${s}` }))).toBe('200');
         await other.close();
 
         const answer = await swipeTo(page, 0, 1);
@@ -202,7 +205,7 @@ test.describe('a switch to an alternative the server didn\'t save says why', () 
         const bo = await createCharacter(page, `MemberBo-${s}`, [`Bo ${s}`]);
         const groupId = await openNewGroup(page, [ann, bo]);
         const other = await otherTab(page);
-        expect((await post(other, '/api/groups/members', { id: groupId, op: 'remove', avatar: bo })).status).toBe(200);
+        expect(answerOf(await post(other, '/api/groups/members', { id: groupId, op: 'remove', avatar: bo }))).toBe('200');
         await other.close();
 
         const answer = await swipeTo(page, 0, 1);
@@ -229,7 +232,7 @@ test.describe('a switch to an alternative the server didn\'t save says why', () 
         const other = await otherTab(page);
         const deleted = await post(other, '/api/chats/message/alternative/delete', { avatar_url: avatar, node_id: first, preview: true });
         expect(deleted.status).toBe(200);
-        expect((await post(other, '/api/chats/message/alternative/delete', { avatar_url: avatar, node_id: first, confirm: deleted.body.confirm })).status).toBe(200);
+        expect(answerOf(await post(other, '/api/chats/message/alternative/delete', { avatar_url: avatar, node_id: first, confirm: deleted.body.confirm }))).toBe('200');
         await other.close();
 
         const answer = await swipeTo(page, 2, 0);
