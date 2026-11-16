@@ -238,7 +238,7 @@ test.describe('provisional greeting follows greeting saves', () => {
         expect(after.swipes).toEqual([g0, edited, g2]);
         expect(after.swipe_id).toBe(1);
         expect(after.node_id.startsWith('card:')).toBe(true);
-        expect(after.node_id).not.toBe(before.node_id);
+        expect(after.node_id).toBe(before.node_id);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(edited);
 
         expect(requests.writes).toEqual([]);

@@ -31,6 +31,7 @@ import { keysThatBroughtUp } from './world-info/activation-record.js';
 import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
 import { WORLD_INFO_GLOBAL_DEFAULTS, worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
+import { unstoredGreetingNodeId } from '../public/scripts/node-identity.js';
 import { readUserSettings } from './settings-reads.js';
 
 import { onUserStoreOpened, userStore } from './user-stores.js';
@@ -325,10 +326,12 @@ async function chatOfTab(context) {
 
 /**
  * @param {Record<string, any>} entry
+ * @param {string | null} [avatar] the chat's character, whose card greetings an opening naming no `original_avatar` is
  * @returns {import('@st/alternatives/server').Alternative}
  */
-const alternativeOf = entry => ({
+const alternativeOf = (entry, avatar = null) => ({
     nodeId: entry.node_id ?? null,
+    ...(entry.node_id == null ? { greetingNodeId: unstoredGreetingNodeId(entry, avatar) } : {}),
     text: typeof entry.mes === 'string' ? entry.mes : '',
     name: typeof entry.name === 'string' ? entry.name : '',
     isUser: !!entry.is_user,
@@ -355,7 +358,7 @@ async function listedAlternatives(context, target) {
         const store = await userStore(directoriesOf(context.user), context.user.handle);
         const found = await store.chats.alternatives({ node_id: target.message });
         if (!found) return null;
-        return { alternatives: found.alternatives.map(alternativeOf), current: found.selected, card: null, openings: null };
+        return { alternatives: found.alternatives.map(entry => alternativeOf(entry)), current: found.selected, card: null, openings: null };
     }
     const chat = await chatOfTab(context);
     if ('opening' in target) {
@@ -363,7 +366,7 @@ async function listedAlternatives(context, target) {
         const card = chat.avatar ? await readCardGreetings(chat.store, chat.avatar) : null;
         const openings = await chat.store.chats.openingAlternatives({ tree: chat.tree, actor: chat.actor, range: WHOLE });
         return {
-            alternatives: openings.alternatives.map(alternativeOf),
+            alternatives: openings.alternatives.map(entry => alternativeOf(entry, chat.avatar)),
             current: openings.total > 0 ? openings.default_index : null,
             card: card && chat.avatar ? { avatar: chat.avatar, greetings: card.texts, defaultPosition: card.defaultIndex } : null,
             openings: null,

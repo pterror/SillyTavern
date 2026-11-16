@@ -35,7 +35,7 @@
  * @property {number} count how many messages the page shows
  * @property {string} speaker the name of an alternative that names none
  * @property {string|number} sendDate
- * @property {(speaker: string|undefined, mes: string|undefined) => string} provisionalId
+ * @property {(alt: OpeningAlternative) => string | null} greetingNodeId the node id of an unstored card greeting
  * @property {(nodeId: unknown) => boolean} isStored
  * @property {(nodeId: unknown) => boolean} isProvisional
  */
@@ -79,7 +79,7 @@ export function openingView(state, page) {
             is_system: !!alt.is_system,
             ...(typeof alt.original_avatar === 'string' ? { original_avatar: alt.original_avatar } : {}),
             ...(typeof alt.force_avatar === 'string' ? { force_avatar: alt.force_avatar } : {}),
-            node_id: page.isStored(alt.node_id) ? alt.node_id : page.provisionalId(name, alt.mes),
+            node_id: page.isStored(alt.node_id) ? alt.node_id : page.greetingNodeId(alt),
             greeting: alt.greeting ?? null,
         };
     });
@@ -120,7 +120,8 @@ export function openingView(state, page) {
 
     if (page.isStored(first.node_id) || (page.isProvisional(first.node_id) && page.count > 1)) {
         const at = info.findIndex(entry => entry?.node_id === first.node_id);
-        if (at < 0) return { kind: 'keep' };
+        // A card greeting the page shows with replies after it stays the text they follow, even as its card's changes.
+        if (at < 0 || (!page.isStored(first.node_id) && swipes[at] !== first.mes)) return { kind: 'keep' };
         if (sameSwipes() && first.swipe_id === at) return { kind: 'keep' };
         return { kind: 'update', updates: { swipes, swipe_info: info, swipe_id: at }, shownChanged: false };
     }

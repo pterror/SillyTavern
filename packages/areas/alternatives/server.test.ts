@@ -431,6 +431,21 @@ test('itemsOf: a card greeting appears at its first position when the card has i
     expect(items[0]!.card).toEqual({ position: 1, hash: hash('Same') });
 });
 
+test('itemsOf: an unstored card greeting is the item its node id names, whatever its text and speaker name', () => {
+    const greeting = (greetingNodeId: string): Alternative => ({ ...said('Hi'), greetingNodeId });
+    const items = itemsOf(
+        {
+            alternatives: [greeting('card:0:ann.png'), greeting('card:0:ann2.png'), said('Hi', 'n1')],
+            current: 0,
+            card: null,
+            openings: null,
+        },
+        { opening: true },
+        hash,
+    );
+    expect(items.map((i) => i.id)).toEqual(['card:0:ann.png', 'card:0:ann2.png', 'n1']);
+});
+
 test("a message's alternative moves among them: before one is after the one above it, or first; the answer says where the current one is now", async () => {
     const w = world(() => swipes(['one', 'two', 'three', 'four'], 1));
     await w.act('alternatives.open', { target: { message: 'n1' }, tokenizer });

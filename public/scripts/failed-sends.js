@@ -1,6 +1,7 @@
 import { chat } from './chat-state.js';
 import { eventSource, event_types } from './events.js';
 import { getRequestHeaders } from './request-headers.js';
+import { getStringHash } from './hash-utils.js';
 
 /**
  * @typedef {object} FailedSendsDeps
@@ -19,7 +20,7 @@ import { getRequestHeaders } from './request-headers.js';
  * @property {typeof import('./chat-store.js').storeRefOf} storeRefOf
  * @property {typeof import('./node-identity.js').isStoredNodeId} isStoredNodeId
  * @property {typeof import('./node-identity.js').isProvisionalNodeId} isProvisionalNodeId
- * @property {typeof import('./node-identity.js').provisionalNodeId} provisionalNodeId
+ * @property {typeof import('./node-identity.js').unstoredGreetingNodeId} unstoredGreetingNodeId
  * @property {typeof import('./i18n.js').t} t
  * @property {(text: string) => Promise<boolean>} confirmDiscard
  */
@@ -415,15 +416,34 @@ function placeFailedSends(options = {}) {
     return placing;
 }
 
+/** An unstored opening's id as the page made it before card greetings were named by their id: `card:` and a hash */
+const LEGACY_GREETING_ID = /^card:\d+$/;
+
 /**
+ * @param {{ name?: unknown, mes?: unknown }} message
+ * @returns {string} the id an opening with this speaker and text had before card greetings were named by their id
+ */
+function legacyGreetingId(message) {
+    return `card:${getStringHash(`c${message.name ?? ''} ${message.mes ?? ''}`)}`;
+}
+
+/**
+ * The send, after the opening it was written after once that is stored. One written after an opening's id from before
+ * card greetings were named by their id is moved to the id of the opening with that speaker and text.
  * @param {Owner} context
  * @param {FailedSend} entry
  * @returns {FailedSend}
  */
 function withStoredGreeting(context, entry) {
     if (!deps.isProvisionalNodeId(entry.after)) return entry;
-    const greeting = chat.find(message => deps.isStoredNodeId(message.node_id) && deps.provisionalNodeId(message.name, message.mes) === entry.after);
-    if (!greeting) return entry;
+    const avatar = context.type === 'character' ? context.id : null;
+    const after = entry.after;
+    const greeting = LEGACY_GREETING_ID.test(after)
+        ? chat.find(message => legacyGreetingId(message) === after)
+        : chat.find(message => deps.isStoredNodeId(message.node_id)
+            && Number.isFinite(/** @type {{ greeting_hash?: unknown } | undefined} */ (message.extra)?.greeting_hash)
+            && deps.unstoredGreetingNodeId(message, avatar) === after);
+    if (typeof greeting?.node_id !== 'string' || greeting.node_id === after) return entry;
     const updated = { ...entry, after: greeting.node_id };
     writeEntries(context, readEntries(context).map(e => e.key === entry.key ? updated : e));
     return updated;

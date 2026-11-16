@@ -5,6 +5,8 @@ import type { ActionContext, ActionResult, User, ViewContext } from '@st/server-
 
 export type Alternative = {
     nodeId: string | null;
+    /** an unstored card greeting's node id, as the page names it */
+    greetingNodeId?: string | null;
     text: string;
     name: string;
     isUser: boolean;
@@ -119,7 +121,7 @@ export function itemsOf(listed: Listed, target: Target, hash: (text: string) => 
         const card = position === undefined ? null : { position, hash: hash(greetings[position] ?? a.text) };
         const at = openings?.indexOf(shown(a.text)) ?? -1;
         return {
-            id: a.nodeId ?? idOf(a.text),
+            id: a.nodeId ?? a.greetingNodeId ?? idOf(a.text),
             index,
             text: a.text,
             name: a.name,

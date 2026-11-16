@@ -300,8 +300,8 @@ export {
     chatOpAddAlternative,
     chatOpCut,
 };
-import { isStoredNodeId, isProvisionalNodeId, provisionalNodeId } from './scripts/node-identity.js';
-export { isStoredNodeId, isProvisionalNodeId, provisionalNodeId };
+import { isStoredNodeId, isProvisionalNodeId, unstoredGreetingNodeId, composedOpeningNodeId } from './scripts/node-identity.js';
+export { isStoredNodeId, isProvisionalNodeId, unstoredGreetingNodeId, composedOpeningNodeId };
 import { saveMetadata, _resetMetadataSaveSnapshot, takePushedState, openChatMacroScope, cancelDebouncedMetadataSave } from './scripts/metadata-store.js';
 export { openChatMacroScope };
 export { saveMetadata };
@@ -1446,7 +1446,7 @@ async function firstLoadInit() {
     initFailedSends({
         addOneMessage, deleteMessage, getCurrentChatContext, redisplayChat, reloadCurrentChat, updateViewMessageIds,
         switchToNode, chatOpAppendAfter, chatOpGraft, appendTarget, setSendStoredListener, setStoreRef, storeRefOf,
-        isStoredNodeId, isProvisionalNodeId, provisionalNodeId, t,
+        isStoredNodeId, isProvisionalNodeId, unstoredGreetingNodeId, t,
         confirmDiscard: async (text) => await callGenericPopup(text, POPUP_TYPE.CONFIRM, '', { okButton: t`Discard`, cancelButton: t`Keep it` }) === POPUP_RESULT.AFFIRMATIVE,
     });
     initItemizedPrompts();
@@ -5077,7 +5077,7 @@ export async function hydrateSwipes(mesId, { index = null, all = false } = {}) {
             is_user: alt.is_user,
             ...(typeof alt.original_avatar === 'string' ? { original_avatar: alt.original_avatar } : {}),
             ...(typeof alt.force_avatar === 'string' ? { force_avatar: alt.force_avatar } : {}),
-            node_id: alt.node_id ?? (isOpening ? provisionalNodeId(alt.name ?? getCurrentCharacter()?.name ?? message.name, alt.mes ?? '') : undefined),
+            node_id: alt.node_id ?? (isOpening ? unstoredGreetingNodeId(alt, selected_group ? null : getCurrentCharacter()?.avatar) ?? undefined : undefined),
         };
     });
 

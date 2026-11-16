@@ -1,4 +1,4 @@
-import { isStoredNodeId } from './node-identity.js';
+import { cardGreetingOf, isStoredNodeId } from './node-identity.js';
 
 /**
  * The message a draft responds to, as the server names it (`src/chat-drafts.js`)
@@ -18,10 +18,8 @@ export function endOwnerOf(messages, avatar) {
         if (isStoredNodeId(messages[i].node_id)) return { message: /** @type {string} */ (messages[i].node_id) };
     }
     for (let i = messages.length - 1; i >= 0; i--) {
-        const { extra, original_avatar: own } = messages[i];
-        const greeting = /** @type {{ greeting_id?: unknown } | undefined} */ (extra)?.greeting_id;
-        const card = typeof own === 'string' && own !== '' ? own : avatar;
-        if (Number.isInteger(greeting) && card) return { greeting: /** @type {number} */ (greeting), avatar: card };
+        const greeting = cardGreetingOf(messages[i], avatar);
+        if (greeting !== null) return greeting;
     }
     return { root: true };
 }

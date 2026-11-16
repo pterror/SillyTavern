@@ -1,10 +1,12 @@
-import { provisionalNodeId } from '../public/scripts/node-identity.js';
+import { unstoredGreetingNodeId } from '../public/scripts/node-identity.js';
 import { countedText } from '../public/scripts/counted-text.js';
 
 /**
  * @typedef {object} CountSources
  * @property {Record<string, any>[]} [messages]
  * @property {Record<string, any>[]} [alternatives]
+ * @property {string | null} [avatar] the chat's character, whose card greetings an alternative naming no
+ *   `original_avatar` is; null for a group
  */
 
 /**
@@ -20,7 +22,7 @@ export function extraOf(extra) {
  * @param {CountSources} sources
  * @returns {{ holder: Record<string, any>, text: string, key: string | null }[]}
  */
-export function targetsOf({ messages = [], alternatives = [] }) {
+export function targetsOf({ messages = [], alternatives = [], avatar = null }) {
     const targets = [];
     for (const message of [...messages].reverse()) {
         if (!message || typeof message !== 'object') continue;
@@ -36,7 +38,7 @@ export function targetsOf({ messages = [], alternatives = [] }) {
         if (!alternative || typeof alternative !== 'object') continue;
         const key = typeof alternative.node_id === 'string' && alternative.node_id !== ''
             ? alternative.node_id
-            : provisionalNodeId(alternative.name, alternative.mes);
+            : unstoredGreetingNodeId(alternative, avatar);
         targets.push({ holder: alternative, text: countedText(alternative.extra, alternative.mes), key });
     }
     return targets;

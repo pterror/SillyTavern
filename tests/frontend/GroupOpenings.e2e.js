@@ -63,6 +63,8 @@ async function opening(page) {
             node_id: m.node_id,
             swipe_id: m.swipe_id,
             swipes: [...m.swipes],
+            swipe_nodes: m.swipe_info.map((/** @type {any} */ info) => info?.node_id ?? null),
+            swipe_avatars: m.swipe_info.map((/** @type {any} */ info) => info?.original_avatar ?? null),
         };
     });
 }
@@ -159,5 +161,71 @@ test.describe('a group chat\'s first message', () => {
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(edited, { timeout: 10000 });
         const reloaded = await opening(page);
         expect([reloaded.node_id, reloaded.name, reloaded.swipes]).toEqual([stored.node_id, boName, [...ann, ...bo, edited]]);
+    });
+
+    test('two members of one name with the same greeting text are two alternatives, each edited and shown on its own', async ({ page }) => {
+        const s = stamp();
+        const name = `Twin-${s}`;
+        const text = `Hello, I am a twin ${s}`;
+        const first = await createCharacter(page, name, [text]);
+        const second = await createCharacter(page, name, [text]);
+        expect(second).not.toBe(first);
+        const groupId = await openNewGroup(page, `TwinOpenings-${s}`, [first, second]);
+
+        const shown = await opening(page);
+        expect(shown.swipes).toEqual([text, text]);
+        expect(shown.swipe_avatars).toEqual([first, second]);
+        expect(new Set(shown.swipe_nodes).size).toBe(2);
+        expect(shown.swipe_nodes.every((/** @type {string} */ id) => id.startsWith('card:'))).toBe(true);
+        expect([shown.swipe_id, shown.original_avatar, shown.node_id]).toEqual([0, first, shown.swipe_nodes[0]]);
+
+        await showOpening(page, 1);
+        const swiped = await opening(page);
+        expect([swiped.original_avatar, swiped.node_id]).toEqual([second, shown.swipe_nodes[1]]);
+        await page.reload();
+        await testSetup.awaitST({ page });
+        await page.evaluate(async (groupId) => {
+            // @ts-ignore
+            await stTest.context().getCharacters();
+            const { openGroupById } = await import('/scripts/group-chats.js');
+            await openGroupById(groupId);
+        }, groupId);
+        await expect.poll(async () => (await opening(page)).original_avatar, { timeout: 10000 }).toBe(second);
+        expect((await opening(page)).swipe_id).toBe(1);
+
+        const edit = async (/** @type {string} */ to) => {
+            await page.locator('#chat .mes[mesid="0"] .mes_edit').click();
+            await page.locator('.mes_editor .cm-content').fill(to);
+            await page.locator('#chat .mes[mesid="0"] .mes_edit_done').click();
+            await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(to, { timeout: 10000 });
+        };
+        const secondEdit = `The second twin, edited ${s}`;
+        await edit(secondEdit);
+        await expect.poll(() => listedOpenings(page, groupId), { timeout: 10000 }).toEqual([
+            { stored: false, mes: text, by: first },
+            { stored: false, mes: text, by: second },
+            { stored: true, mes: secondEdit, by: second },
+        ]);
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([text, text, secondEdit]);
+        expect((await opening(page)).swipe_nodes.slice(0, 2)).toEqual(shown.swipe_nodes);
+
+        await showOpening(page, 0);
+        const back = await opening(page);
+        expect([back.mes, back.original_avatar, back.node_id]).toEqual([text, first, shown.swipe_nodes[0]]);
+        const firstEdit = `The first twin, edited ${s}`;
+        await edit(firstEdit);
+        await expect.poll(() => listedOpenings(page, groupId), { timeout: 10000 }).toEqual([
+            { stored: false, mes: text, by: first },
+            { stored: true, mes: firstEdit, by: first },
+            { stored: false, mes: text, by: second },
+            { stored: true, mes: secondEdit, by: second },
+        ]);
+        await expect.poll(async () => (await opening(page)).swipes, { timeout: 10000 }).toEqual([text, firstEdit, text, secondEdit]);
+        const done = await opening(page);
+        expect([done.mes, done.original_avatar, done.swipe_id]).toEqual([firstEdit, first, 1]);
+
+        await showOpening(page, 2);
+        const other = await opening(page);
+        expect([other.mes, other.original_avatar, other.node_id]).toEqual([text, second, shown.swipe_nodes[1]]);
     });
 });

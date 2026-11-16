@@ -224,7 +224,7 @@ async function countFor(directories, store, owner, sources, options) {
     const context = settingsContextOf({ avatar: owner.avatar ?? null, groupId: owner.groupId ?? null });
     if (!messageCountsShown(directories, context)) return {};
     const counting = await openCounting(directories, context);
-    return counting ? countForPage(store, counting, sources, options) : {};
+    return counting ? countForPage(store, counting, { avatar: owner.avatar ?? null, ...sources }, options) : {};
 }
 
 /**

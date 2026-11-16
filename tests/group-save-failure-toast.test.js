@@ -186,7 +186,9 @@ jest.unstable_mockModule('../public/scripts/chat-store.js', () => ({
 }));
 
 jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({
-    provisionalNodeId: jest.fn(),
+    cardGreetingOf: jest.fn(() => null),
+    unstoredGreetingNodeId: jest.fn(),
+    composedOpeningNodeId: jest.fn(),
     isProvisionalNodeId: jest.fn(() => false),
     isStoredNodeId: jest.fn(() => false),
 }));

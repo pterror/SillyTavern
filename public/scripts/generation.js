@@ -11,7 +11,7 @@ import { chat, chat_metadata } from './chat-state.js';
 import { name1 } from './app-selection-state.js';
 import { changedMetadata, noteMetadataChangesStored, noteMetadataSent } from './metadata-store.js';
 import { changeOps, changesSince } from './state-sync.js';
-import { isProvisionalNodeId, isStoredNodeId, provisionalNodeId } from './node-identity.js';
+import { composedOpeningNodeId, isProvisionalNodeId, isStoredNodeId } from './node-identity.js';
 import { writeChatBox } from './chat-box.js';
 import { isFailedSend, keepFailedSend, wasSendStored } from './failed-sends.js';
 import { updateMessage, setStoreRef, storeRefOf, adoptStored, deepFreeze, claimPushedCounts, takeMessageMacros } from './chat-store.js';
@@ -410,7 +410,7 @@ function rawActionWritesFor(type, lastMessage, lastMessageIndex, atStart) {
         writes.node_id = chat[lastStored].node_id;
     } else if (end > 0) {
         if (chat[0].node_id == null || chat[0].node_id === '') {
-            updateMessage(0, { node_id: provisionalNodeId(chat[0].name, chat[0].mes) });
+            updateMessage(0, { node_id: composedOpeningNodeId() });
         }
         if (isProvisionalNodeId(chat[0].node_id) && String(chat[0].mes ?? '').trim() !== '') {
             const speaker = getCurrentCharacter()?.name;

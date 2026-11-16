@@ -58,6 +58,8 @@ position.
 A stored opening names the card greeting it came from in `extra.greeting_id`. The tree's openings the server sends
 carry the id on each card greeting not yet stored, so whatever the page stores from one keeps it: the greeting stored
 with what goes under it, an in-chat edit of it, an alternative added to it, a duplicate of an opening that has one.
+The page names a card greeting not stored yet by that id and its character (the `original_avatar` the server sends
+with a member's, else the chat's own), never by its text or its speaker's name (`unstoredGreetingNodeId`).
 
 An opening's greeting is of the character it is stored as spoken by: a member's, in a group's tree; the tree's own
 character's for one by it, and for a user's own first message, in a character's tree. A user's opening in a group's

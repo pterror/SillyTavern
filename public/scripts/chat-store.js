@@ -1,4 +1,4 @@
-import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, provisionalNodeId, redisplayChat, refreshSwipeButtons, showMessageCount, updateMessageBlock, updateViewMessageIds, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
+import { cardToGreetingsModel, getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, unstoredGreetingNodeId, composedOpeningNodeId, redisplayChat, refreshSwipeButtons, showMessageCount, updateMessageBlock, updateViewMessageIds, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
 import { eventSource, event_types } from './events.js';
 import { openingView } from './opening-view.js';
 import { chat, chat_metadata } from './chat-state.js';
@@ -653,13 +653,14 @@ export async function takeOpenings(owner, answer, { render = true } = {}) {
     if (!answer || typeof answer !== 'object' || !('openings' in answer)) return;
     if (!sameOwner(owner, _currentOwner())) return;
     const character = 'avatar_url' in /** @type {object} */ (owner) ? getCurrentCharacter() : null;
+    const avatar = owner && 'avatar_url' in owner ? owner.avatar_url : null;
     const state = /** @type {import('./opening-view.js').OpeningState} */ (answer);
     const view = openingView({ openings: state.openings, card_openings: state.card_openings ?? null }, {
         first: _chatAt(0),
         count: chat.length,
         speaker: character?.name ?? '',
         sendDate: getMessageTimeStamp(),
-        provisionalId: provisionalNodeId,
+        greetingNodeId: alt => unstoredGreetingNodeId(alt, avatar),
         isStored: isStoredNodeId,
         isProvisional: isProvisionalNodeId,
     });
@@ -987,7 +988,7 @@ export async function chatOpStoreComposed(mesId) {
     /** @type {string|null} */
     let nodeId = null;
     if (mesId === 0) {
-        updateMessage(0, { node_id: provisionalNodeId(msg.name, msg.mes) });
+        updateMessage(0, { node_id: composedOpeningNodeId() });
         const saved = await _storeOpening(0, { typing: false });
         if (saved !== null && 'node' in saved && saved.shown) return saved.node;
         nodeId = saved !== null && 'node' in saved && isStoredNodeId(saved.node) ? saved.node : null;

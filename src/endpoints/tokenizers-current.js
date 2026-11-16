@@ -259,7 +259,7 @@ async function shownChatCounts(request, shown, counting) {
     const loaded = at === null ? null : await chat.store.chats.load({ tree: chat.tree, at, session: reader.session });
     const openings = await openingState({ store: chat.store, tree: chat.tree, actor: reader });
     const { countForPage } = await import('../message-count-service.js');
-    return countForPage(chat.store, counting, { messages: loaded?.messages ?? [], alternatives: openingAlternatives(openings) });
+    return countForPage(chat.store, counting, { messages: loaded?.messages ?? [], alternatives: openingAlternatives(openings), avatar: chat.avatar });
 }
 
 router.post('/current/tokenizer', currentTokenizerRoute(

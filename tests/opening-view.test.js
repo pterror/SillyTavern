@@ -1,11 +1,14 @@
 import { describe, test, expect } from '@jest/globals';
 import { openingView } from '../public/scripts/opening-view.js';
+import { unstoredGreetingNodeId } from '../public/scripts/node-identity.js';
 
-const provisionalId = (speaker, mes) => `card:${speaker}|${mes}`;
+const GREETING_IDS = { 'Hi': 0, 'Hi, edited': 0, 'Yo': 1 };
+const greetingNodeId = alt => unstoredGreetingNodeId(alt, 'Rex.png');
+const provisionalId = mes => greetingNodeId({ extra: { greeting_id: GREETING_IDS[mes] } });
 const isStored = id => typeof id === 'string' && id !== '' && !id.startsWith('card:');
 const isProvisional = id => typeof id === 'string' && id.startsWith('card:');
 
-const card = mes => ({ node_id: null, mes, name: 'Rex', is_user: false, send_date: 1, extra: {} });
+const card = mes => ({ node_id: null, mes, name: 'Rex', is_user: false, send_date: 1, extra: { greeting_id: GREETING_IDS[mes] } });
 const stored = (node_id, mes, is_user = false) => ({ node_id, mes, name: is_user ? 'You' : 'Rex', is_user, send_date: 1, extra: {} });
 
 /**
@@ -21,10 +24,10 @@ function state(storedOpenings, cardOpenings, shown) {
     };
 }
 
-const page = (first, count = first ? 1 : 0) => ({ first, count, speaker: 'Rex', sendDate: 9, provisionalId, isStored, isProvisional });
+const page = (first, count = first ? 1 : 0) => ({ first, count, speaker: 'Rex', sendDate: 9, greetingNodeId, isStored, isProvisional });
 const shownCard = (mes, swipes = [mes]) => ({
-    name: 'Rex', mes, node_id: provisionalId('Rex', mes), swipes, swipe_id: swipes.indexOf(mes),
-    swipe_info: swipes.map(text => ({ node_id: provisionalId('Rex', text) })),
+    name: 'Rex', mes, node_id: provisionalId(mes), swipes, swipe_id: swipes.indexOf(mes),
+    swipe_info: swipes.map(text => ({ node_id: provisionalId(text) })),
 });
 
 describe('the first message of a character tree', () => {
@@ -32,7 +35,7 @@ describe('the first message of a character tree', () => {
         expect(openingView(state([], [], 0), page(undefined))).toEqual({ kind: 'keep' });
         const view = openingView(state([], [card('Hi'), card('Yo')], 1), page(undefined));
         expect(view.kind).toBe('show');
-        expect(view.message).toMatchObject({ mes: 'Yo', node_id: provisionalId('Rex', 'Yo'), swipes: ['Hi', 'Yo'], swipe_id: 1 });
+        expect(view.message).toMatchObject({ mes: 'Yo', node_id: provisionalId('Yo'), swipes: ['Hi', 'Yo'], swipe_id: 1 });
     });
 
     test('a shown card greeting with nothing after it follows an edit, an add and a default change', () => {
@@ -63,7 +66,7 @@ describe('the first message of a character tree', () => {
                 swipe_id: 0,
                 swipe_info: [
                     { node_id: 'n1', name: 'You', is_user: true, is_system: false, send_date: 1, extra: {}, greeting: null },
-                    { node_id: provisionalId('Rex', 'Hi'), name: 'Rex', is_user: false, is_system: false, send_date: 1, extra: {}, greeting: null },
+                    { node_id: provisionalId('Hi'), name: 'Rex', is_user: false, is_system: false, send_date: 1, extra: { greeting_id: 0 }, greeting: null },
                 ],
             },
         });
@@ -81,6 +84,14 @@ describe('the first message of a character tree', () => {
     test('a message the page composed is left alone', () => {
         expect(openingView(state([], [card('Hi')], 0), page({ mes: 'typed', node_id: null }))).toEqual({ kind: 'keep' });
     });
+});
+
+test('a group\'s members\' greetings with the same speaker name and text are each their own alternative', () => {
+    const member = (avatar, id) => ({ ...card('Hi'), original_avatar: avatar, extra: { greeting_id: id } });
+    const view = openingView(state([], [member('Ann.png', 0), member('Ann2.png', 0)], 1), page(undefined));
+    expect(view.kind).toBe('show');
+    expect(view.message.swipe_info.map(info => info.node_id)).toEqual(['card:0:Ann.png', 'card:0:Ann2.png']);
+    expect(view.message.node_id).toBe('card:0:Ann2.png');
 });
 
 test('an opening that stops being its card greeting is updated, though its text and place are the same', () => {
