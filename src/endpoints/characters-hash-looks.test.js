@@ -26,3 +26,13 @@ test('a list page\'s hashes carry its names\' looks after everything else, and a
     assert.equal(withLooks.hidden, 2);
     assert.equal(read(serializeQueryHashesBinary(base)).looks, undefined);
 });
+
+test('a folder list\'s page carries its folder rows, the page\'s first, beside its hash rows', () => {
+    const leadRows = [{ id: 'f1', name: 'Vault ✦', thing: '12', count: 3, countApprox: true }, { id: 'none' }];
+    const base = { seq: 5, token: 'l9', total: 3, approxTotal: false, hashRows: [row], cursor: 'c' };
+    const page = read(serializeQueryHashesBinary({ ...base, looks, leadRows }));
+    assert.deepEqual(page.leadRows, leadRows);
+    assert.deepEqual(page.looks, looks);
+    assert.equal(page.hashRows[0].id, 'Ilse.png');
+    assert.deepEqual(read(serializeQueryHashesBinary(base)).leadRows, []);
+});

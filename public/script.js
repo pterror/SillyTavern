@@ -158,7 +158,6 @@ import { extension_settings } from './scripts/extension-settings.js';
 import { chatBoxSlashParser, executeSlashCommandsOnChatInput, initDefaultSlashCommands, isExecutingCommandsFromChatInput, slashSuggestionsWanted, pauseScriptExecution, stopScriptExecution } from './scripts/slash-commands.js';
 import { initMacroAutoComplete } from './scripts/autocomplete/MacroAutoComplete.js';
 import {
-    chooseBogusFolder,
     loadTagsFromServer,
     reindexTagAssignments,
     tagsStore,
@@ -10273,12 +10272,6 @@ jQuery(async function () {
         const avatar = $(this).attr('data-avatar');
         await selectCharacterByAvatar(avatar);
         if (!selected_group && String(this_avatar) === String(avatar)) bringChatForward();
-    });
-
-    $(document).on('click', '.bogus_folder_select', function () {
-        const tagId = $(this).attr('tagid');
-        console.debug('Bogus folder clicked', tagId);
-        chooseBogusFolder($(this), tagId);
     });
 
 

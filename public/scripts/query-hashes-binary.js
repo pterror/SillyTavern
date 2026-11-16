@@ -1,8 +1,14 @@
+/**
+ * A row a folder case's list starts with: a closed folder, or (`id` "none") the way back to the rest case.
+ * @typedef {{ id: string, name?: string, thing?: string, count?: number, countApprox?: boolean }} LeadRow
+ */
+
 /** @typedef {{id:string, isGroup:boolean, version:number|null, favHash:number, tagIdsHash:number, contentHash:number, date_added:number, create_date:number|null, date_last_chat:number, chat_size:number, data_size:number, chat:string|null}} HashRow */
 
 /**
  * @param {ArrayBuffer} buffer
- * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, more: boolean, cursor: string|undefined, hashRows: HashRow[], favHashRows: HashRow[]|undefined, looks: import('@st/protocol/looks').Looks|undefined}}
+ * @returns {{seq: number, token: string|null, total: number|undefined, totalApprox: boolean, hidden: number|undefined, hiddenApprox: boolean, more: boolean, cursor: string|undefined, hashRows: HashRow[], favHashRows: HashRow[]|undefined, looks: import('@st/protocol/looks').Looks|undefined, leadRows: LeadRow[]}}
+ * `leadRows`: the page's first rows, before `hashRows`.
  */
 export function deserializeQueryHashesBinary(buffer) {
     const view = new DataView(buffer);
@@ -17,6 +23,7 @@ export function deserializeQueryHashesBinary(buffer) {
     const hasHidden = (headerFlags & 0b10000) !== 0;
     const hasFavs = (headerFlags & 0b100000) !== 0;
     const hasLooks = (headerFlags & 0b1000000) !== 0;
+    const hasLead = (headerFlags & 0b10000000) !== 0;
     const seq = view.getFloat64(offset, true); offset += 8;
     const total = view.getFloat64(offset, true); offset += 8;
 
@@ -89,5 +96,13 @@ export function deserializeQueryHashesBinary(buffer) {
         offset += looksLen;
     }
 
-    return { seq, token, total: hasTotal ? total : undefined, totalApprox, hashRows, hidden, hiddenApprox, more, cursor, favHashRows, looks };
+    /** @type {LeadRow[]} */
+    let leadRows = [];
+    if (hasLead) {
+        const leadLen = view.getUint32(offset, true); offset += 4;
+        leadRows = JSON.parse(decoder.decode(new Uint8Array(buffer, offset, leadLen)));
+        offset += leadLen;
+    }
+
+    return { seq, token, total: hasTotal ? total : undefined, totalApprox, hashRows, hidden, hiddenApprox, more, cursor, favHashRows, looks, leadRows };
 }

@@ -155,10 +155,6 @@
     background-color: rgba(100, 100, 100, 0.5);
 }
 
-.tag.filterByFolder {
-    background-color: rgba(120, 120, 120, 0.5);
-}
-
 .tag.manageTags,
 .tag.showTagList {
     background-color: rgba(150, 100, 100, 0.5);

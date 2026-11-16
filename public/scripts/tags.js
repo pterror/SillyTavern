@@ -141,7 +141,7 @@ function getVisibleAvatarsForGroupContext(type, currentGroup) {
 
 /**
  * Filters actionable tags for group contexts.
- * In group contexts, hide GROUP and FOLDER filters but keep Favorites and utility buttons.
+ * In group contexts, hide the GROUP filter but keep Favorites and utility buttons.
  * @param {object[]} actionTags - Array of actionable tag objects
  * @returns {object[]} Filtered array of actionable tags
  */
@@ -150,7 +150,7 @@ function filterActionableTagsForGroupContext(actionTags) {
         if (tag.id === ACTIONABLE_TAGS.FAV.id) {
             return true;
         }
-        if (tag.id === ACTIONABLE_TAGS.GROUP.id || tag.id === ACTIONABLE_TAGS.FOLDER.id) {
+        if (tag.id === ACTIONABLE_TAGS.GROUP.id) {
             return false;
         }
         return true;
@@ -160,8 +160,10 @@ function filterActionableTagsForGroupContext(actionTags) {
 const ACTIONABLE_FILTER_STORAGE_KEYS = Object.freeze({
     GROUP: 'TagFilterState_GROUP',
     FAV: 'TagFilterState_FAV',
-    FOLDER: 'TagFilterState_FOLDER',
 });
+
+/** Where the retired "Show only folders" filter kept its state; dropped on load. */
+const RETIRED_FOLDER_FILTER_STORAGE_KEY = 'TagFilterState_FOLDER';
 
 /**
  * Gets the storage key prefix for a filter helper to enable persistence.
@@ -316,7 +318,6 @@ export const tag_sort_mode = {
 const ACTIONABLE_TAGS = {
     FAV: { id: '1', sort_order: 1, name: 'Show only favorites', filter_state: undefined, action: filterByFav, icon: 'fa-solid fa-star', class: 'filterByFavorites' },
     GROUP: { id: '0', sort_order: 2, name: 'Show only groups', filter_state: undefined, action: filterByGroups, icon: 'fa-solid fa-users', class: 'filterByGroups' },
-    FOLDER: { id: '4', sort_order: 3, name: 'Show only folders', filter_state: undefined, action: filterByFolder, icon: 'fa-solid fa-folder-plus', class: 'filterByFolder' },
     VIEW: { id: '2', sort_order: 4, name: 'Manage tags', action: onViewTagsListClick, icon: 'fa-solid fa-gear', class: 'manageTags' },
     HINT: { id: '3', sort_order: 5, name: 'Show Tag List', action: onTagListHintClick, icon: 'fa-solid fa-tags', class: 'showTagList' },
     UNFILTER: { id: '5', sort_order: 6, name: 'Clear all filters', action: onClearAllFiltersClick, icon: 'fa-solid fa-filter-circle-xmark', class: 'clearAllFilters' },
@@ -333,7 +334,6 @@ function getTagIdToFilterType() {
         TAG_ID_TO_FILTER_TYPE = new Map([
             [ACTIONABLE_TAGS.FAV.id, FILTER_TYPES.FAV],
             [ACTIONABLE_TAGS.GROUP.id, FILTER_TYPES.GROUP],
-            [ACTIONABLE_TAGS.FOLDER.id, FILTER_TYPES.FOLDER],
         ]);
     }
     return TAG_ID_TO_FILTER_TYPE;
@@ -1032,6 +1032,7 @@ function tellTagEditFailed(id, notSaved) {
  * @returns {Promise<'stored' | 'refused' | 'failed'>}
  */
 async function editTagOnServer(id, patch, tag, applyStored) {
+    const before = folderEntryFactsOf([id]);
     try {
         const response = await fetch('/api/tags/edit', {
             method: 'POST',
@@ -1053,7 +1054,7 @@ async function editTagOnServer(id, patch, tag, applyStored) {
         }
         await eventSource.emit(event_types.SETTINGS_UPDATED);
         refreshUsedTagBars();
-        onFolderListChanged();
+        folderEntriesChangedFrom(before);
         return 'stored';
     } catch (error) {
         console.error(`Error editing tag ${id}:`, error);
@@ -1271,6 +1272,7 @@ async function dropTagsLocally(drops) {
     /** @type {Map<string, { held: boolean, moved: boolean }>} */
     const filters = new Map();
     if (!drops.length) return filters;
+    const reachesFolderEntries = drops.some(({ id }) => folderEntryFacts(id) !== '' || showsFolderEntry(id));
     const needsFullRedraw = tagChangeAffectsCurrentView(drops.flatMap(({ id, replaceWithId }) => replaceWithId ? [id, replaceWithId] : [id]));
     const affectedRowKeys = needsFullRedraw ? null : getRenderedKeysWithAnyTag(new Set(drops.map(({ id }) => id)));
 
@@ -1303,7 +1305,7 @@ async function dropTagsLocally(drops) {
         $(`.tag_view_item[id="${id}"]`).remove();
     }
     refreshUsedTagBars();
-    onFolderListChanged();
+    if (reachesFolderEntries) onFolderListChanged();
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
@@ -1735,16 +1737,53 @@ function isBogusFolderOpen() {
 let showFolderCase = /** @type {((folderCase: string) => void) | null} */ (null);
 let readShownFolderCase = /** @type {() => string} */ (() => 'none');
 let onFolderListChanged = () => {};
+let showsFolderEntry = /** @type {(tagId: string) => boolean} */ (() => false);
 
 /**
- * @param {{ show: (folderCase: string) => void, read: () => string, listChanged: () => void }} handlers
- * `listChanged`: tag definitions or their order changed, so which closed folders there are, or how they are named or
- * ordered, may have changed.
+ * @param {{ show: (folderCase: string) => void, read: () => string, listChanged: () => void, shows: (tagId: string) => boolean }} handlers
+ * `listChanged`: which closed folders there are, or how they are named or ordered, may have changed.
+ * `shows`: whether the character list draws the tag as a folder entry or shows its folder case.
  */
-export function registerFolderCaseHandlers({ show, read, listChanged }) {
+export function registerFolderCaseHandlers({ show, read, listChanged, shows }) {
     showFolderCase = show;
     readShownFolderCase = read;
     onFolderListChanged = listChanged;
+    showsFolderEntry = shows;
+}
+
+/**
+ * What of a held tag the character list's folder entries are drawn from: '' for a tag that is no closed folder,
+ * undefined while its definition isn't held.
+ * @param {string} id
+ * @returns {string | undefined}
+ */
+function folderEntryFacts(id) {
+    const tag = tagsStore.get(id);
+    if (!tag) return undefined;
+    return tag.folder_type === 'CLOSED' ? JSON.stringify([tag.name, tag.sort_order]) : '';
+}
+
+/**
+ * @param {string[]} ids
+ * @returns {Map<string, string | undefined>}
+ */
+function folderEntryFactsOf(ids) {
+    return new Map(ids.map(id => [id, folderEntryFacts(id)]));
+}
+
+/**
+ * Tells the character list its folder entries may have changed, when a change to these tags reached a closed folder.
+ * @param {Map<string, string | undefined>} before folderEntryFactsOf() the tags before the change
+ */
+function folderEntriesChangedFrom(before) {
+    const plain = (/** @type {string | undefined} */ facts) => facts === '' || facts === undefined;
+    for (const [id, was] of before) {
+        const now = folderEntryFacts(id);
+        if (showsFolderEntry(id) || (was !== now && !(plain(was) && plain(now)))) {
+            onFolderListChanged();
+            return;
+        }
+    }
 }
 
 /**
@@ -1870,14 +1909,6 @@ function filterByFav(filterHelper) {
  */
 function filterByGroups(filterHelper) {
     applyActionableTagFilter.call(this, filterHelper, ACTIONABLE_TAGS.GROUP, FILTER_TYPES.GROUP, ACTIONABLE_FILTER_STORAGE_KEYS.GROUP);
-}
-
-/**
- * Applies the "only folder" filter to the character list.
- * @param {FilterHelper} filterHelper Instance of FilterHelper class.
- */
-function filterByFolder(filterHelper) {
-    applyActionableTagFilter.call(this, filterHelper, ACTIONABLE_TAGS.FOLDER, FILTER_TYPES.FOLDER, ACTIONABLE_FILTER_STORAGE_KEYS.FOLDER);
 }
 
 async function loadTagsFromServer() {
@@ -2653,7 +2684,8 @@ function redrawTagsOnScreen() {
     applyCharacterTagsToMessageDivs();
 }
 
-function tagQuerySortField() {
+/** @returns {'manual'|'alphabetical'|'by_entries'} */
+export function tagQuerySortField() {
     const mode = power_user.tag_sort_mode;
     return Object.values(tag_sort_mode).includes(mode) ? mode : tag_sort_mode.MANUAL;
 }
@@ -3087,7 +3119,7 @@ function loadFilterStatesForContext(filterHelper, storagePrefix) {
         return v && validStates.has(v) ? v : null;
     };
 
-    // Load actionable tag states (Favorites, Groups, Folders)
+    // Load actionable tag states (Favorites, Groups)
     const favState = readState(`${storagePrefix}_${ACTIONABLE_FILTER_STORAGE_KEYS.FAV}`);
     if (favState) {
         filterHelper.setFilterData(FILTER_TYPES.FAV, favState, true);
@@ -3098,10 +3130,7 @@ function loadFilterStatesForContext(filterHelper, storagePrefix) {
         filterHelper.setFilterData(FILTER_TYPES.GROUP, groupState, true);
     }
 
-    const folderState = readState(`${storagePrefix}_${ACTIONABLE_FILTER_STORAGE_KEYS.FOLDER}`);
-    if (folderState) {
-        filterHelper.setFilterData(FILTER_TYPES.FOLDER, folderState, true);
-    }
+    accountStorage.removeItem(`${storagePrefix}_${RETIRED_FOLDER_FILTER_STORAGE_KEY}`);
 
     // Load regular tag filter states
     const tagFilterData = filterHelper.getFilterData(FILTER_TYPES.TAG);
@@ -3532,7 +3561,7 @@ function printTagFilters(type = tag_filter_type.character) {
         }
     }
 
-    let actionTags = Object.values(ACTIONABLE_TAGS).filter(x => x !== ACTIONABLE_TAGS.FOLDER);
+    let actionTags = Object.values(ACTIONABLE_TAGS);
 
     if (isGroupContext(type)) {
         actionTags = filterActionableTagsForGroupContext(actionTags);
@@ -3843,6 +3872,7 @@ let tagOrderChain = Promise.resolve();
  */
 async function moveTagOnServer(id, placement, mode) {
     const manual = mode === tag_sort_mode.MANUAL;
+    const movesFolderEntries = folderEntryFacts(id) !== '' || showsFolderEntry(id);
     const anchorId = 'before' in placement ? placement.before : placement.after;
     let answer;
     try {
@@ -3872,7 +3902,8 @@ async function moveTagOnServer(id, placement, mode) {
         return;
     }
 
-    if (!manual && power_user.tag_sort_mode !== tag_sort_mode.MANUAL) {
+    const switchesToManual = !manual && power_user.tag_sort_mode !== tag_sort_mode.MANUAL;
+    if (switchesToManual) {
         power_user.tag_sort_mode = tag_sort_mode.MANUAL;
         $('#tag_sort_mode_select').val(tag_sort_mode.MANUAL);
         saveSettingsDebounced('power_user.tag_sort_mode');
@@ -3884,7 +3915,7 @@ async function moveTagOnServer(id, placement, mode) {
     }
 
     refreshUsedTagBars();
-    onFolderListChanged();
+    if (switchesToManual || movesFolderEntries) onFolderListChanged();
 
     if (answer.queued) return;
 
@@ -3948,6 +3979,7 @@ function takeInServerTagDefinitions(serverTags) {
  */
 async function rereadTagDefinitions() {
     const ids = tags.filter(tag => isTagObject(tag) && storedTagFields.has(tag.id)).map(tag => tag.id);
+    const before = folderEntryFactsOf(ids);
     let sortOrderChanged = false;
     /** @type {{ id: string, replaceWithId?: string }[]} */
     const gone = [];
@@ -3969,7 +4001,7 @@ async function rereadTagDefinitions() {
     if (sortOrderChanged) redrawAfterTagSortOrderChange();
     refreshViewTagList();
     refreshUsedTagBars();
-    onFolderListChanged();
+    folderEntriesChangedFrom(before);
     return readAll;
 }
 
@@ -3989,6 +4021,8 @@ async function takeInTagChanges() {
 
         const changedTags = Array.isArray(page.tags) ? page.tags : [];
         const removed = Array.isArray(page.removed) ? page.removed : [];
+        const changedIds = changedTags.filter(isTagObject).map(tag => tag.id);
+        const before = folderEntryFactsOf(changedIds);
         const { sortOrderChanged } = takeInServerTagDefinitions(changedTags);
         const drops = removed
             .filter(removal => typeof removal?.id === 'string')
@@ -3998,8 +4032,9 @@ async function takeInTagChanges() {
         if (changedTags.length || removed.length) {
             refreshViewTagList();
             refreshUsedTagBars();
-            onFolderListChanged();
         }
+        if (changedIds.some(id => before.get(id) === undefined)) onFolderListChanged();
+        else folderEntriesChangedFrom(before);
         tagChangesSeq = page.seq;
         if (!page.hasMore) return;
     }

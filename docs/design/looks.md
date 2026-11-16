@@ -273,7 +273,8 @@ merge's target) and a Manage tags row's name are the name element themselves (`n
 classes on the element the place draws): the look's layers style the whole chip as upstream's colors did, the chip's
 own CSS keeps its padding and shape, and no box goes around it, so no picture or note is drawn there. Elsewhere it is
 the renderer's name: the add-tag suggestions (`_renderItem`), the merge
-picker (select2's templates), the search pills and their picker, the folder switcher and the saved views' folders, and
+picker (select2's templates), the search pills and their picker, the character list's folder entries and the saved
+views' folders, and
 the worldbuilding character filter (`FilteredTag.named`). A Manage tags row opens the tag's Look screen. A group is drawn so in its list row, the heading of the open
 group (whose look button opens its Look screen, as a character's does) and the recent chats.
 

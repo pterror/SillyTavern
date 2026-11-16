@@ -1484,8 +1484,7 @@ export async function printGroupCandidates() {
     const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
     const thisGroup = openGroupId && groupsStore.get(openGroupId);
     const { filter, sort: wantedSort } = buildGroupCandidateQuery(thisGroup?.members ?? newGroupMembers, { doFilter: true });
-    const noCharacterShown = [FILTER_TYPES.GROUP, FILTER_TYPES.FOLDER]
-        .some(type => isFilterState(groupCandidatesFilter.getFilterData(type), FILTER_STATES.SELECTED));
+    const noCharacterShown = isFilterState(groupCandidatesFilter.getFilterData(FILTER_TYPES.GROUP), FILTER_STATES.SELECTED);
     const empty = { rows: [], total: 0 };
     const { sort, result: firstPage } = noCharacterShown
         ? { sort: wantedSort, result: empty }

@@ -70,6 +70,7 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
 }));
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     registerFolderCaseHandlers: noop,
+    tagQuerySortField: () => 'manual',
     takeInExtensionTagWrites: noop,
     searchTagsByName: async () => ({ rows: [], cursor: null }),
     readTagsForIds: async () => ({ tags: new Map(), gone: new Set() }),

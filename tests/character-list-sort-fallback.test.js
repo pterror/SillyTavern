@@ -56,6 +56,7 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
 }));
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     registerFolderCaseHandlers: noop,
+    tagQuerySortField: () => 'manual',
     takeInExtensionTagWrites: noop,
     searchTagsByName: async () => ({ rows: [], cursor: null }),
     readTagsForIds: async () => ({ tags: new Map(), gone: new Set() }),
@@ -157,7 +158,6 @@ beforeEach(async () => {
     filter.setFilterData(FILTER_TYPES.SEARCH, '', true);
     filter.setFilterData(FILTER_TYPES.FAV, false, true);
     filter.setFilterData(FILTER_TYPES.GROUP, false, true);
-    filter.setFilterData(FILTER_TYPES.FOLDER, false, true);
     filter.setFilterData(FILTER_TYPES.TAG, { excluded: [], selected: [] }, true);
 
     queryRequests = [];

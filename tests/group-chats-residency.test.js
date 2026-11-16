@@ -212,7 +212,7 @@ jest.unstable_mockModule('../public/scripts/node-identity.js', () => ({
 }));
 
 jest.unstable_mockModule('../public/scripts/filters.js', () => ({
-    FILTER_TYPES: { SEARCH: 'search', TAG: 'tag', FOLDER: 'folder', FAV: 'fav', GROUP: 'group' },
+    FILTER_TYPES: { SEARCH: 'search', TAG: 'tag', FAV: 'fav', GROUP: 'group' },
     FILTER_STATES: {
         SELECTED: { key: 'SELECTED', class: 'selected' },
         EXCLUDED: { key: 'EXCLUDED', class: 'excluded' },
@@ -641,8 +641,8 @@ describe('the add-member picker shows the candidates a page at a time from the s
         expect(await showPage(1, 5)).toEqual({ rows: [toEntity(a), toEntity(b)], total: 2 });
     });
 
-    test.each(['group', 'folder'])('a selected %s filter shows no candidate and asks the server for none', async (type) => {
-        groupCandidatesFilter.filterData[type] = 'SELECTED';
+    test('a selected group filter shows no candidate and asks the server for none', async () => {
+        groupCandidatesFilter.filterData.group = 'SELECTED';
 
         await printGroupCandidates();
 

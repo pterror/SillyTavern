@@ -18,7 +18,8 @@ import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
  * @property {string[]} [ids]
  * @property {boolean} [includeGroups]
  * @property {boolean} [group]
- * @property {string} [folder]
+ * @property {string} [folder] "none" (the rest case) or a closed folder's tag id; the list then leads with folder rows
+ * @property {'alphabetical'|'by_entries'|'manual'} [folderOrder] The order of a folder list's folder rows, a tag sort.
  */
 
 /**
@@ -31,7 +32,7 @@ import { deserializeQueryHashesBinary } from './query-hashes-binary.js';
 
 /**
  * @typedef {object} CharacterQueryResult
- * @property {Character[]|Array<{type: 'character', item: Character}|{type: 'group', item: object}>} [rows]
+ * @property {Character[]|Array<{type: 'character', item: Character}|{type: 'group', item: object}|{type: 'folder', item: import('./query-hashes-binary.js').LeadRow}>} [rows] A folder case's list starts with its folder rows.
  * @property {number|string} [total]
  * @property {number} rev
  * @property {string|null} [token]
@@ -56,6 +57,16 @@ const QUERY_RESPONSE_CACHE_LIMIT = 100;
 
 const resultHashRows = new WeakMap();
 const resultFavHashRows = new WeakMap();
+/** @type {WeakMap<object, import('./query-hashes-binary.js').LeadRow[]>} */
+const resultLeadRows = new WeakMap();
+
+/**
+ * @param {import('./query-hashes-binary.js').LeadRow[] | undefined} leadRows
+ * @returns {{ type: 'folder', item: import('./query-hashes-binary.js').LeadRow }[]}
+ */
+function folderRows(leadRows) {
+    return (leadRows ?? []).map(item => ({ type: 'folder', item }));
+}
 
 const QUERY_ALL_PAGE_SIZE = 2000;
 const FULL_BATCH_SIZE = 200;
@@ -85,6 +96,7 @@ export function parseQueryTotal(total) {
  * @property {boolean} [includeGroups]
  * @property {boolean} [group]
  * @property {string} [folder]
+ * @property {'alphabetical'|'by_entries'|'manual'} [folderOrder]
  */
 
 /**
@@ -105,6 +117,7 @@ export function buildCharacterQuery({
     includeGroups = false,
     group = undefined,
     folder = undefined,
+    folderOrder = undefined,
 } = {}) {
     /** @type {CharacterQueryFilter} */
     const filter = {};
@@ -117,7 +130,10 @@ export function buildCharacterQuery({
     if (typeof fav === 'boolean') filter.fav = fav;
     if (includeGroups) filter.includeGroups = true;
     if (typeof group === 'boolean') filter.group = group;
-    if (typeof folder === 'string' && folder) filter.folder = folder;
+    if (typeof folder === 'string' && folder) {
+        filter.folder = folder;
+        if (folderOrder) filter.folderOrder = folderOrder;
+    }
 
     /** @type {CharacterQuerySort|undefined} */
     let sort;
@@ -140,11 +156,11 @@ export function isServerQueryableSort(sortField) {
 }
 
 /**
- * @param {Character|{type: 'character'|'group', item: Character|object}} row
- * @returns {{type: 'character'|'group', item: Character|object}}
+ * @param {Character|{type: 'character'|'group'|'folder', item: Character|object}} row
+ * @returns {{type: 'character'|'group'|'folder', item: Character|object}}
  */
 export function normalizeQueryRow(row) {
-    if (row && typeof row === 'object' && (row.type === 'character' || row.type === 'group') && 'item' in row) {
+    if (row && typeof row === 'object' && (row.type === 'character' || row.type === 'group' || row.type === 'folder') && 'item' in row) {
         return row;
     }
     return { type: 'character', item: row };
@@ -525,7 +541,8 @@ export class CharacterRepository {
         /** @type {CharacterQueryResult} */
         const [rows, favs] = await this.#resolveHashRowSets([kept.hashRows, kept.favHashRows], includeGroups);
         /** @type {CharacterQueryResult} */
-        const result = { seq: kept.seq, token: kept.token, rows };
+        const result = { seq: kept.seq, token: kept.token, rows: [...folderRows(kept.leadRows), ...rows] };
+        if (kept.leadRows) resultLeadRows.set(result, kept.leadRows);
         for (const field of /** @type {const} */ (['total', 'hidden', 'cursor'])) {
             if (kept[field] !== undefined) result[field] = kept[field];
         }
@@ -589,6 +606,8 @@ export class CharacterRepository {
                 }
                 const favHashRows = resultFavHashRows.get(result);
                 if (favHashRows) entry.favHashRows = favHashRows;
+                const leadRows = resultLeadRows.get(result);
+                if (leadRows) entry.leadRows = leadRows;
                 void writeQueryCache(signature, entry);
                 keptPage = true;
             }
@@ -626,6 +645,8 @@ export class CharacterRepository {
         if (useHashMode) resultHashRows.set(result, hashRows);
         const favHashRows = resultFavHashRows.get(first);
         if (favHashRows) resultFavHashRows.set(result, favHashRows);
+        const leadRows = resultLeadRows.get(first);
+        if (leadRows) resultLeadRows.set(result, leadRows);
         delete result.more;
         if (last.total !== undefined) result.total = last.total;
         if (typeof last.cursor === 'string') result.cursor = last.cursor;
@@ -662,8 +683,9 @@ export class CharacterRepository {
         if (decoded.cursor !== undefined) result.cursor = decoded.cursor;
         if (decoded.looks !== undefined) result.looks = decoded.looks;
         const [rows, favs] = await this.#resolveHashRowSets([decoded.hashRows, decoded.favHashRows], includeGroups);
-        result.rows = rows;
+        result.rows = [...folderRows(decoded.leadRows), ...rows];
         resultHashRows.set(result, decoded.hashRows);
+        if (decoded.leadRows.length > 0) resultLeadRows.set(result, decoded.leadRows);
         if (favs) {
             result.favs = favs;
             resultFavHashRows.set(result, decoded.favHashRows);

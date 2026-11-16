@@ -6,14 +6,13 @@ import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav } from './hash-utils.js';
 import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers } from './tags.js';
+import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, tagQuerySortField } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow } from './character-repository.js';
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
 import { applyKeptView, initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
-import { folderListChanged, initFolderSwitcher, refreshFolderSwitcher } from './folder-switcher.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -335,7 +334,6 @@ export async function printCharacters(fullRefresh = false) {
 
     showViewInSearchBox();
     refreshSavedViewState();
-    void refreshFolderSwitcher();
 
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
@@ -378,6 +376,10 @@ export async function printCharacters(fullRefresh = false) {
                     case 'group':
                         position++;
                         fragment.appendChild(getGroupBlock(i.item).get(0));
+                        break;
+                    case 'folder':
+                        position++;
+                        fragment.appendChild(getFolderCaseBlock(i.item));
                         break;
                 }
             }
@@ -451,7 +453,7 @@ export async function printCharacters(fullRefresh = false) {
     updatePersonaConnectionsAvatarList();
 
     async function printServerPaginated() {
-        const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
+        const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState();
 
         const freshFor = (/** @type {number} */ page, /** @type {number} */ size) => (/** @type {import('./character-repository.js').CharacterQueryResult} */ result) => {
             freshPage = { filter, page, pageSize: size, result };
@@ -544,9 +546,9 @@ function verifyCharactersSearchSortRule() {
 
 /**
  * @typedef {object} Entity
- * @property {Character|Group|import('./scripts/tags.js').Tag|*} item
+ * @property {Character|Group|import('./scripts/tags.js').Tag|import('./query-hashes-binary.js').LeadRow|*} item
  * @property {string|number} id
- * @property {'character'|'group'|'tag'} type
+ * @property {'character'|'group'|'tag'|'folder'} type `folder`: an entry for a folder case (a closed folder, or "none", the rest)
  * @property {Entity[]?} [entities=null]
  * @property {number|string?} [hidden=null]
  * @property {number|string?} [total=null]
@@ -773,8 +775,15 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
 }
 
 
-function buildCharacterQueryFromCurrentFilterState({ includeGroups = false } = {}) {
-    return buildCharacterQuery(viewToQueryState(getCharacterView(), { includeGroups }));
+function buildCharacterQueryFromCurrentFilterState() {
+    return listQuery(getCharacterView());
+}
+
+/**
+ * @param {import('./character-view.js').CharacterView} view
+ */
+function listQuery(view) {
+    return buildCharacterQuery({ ...viewToQueryState(view, { includeGroups: true }), folderOrder: tagQuerySortField() });
 }
 
 const HOTSWAP_FAVS_LIMIT = 25;
@@ -796,19 +805,43 @@ function hotswapQuery(fallback) {
     return { filter, sort: fallback ? fallbackSort(filter) : sort, pageSize: HOTSWAP_FAVS_LIMIT };
 }
 
+/** @returns {Entity} */
 function queryRowToEntity(row) {
     const { type, item } = normalizeQueryRow(row);
+    if (type === 'folder') return { item, id: /** @type {any} */ (item).id, type: 'folder' };
     return type === 'group' ? groupToEntity(item) : characterToEntity(item);
+}
+
+/**
+ * The list's entry for a folder case: a closed folder's, or the rest case's (the way back out of a folder).
+ * @param {import('./query-hashes-binary.js').LeadRow} row
+ * @returns {HTMLElement}
+ */
+function getFolderCaseBlock(row) {
+    const rest = row.id === 'none';
+    const block = /** @type {HTMLElement} */ ($(rest ? '#bogus_folder_back_template .bogus_folder_select' : '#bogus_folder_template .bogus_folder_select').clone().get(0));
+    block.dataset.folderCase = row.id;
+    if (rest) {
+        block.title = t`Back to the characters and groups in no closed folder`;
+        block.setAttribute('aria-label', t`Go back`);
+        return block;
+    }
+    const name = String(row.name ?? '');
+    const count = `${row.countApprox ? '~' : ''}${row.count ?? 0}`;
+    block.querySelector('.bogus_folder_icon')?.classList.add('fa-folder-closed');
+    drawName(block.querySelector('.ch_name'), row.thing, name);
+    const counter = block.querySelector('.bogus_folder_counter');
+    if (counter) counter.textContent = count;
+    block.querySelector('.bogus_folder_hidden_counter')?.remove();
+    block.querySelector('.bogus_folder_avatars_block')?.remove();
+    block.title = t`Folder "${name}": ${count} characters and groups`;
+    block.setAttribute('aria-label', t`Folder ${name}, ${count} characters and groups`);
+    return block;
 }
 
 function applyFinalFilterRun(entities) {
     const beforeFinalEntities = filterByTagState(entities, { globalDisplayFilters: true });
-    let filtered = entitiesFilter.applyFilters(beforeFinalEntities, { clearFuzzySearchCaches: false });
-
-    if (isFilterState(entitiesFilter.getFilterData(FILTER_TYPES.FOLDER), FILTER_STATES.SELECTED) && filtered.filter(x => x.type == 'tag').length == 0) {
-        filtered = entitiesFilter.applyFilters(beforeFinalEntities, { tempOverrides: { [FILTER_TYPES.FOLDER]: FILTER_STATES.UNDEFINED }, clearFuzzySearchCaches: false });
-    }
-    return filtered;
+    return entitiesFilter.applyFilters(beforeFinalEntities, { clearFuzzySearchCaches: false });
 }
 
 const FIND_PAGE_CHUNK_SIZE = 1000;
@@ -819,7 +852,7 @@ const FIND_PAGE_CHUNK_SIZE = 1000;
  * @returns {Promise<number>}
  */
 export async function findCharacterListPage(isEntity, pageSize) {
-    const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState({ includeGroups: true });
+    const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState();
     let sort = wantedSort;
     for (let chunk = 1; ; chunk++) {
         const answer = await queryWithSortFallback(filter, sort,
@@ -861,21 +894,28 @@ async function pinSavedViewPage(id, view) {
         return;
     }
     const pageSize = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
-    const { filter, sort } = sameView(getCharacterView(), view)
-        ? buildCharacterQueryFromCurrentFilterState({ includeGroups: true })
-        : buildCharacterQuery(viewToQueryState(view, { includeGroups: true }));
+    const { filter, sort } = listQuery(view);
     await characterRepository.pinPage(owner, filter, sort, 1, pageSize, PAGE_WANT);
 }
 
 /**
  * @param {string} term
  * @param {string | null} cursor
- * @param {'OPEN'|'CLOSED'} folderType
  * @returns {Promise<{ rows: { id: string, name: string, thing?: string }[], cursor: string | null } | null>}
  */
-async function readFolderPage(term, cursor, folderType) {
-    const page = await searchTagsByName(term, { pageSize: 50, cursor, folderType });
+async function readOpenFolderPage(term, cursor) {
+    const page = await searchTagsByName(term, { pageSize: 50, cursor, folderType: 'OPEN' });
     return page && { rows: page.rows.map(tag => ({ id: tag.id, name: String(tag.name), thing: tag.thing })), cursor: page.cursor };
+}
+
+/**
+ * Shows the rest case when the folder whose case is shown is no longer a closed folder.
+ */
+async function leaveGoneFolderCase() {
+    const shown = getCharacterView().folderCase;
+    if (shown === 'none') return;
+    const folder = await readFolder(shown, 'CLOSED');
+    if (folder === null && getCharacterView().folderCase === shown) setCharacterView({ folderCase: 'none' });
 }
 
 /**
@@ -1187,25 +1227,23 @@ export function initCharacterSearch() {
         storage: accountStorage,
         translate: t,
         folders: {
-            list: (term, cursor) => readFolderPage(term, cursor, 'OPEN'),
+            list: readOpenFolderPage,
             get: id => readFolder(id, 'OPEN'),
         },
         pinView: (id, view) => void pinSavedViewPage(id, view),
     });
-    initFolderSwitcher({
-        after: $('#rm_characters_block .rm_tag_controls').get(0),
-        deps: {
-            getCase: () => getCharacterView().folderCase,
-            setCase: folderCase => setCharacterView({ folderCase }),
-            list: (term, cursor) => readFolderPage(term, cursor, 'CLOSED'),
-            get: id => readFolder(id, 'CLOSED'),
-        },
-        translate: t,
-    });
     registerFolderCaseHandlers({
         show: folderCase => setCharacterView({ folderCase }),
         read: () => getCharacterView().folderCase,
-        listChanged: folderListChanged,
+        listChanged: () => {
+            printCharactersDebounced();
+            void leaveGoneFolderCase();
+        },
+        shows: tagId => getCharacterView().folderCase === tagId || renderedPageEntities.some(entity => entity.type === 'folder' && entity.id === tagId),
+    });
+    $('#rm_print_characters_block').on('click', '.bogus_folder_select[data-folder-case]', function () {
+        const folderCase = this.dataset.folderCase;
+        if (folderCase) setCharacterView({ folderCase });
     });
 
     searchButton.on('click', function () {
@@ -1221,6 +1259,7 @@ export function initCharacterSearch() {
     eventSource.on(event_types.SETTINGS_LOADED, () => applyKeptView());
     eventSource.on(event_types.APP_READY, () => {
         void restoreCurrentView();
+        void leaveGoneFolderCase();
         const isVisible = accountStorage.getItem(storageKey) === 'true';
         searchForm.toggle(isVisible);
         searchButton.toggleClass('active', isVisible);

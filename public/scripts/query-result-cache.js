@@ -12,6 +12,7 @@ const INDEX_KEY = '__index__';
  * @property {number|string} [hidden]
  * @property {string} [cursor]
  * @property {object[]} [favHashRows]
+ * @property {import('./query-hashes-binary.js').LeadRow[]} [leadRows]
  */
 
 /**

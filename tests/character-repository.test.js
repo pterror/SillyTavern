@@ -43,7 +43,7 @@ installBrowserStorage({ quota: 1e9 });
  * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[]}} params
  * @returns {ArrayBuffer}
  */
-function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, more = false, cursor }) {
+function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, more = false, cursor, leadRows = [] }) {
     const hasTotal = typeof total === 'number';
     const cursorBytes = cursor ? Buffer.byteLength(cursor, 'utf8') : 0;
 
@@ -56,11 +56,13 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, more = fa
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
     totalSize += 2 + tokenBytes;
     if (cursor) totalSize += 2 + cursorBytes;
+    const leadJson = leadRows.length > 0 ? JSON.stringify(leadRows) : null;
+    if (leadJson) totalSize += 4 + Buffer.byteLength(leadJson, 'utf8');
 
     const buf = Buffer.alloc(totalSize);
     let offset = 0;
 
-    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (cursor ? 0b1000 : 0);
+    const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (cursor ? 0b1000 : 0) | (leadJson ? 0b10000000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
     buf.writeDoubleLE(hasTotal ? total : 0, offset); offset += 8;
@@ -105,6 +107,11 @@ function encodeQueryHashes({ seq, token, total, approxTotal, hashRows, more = fa
         buf.writeUInt16LE(cursorBytes, offset); offset += 2;
         buf.write(cursor, offset, cursorBytes, 'utf8'); offset += cursorBytes;
     }
+    if (leadJson) {
+        const leadBytes = Buffer.byteLength(leadJson, 'utf8');
+        buf.writeUInt32LE(leadBytes, offset); offset += 4;
+        buf.write(leadJson, offset, leadBytes, 'utf8'); offset += leadBytes;
+    }
 
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
@@ -144,8 +151,8 @@ function addGroup(group) {
     return group;
 }
 
-function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, unchanged = false, more = false, cursor = undefined, refused = undefined }) {
-    server.queryResponses.push({ ids, total, approxTotal, seq, token, unchanged, more, cursor, refused });
+function queueQuery({ ids = [], total = undefined, approxTotal = false, seq, token = null, unchanged = false, more = false, cursor = undefined, refused = undefined, leadRows = [] }) {
+    server.queryResponses.push({ ids, total, approxTotal, seq, token, unchanged, more, cursor, refused, leadRows });
 }
 
 function jsonResponse(data) {
@@ -179,7 +186,7 @@ async function fakeFetch(url, init) {
         }
         const buffer = encodeQueryHashes({
             seq: next.seq, token: next.token, total: next.total, approxTotal: next.approxTotal,
-            hashRows: next.ids.map(hashRowFor), more: next.more, cursor: next.cursor,
+            hashRows: next.ids.map(hashRowFor), more: next.more, cursor: next.cursor, leadRows: next.leadRows,
         });
         return {
             ok: true,
@@ -676,6 +683,39 @@ describe('query()', () => {
         expect(second).not.toBe(first);
         expect(second).toEqual(first);
         expect(fetchedUrls()).toEqual(['/api/characters/query']);
+    });
+
+    test('a folder list\'s folder rows come first, and are kept with the page: a kept page shows them before its answer', async () => {
+        keepPages = true;
+        const repo = new CharacterRepository(makeStore([]));
+        const alice = addCharacter({ avatar: 'alice', name: 'Alice' });
+        const folder = { id: 'f1', name: 'Vault', thing: '7', count: 3, countApprox: false };
+        const filter = { includeGroups: true, folder: 'none', folderOrder: 'manual' };
+        const sort = { field: 'name', order: 'asc' };
+        queueQuery({ ids: ['alice'], total: 2, seq: 4, token: 'tokenA', leadRows: [folder, { id: 'none' }] });
+
+        const first = await repo.query(filter, sort, 1, 10, ['rows', 'total']);
+        expect(first.rows).toEqual([
+            { type: 'folder', item: folder },
+            { type: 'folder', item: { id: 'none' } },
+            { type: 'character', item: hashModeCharacter(alice) },
+        ]);
+        expect(JSON.parse(global.fetch.mock.calls[0][1].body).filter).toEqual(filter);
+
+        queueQuery({ seq: 4, token: 'tokenA', unchanged: true });
+        const kept = await repo.query(filter, sort, 1, 10, ['rows', 'total'], { onFresh: () => {} });
+        expect(kept.rows).toEqual(first.rows);
+    });
+
+    test('a page filled past the server\'s work cap keeps the folder rows its first answer led with', async () => {
+        const repo = new CharacterRepository(makeStore([]));
+        const [a, b] = ['a', 'b'].map(avatar => addCharacter({ avatar, name: avatar.toUpperCase() }));
+        const folder = { id: 'f1', name: 'Vault', count: 1, countApprox: false };
+        queueQuery({ ids: ['a'], seq: 1, more: true, cursor: 'k1', leadRows: [folder] });
+        queueQuery({ ids: ['b'], total: 3, seq: 1 });
+
+        const result = await repo.query({ includeGroups: true, folder: 'none' }, { field: 'name', order: 'asc' }, 1, 3, ['rows', 'total']);
+        expect(result.rows).toEqual([{ type: 'folder', item: folder }, ...[a, b].map(c => ({ type: 'character', item: hashModeCharacter(c) }))]);
     });
 
     test('hash mode keeps a page under its new token even when seq did not move', async () => {

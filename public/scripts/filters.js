@@ -6,17 +6,16 @@ import { normalizeFav } from './hash-utils.js';
 
 /**
  * @typedef FilterType The filter type possible for this filter helper
- * @type {'search'|'tag'|'folder'|'fav'|'group'|'persona_search'}
+ * @type {'search'|'tag'|'fav'|'group'|'persona_search'}
  */
 
 /**
  * The filter types
- * @type {{ SEARCH: 'search', TAG: 'tag', FOLDER: 'folder', FAV: 'fav', GROUP: 'group', PERSONA_SEARCH: 'persona_search'}}
+ * @type {{ SEARCH: 'search', TAG: 'tag', FAV: 'fav', GROUP: 'group', PERSONA_SEARCH: 'persona_search'}}
  */
 export const FILTER_TYPES = {
     SEARCH: 'search',
     TAG: 'tag',
-    FOLDER: 'folder',
     FAV: 'fav',
     GROUP: 'group',
     PERSONA_SEARCH: 'persona_search',
@@ -142,7 +141,6 @@ export class FilterHelper {
         [FILTER_TYPES.SEARCH]: this.searchFilter.bind(this),
         [FILTER_TYPES.FAV]: this.favFilter.bind(this),
         [FILTER_TYPES.GROUP]: this.groupFilter.bind(this),
-        [FILTER_TYPES.FOLDER]: this.folderFilter.bind(this),
         [FILTER_TYPES.TAG]: this.tagFilter.bind(this),
         [FILTER_TYPES.PERSONA_SEARCH]: this.personaSearchFilter.bind(this),
     };
@@ -155,7 +153,6 @@ export class FilterHelper {
         [FILTER_TYPES.SEARCH]: '',
         [FILTER_TYPES.FAV]: false,
         [FILTER_TYPES.GROUP]: false,
-        [FILTER_TYPES.FOLDER]: false,
         [FILTER_TYPES.TAG]: { excluded: [], selected: [] },
         [FILTER_TYPES.PERSONA_SEARCH]: '',
     };
@@ -251,19 +248,6 @@ export class FilterHelper {
         const isGroup = entity => entity.type === 'group';
 
         return this.filterDataByState(data, state, isGroup, { includeFolders: true });
-    }
-
-    /**
-     * Applies a "folder" filter to the data.
-     * @param {any[]} data The data to filter.
-     * @returns {any[]} The filtered data.
-     */
-    folderFilter(data) {
-        const state = this.filterData[FILTER_TYPES.FOLDER];
-        // Filter directly on folder. Special rules on still displaying characters with active folder filter are implemented in 'getEntitiesList' directly.
-        const isFolder = entity => entity.type === 'tag';
-
-        return this.filterDataByState(data, state, isFolder);
     }
 
     /**

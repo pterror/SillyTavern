@@ -55,6 +55,7 @@ import { tagLooks } from './tags.js';
 import { CANDIDATE_LOOKS, LIST_LOOKS } from '../../public/scripts/name-holders.js';
 
 import { groupDigests, groupObjects } from './groups.js';
+import { FOLDER_ORDERS, listLead } from '../list-folders.js';
 
 const DRAWING_LISTS = new Set([LIST_LOOKS, CANDIDATE_LOOKS]);
 
@@ -1824,14 +1825,24 @@ async function runQuery(request, body, { compat = true } = {}) {
         return queryReply(400, { error: true, reason: 'hashes-and-rows-exclusive', message: 'want cannot include both "rows" and "hashes" in the same request.' });
     }
 
-    const store = await requestStore(request);
-    const { lib } = store;
-    if (filter.folder !== undefined) {
-        if (typeof filter.folder !== 'string' || filter.folder === '') {
+    const folderCase = filter.folder;
+    if (folderCase !== undefined) {
+        if (typeof folderCase !== 'string' || folderCase === '') {
             return queryReply(400, { error: true, reason: 'invalid-folder', message: 'filter.folder takes "none" or a closed folder\'s tag id.' });
         }
-        await applyFolderCase(lib, filter);
+        if (!includeGroups) {
+            return queryReply(400, { error: true, reason: 'folder-requires-include-groups', message: 'filter.folder requires filter.includeGroups: its list leads with folder rows.' });
+        }
     }
+    const folderOrder = filter.folderOrder ?? 'manual';
+    delete filter.folderOrder;
+    if (!FOLDER_ORDERS.has(folderOrder)) {
+        return queryReply(400, { error: true, reason: 'invalid-folder-order', message: `filter.folderOrder takes one of: ${[...FOLDER_ORDERS].join(', ')}.` });
+    }
+
+    const store = await requestStore(request);
+    const { lib } = store;
+    if (folderCase !== undefined) await applyFolderCase(lib, filter);
 
     const page = Number.isFinite(Number(body.page)) && Number(body.page) >= 1 ? Math.trunc(Number(body.page)) : 1;
     const pageSize = Number.isFinite(Number(body.pageSize)) && Number(body.pageSize) > 0
@@ -1844,7 +1855,16 @@ async function runQuery(request, body, { compat = true } = {}) {
         return queryReply(200, { seq, token, unchanged: true });
     }
 
-    const result = await lib.query({
+    const cursorIn = typeof body.cursor === 'string' ? body.cursor : undefined;
+    const lead = folderCase === undefined
+        ? { rows: [], entities: { offset: (page - 1) * pageSize, limit: pageSize, cursor: cursorIn }, total: undefined }
+        : await listLead(lib, { folderCase, search: searchTerm, order: folderOrder, offset: (page - 1) * pageSize, limit: pageSize, cursor: cursorIn, wantTotal });
+    if (lead === 'invalid-cursor') {
+        return queryReply(400, { error: true, reason: 'invalid-cursor', message: 'The cursor was made for another sort: ask again without it.' });
+    }
+    const leadEndsPage = lead.entities.limit === 0;
+
+    const result = leadEndsPage && !wantTotal && !wantHidden ? { rows: [], hashRows: [] } : await lib.query({
         tags: filter.tags,
         fav: typeof filter.fav === 'boolean' ? filter.fav : undefined,
         world: filter.world,
@@ -1855,12 +1875,12 @@ async function runQuery(request, body, { compat = true } = {}) {
         sortOrder: sort.order,
         seed,
         ...(tie ? { tieSortField: tie.field, tieSortOrder: tie.order, tieSeed } : {}),
-        offset: typeof body.cursor === 'string' ? 0 : (page - 1) * pageSize,
-        limit: pageSize,
-        cursor: body.cursor,
-        wantRows,
+        offset: lead.entities.cursor === undefined ? lead.entities.offset : 0,
+        limit: lead.entities.limit,
+        cursor: lead.entities.cursor,
+        wantRows: wantRows && !leadEndsPage,
         wantTotal,
-        wantHashes,
+        wantHashes: wantHashes && !leadEndsPage,
         wantHidden,
         groupsOnly: includeGroups && group === true,
         includeGroups: includeGroups && group !== false,
@@ -1871,22 +1891,29 @@ async function runQuery(request, body, { compat = true } = {}) {
         return queryReply(400, { error: true, reason: 'invalid-cursor', message: 'The cursor was made for another sort: ask again without it.' });
     }
 
-    const listed = /** @type {{ id: string, isGroup?: boolean, type?: string }[]} */ (wantHashes ? result.hashRows : (result.rows ?? []));
+    const listed = /** @type {{ id: string, isGroup?: boolean, type?: string }[]} */ ((wantHashes ? result.hashRows : result.rows) ?? []);
     const keys = listed.map(r => ({ key: r.id, group: wantHashes ? !!r.isGroup : r.type === 'group' }));
     const ids = compat ? await Promise.all(keys.map(async k => (await lib.ids(k.group ? TYPE.group : TYPE.character, [k.key]))[0])) : keys.map(() => null);
     const chats = await compatChatIds(store, request, /** @type {bigint[]} */ (ids.filter(id => id !== null)));
     const chatOf = (/** @type {number} */ i) => (ids[i] === null ? null : chats.get(/** @type {bigint} */ (ids[i])) ?? null);
-    const extra = {
-        ...(result.more ? { more: true } : {}),
-        ...(typeof result.cursor === 'string' ? { cursor: result.cursor } : {}),
-    };
+    const extra = leadEndsPage
+        ? (lead.cursor === undefined ? {} : { cursor: lead.cursor })
+        : {
+            ...(result.more ? { more: true } : {}),
+            ...(typeof result.cursor === 'string' ? { cursor: result.cursor } : {}),
+        };
+    const leadRows = /** @type {import('../list-folders.js').LeadRow[]} */ (lead.rows);
+    const leadThings = leadRows.flatMap(r => ('thing' in r && r.thing !== undefined ? [r.thing] : []));
+    const total = wantTotal
+        ? { count: Number(result.total) + (lead.total?.count ?? 0), approx: !!result.approxTotal || !!lead.total?.approx }
+        : undefined;
 
     const groupKeys = keys.filter(k => k.group).map(k => k.key);
     const groups = new Map((compat && groupKeys.length ? await groupObjects(request, groupKeys) : []).filter(g => g !== null).map(g => [(g).id, g]));
-    const looks = draws ? await listLooks(request, draws, lib, ids, [...groups.values()], body.drawsMore === true) : undefined;
+    const looks = draws ? await listLooks(request, draws, lib, [...ids, ...leadThings], [...groups.values()], body.drawsMore === true) : undefined;
 
     if (wantHashes) {
-        const hashRows = /** @type {any[]} */ (result.hashRows).map((r, i) => {
+        const hashRows = /** @type {any[]} */ (result.hashRows ?? []).map((r, i) => {
             const group = r.isGroup ? groups.get(r.id) : undefined;
             return { ...r, chat: chatOf(i), ...(group ? groupDigests(group) : {}) };
         });
@@ -1899,7 +1926,8 @@ async function runQuery(request, body, { compat = true } = {}) {
         }
         return {
             hashes: {
-                seq, token, total: wantTotal ? Number(result.total) : undefined, approxTotal: !!result.approxTotal, hashRows,
+                seq, token, total: total?.count, approxTotal: !!total?.approx, hashRows,
+                ...(leadRows.length > 0 ? { leadRows } : {}),
                 ...extra,
                 ...(looks ? { looks } : {}),
                 ...(wantHidden ? { hidden: Number(result.hidden), approxHidden: !!result.approxHidden } : {}),
@@ -1910,25 +1938,25 @@ async function runQuery(request, body, { compat = true } = {}) {
     /** @type {Record<string, unknown>} */
     const payload = { seq, token, ...extra, ...(looks ? { looks } : {}) };
     if (wantRows) {
-        const rows = /** @type {any[]} */ (result.rows).map((r, i) => {
+        const rows = /** @type {any[]} */ (result.rows ?? []).map((r, i) => {
             const group = r.type === 'group' ? groups.get(r.id) : undefined;
             const thing = ids[i] === null ? {} : { thing: String(ids[i]) };
             const item = r.type === 'group' ? { ...r.item, chat_id: group?.chat_id ?? chatOf(i), chats: group?.chats ?? [], ...thing } : { ...r.item, chat: chatOf(i), ...thing };
             return { type: r.type, item };
         });
-        payload.rows = includeGroups ? rows : rows.map(r => r.item);
+        payload.rows = includeGroups ? [...leadRows.map(item => ({ type: 'folder', item })), ...rows] : rows.map(r => r.item);
     }
-    if (wantTotal && want.includes('total')) payload.total = result.approxTotal ? `~${result.total}` : result.total;
+    if (total && want.includes('total')) payload.total = total.approx ? `~${total.count}` : total.count;
     if (wantHidden) payload.hidden = result.approxHidden ? `~${result.hidden}` : result.hidden;
     return queryReply(200, payload);
 }
 
 /**
- * The looks of a list page's names: its characters', its groups' and their members'.
+ * The looks of a list page's names: its folders', characters', groups' and their members'.
  * @param {import('express').Request} request
  * @param {string} holder
  * @param {import('../library-engine.js').LibraryEngine} lib
- * @param {(bigint | null)[]} ids the page's characters' and groups'
+ * @param {(bigint | string | null)[]} ids the page's folders', characters' and groups'
  * @param {any[]} groups
  * @param {boolean} more the rest of a page whose start was answered already
  */
@@ -2058,10 +2086,11 @@ function writeHashRow(buf, offset, row) {
 }
 
 /**
- * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string, favHashRows?:object[], looks?:import('@st/protocol/looks').Looks}} params
+ * @param {{seq:number, token:string|null, total:number|undefined, approxTotal:boolean, hashRows:object[], hidden?:number, approxHidden?:boolean, more?:boolean, cursor?:string, favHashRows?:object[], looks?:import('@st/protocol/looks').Looks, leadRows?:import('../list-folders.js').LeadRow[]}} params
+ * `leadRows`: the rows before `hashRows`, the page's first.
  * @returns {Buffer}
  */
-export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, hidden, approxHidden = false, more = false, cursor, favHashRows, looks }) {
+export function serializeQueryHashesBinary({ seq, token, total, approxTotal, hashRows, hidden, approxHidden = false, more = false, cursor, favHashRows, looks, leadRows }) {
     const hasTotal = typeof total === 'number';
     const hasCursor = typeof cursor === 'string' && cursor.length > 0;
     const cursorBytes = hasCursor ? Buffer.byteLength(cursor, 'utf8') : 0;
@@ -2069,6 +2098,8 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
     const hasFavs = Array.isArray(favHashRows);
     const looksJson = looks === undefined ? null : JSON.stringify(looks);
     const looksBytes = looksJson === null ? 0 : Buffer.byteLength(looksJson, 'utf8');
+    const leadJson = Array.isArray(leadRows) && leadRows.length > 0 ? JSON.stringify(leadRows) : null;
+    const leadBytes = leadJson === null ? 0 : Buffer.byteLength(leadJson, 'utf8');
 
     const tokenBytes = token ? Buffer.byteLength(token, 'utf8') : 0;
     let totalSize = 1 + 8 + 8 + 2;
@@ -2081,12 +2112,13 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
         for (const row of favHashRows) totalSize += hashRowSize(row);
     }
     if (looksJson !== null) totalSize += 4 + looksBytes;
+    if (leadJson !== null) totalSize += 4 + leadBytes;
 
     const buf = Buffer.allocUnsafe(totalSize);
     let offset = 0;
 
     const headerFlags = (hasTotal ? 0b01 : 0) | (hasTotal && approxTotal ? 0b10 : 0) | (more ? 0b100 : 0) | (hasCursor ? 0b1000 : 0)
-        | (hasHidden ? 0b10000 : 0) | (hasFavs ? 0b100000 : 0) | (looksJson !== null ? 0b1000000 : 0);
+        | (hasHidden ? 0b10000 : 0) | (hasFavs ? 0b100000 : 0) | (looksJson !== null ? 0b1000000 : 0) | (leadJson !== null ? 0b10000000 : 0);
     buf.writeUInt8(headerFlags, offset); offset += 1;
     buf.writeDoubleLE(seq ?? 0, offset); offset += 8;
     buf.writeDoubleLE(hasTotal ? total : 0, offset); offset += 8;
@@ -2112,6 +2144,10 @@ export function serializeQueryHashesBinary({ seq, token, total, approxTotal, has
     if (looksJson !== null) {
         buf.writeUInt32LE(looksBytes, offset); offset += 4;
         buf.write(looksJson, offset, looksBytes, 'utf8'); offset += looksBytes;
+    }
+    if (leadJson !== null) {
+        buf.writeUInt32LE(leadBytes, offset); offset += 4;
+        buf.write(leadJson, offset, leadBytes, 'utf8'); offset += leadBytes;
     }
 
     return buf;
@@ -2785,12 +2821,16 @@ async function* listRows(request, query, start) {
     for (;;) {
         const reply = await runQuery(request, { filter, sort: query.sort, page, pageSize: BULK_QUERY_PAGE_SIZE, want: ['hashes'], cursor }, { compat: false });
         if (!('hashes' in reply)) throw new Error(`The list could not be read: ${reply.status}`);
-        const rows = reply.hashes.hashRows;
-        for (const row of rows) {
+        const { hashRows, leadRows = [] } = reply.hashes;
+        for (let i = 0; i < leadRows.length; i++) {
+            if (position >= start) yield { position, avatar: null };
+            position++;
+        }
+        for (const row of hashRows) {
             if (position >= start) yield { position, avatar: row.isGroup ? null : row.id };
             position++;
         }
-        if (typeof reply.hashes.cursor !== 'string' || rows.length === 0) return;
+        if (typeof reply.hashes.cursor !== 'string' || leadRows.length + hashRows.length === 0) return;
         cursor = reply.hashes.cursor;
         page++;
         await bulkPause();
