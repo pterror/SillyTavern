@@ -50,6 +50,7 @@ export function macroValuePieces(values, person, t) {
             if (value === undefined) {
                 element.className = 'macro-value macro-value-unknown';
                 element.setAttribute('data-macro-source', source);
+                if (name) element.setAttribute('data-macro-name', name);
                 element.textContent = described(source);
                 return;
             }

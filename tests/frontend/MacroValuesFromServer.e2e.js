@@ -40,6 +40,23 @@ test('a field\'s preview shows the values the server fills in; a macro run only 
     await expect(preview.locator('.macro-value[data-macro-name="roll"]')).toHaveCount(1);
 });
 
+test('a drawn macro value takes its macro\'s color, as its pill in the editor does', async ({ page }) => {
+    await openWithDescription(page, 'Feeling {{getglobalvar::mood}}.');
+    const value = page.locator('.field_preview[data-for="description_textarea"] .macro-value[data-macro-name="getglobalvar"]');
+    await expect(value).toHaveCount(1);
+    const colors = await value.evaluate((element) => {
+        const pill = document.createElement('span');
+        pill.className = 'macro-pill';
+        pill.setAttribute('data-macro-name', 'getglobalvar');
+        element.parentElement.append(pill);
+        const result = { value: getComputedStyle(element).color, pill: getComputedStyle(pill).color, text: getComputedStyle(element.parentElement).color };
+        pill.remove();
+        return result;
+    });
+    expect(colors.value).toBe(colors.pill);
+    expect(colors.value).not.toBe(colors.text);
+});
+
 test('a character mention\'s card shows its creator\'s notes with their macros filled in, their inline markdown rendered', async ({ page }) => {
     await openWithDescription(page, 'I am **{{char}}**, not shown on the card.', 'I am **{{char}}**, feeling {{getglobalvar::mood}}. ![x](/img/ai4.png)');
     const value = page.locator('.field_preview[data-for="description_textarea"] .macro-value[data-macro-name="char"]');

@@ -657,6 +657,14 @@ input[type='checkbox']:focus-visible {
     object-fit: contain;
 }
 
+.macro-value {
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    border-radius: 0.6em;
+    background-color: color-mix(in srgb, var(--macro-color) 18%, transparent);
+    color: var(--macro-color);
+}
+
 .chat-text .macro-value-later,
 .chat-text .macro-value-empty,
 .chat-text .macro-value-unknown {
@@ -1657,7 +1665,7 @@ textarea.autoSetHeight {
     min-height: calc(attr(rows type(<number>), 2) * 1lh + 2 * (var(--field-padding-block) + var(--field-border-width)));
 }
 
-:where(.macro-pill, .macro-source, .macro-tooltip, .macro-block-tag) {
+:where(.macro-pill, .macro-value, .macro-source, .macro-tooltip, .macro-block-tag) {
     --macro-color: oklch(from var(--SmartThemeBodyColor) l var(--macro-chroma, 0.14) var(--macro-hue, 250));
 }
 
