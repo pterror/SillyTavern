@@ -71,21 +71,29 @@ async function reportAssetLoadFailure() {
         return;
     }
     lastBuildCheck = Date.now();
+    if (await serverHasNewerBuild()) {
+        showReloadNotice();
+    }
+}
+
+/**
+ * @returns {Promise<boolean>} whether the server serves another build of the page than this one; false when that
+ *   can't be told
+ */
+export async function serverHasNewerBuild() {
     const ownBuild = document.querySelector('meta[name="st-build"]')?.getAttribute('content');
     if (!ownBuild) {
-        return;
+        return false;
     }
     try {
         const response = await fetch('/api/frontend/build', { cache: 'no-store' });
         if (!response.ok) {
-            return;
+            return false;
         }
         const { buildId } = await response.json();
-        if (buildId && buildId !== ownBuild) {
-            showReloadNotice();
-        }
+        return typeof buildId === 'string' && buildId !== '' && buildId !== ownBuild;
     } catch {
-        // The server can't be reached; that has its own notices.
+        return false;
     }
 }
 

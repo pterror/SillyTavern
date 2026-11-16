@@ -14,6 +14,7 @@ import { ITEMIZED_PROMPT_FLAG } from './itemized-prompts.js';
 import { countedTextHash } from './counted-text.js';
 import { arriveChatBox, chatBoxFollowCut, chatBoxLeft, moveChatBox } from './chat-box.js';
 import { takeChatLinks } from './chat-links.js';
+import { askSwitch } from './switch-answer.js';
 
 /**
  * @param {number} i
@@ -595,30 +596,22 @@ function _noticeSameAlternative(place) {
  * the chat box moves to it as it is asked (`moveChatBox`). Only an alternative the server named a card greeting (its
  * swipe info's `greeting`: the greeting's id, its character and its text's hash) is one.
  * @param {(SwipeInfo & { greeting?: { id?: unknown, avatar?: unknown, hash?: unknown } | null }) | undefined} info the alternative's swipe info
- * @returns {Promise<boolean>} false when the server didn't take it
+ * @returns {Promise<import('./switch-answer.js').SwitchAnswer>} an answer of null when there is nothing to remember
  */
 export async function rememberCardOpening(info) {
     const owner = _currentOwner();
     const greeting = info?.greeting;
-    if (!owner || !greeting || !Number.isInteger(greeting.id) || typeof greeting.avatar !== 'string' || greeting.avatar === '') return true;
+    if (!owner || !greeting || !Number.isInteger(greeting.id) || typeof greeting.avatar !== 'string' || greeting.avatar === '') return { answer: null };
     const move = moveChatBox({ chat: owner });
-    try {
-        const response = await fetch('/api/chats/openings/choose', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ ...owner, greeting_avatar: greeting.avatar, greeting_id: greeting.id, expected_hash: greeting.hash, leaving: move.leaving }),
-        });
-        if (!response.ok) throw new Error(`/api/chats/openings/choose responded ${response.status}`);
-        const answer = await response.json().catch(() => null);
-        chatBoxLeft(answer?.left);
-        await takeOpenings(owner, answer);
-        move.arrive(answer?.draft);
-        return true;
-    } catch (error) {
+    const asked = await askSwitch('/api/chats/openings/choose', { ...owner, greeting_avatar: greeting.avatar, greeting_id: greeting.id, expected_hash: greeting.hash, leaving: move.leaving });
+    if (!('answer' in asked)) {
         move.undo();
-        console.warn('[greetings] Could not remember the chosen greeting:', error);
-        return false;
+        return asked;
     }
+    chatBoxLeft(asked.answer.left);
+    await takeOpenings(owner, asked.answer);
+    move.arrive(asked.answer.draft);
+    return asked;
 }
 
 /**

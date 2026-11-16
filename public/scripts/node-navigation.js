@@ -2,7 +2,6 @@ import { getCurrentChatId, getCurrentCharacter,
     redisplayChat, updateViewMessageIds, refreshSwipeButtons,
 } from '../script.js';
 import { chat } from './chat-state.js';
-import { getRequestHeaders } from './request-headers.js';
 import { selected_group } from './group-chats.js';
 import { updateMessage, _setCurrentTarget, rememberCardOpening } from './chat-store.js';
 import { isProvisionalNodeId } from './node-identity.js';
@@ -10,6 +9,8 @@ import { _snapshotMessages } from './generation.js';
 import { chatBoxLeft, moveChatBox } from './chat-box.js';
 import { takeChatLinks } from './chat-links.js';
 import { t } from './i18n.js';
+import { askSwitch } from './switch-answer.js';
+import { getRequestHeaders } from './request-headers.js';
 
 /**
  * @param {{ chat_metadata?: ChatMetadata } | null | undefined} answer
@@ -32,25 +33,35 @@ function openChat() {
  */
 
 /**
- * @param {object} body
- * @returns {Promise<SelectAnswer | null>} the answer; null when the server didn't take the selection
+ * Says the switch to an alternative wasn't saved and why, the message being back as it was
+ * @param {Exclude<import('./switch-answer.js').SwitchAnswer, { answer: any }>} why
  */
-async function askSelect(body) {
-    try {
-        const response = await fetch('/api/chats/message/select', { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(body) });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return await response.json();
-    } catch (error) {
-        console.warn('[node-navigation] The server didn\'t take the selection:', error);
-        return null;
+function noticeSwitchNotSaved(why) {
+    toastr.warning(switchNotSavedText(why), t`Not saved`, { preventDuplicates: true });
+}
+
+/**
+ * @param {Exclude<import('./switch-answer.js').SwitchAnswer, { answer: any }>} why
+ * @returns {string}
+ */
+function switchNotSavedText(why) {
+    if ('unreachable' in why) return t`The switch to this alternative wasn't saved, because the server couldn't be reached. The message is back as it was.`;
+    switch (why.refused) {
+        case 'the greeting changed': return t`The switch to this greeting wasn't saved, because its text was changed elsewhere since this page showed it. The message is back as it was; reopen the chat to see the greeting as it is now.`;
+        case 'no such greeting': return t`The switch to this greeting wasn't saved, because the greeting was deleted from the character's card. The message is back as it was.`;
+        case 'not in this chat': return t`The switch to this greeting wasn't saved, because its character is no longer in this chat. The message is back as it was.`;
+        case 'unknown node': return t`The switch to this alternative wasn't saved, because the alternative was deleted. The message is back as it was.`;
+        case 'unknown chat': return t`The switch to this alternative wasn't saved, because this chat was deleted. The message is back as it was.`;
+        case 'outdated': return t`The switch to this alternative wasn't saved, because SillyTavern was updated and this page is older than the server. Reload the page, then switch again.`;
+        default: return t`The switch to this alternative wasn't saved, because the server ran into an error; its console has the details. The message is back as it was.`;
     }
 }
 
 /**
  * Switches message `mesId` to its alternative `swipeId`, at once: the message names the alternative's node, and the
  * chat box is at the chat's new end, before the server is asked. Its answer brings the path below the alternative; a
- * refusal puts the message back as `before` and the box where it was, and says the switch wasn't saved. The caller has
- * shown the alternative's text and `swipe_id` already.
+ * refusal puts the message back as `before` and the box where it was, and says the switch wasn't saved and why. The
+ * caller has shown the alternative's text and `swipe_id` already.
  * @param {number} mesId
  * @param {number} swipeId
  * @param {{ redraw?: boolean, before?: ChatMessage }} [options] `before`: the message as it was before the switch
@@ -70,31 +81,32 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true, b
     updateMessage(mesId, { node_id: targetNodeId, swipe_id: swipeId });
     const atEnd = mesId === chat.length - 1;
 
-    /** @type {SelectAnswer | null} */
-    let payload = { messages: [] };
+    /** @type {import('./switch-answer.js').SwitchAnswer} */
+    let asked = { answer: { messages: [] } };
     if (!unstored) {
         const move = moveChatBox({ chat: openChat(), owner: atEnd ? undefined : null });
-        payload = await askSelect({ ...openChat(), node_id: targetNodeId, chat_name: getCurrentChatId(), leaving: move.leaving });
-        if (payload === null) {
-            move.undo();
-        } else {
-            chatBoxLeft(payload.left);
-            takeChatLinks(payload.links);
+        asked = await askSwitch('/api/chats/message/select', { ...openChat(), node_id: targetNodeId, chat_name: getCurrentChatId(), leaving: move.leaving });
+        if ('answer' in asked) {
+            chatBoxLeft(asked.answer.left);
+            takeChatLinks(asked.answer.links);
             if (avatar != null) _setCurrentTarget(getCurrentChatId() ?? '', null);
-            move.arrive(payload.draft);
+            move.arrive(asked.answer.draft);
+        } else {
+            move.undo();
         }
-    } else if (mesId === 0 && !await rememberCardOpening(message.swipe_info?.[swipeId])) {
-        payload = null;
+    } else if (mesId === 0) {
+        const remembered = await rememberCardOpening(message.swipe_info?.[swipeId]);
+        if (!('answer' in remembered)) asked = remembered;
     }
 
     if (chat[mesId]?.node_id !== targetNodeId) {
         return 'same';
     }
 
-    if (payload === null) {
+    if (!('answer' in asked)) {
         updateMessage(mesId, before);
         _snapshotMessages();
-        toastr.warning(t`The switch to this alternative wasn't saved, so the message is back as it was.`, t`Not saved`, { preventDuplicates: true });
+        noticeSwitchNotSaved(asked);
         if (redraw) {
             await redisplayChat({ startIndex: mesId });
             updateViewMessageIds();
@@ -102,6 +114,8 @@ export async function switchToAlternativePath(mesId, swipeId, { redraw = true, b
         }
         return 'refused';
     }
+    /** @type {SelectAnswer} */
+    const payload = asked.answer;
 
     chat.splice(mesId + 1, chat.length - (mesId + 1), ...(payload.messages ?? []));
     await takeStateFrom(payload);
