@@ -2073,33 +2073,68 @@ input[type="range"].macro-colors-hue {
     margin-left: 0.75em;
 }
 
+/* In the text's own colour, so a key follows the theme and a highlighted row */
 .commandPalette kbd,
 .commandMenu kbd,
 .commandCheatsheet kbd {
+    min-width: 1.6em;
+    padding: 1px 0.45em;
     font-size: 0.85em;
-    opacity: 0.8;
+    line-height: 1.5;
+    text-align: center;
+    color: color-mix(in srgb, currentColor 70%, transparent);
+    background-color: color-mix(in srgb, currentColor 10%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-radius: 4px;
+    box-shadow: none;
 }
 
+.commandPalette [role="option"] > span:last-child > span,
+.commandMenu [role="menuitem"] > span:last-child > span,
+.commandCheatsheet [role="group"] > div > span:last-child > span {
+    display: inline-flex;
+    gap: 3px;
+}
+
+/* No set width: it is what the centred popover leaves (half the window), or the widest row if that is wider */
 .commandCheatsheet {
-    width: min(90vw, 70em);
-    max-height: 85vh;
+    flex-flow: row wrap;
+    align-items: flex-start;
+    gap: 1.4em 2em;
+    max-width: calc(100vw - 24px);
+    max-height: 70vh;
     overflow: auto;
-    padding: 10px 20px;
-    columns: 22em;
+    padding: 1.1em 1.5em;
 }
 
 .commandCheatsheet [role="group"] {
-    break-inside: avoid;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    min-width: 12em;
 }
 
-.commandCheatsheet [role="group"] > :first-child {
-    font-weight: bold;
+.commandCheatsheet [role="group"] > [role="presentation"] {
+    margin-bottom: 0.1em;
+    font-size: 0.8em;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    opacity: 0.7;
 }
 
-.commandCheatsheet [role="group"] > div {
+.commandCheatsheet [role="group"] > div:not([role]) {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     gap: 1em;
+}
+
+.commandCheatsheet [role="group"] > div > span:last-child {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 3px 0.75em;
 }
 
 .commandCheatsheet [aria-disabled="true"] {

@@ -158,6 +158,8 @@ test.describe('Hotkeys', () => {
     });
 
     const overlay = page => page.locator('.commandCheatsheet:popover-open');
+    /** @param {import('@playwright/test').Locator} locator */
+    const rectOf = locator => locator.evaluate(element => element.getBoundingClientRect().toJSON());
 
     test('the Hotkeys topic lists the registered commands by category, each with its keys', async ({ page }) => {
         await runSlash(page, '/help hotkeys');
@@ -202,6 +204,31 @@ test.describe('Hotkeys', () => {
         await expect(page.locator('#user-settings-block')).toHaveClass(/openDrawer/);
         await page.keyboard.press('Escape');
         await expect(page.locator('#user-settings-block')).toHaveClass(/closedDrawer/);
+    });
+
+    test('the list puts categories side by side, keys beside their command, a command\'s bindings further apart than a binding\'s keys', async ({ page }) => {
+        await page.locator('body').click({ position: { x: 1, y: 1 } });
+        await page.keyboard.press('Shift+Slash');
+        const sheet = overlay(page);
+        await expect(sheet).toHaveAttribute('role', 'region');
+        await expect(sheet).toHaveAccessibleName('Keyboard shortcuts');
+        await expect(sheet).toHaveAttribute('tabindex', '0');
+
+        const group = name => sheet.locator('[role=group]', { has: page.getByText(name, { exact: true }) });
+        const fields = await rectOf(group('Fields and lists'));
+        const general = await rectOf(group('General'));
+        expect(general.top).toBe(fields.top);
+        expect(general.left).toBeGreaterThan(fields.right);
+
+        const row = group('General').locator('div', { hasText: 'Command palette' });
+        const keys = row.locator('kbd');
+        await expect(keys).toHaveText(['Ctrl', 'K', 'Ctrl', 'Shift', 'P']);
+        const label = await rectOf(row.locator(':scope > span').first());
+        const [ctrl, k, nextCtrl] = await Promise.all([0, 1, 2].map(i => rectOf(keys.nth(i))));
+        expect(Math.abs((ctrl.top + ctrl.bottom) / 2 - (label.top + label.bottom) / 2)).toBeLessThan(2);
+        const inBinding = k.left - ctrl.right;
+        expect(inBinding).toBeGreaterThan(0);
+        expect(nextCtrl.left - k.right).toBeGreaterThan(inBinding * 2);
     });
 
     test('with stacked drawers on, the held list is a layer: the chat under it is cut there, and back once it hides', async ({ page }) => {

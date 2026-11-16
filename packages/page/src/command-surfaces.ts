@@ -159,6 +159,10 @@ export function commandSurfaces({ commands, focusActions, holdShowsKeys, t }: Su
     ];
 
     const sheetElement = surface('commandCheatsheet');
+    // A list longer than the window scrolls, so the keyboard can reach it; opening it still moves no focus
+    sheetElement.tabIndex = 0;
+    sheetElement.setAttribute('role', 'region');
+    sheetElement.setAttribute('aria-label', t('Keyboard shortcuts'));
     const sheetOpen = cell(false);
     const stopSheet = cheatsheetOver(commands, sheetElement, sheetOpen, strings);
     // Its trigger listens nowhere while holding the modifier isn't to show it
