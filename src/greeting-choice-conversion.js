@@ -4,6 +4,7 @@ import { greetingModelOf } from './greeting-items.js';
 import { greetingChoice } from './chat-engine.js';
 import { applyGreetingsModelToCard } from './greeting-list.js';
 import { GREETING_SHOWN } from './tab-views.js';
+import { hashGreetingText } from './greeting-ops.js';
 
 const PAGE = 500;
 
@@ -65,6 +66,38 @@ export async function convertGreetingChoices(lib, handle) {
  */
 export async function convertOpeningLinks(lib, chats, handle) {
     let changed = 0;
+    await eachCharacter(lib, async (tree, greetings) => {
+        changed += await chats.relinkStarts({ tree, greetings, actor: { user: handle } });
+    });
+    return changed;
+}
+
+/**
+ * Writes again by the link rule each stored first message that holds a card greeting whose text isn't exactly its
+ * own: one linked when the rule also matched the text without surrounding whitespace. It holds the greeting no more.
+ * @param {import('./library-engine.js').LibraryEngine} lib
+ * @param {import('./chat-engine.js').ChatEngine} chats
+ * @param {string} handle
+ * @returns {Promise<number>} how many first messages changed
+ */
+export async function convertTrimmedOpeningLinks(lib, chats, handle) {
+    let changed = 0;
+    await eachCharacter(lib, async (tree, greetings) => {
+        const held = (/** @type {Record<string, any>} */ m) => {
+            const greeting = greetings.find(g => g.id === m?.extra?.greeting_id);
+            return greeting !== undefined && m.extra.greeting_hash === hashGreetingText(greeting.text) && m.mes !== greeting.text;
+        };
+        changed += await chats.relinkStarts({ tree, greetings, actor: { user: handle }, only: held });
+    });
+    return changed;
+}
+
+/**
+ * @param {import('./library-engine.js').LibraryEngine} lib
+ * @param {(tree: bigint, greetings: { id: number, text: string }[]) => Promise<void>} fn called with each character's
+ *   tree and its greetings that have text
+ */
+async function eachCharacter(lib, fn) {
     /** @type {string | undefined} */
     let cursor;
     for (;;) {
@@ -73,10 +106,9 @@ export async function convertOpeningLinks(lib, chats, handle) {
         for (const avatar of avatars) {
             const entity = await lib.entity(TYPE.character, avatar);
             if (!entity) continue;
-            const greetings = greetingModelOf(entity).greetings.filter(g => g.text !== '');
-            changed += await chats.relinkStarts({ tree: entity.id, greetings, actor: { user: handle } });
+            await fn(entity.id, greetingModelOf(entity).greetings.filter(g => g.text !== ''));
         }
-        if (typeof page.cursor !== 'string' || avatars.length === 0) return changed;
+        if (typeof page.cursor !== 'string' || avatars.length === 0) return;
         cursor = page.cursor;
     }
 }

@@ -58,7 +58,9 @@ with what goes under it, an in-chat edit of it, an alternative added to it, a du
 Texts are compared only when a first message is written (stored, edited, imported or converted): one whose text is a
 card greeting's is that greeting, linked with its id and `extra.greeting_hash`, the hash of the text it had. Any other
 keeps the greeting it came from, unlinked. A user's own first message with a greeting's text is that greeting too.
-The exact text is matched first, then the text without surrounding whitespace.
+Only the exact text matches, whitespace included (owner, 2026-11-16). Openings linked before by their text without surrounding whitespace hold their greeting no more
+once `scripts/convert-greeting-links-exact.mjs` has run, with the server stopped: each keeps its `greeting_id`, and
+loses `greeting_hash` unless its text is exactly another greeting's.
 
 A card greeting is left out of the openings exactly when a stored opening links to it with its current text's hash:
 editing the card greeting offers its new text again beside the opening that had the old one.

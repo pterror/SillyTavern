@@ -73,13 +73,15 @@ test('a store from before greeting ids is refused until the conversion script ha
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-card-lorebook-copies.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Lorebooks looked at: 0.');
         expect(await stores.oldFormatLine({ root })).toContain('convert-message-order.mjs');
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-message-order.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Steps of 2000 messages: 1.');
+        expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-links-exact.mjs');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-links-exact.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Openings that held a greeting whose text differs from theirs in whitespace, and hold it no more: 0.');
         expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });
     }
 });
 
-test('every stored first message with a card greeting\'s text is linked to it, once; any other keeps where it came from, unlinked', async () => {
+test('every stored first message with a card greeting\'s exact text is linked to it, once; any other keeps where it came from, unlinked', async () => {
     const { lib } = user.store;
     const { convertOpeningLinks } = await import('../src/greeting-choice-conversion.js');
     const { hashGreetingText } = await import('../src/greeting-ops.js');
@@ -104,9 +106,47 @@ test('every stored first message with a card greeting\'s text is linked to it, o
     expect(await links(before)).toEqual([['Hello', null, null], [' Bye ', null, null], ['Mine', greetings[0].id, null]]);
 
     const after = await ChatEngine.open(lib.store, libraryPeople(lib), await lib.nextIds());
-    expect(await convertOpeningLinks(lib, after, 'u')).toBe(2);
-    expect(await links(after)).toEqual([['Hello', greetings[0].id, hashGreetingText('Hello')], ['Mine', greetings[0].id, null], [' Bye ', greetings[1].id, hashGreetingText('Bye')]]);
+    expect(await convertOpeningLinks(lib, after, 'u')).toBe(1);
+    expect(await links(after)).toEqual([[' Bye ', null, null], ['Hello', greetings[0].id, hashGreetingText('Hello')], ['Mine', greetings[0].id, null]]);
     expect(await convertOpeningLinks(lib, after, 'u')).toBe(0);
+});
+
+test('an opening that holds a greeting whose text differs from its own in whitespace holds it no more, once; the speaker and every other link stay', async () => {
+    const { lib, chats } = user.store;
+    const { convertTrimmedOpeningLinks } = await import('../src/greeting-choice-conversion.js');
+    const { hashGreetingText } = await import('../src/greeting-ops.js');
+    const { speakerIdOf } = await import('../src/chat-codec.js');
+    await lib.writeCard(user.directories, 's.png', JSON.stringify({
+        spec: 'chara_card_v2', spec_version: '2.0', name: 'S',
+        data: { name: 'S', description: '', first_mes: 'Hello', alternate_greetings: ['Bye', 'Later'], extensions: {} },
+    }));
+    const [tree] = await user.store.people.trees([{ avatar: 's.png' }]);
+    const [speaker] = (await user.store.people.byAvatar(['s.png'])).values();
+    const { greetings } = await lib.greetingModel('s.png');
+    const [hello, bye, later] = greetings.map(g => g.id);
+    const actor = { user: 'u', session: '0190a1b2-0000-7000-8000-0000000000c9' };
+    const open = async (/** @type {string} */ mes, /** @type {number} */ greetingId) => (await chats.appendMessages({ tree, treeSpeaker: speaker, after: null, contents: [{ name: 'S', is_user: false, mes, extra: { greeting_id: greetingId } }], actor })).node_ids[0];
+    const spaced = await open(' Hello\n', hello);
+    await open('Bye', bye);
+    const stale = await open('Later, edited', later);
+    const linkAs = async (/** @type {string} */ node, /** @type {string} */ text) => {
+        const [id] = await chats.messageIds([node]);
+        await lib.store.commit([{ kind: 'jsonValue', message: id, field: 'greeting_hash', json: JSON.stringify(hashGreetingText(text)) }]);
+    };
+    await linkAs(spaced, 'Hello');
+    await linkAs(stale, 'Later, before');
+    const links = async () => (await chats.openings(tree)).map(o => [o.message.mes, o.message.extra?.greeting_id ?? null, o.message.extra?.greeting_hash ?? null, o.message.name, speakerIdOf(o.stored)]);
+    const listed = async () => (await chats.openingAlternatives({ tree, actor, range: { limit: 10 }, card: await chats.cardGreetings(tree) })).alternatives.map((/** @type {any} */ a) => [a.mes, a.node_id === null]);
+    expect(await listed()).toEqual([[' Hello\n', false], ['Bye', false], ['Later', true], ['Later, edited', false]]);
+
+    expect(await convertTrimmedOpeningLinks(lib, chats, 'u')).toBe(1);
+    expect(await links()).toEqual(expect.arrayContaining([
+        [' Hello\n', hello, null, 'S', tree],
+        ['Bye', bye, hashGreetingText('Bye'), 'S', tree],
+        ['Later, edited', later, hashGreetingText('Later, before'), 'S', tree],
+    ]));
+    expect(await listed()).toEqual([['Hello', true], [' Hello\n', false], ['Bye', false], ['Later', true], ['Later, edited', false]]);
+    expect(await convertTrimmedOpeningLinks(lib, chats, 'u')).toBe(0);
 });
 
 test('a store converted by the first version of the script gets the links when it runs again, and then opens', async () => {
@@ -136,6 +176,8 @@ test('a store converted by the first version of the script gets the links when i
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-card-lorebook-copies.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Lorebooks looked at: 0.');
         expect(await stores.oldFormatLine({ root })).toContain('convert-message-order.mjs');
         expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-message-order.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Steps of 2000 messages: 1.');
+        expect(await stores.oldFormatLine({ root })).toContain('convert-greeting-links-exact.mjs');
+        expect(execFileSync(process.execPath, [path.join('..', 'scripts', 'convert-greeting-links-exact.mjs'), '--data-root', dataRoot], { encoding: 'utf8' })).toContain('Users: 1 (0 already converted). Openings that held a greeting whose text differs from theirs in whitespace, and hold it no more: 0.');
         expect(await stores.oldFormatLine({ root })).toBeNull();
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });

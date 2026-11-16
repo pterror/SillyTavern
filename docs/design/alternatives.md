@@ -132,10 +132,8 @@ When the text is another alternative's:
 With saving while typing, the message being edited holds what the last save stored when Done goes to another
 alternative.
 
-An opening whose text is a card greeting's but for surrounding whitespace is stored, and linked to that greeting by
-`greeting-ids.md`'s rule (the exact text first, then the text without surrounding whitespace), so it holds the
-greeting and the greeting is left out of the openings. Whether that link should take the exact text only is not
-decided.
+An opening whose text is a card greeting's but for whitespace is stored, and is not linked to that greeting
+(`greeting-ids.md`: the exact text only), so the greeting stays among the openings beside it.
 
 Not covered yet: a card greeting of a group chat's opening, edited while not stored (the page stores the group's
 openings together).

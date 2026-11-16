@@ -218,8 +218,7 @@ export function storedForm(msg) {
  * @returns {Record<string, any>}
  */
 export function linkedToCard(content, greetings) {
-    const text = typeof content?.mes === 'string' ? content.mes.trim() : null;
-    const same = text === null ? undefined : greetings.find(g => g.text === content.mes) ?? greetings.find(g => g.text.trim() === text);
+    const same = typeof content?.mes === 'string' ? greetings.find(g => g.text === content.mes) : undefined;
     const extra = { ...(content?.extra && typeof content.extra === 'object' ? content.extra : {}) };
     if (same) {
         extra.greeting_id = same.id;
@@ -934,19 +933,22 @@ export class ChatEngine {
     /**
      * Writes a tree's stored first messages again by the link rule, against the given card greetings.
      * @param {object} p
-     * @param {bigint} p.tree
+     * @param {bigint} p.tree a character's tree
      * @param {{ id: number, text: string }[]} p.greetings
      * @param {Actor} p.actor
+     * @param {(message: Record<string, any>) => boolean} [p.only] which of them; all when absent
      * @returns {Promise<number>} how many changed
      */
-    async relinkStarts({ tree, greetings, actor }) {
+    async relinkStarts({ tree, greetings, actor, only = () => true }) {
         const edits = [];
         for (const { message, stored } of await this.openings(tree)) {
+            if (!only(message)) continue;
             const extra = linkedToCard(message, greetings).extra;
             if (JSON.stringify(extra) !== JSON.stringify(message?.extra ?? {})) edits.push({ node_id: this.externalId(stored), patch: { extra } });
         }
         if (!edits.length) return 0;
-        const done = await this.editMessages({ tree, treeSpeaker: null, edits, actor, asStart: content => linkedToCard(content, greetings) });
+        const treeSpeaker = (await this.people.speakers([tree])).get(tree) ?? null;
+        const done = await this.editMessages({ tree, treeSpeaker, edits, actor, asStart: content => linkedToCard(content, greetings) });
         return edits.length - done.refused.length;
     }
 

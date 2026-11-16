@@ -193,4 +193,16 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.equal(await chosen(), null);
         await store.close();
     });
+
+    test(`${kind}: an opening with a card greeting's text but for whitespace is not linked to it, and the greeting stays listed`, async () => {
+        const { store, chats, t, id, send, card } = await fresh(engine);
+        await send(null, [said(' Greeting 2\n', { greeting_id: 7 })]);
+        const [opening] = await chats.openings(t);
+        assert.deepEqual(opening.message.extra, { greeting_id: 7 }, 'it keeps the greeting it came from, unlinked');
+        const listed = async () => (/** @type {any} */ (await chats.openingAlternatives({ tree: t, actor: a, range: { limit: 10 }, card: await card() }))).alternatives.map((/** @type {any} */ x) => [x.mes, x.node_id === null]);
+        assert.deepEqual(await listed(), [['Greeting 1', true], ['Greeting 2', true], [' Greeting 2\n', false], ['Greeting 3', true]]);
+        await chats.editMessages({ tree: t, treeSpeaker: ivy, edits: [{ node_id: id[' Greeting 2\n'], patch: { mes: 'Greeting 3 ' }, finished: true }], actor: a });
+        assert.deepEqual(await listed(), [['Greeting 1', true], ['Greeting 2', true], ['Greeting 3 ', false], ['Greeting 3', true]], 'an edit is linked the same way');
+        await store.close();
+    });
 }

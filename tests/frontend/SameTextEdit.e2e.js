@@ -407,4 +407,19 @@ test.describe('an edit that becomes the text of another alternative', () => {
         expect(await notices(page)).not.toContain('same as alternative');
         await expectNoWarnings(page);
     });
+
+    test('a card greeting edited to its text with other whitespace is stored beside it, and the greeting stays an alternative', async ({ page }) => {
+        const s = stamp();
+        const g = [`Zero ${s}`, `One ${s}`];
+        const avatar = await createCharacter(page, `SameSpaced-${s}`, g);
+        await openCharacter(page, avatar);
+        await startEdit(page, 0, `${g[0]} `);
+        await done(page, 0);
+        await expect.poll(() => openings(page, avatar), { timeout: 10000 }).toEqual([
+            { stored: false, mes: g[0] }, { stored: true, mes: `${g[0]} ` }, { stored: false, mes: g[1] },
+        ]);
+        expect((await message(page, 0)).swipes).toEqual([g[0], `${g[0]} `, g[1]]);
+        expect(await notices(page)).not.toContain('same as alternative');
+        await expectNoWarnings(page);
+    });
 });
