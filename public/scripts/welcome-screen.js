@@ -506,7 +506,7 @@ async function sendWelcomePanel(chats, expand = false, { replace = false, stillS
  * @param {string} avatarId Avatar file name
  * @param {string} fileName Chat file name
  */
-async function openRecentCharacterChat(avatarId, fileName) {
+export async function openRecentCharacterChat(avatarId, fileName) {
     try {
         await selectCharacterByAvatar(avatarId);
         if (getCurrentCharacter()?.avatar !== avatarId) {
@@ -530,7 +530,7 @@ async function openRecentCharacterChat(avatarId, fileName) {
  * @param {string} groupId Group ID
  * @param {string} fileName Chat file name
  */
-async function openRecentGroupChat(groupId, fileName) {
+export async function openRecentGroupChat(groupId, fileName) {
     try {
         await openGroupById(groupId);
         if (!groupsStore.has(groupId)) {

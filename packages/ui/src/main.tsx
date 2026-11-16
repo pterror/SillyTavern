@@ -41,6 +41,8 @@ import type { Look as ActivationsLook, OldPage as ActivationsOldPage } from '@st
 import { UsageStats } from '@st/usage-stats/page';
 import type { Buttons as UsageStatsButtons, OldPage as UsageStatsOldPage } from '@st/usage-stats/page';
 import { Help, helpCompat } from '@st/help/page';
+import { RecentHistory, recentHistoryCompat } from '@st/recent-history/page';
+import type { OldPage as RecentHistoryOldPage } from '@st/recent-history/page';
 import { LookScreen, looksCompat } from '@st/looks/page';
 import { Worldbuilding, worldbuildingCompat } from '@st/worldbuilding/page';
 import type { OldPage as HelpOldPage } from '@st/help/page';
@@ -59,6 +61,7 @@ export type StartOptions = {
     activations: ActivationsOldPage;
     usageStats: UsageStatsOldPage;
     help: HelpOldPage;
+    recentHistory: RecentHistoryOldPage;
     worldbuilding: WorldbuildingOldPage;
     containers: {
         backgrounds: HTMLElement;
@@ -169,6 +172,34 @@ export function start(options: StartOptions) {
         />
     ));
 
+    const recentHistory = recentHistoryCompat(client);
+    const showRecentHistory = (of: 'chat' | 'all') => {
+        void recentHistory.open(of).then((refused) => {
+            if (refused !== null) options.recentHistory.failed(refused);
+        });
+    };
+    const openRecentHistory = () => {
+        showRecentHistory(options.currentChat() ? 'chat' : 'all');
+    };
+    commands.register([
+        {
+            id: 'history.recent',
+            label: options.t('Recent history'),
+            category: options.t('Chat'),
+            run: openRecentHistory,
+        },
+    ]);
+    const recentHistoryHost = document.createElement('div');
+    document.body.append(recentHistoryHost);
+    mount(recentHistoryHost, () => (
+        <RecentHistory
+            shown={recentHistory.shown()}
+            old={options.recentHistory}
+            onShow={showRecentHistory}
+            onClose={() => recentHistory.close()}
+        />
+    ));
+
     return {
         receive: (push: ViewPush) => {
             client.receive(push);
@@ -203,6 +234,7 @@ export function start(options: StartOptions) {
         help: {
             open: (name: string) => help.open(name),
         },
+        recentHistory: { open: openRecentHistory },
         names: {
             element: nameElement,
             inline: inlineName,

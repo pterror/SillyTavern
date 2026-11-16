@@ -19,6 +19,7 @@
 @import url(css/chat-backups.css);
 @import url(css/alternatives.css);
 @import url(css/activations.css);
+@import url(css/recent-history.css);
 
 @property --drawerContainerTop {
     syntax: '<length>';

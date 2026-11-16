@@ -8,6 +8,7 @@ import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { openEditorLayer } from './editor-layer.js';
 import { drawerStackChanged, raiseDrawer } from './drawer-stack.js';
+import { recentHistoryOldPage } from './recent-history.js';
 
 /** @type {import('/ui/entry.js').StartOptions['help']} */
 const helpOldPage = {
@@ -78,6 +79,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
             dialogsChanged: fixToastrForDialogs,
         },
         help: helpOldPage,
+        recentHistory: recentHistoryOldPage,
         containers: {
             backgrounds: element('Backgrounds'),
             backgroundLayer: element('bg1'),

@@ -15,6 +15,8 @@ import { usageStatsArea } from '@st/usage-stats/server';
 import { VIEW as USAGE_STATS_VIEW } from '@st/usage-stats/protocol';
 import { STATS_BACKUP_FILE } from './old-stats-file.js';
 import { helpArea } from '@st/help/server';
+import { recentHistoryArea } from '@st/recent-history/server';
+import { VIEW as RECENT_HISTORY_VIEW } from '@st/recent-history/protocol';
 import { looksPorts } from './looks-store.js';
 import { chatReadsBook, resolveChatLinkLooks } from './chat-links.js';
 import { sessionHeaderOf } from './request-session.js';
@@ -592,6 +594,15 @@ onUserStoreOpened(({ events, root, handle }) => {
             ui.changed(user, [DRAWN_VIEW]).catch(error => console.error('Pushing the looks drawn failed.', error));
         });
     });
+    let historyQueued = false;
+    events.on('commit', () => {
+        if (historyQueued || !recentHistory.showing(root)) return;
+        historyQueued = true;
+        setImmediate(() => {
+            historyQueued = false;
+            ui.changed(user, [RECENT_HISTORY_VIEW]).catch(error => console.error('Pushing the recent history failed.', error));
+        });
+    });
     let statsQueued = false;
     events.on('commit', () => {
         if (statsQueued || !usageStats.showing(root)) return;
@@ -601,6 +612,59 @@ onUserStoreOpened(({ events, root, handle }) => {
             ui.changed(user, [USAGE_STATS_VIEW]).catch(error => console.error('Pushing the usage stats failed.', error));
         });
     });
+});
+
+/**
+ * @param {import('./chat-engine.js').HistoryMessage} m
+ * @returns {import('@st/recent-history/protocol').Message}
+ */
+const historyMessageOf = m => ({
+    nodeId: m.node_id,
+    text: m.mes,
+    name: m.name,
+    role: m.is_system ? 'system' : m.is_user ? 'user' : 'assistant',
+    date: typeof m.send_date === 'string' || typeof m.send_date === 'number' ? m.send_date : null,
+});
+
+const recentHistory = recentHistoryArea({
+    async entries(context, of, before, limit) {
+        const store = await userStore(directoriesOf(context.user), context.user.handle);
+        let chat = null;
+        if (of === 'chat') {
+            if (!context.chat) return null;
+            chat = { tree: BigInt(context.chat.tree), actor: { user: context.user.handle, session: context.session } };
+        }
+        const page = await store.chats.recentHistory({ of: chat, before, limit });
+        const trees = [...new Set(page.entries.map(e => e.tree))];
+        const keys = await store.lib.store.libraryKeys(trees);
+        /** @type {Map<bigint, import('@st/protocol').ChatOwner>} */
+        const owners = new Map();
+        trees.forEach((tree, i) => {
+            const key = keys[i];
+            if (key) owners.set(tree, key.type === TYPE.group ? { group: key.key } : { avatar: key.key });
+        });
+        /** @type {import('@st/recent-history/server').Listed[]} */
+        const entries = [];
+        for (const e of page.entries) {
+            const owner = owners.get(e.tree);
+            if (!owner) continue;
+            const chatKey = `${e.tree}:${e.chat.bookmark ?? `s${e.chat.session}`}`;
+            entries.push({
+                id: e.group ?? `at:${chatKey}`,
+                group: e.group,
+                chat: { owner, name: e.chat.name },
+                message: historyMessageOf(e.message),
+                split: e.split === null ? null : e.split.number === null ? { start: true } : { number: e.split.number },
+                tips: e.tips,
+            });
+        }
+        return { entries, next: page.next };
+    },
+    async tips(context, group, before, limit) {
+        const store = await userStore(directoriesOf(context.user), context.user.handle);
+        const page = await store.chats.historyTips({ group, before, limit });
+        return { tips: page.tips.map(historyMessageOf), next: page.next };
+    },
 });
 
 /** @type {import('@st/usage-stats/server').Stored} */
@@ -748,7 +812,7 @@ const worldbuildingPorts = {
     },
 };
 
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts), looks.area, usageStats.area, helpArea()], {
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts), looks.area, usageStats.area, helpArea(), recentHistory.area], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);

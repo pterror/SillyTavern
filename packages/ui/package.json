@@ -11,6 +11,7 @@
         "@st/occlusion": "workspace:*",
         "@st/page": "workspace:*",
         "@st/protocol": "workspace:*",
+        "@st/recent-history": "workspace:*",
         "@st/settings": "workspace:*",
         "@st/usage-stats": "workspace:*",
         "@st/worldbuilding": "workspace:*",

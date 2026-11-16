@@ -10804,6 +10804,8 @@ jQuery(async function () {
         } else if (id === 'option_help') {
             const refused = await newUi().help.open('');
             if (refused) toastr.warning(refused);
+        } else if (id === 'option_recent_history') {
+            newUi().recentHistory.open();
         } else if (id == 'option_delete_mes') {
             setTimeout(() => openMessageDelete(fromSlashCommand, deleteToolCalls), animation_duration);
         } else if (id === 'option_settings') {

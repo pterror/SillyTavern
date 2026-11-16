@@ -1,0 +1,71 @@
+dialog.recent-history {
+    width: var(--sheldWidth);
+    max-width: calc(100dvw - 32px);
+}
+
+dialog.recent-history .popup-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: calc(90dvh - 2em);
+    text-align: left;
+}
+
+.recent-history-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.recent-history-header h3 {
+    margin: 0;
+}
+
+.recent-history-of {
+    display: flex;
+    gap: 4px;
+}
+
+.recent-history-of .menu_button.active {
+    background-color: var(--cobalt30a);
+}
+
+.recent-history-list,
+.recent-history-tips {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.recent-history-list {
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.recent-history-tips {
+    margin-left: 1.5em;
+}
+
+.recent-history-others {
+    width: fit-content;
+    margin: 2px 0 0 0;
+    font-size: calc(var(--mainFontSize) - .15rem);
+}
+
+.recent-history-others i {
+    margin-right: 0.4em;
+}
+
+.recent-history .select_chat_block.now {
+    background-color: var(--cobalt30a);
+}
+
+.recent-history-now {
+    font-weight: bold;
+}
+
+.recent-history-note {
+    opacity: 0.7;
+}
