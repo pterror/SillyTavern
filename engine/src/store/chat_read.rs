@@ -247,7 +247,7 @@ pub fn places(view: &View, ids: &[u64]) -> Result<Js, StoreError> {
         out.push(Js::Obj(vec![
             ("place", Js::Num(order::place(view, list, m)? as f64)),
             ("total", Js::Num(order::count(view, list)? as f64)),
-            ("group", Js::Num(list.group() as f64)),
+            ("group", Js::Big(list.group())),
         ]));
     }
     Ok(Js::Arr(out))
@@ -259,7 +259,7 @@ pub fn root_groups(view: &View, tree: u64) -> Result<Js, StoreError> {
     for g in order::root_groups(view, tree)? {
         let list = List::roots(tree, g);
         out.push(Js::Obj(vec![
-            ("group", Js::Num(g as f64)),
+            ("group", Js::Big(g)),
             ("count", Js::Num(order::count(view, list)? as f64)),
             ("first", opt_big(order::first(view, list)?)),
         ]));
@@ -418,6 +418,18 @@ pub fn current_chats(
 
 pub fn opening_choice(view: &View, s: u64, tree: u64, card: Option<u64>) -> Result<Js, StoreError> {
     Ok(sessions::opening_choice(view, s, tree, card)?.map_or(Js::Null, |i| Js::Num(i as f64)))
+}
+
+/// The session's choice in a tree: `{ card, index }`, `card` null for the tree's own character; null for none.
+pub fn opening_chosen(view: &View, s: u64, tree: u64) -> Result<Js, StoreError> {
+    Ok(
+        sessions::opening_chosen_in(view, s, tree)?.map_or(Js::Null, |(card, index)| {
+            Js::Obj(vec![
+                ("card", opt_big(card)),
+                ("index", Js::Num(index as f64)),
+            ])
+        }),
+    )
 }
 
 fn order_page(list: Vec<(u64, u64)>) -> Js {

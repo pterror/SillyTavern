@@ -1260,8 +1260,8 @@ fn convo_names_gone(view: &View, out: &mut Out, s: u64) -> Result<(), StoreError
     Ok(())
 }
 
-/// A session's choice of the opening a tree shows: the card greeting of a character's tree (`card` none), or of one
-/// member (`card`) of a group's tree.
+/// A session's choice of the opening a tree shows: a card greeting of the tree's own character (`card` none), or of
+/// the character `card` (a member of a group's tree). A session has one choice in a tree: each replaces the one before.
 fn opening_choice_key(s: u64, tree: u64, card: Option<u64>) -> Vec<u8> {
     let mut k = key::ids(OPENING_CHOICE, s, tree);
     if let Some(c) = card {
@@ -1289,11 +1289,43 @@ pub fn opening_chosen(
     at: Loc,
 ) -> Result<(), StoreError> {
     let k = opening_choice_key(s, tree, card);
-    if let Some([_, rp, rl]) = get_vals::<3>(view, &k)? {
+    let p = key::ids(OPENING_CHOICE, s, tree);
+    for (had, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        let [_, rp, rl] = parse_varints::<3>(&v)?;
         dead(out, Loc { pos: rp, len: rl });
+        if had != k {
+            out.del(had);
+        }
     }
     out.put(k, varints(&[index, at.pos, at.len]));
     activity(view, out, s, tree, at.pos)
+}
+
+/// The session's choice in a tree: its character (none for the tree's own) and its index. A store from before a choice
+/// replaced the others can hold one per member; the latest is the choice.
+pub fn opening_chosen_in(
+    view: &View,
+    s: u64,
+    tree: u64,
+) -> Result<Option<(Option<u64>, u64)>, StoreError> {
+    let p = key::ids(OPENING_CHOICE, s, tree);
+    let mut latest: Option<(u64, Option<u64>, u64)> = None;
+    for (k, v) in view.scan(&p, &key::prefix_end(&p), usize::MAX)? {
+        let [index, rp, _] = parse_varints::<3>(&v)?;
+        let card = if k.len() == p.len() {
+            None
+        } else {
+            let mut at = p.len();
+            Some(
+                crate::keyspace::val::get_u64(&k, &mut at)
+                    .ok_or_else(|| bad("an opening choice's card"))?,
+            )
+        };
+        if latest.is_none_or(|(pos, _, _)| rp > pos) {
+            latest = Some((rp, card, index));
+        }
+    }
+    Ok(latest.map(|(_, card, index)| (card, index)))
 }
 
 /// Every opening choice the session made in the tree: the tree's own and each member's

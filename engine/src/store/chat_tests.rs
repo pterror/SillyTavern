@@ -2548,9 +2548,47 @@ fn history_steps_move_a_cursor_and_opening_choices_last_until_an_opening_is_chos
     );
     assert_eq!(
         s.derived(|v| sessions::opening_choice(v, 1, 2, None)).unwrap(),
-        Some(3),
-        "a member's choice is beside the tree's own"
+        None,
+        "a member's choice replaces the tree's own"
     );
+    assert_eq!(
+        s.derived(|v| sessions::opening_chosen_in(v, 1, 2)).unwrap(),
+        Some((Some(9), 4))
+    );
+    model.sessions.get_mut(&1).unwrap().openings.remove(&2);
+    model.check(&s);
+    s.commit_wait(vec![rec(
+        "memberOpeningChoice",
+        vec![Value::Id(1), Value::Id(1), Value::Id(2), Value::Id(8), Value::UInt(6)],
+    )])
+    .unwrap();
+    assert_eq!(
+        s.derived(|v| sessions::opening_choice(v, 1, 2, Some(9))).unwrap(),
+        None,
+        "one member's choice replaces another's"
+    );
+    assert_eq!(
+        s.derived(|v| sessions::opening_chosen_in(v, 1, 2)).unwrap(),
+        Some((Some(8), 6))
+    );
+    s.commit_wait(vec![rec(
+        "openingChoice",
+        vec![Value::Id(1), Value::Id(1), Value::Id(2), Value::UInt(7)],
+    )])
+    .unwrap();
+    model.sessions.get_mut(&1).unwrap().openings.insert(2, 7);
+    model.check(&s);
+    assert_eq!(
+        s.derived(|v| sessions::opening_chosen_in(v, 1, 2)).unwrap(),
+        Some((None, 7)),
+        "the tree's own choice replaces a member's"
+    );
+    s.commit_wait(vec![rec(
+        "memberOpeningChoice",
+        vec![Value::Id(1), Value::Id(1), Value::Id(2), Value::Id(9), Value::UInt(4)],
+    )])
+    .unwrap();
+    model.sessions.get_mut(&1).unwrap().openings.remove(&2);
     let recs = vec![append(&mut model, 2, None, 5, "greeting", None, Some(1), 1)];
     s.commit_wait(recs).unwrap();
     model.check(&s);
@@ -3366,7 +3404,7 @@ fn a_place_moves_a_message_among_its_alternatives_and_nowhere_else() {
     let places = s
         .derived(|v| super::chat_read::places(v, &[1, 3, 2, 4, 99]))
         .unwrap();
-    let want = |p: f64, t: f64| Js::Obj(vec![("place", Js::Num(p)), ("total", Js::Num(t)), ("group", Js::Num(0.0))]);
+    let want = |p: f64, t: f64| Js::Obj(vec![("place", Js::Num(p)), ("total", Js::Num(t)), ("group", Js::Big(0))]);
     assert_eq!(
         places,
         Js::Arr(vec![want(1.0, 3.0), want(2.0, 3.0), want(3.0, 3.0), want(1.0, 1.0), Js::Null])

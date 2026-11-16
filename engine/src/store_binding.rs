@@ -2682,6 +2682,10 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
                     .map(JsTree)
             })
         }
+        "openingChosen" => {
+            let (ses, tree) = (req_integer(a, "session")?, req_integer(a, "tree")?);
+            Box::new(move |s| s.chat_read(|v| cr::opening_chosen(v, ses, tree)).map(JsTree))
+        }
         "recent" => {
             let (before, limit) = (opt_integer(a, "before")?, limit(a)?);
             Box::new(move |s| s.chat_read(|v| cr::recent(v, before, limit)).map(JsTree))
