@@ -152,9 +152,9 @@ test('a draft comes with the values of the macros in it, as the person\'s messag
     assert.deepEqual({ ...opened.body.draft, macro_values: undefined }, { owner: { root: true }, text: 'Hi {{char}}, {{input}}', macro_values: undefined });
     assert.equal(opened.body.draft.macro_values['{{char}}'], 'Mac');
     assert.equal(opened.body.draft.macro_values['{{input}}'], null);
-    const answered = await post('shown-macros', { shown: { avatar_url: 'Mac.png', scopes: [{ speaker: null, sources: ['{{char}}', '{{user}}', '{{input}}'] }] } }, tab);
+    const answered = await post('shown-macros', { shown: { avatar_url: 'Mac.png', scopes: [{ avatar_url: 'Mac.png', speaker: null, sources: ['{{char}}', '{{user}}', '{{input}}'] }] } }, tab);
     const [person] = answered.body.macro_values;
-    assert.deepEqual([person.speaker, person.values['{{char}}'], person.values['{{user}}'], person.values['{{input}}']], [null, 'Mac', 'Tester', null], 'an answer that may change them carries the values of the macros the page holds, the person\'s with the box\'s');
+    assert.deepEqual([person.avatar_url, person.speaker, person.values['{{char}}'], person.values['{{user}}'], person.values['{{input}}']], ['Mac.png', null, 'Mac', 'Tester', null], 'an answer that may change them carries the values of the macros the page holds, the person\'s with the box\'s');
     await post('draft', { avatar_url: 'Mac.png', owner: { root: true }, ...over('Hi {{char}}, {{input}}', 'plain') }, tab);
     assert.deepEqual((await post('open', { avatar_url: 'Mac.png' }, tab)).body.draft, { owner: { root: true }, text: 'plain' }, 'one with no macros comes with none');
 });

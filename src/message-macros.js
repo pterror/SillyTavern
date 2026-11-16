@@ -171,25 +171,46 @@ export async function draftWithMacros(request, chat, draft) {
 }
 
 /**
- * The answer's part for an action that may have changed the values of every macro the page holds: their values now
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+const named = value => (typeof value === 'string' && value !== '' ? value : null);
+
+/**
+ * The answer's part for an action that may have changed the values of every macro the page holds: their values now, by
+ * the scope the page listed each in
  * @param {import('express').Request} request
- * @param {unknown} shown the macros the page holds values of for the open chat, as `shownMessageMacros` lists them
- *   (page): `{ avatar_url | group_id, at, scopes: [{ speaker, sources }] }`
- * @returns {Promise<{ macro_values?: ScopeValues[] }>}
+ * @param {unknown} shown the macros the page holds, as `shownMessageMacros` lists them (page): the open chat
+ *   (`avatar_url` or `group_id`) with where it is read up to (`at`), and `scopes`: `[{ avatar_url?, group_id?, speaker,
+ *   sources }]`
+ * @returns {Promise<{ macro_values?: (ScopeValues & { avatar_url?: string, group_id?: string })[] }>}
  */
 export async function shownMacrosAnswer(request, shown) {
     if (!shown || typeof shown !== 'object') return {};
-    const { avatar_url: avatarUrl, group_id: groupIdOf, at, scopes } = /** @type {Record<string, unknown>} */ (shown);
-    const avatar = typeof avatarUrl === 'string' && avatarUrl !== '' ? avatarUrl : null;
-    const groupId = typeof groupIdOf === 'string' && groupIdOf !== '' ? groupIdOf : null;
-    if ((avatar === null && groupId === null) || !Array.isArray(scopes)) return {};
-    const wanted = scopes.filter(each => Array.isArray(each?.sources)).slice(0, 1000).map(each => ({
-        speaker: typeof each.speaker === 'string' ? each.speaker : null,
-        texts: each.sources.filter((/** @type {unknown} */ source) => typeof source === 'string').slice(0, 1000),
-    }));
+    const { avatar_url: openAvatar, group_id: openGroup, at, scopes } = /** @type {Record<string, unknown>} */ (shown);
+    if (!Array.isArray(scopes)) return {};
+    /** @type {Map<string, { avatar: string | null, groupId: string | null, wanted: { texts: string[], speaker: string | null }[] }>} */
+    const byOwner = new Map();
+    for (const each of scopes.slice(0, 1000)) {
+        if (!each || typeof each !== 'object' || !Array.isArray(each.sources)) continue;
+        const avatar = named(each.avatar_url);
+        const groupId = named(each.group_id);
+        const key = JSON.stringify([avatar, groupId]);
+        const owner = byOwner.get(key) ?? { avatar, groupId, wanted: [] };
+        owner.wanted.push({ speaker: typeof each.speaker === 'string' ? each.speaker : null, texts: each.sources.filter((/** @type {unknown} */ source) => typeof source === 'string').slice(0, 1000) });
+        byOwner.set(key, owner);
+    }
     try {
-        const chat = await chatContext(request, { avatar, group: groupId });
-        const answered = await scopeMacroValues(request.user.directories, { avatar, groupId, chat, at: typeof at === 'string' && at !== '' ? at : null, pageFacts: pageFactsOf(request) }, wanted);
+        /** @type {(ScopeValues & { avatar_url?: string, group_id?: string })[]} */
+        const answered = [];
+        for (const { avatar, groupId, wanted } of byOwner.values()) {
+            const chat = avatar !== null || groupId !== null ? await chatContext(request, { avatar, group: groupId }) : null;
+            const isOpen = avatar === named(openAvatar) && groupId === named(openGroup);
+            const owner = { avatar, groupId, chat, at: isOpen && typeof at === 'string' && at !== '' ? at : null, pageFacts: pageFactsOf(request) };
+            for (const each of await scopeMacroValues(request.user.directories, owner, wanted)) {
+                answered.push({ ...(avatar ? { avatar_url: avatar } : {}), ...(groupId ? { group_id: groupId } : {}), ...each });
+            }
+        }
         return { macro_values: answered };
     } catch (error) {
         console.warn('Could not fill in the macros the page shows:', error);

@@ -21,7 +21,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-    values.replaceMacroValues(null, undefined);
+    values.replaceMacroValues(undefined);
     await settle();
     asked = [];
     heard = 0;
@@ -58,18 +58,19 @@ describe('the page\'s macro values', () => {
         expect(heard).toBe(1);
     });
 
-    test('an action that may change every value is answered with those held for the chat; the rest are dropped', async () => {
+    test('an action that may change every value is answered with every one held, each in its scope; one not answered is dropped', async () => {
         values.takeMacroValues(ada, [{ speaker: null, values: { '{{user}}': 'Me' } }, { speaker: 'Ada', values: { '{{user}}': 'Me', '{{time}}': 'noon' } }]);
         values.takeScopeMacroValues({ avatar_url: 'Bo.png' }, { '{{user}}': 'Me' });
-        expect(values.heldMacroSources({ ...ada, at: 'n1' })).toEqual([
-            { speaker: null, sources: ['{{user}}'] },
-            { speaker: 'Ada', sources: ['{{user}}', '{{time}}'] },
+        expect(values.heldMacroSources()).toEqual([
+            { avatar_url: 'Ada.png', speaker: null, sources: ['{{user}}'] },
+            { avatar_url: 'Ada.png', speaker: 'Ada', sources: ['{{user}}', '{{time}}'] },
+            { avatar_url: 'Bo.png', speaker: null, sources: ['{{user}}'] },
         ]);
         const person = new values.MacroValues(() => ada);
         const speaker = new values.MacroValues(() => ({ ...ada, name2: 'Ada' }));
         const other = new values.MacroValues(() => ({ avatar_url: 'Bo.png' }));
         const [personWas, speakerWas] = [person.version(), speaker.version()];
-        values.replaceMacroValues(ada, [{ speaker: null, values: { '{{user}}': 'Me' } }, { speaker: 'Ada', values: { '{{user}}': 'You', '{{time}}': 'noon' } }]);
+        values.replaceMacroValues([{ ...ada, speaker: null, values: { '{{user}}': 'Me' } }, { ...ada, speaker: 'Ada', values: { '{{user}}': 'You', '{{time}}': 'noon' } }]);
         expect(person.version()).toBe(personWas);
         expect(speaker.version()).toBeGreaterThan(speakerWas);
         expect(speaker.get('{{user}}')).toBe('You');
@@ -80,7 +81,7 @@ describe('the page\'s macro values', () => {
         const view = new values.MacroValues(() => ada);
         expect(view.read('{{user}}')).toBeUndefined();
         await settle();
-        values.replaceMacroValues(ada, [{ speaker: null, values: {} }]);
+        values.replaceMacroValues([{ ...ada, speaker: null, values: {} }]);
         await settle();
         expect(heard).toBe(1);
         asked[0].answer(['Stale', '']);

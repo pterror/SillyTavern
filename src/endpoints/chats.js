@@ -27,7 +27,7 @@ import { groupObjects } from './groups.js';
 import { wholeCharacter } from './characters.js';
 import { chatOpenParts } from '../chat-open-parts.js';
 import { countedOpeningState, countSent, storedMessageCounts } from '../message-count-service.js';
-import { chatMacroOwner, draftWithMacros, sentMacroValues, storedMessageMacros } from '../message-macros.js';
+import { chatMacroOwner, draftWithMacros, scopeMacroValues, sentMacroValues, storedMessageMacros } from '../message-macros.js';
 import { shownTextCounts } from '../shown-text-counts.js';
 import { metadata_keys } from '../authors-note.js';
 import { SESSION_GONE_HEADER, requireSessionHeader, sessionHeaderOf } from '../request-session.js';
@@ -821,6 +821,23 @@ async function shapeSent(request, chat, sources) {
 }
 
 /**
+ * A chat's open answer's values, with those of the macros the page holds for the person (`macro_sources`), in the chat
+ * opened
+ * @param {import('express').Request} request
+ * @param {import('../chat-request.js').ChatContext} chat
+ * @param {Record<string, any>[]} messages the messages opened
+ * @param {unknown} sources
+ * @param {{ macro_values?: import('../message-macros.js').ScopeValues[] }} shaped
+ * @returns {Promise<{ macro_values?: import('../message-macros.js').ScopeValues[] }>}
+ */
+async function withPersonMacros(request, chat, messages, sources, shaped) {
+    const texts = Array.isArray(sources) ? sources.filter(source => typeof source === 'string').slice(0, 1000) : [];
+    if (!texts.length) return shaped;
+    const person = await scopeMacroValues(request.user.directories, chatMacroOwner(request, chat, messages), [{ texts, speaker: null }]);
+    return person.length ? { macro_values: [...(shaped.macro_values ?? []), ...person] } : shaped;
+}
+
+/**
  * The draft of where an answer leaves the chat ending, and what became of the drafts the request carried
  * (`keepLeavingDrafts`)
  * @param {import('express').Response} response
@@ -885,7 +902,7 @@ async function openChatAnswer(request, response, body) {
     const chatId = await compatChatIdOf(chat);
     const messages = loaded?.messages ?? [];
     const avatar = body.group_id ? null : String(body.avatar_url);
-    const shaped = await shapeSent(request, chat, { messages });
+    const shaped = await withPersonMacros(request, chat, messages, body.macro_sources, await shapeSent(request, chat, { messages }));
     /** @type {Promise<Record<string, any> | null> | null} */
     let card = null;
     const wholeCard = () => (card ??= avatar === null ? Promise.resolve(null) : wholeCharacter(request, avatar));

@@ -338,15 +338,13 @@ export function cardTextSetup(kind, { values, person, styleScope = '' }) {
 }
 
 /**
- * The macros the page holds values of for the open chat, for an action that may change their values to be answered
- * with them (`replaceMacroValues`)
- * @returns {{ avatar_url?: string, group_id?: string, at?: string | null, scopes: { speaker: string | null, sources: string[] }[] } | undefined}
+ * The macros the page holds values of, for an action that may change their values to be answered with them
+ * (`replaceMacroValues`), with where the open chat is read up to
+ * @returns {{ avatar_url?: string, group_id?: string, at?: string | null, scopes: ReturnType<typeof heldMacroSources> } | undefined}
  */
 export function shownMessageMacros() {
-    const scope = page.chatScope();
-    if (!scope) return undefined;
-    const scopes = heldMacroSources(scope);
-    return scopes.length ? { ...scope, scopes } : undefined;
+    const scopes = heldMacroSources();
+    return scopes.length ? { ...(page.chatScope() ?? {}), scopes } : undefined;
 }
 
 /**

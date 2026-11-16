@@ -258,7 +258,7 @@ import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder, pageMacroFacts } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { editingIn, initMessageText, messageEditorSetup, redrawMessageText, shownMessageMacros, showBiasText, showMessageText } from './scripts/message-text.js';
-import { macroScopesChanged, onMacroValuesChanged, replaceMacroValues, setSettingsCarrier, takeMacroValues } from './scripts/macro-values.js';
+import { heldPersonMacroSources, macroScopesChanged, onMacroValuesChanged, replaceMacroValues, setSettingsCarrier, takeMacroValues } from './scripts/macro-values.js';
 import {
     updateMessage,
     updateIn,
@@ -640,7 +640,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
         if (mapping.v1) setAtPath(mergeData, mapping.v1, converted.value);
         setAtPath(mergeData, mapping.v2, converted.value);
         mergeData._loadedFieldHashes = { [mapping.v2]: chain.hash };
-        const shownMacros = avatar === getCurrentCharacter()?.avatar ? shownMessageMacros() : undefined;
+        const shownMacros = shownMessageMacros();
         if (shownMacros) mergeData.shown_macros = shownMacros;
 
         try {
@@ -695,7 +695,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                     const payload = await fetchResult.json();
                     savedHash = payload?.hashes?.[mapping.v2];
                     savedCounts = payload?.card_token_counts ?? null;
-                    if (avatar === getCurrentCharacter()?.avatar) replaceMacroValues(shownMacros ?? null, payload?.macro_values);
+                    if (shownMacros) replaceMacroValues(payload?.macro_values);
                 } catch { /* no body, or not JSON - the fallback below covers it */ }
             }
 
@@ -5686,7 +5686,8 @@ const chatBoxChatOf = body => (body.group_id ? { group_id: body.group_id } : { a
  */
 export function chatOpenAsk(body) {
     const owner = chatOpenOwner(body);
-    return { send_keys: keptSendKeys(owner), parts: chatOpenAsks(owner), leaving: moveChatBox({ chat: chatBoxChatOf(body), owner: null, opening: true }).leaving };
+    const sources = heldPersonMacroSources();
+    return { send_keys: keptSendKeys(owner), parts: chatOpenAsks(owner), leaving: moveChatBox({ chat: chatBoxChatOf(body), owner: null, opening: true }).leaving, ...(sources.length ? { macro_sources: sources } : {}) };
 }
 
 /**
@@ -6284,11 +6285,9 @@ export function returnPendingSettingsChanges(changes) {
  * Takes the server's answer to settings changes it applied, as a save's or an action's that carried them.
  * @param {{ keyHashes?: Record<string, number>, settingsHash?: number, shown_counts?: any, card_token_counts?: any, macro_values?: any }} answer
  * @param {Record<string, any>} sent The changes as they were sent, by key.
- * @param {import('./scripts/macro-values.js').MacroScope} [shown] the chat the macros the changes carried were listed
- *   for (`shownMessageMacros`)
  */
-export async function noteSettingsChangesSaved(answer, sent, shown) {
-    replaceMacroValues(shown ?? null, answer.macro_values);
+export async function noteSettingsChangesSaved(answer, sent) {
+    if ('macro_values' in answer) replaceMacroValues(answer.macro_values);
     if (!takeServerKeyHashes(answer.keyHashes, Object.keys(sent).map(key => key.split('.')[0]))) {
         for (const [key, value] of Object.entries(sent)) {
             seedSettingsHashes(value, key);
@@ -6332,13 +6331,12 @@ async function performSave({ full }) {
             return;
         }
         const { keys: partialPayload, expectedHashes } = changes;
-        const shown = shownMessageMacros();
 
         try {
             const result = await fetch('/api/settings/save-partial', {
                 method: 'POST',
                 headers: getRequestHeaders(),
-                body: JSON.stringify({ keys: partialPayload, expectedHashes, shown_macros: shown }),
+                body: JSON.stringify({ keys: partialPayload, expectedHashes, shown_macros: shownMessageMacros() }),
                 cache: 'no-cache',
             });
 
@@ -6352,7 +6350,7 @@ async function performSave({ full }) {
                 throw new Error(`Failed to save partial settings: ${result.statusText}`);
             }
 
-            await noteSettingsChangesSaved(await result.json().catch(() => ({})), partialPayload, shown);
+            await noteSettingsChangesSaved(await result.json().catch(() => ({})), partialPayload);
         } catch (error) {
             console.error('Error saving settings:', error);
             toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Settings could not be saved`);

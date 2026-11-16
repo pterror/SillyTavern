@@ -88,7 +88,9 @@ test.describe('field-scoped character saves', () => {
             await expect.poll(() => mergeBodies.length, { timeout: 10000 }).toBe(1);
             await expect.poll(async () => (await fetchStoredCharacter(page, avatar)).data.description).toBe('saved description');
 
-            expect(mergeBodies[0]).toEqual({
+            const fields = { ...mergeBodies[0] };
+            delete fields.shown_macros;
+            expect(fields).toEqual({
                 avatar,
                 description: 'saved description',
                 data: { description: 'saved description' },

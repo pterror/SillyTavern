@@ -89,10 +89,14 @@ The screen shows the stored text.
   never stored): opening a chat, alternatives, an edit, a stored reply and the message it answered, and the openings
   (`opening_macros`); the chat box's draft carries the person's (the draft's `macro_values`). Since no value waits for
   a node id, none is lost when an answer comes before the page knows the node it wrote.
-- An action that may change every value (a settings change, a card field saved) is answered with the values of every
-  macro the page holds for the open chat (`shownMessageMacros`); they replace the page's, and every other scope's are
-  dropped, to be asked for again where they are drawn. A question asked before is answered into nothing. So a persona
-  switch redraws every greeting, alternative and preview, shown or not, without a request of its own.
+- An action that may change every value (a settings change, a card field saved) lists every macro the page holds, by
+  scope (`shownMessageMacros`), and is answered with their values now, which replace the page's; a scope the answer
+  has none for is dropped, to be asked for again where it is drawn. A question asked before is answered into nothing.
+  So a persona switch redraws every greeting, alternative, preview and text box, shown or not, without a request of
+  its own.
+- Opening a chat lists the macros the page holds for the person (`macro_sources`), which the texts drawn for the open
+  chat rather than for one speaker draw (the chat box, text boxes, previews), and is answered with their values in
+  that chat, so it stays one request.
 - A macro in an HTML block's text is a macro (`public/scripts/chat-text/html-text.js`), drawn as its value inserted as
   text. One in a tag's attribute is drawn as written.
 - A value only known when sent (`{{random}}`, `{{roll}}`, `{{input}}`) is drawn as what it is; the prompt fills it in

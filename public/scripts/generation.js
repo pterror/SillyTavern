@@ -531,7 +531,7 @@ export async function sendCarryingSettings(body, signal, url = undefined) {
     const changes = takePendingSettingsChanges();
     try {
         const answer = await sendGeneration({ ...body, settings_changes: changes }, signal, url);
-        if (changes) await noteSettingsChangesSaved(answer.settingsSaved ?? {}, changes.keys, changes.shown);
+        if (changes) await noteSettingsChangesSaved(answer.settingsSaved ?? {}, changes.keys);
         return answer;
     } catch (error) {
         await settleCarriedSettings(changes, /** @type {any} */ (error));
@@ -547,7 +547,7 @@ export async function sendCarryingSettings(body, signal, url = undefined) {
  */
 async function settleCarriedSettings(changes, failure) {
     if (!changes) return;
-    if (failure?.settings_saved) await noteSettingsChangesSaved(failure.settings_saved, changes.keys, changes.shown);
+    if (failure?.settings_saved) await noteSettingsChangesSaved(failure.settings_saved, changes.keys);
     else if (failure && 'settings_conflict' in failure) await settingsChangesConflicted(failure.settings_conflict ?? undefined);
     else returnPendingSettingsChanges(changes);
 }
@@ -590,7 +590,7 @@ export async function buildPrompt(type = 'normal') {
         await settleCarriedSettings(changes, { settings_saved: settingsSaved, ...(answer?.settings_not_saved ? { settings_conflict: answer.conflictingKeys ?? null } : {}) });
         throw new Error(answer?.error?.message ?? response.statusText);
     }
-    if (changes) await noteSettingsChangesSaved(settingsSaved ?? {}, changes.keys, changes.shown);
+    if (changes) await noteSettingsChangesSaved(settingsSaved ?? {}, changes.keys);
     return answer;
 }
 

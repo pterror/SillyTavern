@@ -5,11 +5,11 @@ import { macrosIn, mentionAboutMacro } from './safe-macros.js';
 let pageMacroFacts = () => ({});
 
 /**
- * @typedef {{ keys: Record<string, any>, expectedHashes: Record<string, number>, shown?: { avatar_url?: string, group_id?: string } }} SettingsChanges
+ * @typedef {{ keys: Record<string, any>, expectedHashes: Record<string, number> }} SettingsChanges
  * @typedef {object} SettingsCarrier the page's settings changes the server hasn't been sent, which a request for values
  *   carries so the values are filled in from the settings as the page has them
  * @property {() => SettingsChanges | undefined} take
- * @property {(answer: any, sent: Record<string, any>, shown?: MacroScope) => Promise<void>} saved
+ * @property {(answer: any, sent: Record<string, any>) => Promise<void>} saved
  * @property {(conflictingKeys?: string[]) => Promise<void>} conflicted
  * @property {(changes: SettingsChanges) => void} returned
  */
@@ -89,7 +89,7 @@ async function send(batch) {
         const answer = await response.json().catch(() => null);
         if (changes) {
             const saved = settingsSavedOf(response);
-            if (saved) await settingsCarrier.saved(saved, changes.keys, changes.shown);
+            if (saved) await settingsCarrier.saved(saved, changes.keys);
             else if (answer?.settings_not_saved) await settingsCarrier.conflicted(answer.conflictingKeys ?? undefined);
             else settingsCarrier.returned(changes);
         }
@@ -274,32 +274,55 @@ export function takeScopeMacroValues(scope, values) {
 }
 
 /**
- * The macros the page holds values of for a chat, by speaker, for an action that may change them to be answered with
- * their values now
- * @param {MacroScope} owner the chat: `avatar_url` or `group_id`
- * @returns {{ speaker: string | null, sources: string[] }[]}
+ * @typedef {{ avatar_url?: string, group_id?: string, speaker: string | null }} HeldScopeName a scope as a request
+ *   names it: its chat or card, none for neither, and its speaker
  */
-export function heldMacroSources(owner) {
-    const chat = macroScopeKey(speakerScope(owner, null));
+
+/**
+ * The macros the page holds values of, by scope, for an action that may change every value to be answered with their
+ * values now
+ * @returns {(HeldScopeName & { sources: string[] })[]}
+ */
+export function heldMacroSources() {
     return [...held.values()].flatMap((entry) => {
-        if (macroScopeKey(speakerScope(entry.scope, null)) !== chat || entry.values.size === 0) return [];
-        return [{ speaker: typeof entry.scope.name2 === 'string' ? entry.scope.name2 : null, sources: [...entry.values.keys()] }];
+        if (entry.values.size === 0) return [];
+        const avatar = named(entry.scope.avatar_url);
+        const group = named(entry.scope.group_id);
+        return [{
+            ...(avatar ? { avatar_url: avatar } : {}),
+            ...(group ? { group_id: group } : {}),
+            speaker: typeof entry.scope.name2 === 'string' ? entry.scope.name2 : null,
+            sources: [...entry.values.keys()],
+        }];
     });
 }
 
 /**
- * Takes an answer to an action that may have changed every value, carrying the values of the macros the page held for
- * the chat (`heldMacroSources`). Those are replaced; every other scope's values are dropped, to be asked for again where
- * they are drawn. A question asked before is answered into nothing.
- * @param {MacroScope | null} owner the chat the held macros were listed for; none drops every scope's
- * @param {unknown} answered the answer's `ScopeValues` list
+ * The macros the page holds values of for the person in any chat or card, for opening a chat to be answered with their
+ * values in it: what texts drawn for the open chat, not one speaker's, draw
+ * @returns {string[]}
  */
-export function replaceMacroValues(owner, answered) {
+export function heldPersonMacroSources() {
+    const sources = new Set();
+    for (const entry of held.values()) {
+        if (typeof entry.scope.name2 !== 'string') for (const source of entry.values.keys()) sources.add(source);
+    }
+    return [...sources];
+}
+
+/**
+ * Takes an answer to an action that may have changed every value, carrying the values of every macro the page held
+ * (`heldMacroSources`): they replace the page's, and a scope's the answer has none of are dropped, to be asked for
+ * again where they are drawn. A question asked before is answered into nothing.
+ * @param {unknown} answered the answer's list: each scope's name (`HeldScopeName`) with its `values`
+ */
+export function replaceMacroValues(answered) {
     /** @type {Map<string, { scope: MacroScope, values: Map<string, string | null> }>} */
     const fresh = new Map();
-    for (const each of owner && Array.isArray(answered) ? answered : []) {
+    for (const each of Array.isArray(answered) ? answered : []) {
         if (!each || typeof each !== 'object' || (each.speaker !== null && typeof each.speaker !== 'string')) continue;
-        const scope = speakerScope(/** @type {MacroScope} */ (owner), each.speaker);
+        const owner = { ...(named(each.avatar_url) ? { avatar_url: each.avatar_url } : {}), ...(named(each.group_id) ? { group_id: each.group_id } : {}) };
+        const scope = speakerScope(owner, each.speaker);
         fresh.set(macroScopeKey(scope), { scope, values: new Map(valuesIn(each.values)) });
     }
     let any = false;
