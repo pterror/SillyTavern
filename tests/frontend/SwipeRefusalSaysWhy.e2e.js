@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
+import { testSetup, openCharacterManagementDrawer, chatBox } from './frontent-test-utils.js';
 import { hashGreetingText } from '../../src/greeting-ops.js';
 
 if (process.env.PLAYWRIGHT_CHROME_PATH) {
@@ -131,21 +131,39 @@ const notSaved = (/** @type {import('@playwright/test').Page} */ page) => page.l
 test.describe('a switch to an alternative the server didn\'t save says why', () => {
     test.beforeEach(testSetup.awaitST);
 
-    test('a page older than the server says to reload', async ({ page }) => {
+    test('a page loaded on another build than the server\'s says to reload, and makes no write', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `Stale-${s}`, g);
         await openCharacter(page, avatar);
         await page.evaluate(() => document.querySelector('meta[name="st-build"]')?.setAttribute('content', 'a build before the server\'s'));
-        await page.route('**/api/chats/openings/choose', async (route) => {
-            const { greeting_id: _id, expected_hash: _hash, ...rest } = route.request().postDataJSON();
-            await route.continue({ postData: JSON.stringify({ ...rest, text: g[1], index: 1 }) });
+        /** @type {string[]} */
+        const writes = [];
+        page.on('request', r => {
+            const url = new URL(r.url());
+            if (r.method() !== 'GET' && url.pathname.startsWith('/api/')) writes.push(url.pathname);
         });
+        const build = await page.evaluate(async () => (await fetch('/api/frontend/build', { cache: 'no-store' })).headers.get('X-ST-Build'));
+        expect(build).toMatch(/./);
 
-        const answer = await swipeTo(page, 0, 1);
-        expect(answer?.status).toBe(400);
-        await expect(notSaved(page)).toContainText('SillyTavern was updated and this page is older than the server. Reload the page, then switch again.');
+        const notice = page.locator('#toast-container .toast', { hasText: 'SillyTavern was updated. Reload to keep going.' });
+        await expect(notice).toHaveCount(1);
+        await expect(notice.getByRole('button', { name: 'Reload' })).toBeVisible();
+        expect(await swipeTo(page, 0, 1, { answered: false })).toBeNull();
         await expect.poll(() => shown(page, 0)).toEqual({ mes: g[0], swipe_id: 0 });
+        await chatBox(page).click();
+        await page.keyboard.type(`typed ${s}`);
+        const sent = await page.evaluate(async () => {
+            // @ts-ignore
+            const headers = stTest.context().getRequestHeaders();
+            return fetch('/api/chats/message/append', { method: 'POST', headers, body: '{}' }).then(() => 'sent', (/** @type {Error} */ error) => error.name);
+        });
+        expect(sent).toBe('PageOutdatedError');
+        // eslint-disable-next-line playwright/no-wait-for-timeout
+        await page.waitForTimeout(1500);
+        expect(writes).toEqual([]);
+        await expect(notice).toHaveCount(1);
+        await expect(notSaved(page)).toHaveCount(0);
     });
 
     test('a greeting deleted in another tab: the card no longer has it', async ({ page }) => {

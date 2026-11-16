@@ -33,10 +33,12 @@ function openChat() {
  */
 
 /**
- * Says the switch to an alternative wasn't saved and why, the message being back as it was
+ * Says the switch to an alternative wasn't saved and why, the message being back as it was; an outdated page's own
+ * notice says it for every write (`showReloadNotice`)
  * @param {Exclude<import('./switch-answer.js').SwitchAnswer, { answer: any }>} why
  */
 function noticeSwitchNotSaved(why) {
+    if ('refused' in why && why.refused === 'outdated') return;
     toastr.warning(switchNotSavedText(why), t`Not saved`, { preventDuplicates: true });
 }
 
@@ -52,7 +54,6 @@ function switchNotSavedText(why) {
         case 'not in this chat': return t`The switch to this greeting wasn't saved, because its character is no longer in this chat. The message is back as it was.`;
         case 'unknown node': return t`The switch to this alternative wasn't saved, because the alternative was deleted. The message is back as it was.`;
         case 'unknown chat': return t`The switch to this alternative wasn't saved, because this chat was deleted. The message is back as it was.`;
-        case 'outdated': return t`The switch to this alternative wasn't saved, because SillyTavern was updated and this page is older than the server. Reload the page, then switch again.`;
         default: return t`The switch to this alternative wasn't saved, because the server ran into an error; its console has the details. The message is back as it was.`;
     }
 }

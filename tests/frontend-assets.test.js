@@ -130,9 +130,12 @@ describe('FrontendAssets', () => {
         const runtime = JSON.parse(/<script type="application\/json" id="st-asset-versions">(.*?)<\/script>/.exec(body)[1]);
         expect(runtime['/scripts/templates/t.html']).toBe(manifest.get('/scripts/templates/t.html'));
         expect(body).toContain(`<meta name="st-build" content="${buildId}">`);
+        expect(assets.buildId).toBe(buildId);
 
         write(path.join(publicDirectory, 'scripts/templates/t.html'), '<div>changed</div>');
-        expect((await assets.renderIndex(path.join(publicDirectory, 'index.html'))).buildId).not.toBe(buildId);
+        const rebuilt = (await assets.renderIndex(path.join(publicDirectory, 'index.html'))).buildId;
+        expect(rebuilt).not.toBe(buildId);
+        expect(assets.buildId).toBe(rebuilt);
     });
 });
 

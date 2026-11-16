@@ -75,6 +75,8 @@ export class FrontendAssets {
         this.textSources = new Map();
         /** @type {{mtimeMs: number, size: number, text: string}|null} */
         this.indexSource = null;
+        /** @type {string|null} the build of the page the index was last rendered as */
+        this.buildId = null;
     }
 
     /**
@@ -272,6 +274,7 @@ export class FrontendAssets {
             `<script type="application/json" id="st-asset-versions">${escapeScriptContent(runtimeMap)}</script>`,
         ].join('\n    ');
         const body = page.replace(/<head>/i, match => `${match}\n    ${head}`);
+        this.buildId = buildId;
         return { body, buildId };
     }
 

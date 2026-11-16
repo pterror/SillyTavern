@@ -245,6 +245,12 @@ app.get('/', cacheBuster.middleware, async (request, response, next) => {
     }
 });
 
+// The build of the page the server serves, on every API answer, so a page loaded before an update knows it is outdated
+app.use('/api', (_request, response, next) => {
+    if (frontendAssets.buildId) response.setHeader('X-ST-Build', frontendAssets.buildId);
+    next();
+});
+
 app.get('/api/frontend/build', async (request, response, next) => {
     if (shouldRedirectToLogin(request)) {
         return response.sendStatus(403);
@@ -407,6 +413,7 @@ async function preSetupTasks() {
     });
 
     servedUi = await serveUi({ dev: process.env.ST_UI_DEV === '1', ...(process.env.ST_UI_DIST ? { outDir: process.env.ST_UI_DIST } : {}) });
+    await frontendAssets.renderIndex(path.join(serverDirectory, 'public', 'index.html'));
     __mark('serveUi');
 }
 

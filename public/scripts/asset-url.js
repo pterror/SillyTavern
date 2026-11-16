@@ -60,56 +60,116 @@ export async function fetchAsset(url, init) {
 }
 
 const BUILD_CHECK_INTERVAL_MS = 10000;
+/** The header each API answer names the server's build of the page in, as the page's `st-build` meta names its own */
+const BUILD_HEADER = 'X-ST-Build';
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 let lastBuildCheck = 0;
-let reloadNoticeShown = false;
+let outdated = false;
+
+/** A write the page didn't send, because the server was updated and might misread what this page sends */
+export class PageOutdatedError extends Error {
+    constructor() {
+        super('SillyTavern was updated; the page sends no more writes until it is reloaded');
+        this.name = 'PageOutdatedError';
+    }
+}
 
 /**
  * @returns {Promise<void>}
  */
 async function reportAssetLoadFailure() {
-    if (reloadNoticeShown || Date.now() - lastBuildCheck < BUILD_CHECK_INTERVAL_MS) {
+    if (outdated || Date.now() - lastBuildCheck < BUILD_CHECK_INTERVAL_MS) {
         return;
     }
     lastBuildCheck = Date.now();
-    if (await serverHasNewerBuild()) {
+    try {
+        const response = await fetch('/api/frontend/build', { cache: 'no-store' });
+        if (!response.ok) {
+            return;
+        }
+        const { buildId } = await response.json();
+        takeServerBuild(buildId);
+    } catch {
+        // The server can't be reached; that has its own notices.
+    }
+}
+
+/**
+ * @param {unknown} build the server's build of the page
+ */
+function takeServerBuild(build) {
+    const own = document.querySelector('meta[name="st-build"]')?.getAttribute('content');
+    if (own && typeof build === 'string' && build !== '' && build !== own) {
         showReloadNotice();
     }
 }
 
 /**
- * @returns {Promise<boolean>} whether the server serves another build of the page than this one; false when that
- *   can't be told
+ * @param {string} method
+ * @param {string} url
+ * @returns {boolean} whether the request is a write to the server's API
  */
-export async function serverHasNewerBuild() {
-    const ownBuild = document.querySelector('meta[name="st-build"]')?.getAttribute('content');
-    if (!ownBuild) {
-        return false;
-    }
+function isApiWrite(method, url) {
+    if (!WRITE_METHODS.has(method.toUpperCase())) return false;
     try {
-        const response = await fetch('/api/frontend/build', { cache: 'no-store' });
-        if (!response.ok) {
-            return false;
-        }
-        const { buildId } = await response.json();
-        return typeof buildId === 'string' && buildId !== '' && buildId !== ownBuild;
+        const target = new URL(url, location.href);
+        return target.origin === location.origin && target.pathname.startsWith('/api/');
     } catch {
         return false;
     }
 }
 
+/**
+ * The page is older than the server's: it sends no more writes, and says so once, with a way to reload. It doesn't
+ * reload by itself, so nothing typed is lost.
+ */
 export function showReloadNotice() {
-    if (reloadNoticeShown) {
+    if (outdated) {
         return;
     }
-    reloadNoticeShown = true;
+    outdated = true;
     const toastr = /** @type {any} */ (window).toastr;
-    const message = 'The server has newer files than this page. Reload to use them; until then, parts that haven\'t loaded yet may not work.'
+    const message = 'SillyTavern was updated. Reload to keep going.'
         + '<br><button type="button" class="menu_button stReloadPage">Reload</button>';
-    const options = { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false, closeButton: true, escapeHtml: false, preventDuplicates: true };
-    const toast = toastr?.warning(message, 'SillyTavern was updated', options);
+    const options = { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false, closeButton: false, escapeHtml: false, preventDuplicates: true };
+    const toast = toastr?.warning(message, '', options);
     const button = toast?.[0]?.querySelector?.('.stReloadPage');
     button?.addEventListener('click', () => location.reload());
     document.body.dataset.frontendOutdated = 'true';
+}
+
+/**
+ * @returns {boolean} whether the page knows the server serves a newer build of it
+ */
+export function isPageOutdated() {
+    return outdated;
+}
+
+/**
+ * Reads the server's build off every API answer, and holds back every API write once the page is outdated: through
+ * fetch and through jQuery's ajax
+ */
+function watchServerBuild() {
+    const fetch = window.fetch;
+    window.fetch = async function (input, init) {
+        const request = input instanceof Request ? input : null;
+        const url = request ? request.url : String(input);
+        if (outdated && isApiWrite(init?.method ?? request?.method ?? 'GET', url)) {
+            throw new PageOutdatedError();
+        }
+        const response = await fetch.call(this, input, init);
+        takeServerBuild(response.headers.get(BUILD_HEADER));
+        return response;
+    };
+    const jQuery = /** @type {any} */ (window).jQuery;
+    jQuery?.ajaxPrefilter?.((/** @type {any} */ options, /** @type {any} */ _original, /** @type {any} */ xhr) => {
+        if (outdated && isApiWrite(String(options.type ?? options.method ?? 'GET'), String(options.url ?? ''))) {
+            xhr.abort('the page is outdated');
+        }
+    });
+    jQuery?.(document).ajaxComplete?.((/** @type {unknown} */ _event, /** @type {any} */ xhr) => {
+        takeServerBuild(xhr?.getResponseHeader?.(BUILD_HEADER));
+    });
 }
 
 const MODULE_LOAD_FAILURE = /dynamically imported module|Importing a module script failed|error loading dynamically imported module/i;
@@ -143,4 +203,5 @@ function watchForStaleFiles() {
 
 if (typeof window !== 'undefined') {
     watchForStaleFiles();
+    watchServerBuild();
 }
