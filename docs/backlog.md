@@ -32,6 +32,7 @@
 - `docs/design/chat-names.md` contradicts the owner's definition quoted at its top (a chat is its last message; no checkpoint vs chat; bookmarks replaced the current chat): it makes a name the chat id (display text as identity) and brings back a per-session "conversation" with a stored name. Redo against the definition; nothing new is built on it.
 - Install as fast as possible without losing functionality; updating too.
 - Zero friction for everyone, including browsing cards.
+- Character list, folders as entries (owner, 2026-11-16): a folder tile shows its count somewhere ("should show somewhere yeah"); tiles hiding every entry's extras (counts, group sizes) "sounds weird" and needs revisiting. The engine keeps no count of closed folders (the list total is approximate past 20,000 matching folders) and no per-tag count; the owner asks why not: keep both counts in the engine like other indexes.
 - Fold in the SillyTavern-CharacterLibrary extension, without the owner's custom protocol (owner, 2026-11-16, "for after weekly reset"). Tied to the state model rework (`docs/design/state-model.md`): it does more than a character library, so first an inventory of everything it does, from its code, as input to the model, then built as a module on the new core rather than ported to today's page.
 - Budget tracking, management, enforcement (money).
 - Capability parity with other frontends (Marinara Engine's Noodle, Talemate).
