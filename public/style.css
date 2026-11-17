@@ -654,10 +654,9 @@ input[type='checkbox']:focus-visible {
     white-space: normal;
 }
 
-.chat-text img[data-unsized] {
-    width: min(100%, 24rem);
-    aspect-ratio: 4 / 3;
-    object-fit: contain;
+.chat-text img {
+    display: block;
+    margin-inline: auto;
 }
 
 .chat-text .text-fade-in {

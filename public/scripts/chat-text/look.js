@@ -161,8 +161,7 @@ export function chatLook({ html, emojis, macro, pill, reasoningMarkers = [] }) {
                 ...size,
             }, undefined);
             if (src === undefined || shown === undefined) return undefined;
-            const sized = 'width' in shown.attributes || 'height' in shown.attributes || 'hidden' in shown.attributes;
-            return elementPiece({ ...shown, attributes: { ...shown.attributes, ...(sized ? {} : { 'data-unsized': '' }) } });
+            return elementPiece(shown);
         },
     };
     return {

@@ -119,9 +119,9 @@ describe('chat text, read', () => {
         );
     });
 
-    test('draws images at their written size, and an unsized one in the fixed box', () => {
+    test('draws images with dimensions only when a size is written', () => {
         expect(drawn('![a](i.png =100x50)')).toBe('<p><img alt="a" src="i.png" width="100" height="50"></p>');
-        expect(drawn('![a](i.png)')).toBe('<p><img alt="a" src="i.png" data-unsized=""></p>');
+        expect(drawn('![a](i.png)')).toBe('<p><img alt="a" src="i.png"></p>');
     });
 
     test('hides media from other sites unless it is allowed', () => {
