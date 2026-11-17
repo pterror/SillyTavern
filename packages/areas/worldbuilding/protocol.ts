@@ -182,9 +182,9 @@ export type RegionCell = EntryCell | PlaceOfDeletedEntryCell | NotShownTile;
 
 export type StepLanding = { occurrence: string; topLevelRank: number };
 
-export type RegionLayout = { columns: number; rows: number };
+export type RegionLayout = v.InferOutput<typeof regionLayout>;
 
-export type OverviewLayout = { regionsByNestingLevel: RegionLayout[]; cardTextCharacters: number };
+export type OverviewLayout = v.InferOutput<typeof layout>;
 
 export function sameLayout(one: OverviewLayout, other: OverviewLayout): boolean {
     return (
@@ -235,9 +235,9 @@ export type ShownLoops = { unreachedLoops: ShownLoop[]; moreUnreachedLoops: numb
 
 export type LoopsLeftByJobsView = { book: string | null } & ShownLoops;
 
-export type ChangedRelation = { book: string; entry: string; kind: string; target: string };
+export type ChangedRelation = v.InferOutput<v.ObjectSchema<typeof relationNamed, undefined>>;
 
-export type EntryAt = { book: string; entry: string };
+export type EntryAt = v.InferOutput<v.ObjectSchema<typeof entryNamed, undefined>>;
 
 export type LastChangeView = {
     createdKind: { book: string; kind: string } | null;
@@ -354,7 +354,7 @@ export type CharactersFoundView =
     | { query: string; characters: FilteredCharacter[]; tags: { key: string; named: Named }[] }
     | { query: null };
 
-export type FilterItem = { character: string } | { tag: string };
+export type FilterItem = v.InferOutput<typeof filterItem>;
 
 export type DeletedEntryView = EntryAt & { deleted: true; label: Named | null };
 
@@ -369,7 +369,7 @@ export type PointingAtSection = {
 
 export type PointingAtView = (EntryAt & { sections: PointingAtSection[] }) | { book: null };
 
-export type PointingAtShown = { endRank: number; layout: OverviewLayout };
+export type PointingAtShown = v.InferOutput<typeof pointingAtShown>;
 
 export type EntryView = OpenEntryView | DeletedEntryView | { book: null };
 
@@ -430,14 +430,14 @@ export type CardView = { asked: CardAsked | null; cards: HoverCard[] };
 
 export type ExportedWorld = { fileName: string; json: string };
 
-export type Depth = 'directly' | 'anyDepth';
+export type Depth = v.InferOutput<typeof depth>;
 
-export type Chip = { kind: string; target: string; depth: Depth };
+export type Chip = v.InferOutput<typeof chip>;
 
 // What a drawn card or row shows of how the entry comes into the prompt. `comesIn`: upstream's `constant` and `disable`;
 // `chance` is null when it comes in every time; `tokens` is null unless the view's rows show it.
 // An entry's version: an edit names the one it was made against.
-export type EntryVersion = string;
+export type EntryVersion = v.InferOutput<typeof entryVersion>;
 
 // An edit that can't merge with what another tab changed since its version: the version the entry now is, and each
 // field both changed (its path in the entry, as `content` or `characterFilter.isExclude`), with both sides' values. For
@@ -474,13 +474,13 @@ export const ROW_FIELDS = ['relations', 'names', 'triggers', 'comesIn', 'goes', 
 export type RowField = (typeof ROW_FIELDS)[number];
 
 // One column or row of a board or grid: the entries with a relation of `kind` to a target, with any, or with none.
-export type AxisItem = { kind: string; is: { target: string; depth: Depth } | 'any' | 'none' };
+export type AxisItem = v.InferOutput<typeof axisItem>;
 
 // How a view lists the world's entries: in the world's own order, or by a field (each field's ties by order, highest
 // first, then uid). A field's sort reads the world ungrouped.
 export const SORTS = ['world', 'title', 'depth', 'order', 'uid', 'probability', 'priority'] as const;
 export type SortBy = (typeof SORTS)[number];
-export type ViewSort = { by: SortBy; descending: boolean };
+export type ViewSort = v.InferOutput<typeof viewSort>;
 export const WORLD_SORT: ViewSort = { by: 'world', descending: false };
 
 // A saved view. Targets are entity ids. The world file carries the author's views with targets as entries' keys (uids).
@@ -489,7 +489,7 @@ export type SavedView = {
     name: string;
     groupBy: string | null;
     sort: ViewSort;
-    drawing: 'cards' | 'rows';
+    drawing: v.InferOutput<typeof drawing>;
     fields: RowField[];
     query: string;
     chips: Chip[];
@@ -570,19 +570,12 @@ export type SelectionView =
       }
     | { book: null };
 
-export type RelationTo = { kind: string; target: string };
+export type RelationTo = v.InferOutput<typeof relationTo>;
 
 // A delete's answer: its own id, which undoing it names, and the entry's label when it took one.
 export type Deleted = { deleted: { book: string; set: string; one: Named | null } };
 
-export type BulkAction =
-    | { delete: true }
-    | { set: Partial<Omit<Placement, 'characterFilter'>> }
-    | { moveTo: RelationTo }
-    | { alsoPutIn: RelationTo }
-    | { moveToWorld: string }
-    | { copyToWorld: string }
-    | { fillTitles: true };
+export type BulkAction = v.InferOutput<typeof bulkAction>;
 
 export type BulkJob = { job: string; action: BulkAction; target: Named | null; done: number };
 
@@ -622,13 +615,14 @@ const positiveWholeNumber = v.pipe(v.number(), v.integer(), v.minValue(1));
 const kindName = v.pipe(v.string(), v.trim(), v.minLength(1));
 const loopCheckLimit = v.pipe(positiveWholeNumber, v.maxValue(LOOP_CHECK_VISITS_PER_WRITE));
 
+const regionLayout = v.object({ columns: positiveWholeNumber, rows: positiveWholeNumber });
 const layout = v.object({
-    regionsByNestingLevel: v.array(v.object({ columns: positiveWholeNumber, rows: positiveWholeNumber })),
+    regionsByNestingLevel: v.array(regionLayout),
     cardTextCharacters: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });
 
 const rangeFields = { firstRank: topLevelRank, endRank: topLevelRank };
-type Range = { firstRank: number; endRank: number };
+type Range = v.InferOutput<v.ObjectSchema<typeof rangeFields, undefined>>;
 const rangeRunsForward = <T extends Range>(range: T) => range.endRank >= range.firstRank;
 const RANGE_REFUSAL = 'The range must end after it starts.';
 export const READ_REFUSAL = `Too many cards (max ${MAX_CARDS_PER_READ}). Show fewer entries, levels, columns or rows.`;
@@ -686,14 +680,12 @@ const navigation = v.strictObject({ to: navigationTarget, overview: shownOvervie
 const keyText = v.pipe(v.string(), v.trim(), v.minLength(1));
 const keyAs = v.picklist(['name', 'trigger']);
 const cursor = v.pipe(v.string(), v.minLength(1));
-const chip = v.object({ kind: kindId, target: entityId, depth: v.picklist(['directly', 'anyDepth']) });
+const depth = v.picklist(['directly', 'anyDepth']);
+const chip = v.object({ kind: kindId, target: entityId, depth });
 const rowField = v.picklist(ROW_FIELDS);
 const axisItem = v.object({
     kind: kindId,
-    is: v.union([
-        v.object({ target: entityId, depth: v.picklist(['directly', 'anyDepth']) }),
-        v.picklist(['any', 'none']),
-    ]),
+    is: v.union([v.object({ target: entityId, depth }), v.picklist(['any', 'none'])]),
 });
 const axis = v.pipe(v.array(axisItem), v.maxLength(AXIS_ITEMS_AT_MOST));
 const cellAt = v.object({
@@ -702,11 +694,13 @@ const cellAt = v.object({
 });
 const viewId = v.pipe(v.string(), v.regex(/^[a-z0-9-]{1,40}$/));
 const viewName = v.pipe(v.string(), v.trim(), v.minLength(1, 'Enter a view name.'), v.maxLength(80));
+const viewSort = v.strictObject({ by: v.picklist(SORTS), descending: v.boolean() });
+const drawing = v.picklist(['cards', 'rows']);
 const viewChangeFields = v.partial(
     v.strictObject({
         groupBy: v.nullable(kindId),
-        sort: v.strictObject({ by: v.picklist(SORTS), descending: v.boolean() }),
-        drawing: v.picklist(['cards', 'rows']),
+        sort: viewSort,
+        drawing,
         fields: v.pipe(v.array(rowField), v.maxLength(ROW_FIELDS.length)),
         columns: axis,
         rows: axis,
@@ -792,7 +786,7 @@ export const actions = {
         book: entityId,
         after: v.nullable(entityId),
         name: v.nullable(keyText),
-        relation: v.nullable(v.object({ kind: kindId, target: entityId })),
+        relation: v.nullable(relationTo),
         open: v.nullable(v.object({ pointingAt: pointingAtShown })),
         loopCheckLimit,
     }),
