@@ -113,7 +113,7 @@ test('a reply that a lorebook entry came up for is marked; the mark lists the en
         await expect(page.locator('#chat .mes[mesid="1"] .mes_lore')).toBeHidden();
 
         await reply.locator('.mes_lore').click();
-        const panel = page.locator('dialog.activations');
+        const panel = page.getByRole('region', { name: 'Worldbuilding entries used for this reply' });
         await expect(panel).toBeVisible();
         const row = panel.locator('li.activation');
         await expect(row).toHaveCount(1);
@@ -179,7 +179,7 @@ test('the words that brought an entry in are marked where they were written; poi
         await expect(marks).toHaveText('lantern', { timeout: 15000 });
         const opened = page.waitForRequest(request => {
             if (!request.url().endsWith('/api/ui/action')) return false;
-            return request.postDataJSON()?.type === 'worldbuilding.openAt';
+            return request.postDataJSON()?.type === 'worldbuilding.navigate' && request.postDataJSON()?.payload?.to?.kind === 'at';
         });
         await marks.click();
         const opening = (await opened).postDataJSON().payload;
@@ -187,8 +187,8 @@ test('the words that brought an entry in are marked where they were written; poi
             const { chat } = await import('/scripts/chat-state.js');
             return chat[2].extra.activations.entries[0].ref;
         });
-        expect(opening.book).toBe(activated.book);
-        expect(opening.entry).toBe(activated.entry);
+        expect(opening.to.book).toBe(activated.book);
+        expect(opening.to.entry).toBe(activated.entry);
         await expect(page.locator('#Worldbuilding .wb-entry .wb-entry-name')).toContainText('The lantern', { timeout: 10000 });
         await expect(page.locator('#Worldbuilding .wb-switch-name')).toHaveText(book);
         await expect(page.locator('.mes_editor')).toHaveCount(0);
@@ -331,6 +331,15 @@ test('an embedded lorebook trigger previews and opens its specific entry', async
             return response.text();
         });
         await openCharacter(page, avatar);
+        // The embedded-book command must work before worldbuilding has ever mounted.
+        await page.locator('#char-management-dropdown').selectOption({ label: 'View/Edit Embedded Lore' });
+        await expect(page.locator('#Worldbuilding .wb-card-name')).toContainText('Embedded lantern');
+        await page.locator('#WIDrawerIcon').click();
+        await openCharacter(page, avatar);
+        // And again after the drawer has mounted and been closed.
+        await page.locator('#char-management-dropdown').selectOption({ label: 'View/Edit Embedded Lore' });
+        await expect(page.locator('#Worldbuilding .wb-card-name')).toContainText('Embedded lantern');
+        await page.locator('#WIDrawerIcon').click();
         await connectLlamaCpp(page, mock.url);
         await chatBox(page).fill('Where is the glowstone?');
         await page.locator('#send_but').click();
@@ -347,7 +356,7 @@ test('an embedded lorebook trigger previews and opens its specific entry', async
         await expect(page.locator('#Worldbuilding .wb-entry .wb-entry-name')).toContainText('Embedded lantern');
         await page.locator('#WIDrawerIcon').click();
         await page.locator('#chat .mes[mesid="2"] .mes_lore').click();
-        const panel = page.locator('dialog.activations');
+        const panel = page.getByRole('region', { name: 'Worldbuilding entries used for this reply' });
         await panel.getByRole('button', { name: 'Embedded lantern', exact: true }).click();
         await expect(panel).toBeHidden();
         await expect(page.locator('#Worldbuilding .wb-entry .wb-entry-name')).toContainText('Embedded lantern');

@@ -570,10 +570,13 @@ One area, `@st/worldbuilding`. Views:
 
 Actions:
 
-- `worldbuilding.openOverview` (book, grouping kind, layout, and optionally an occurrence to open around; opens the
+- `worldbuilding.navigate` uses one `{to, overview, pointingAt}` envelope for every destination (see
+  [request structure](../worldbuilding-protocol.md)). A `world` destination carries the book, grouping kind, and
+  optionally an occurrence to open around; it opens the
   overview, the world's kinds and the last change in the same request). The overview holds every top-level entry the tab
   has read, from the first: its first page, or every page up to the occurrence's top-level entry;
-- `worldbuilding.showMore` (the rank the page has drawn to) reads the next page and keeps every page read. Each page is a
+- `worldbuilding.setViewport` (`layout`, `ahead`) changes the current overview’s layout or extends its read range
+  without navigating or resetting entry, filter, selection, or saved-view state. It keeps every page read. Each page is a
   part of the overview's read; a read of the overview the tab already holds patches it, so nothing drawn goes away
   while the parts come;
 - `worldbuilding.showRelationKinds` (book) opens the kinds view for a world, where no overview is open;
@@ -586,9 +589,9 @@ Actions:
   relation rewrites only its `target`, `position` and `weak` fields, keeping every other field of its object and every
   other relation as written.
 
-- `worldbuilding.openEntry` (an entry of the shown world, and how the page draws what points at it: the layout and the
-  `endRank` each section starts with, within one read's budget; opens the entry view and `worldbuilding.pointingAt`),
-  `closeEntry`, `showMentions` (a run of pages, as `showResults` names one). The open entry is held inside the session's shown world and has no world
+- `worldbuilding.navigate` with an `entry` destination names an entry of the shown world; `pointingAt` supplies the layout and the
+  `endRank` each section starts with, within one read's budget. It opens the entry view and `worldbuilding.pointingAt`;
+  a `back` destination closes the entry. `showMentions` reads a run of pages, as `showResults` names one. The open entry is held inside the session's shown world and has no world
   of its own, so it is always one of the shown world's entries: opening another world closes it, reopening the same
   world (another range, layout or grouping) keeps it, and with no world shown none opens;
 - `worldbuilding.showPointingAtRange` (kind, range) and `worldbuilding.stepPointingAt` (kind, from an occurrence or
@@ -599,7 +602,7 @@ Actions:
   the world), `setKeyAs`, `removeKey`, `setPlacement` (a partial set of placement fields, each checked by its own
   schema), each naming its book and entry, each a write of the entry as it is stored at that moment (last write wins);
 - `worldbuilding.createEntry` (after an entry or last, optionally named, optionally with a relation, optionally opened,
-  with the same layout as `openEntry` takes; opening it is refused unless its world is the shown one):
+  with the same `pointingAt` layout as navigation takes; opening it is refused unless its world is the shown one):
   one commit. It goes right after `after` in the world's order: between its order value and the next entry's, a whole
   number when one fits, else the middle (`entry_page::place_after`). When the next entry has the same order value, the
   entries with that value after `after` (at most 1,000) move to a value between it and the entry after them, and the
@@ -610,7 +613,7 @@ Actions:
 - `worldbuilding.deleteEntry` (the chunked delete, through `apply`), `restoreEntry`, `moveEntryToWorld` (a transplant
   that deletes the original; its relations drop; when it is the open entry, the answer opens the world it went to, at
   the range the page showed, around it and grouped by nothing, with it open over that world).
-- `worldbuilding.openOverview` takes `book: null` for the world last opened: a book choice of the user in its own slot
+- `worldbuilding.navigate` with `{kind: 'world', book: null}` selects the world last opened: a book choice of the user in its own slot
   (`CHOICE.lastOpened`), so it follows a rename and goes with a delete; upstream's `power_user.wi_last_editor_book`
   becomes it when upstream's settings are converted. Else the first world; with none, it opens `worldbuilding.world`
   as no world and `worldbuilding.worlds`. Opening a world writes the choice when it changes.

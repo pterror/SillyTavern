@@ -39,14 +39,4 @@ export function pageLayout(paneWidth: number): PageLayout {
     return { overview, columns: columnsIn(width) };
 }
 
-export function sameLayout(one: OverviewLayout, other: OverviewLayout): boolean {
-    return (
-        one.cardTextCharacters === other.cardTextCharacters &&
-        one.regionsByNestingLevel.length === other.regionsByNestingLevel.length &&
-        one.regionsByNestingLevel.every(
-            (level, at) =>
-                level.columns === other.regionsByNestingLevel[at]?.columns &&
-                level.rows === other.regionsByNestingLevel[at].rows,
-        )
-    );
-}
+export { sameLayout } from '../protocol.ts';

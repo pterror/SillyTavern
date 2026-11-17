@@ -16,6 +16,7 @@ import {
     WORLD_VIEW,
 } from '../protocol.ts';
 import type {
+    NavigationTarget,
     AxesView,
     EntryView,
     LastChangeView,
@@ -137,16 +138,13 @@ function Page(props: Props) {
         layout: layout().overview,
         ahead: aheadIn(height() > 0 ? height() : 820, layout().columns),
     });
+    const navigate = (to: NavigationTarget) =>
+        act('worldbuilding.navigate', { to, overview: firstRead(), pointingAt: pointingAtShown() });
     const openWorld = (book: string | null, groupBy?: string | null) =>
-        act('worldbuilding.openOverview', {
-            book,
-            ...(groupBy === undefined ? {} : { groupBy }),
-            ...firstRead(),
-            around: null,
-        });
+        navigate({ kind: 'world', book, groupBy, around: null });
     const open = (entry: string) => {
         pane()?.scrollTo({ top: 0 });
-        void act('worldbuilding.openEntry', { entry, pointingAt: pointingAtShown() });
+        void navigate({ kind: 'entry', entry });
     };
     const drag = dragControl(act);
     const offerUndo: Wb['offerUndo'] = (words, undo) => props.notify(words, { label: t('Undo'), run: undo });
@@ -256,27 +254,16 @@ function Page(props: Props) {
     });
     createEffect(
         on(
-            () => props.target,
+            () => (props.shown ? props.target : null),
             (target) => {
-                if (!target || !pane()) return;
+                const element = pane();
+                if (!target || !element) return;
+                setWidth(element.clientWidth);
+                setHeight(element.clientHeight);
                 props.onTargetTaken();
                 pane()?.scrollTo({ top: 0 });
                 if ('import' in target) void act('worldbuilding.importWorld', { overview: firstRead() }, target.import);
-                else if ('character' in target)
-                    void act('worldbuilding.openCharacterBook', { character: target.character, overview: firstRead() });
-                else if ('at' in target)
-                    void act('worldbuilding.openAt', {
-                        ...target.at,
-                        overview: firstRead(),
-                        pointingAt: pointingAtShown(),
-                    });
-                else
-                    void act('worldbuilding.openNamed', {
-                        world: target.world,
-                        uid: target.uid,
-                        overview: firstRead(),
-                        pointingAt: pointingAtShown(),
-                    });
+                else void navigate(target);
             },
         ),
     );
@@ -286,12 +273,7 @@ function Page(props: Props) {
             (_now, before) => {
                 const shown = shownOverview();
                 if (!before || !shown || !props.shown) return;
-                void act('worldbuilding.openOverview', {
-                    book: shown.book,
-                    groupBy: shown.groupBy,
-                    ...firstRead(),
-                    around: null,
-                });
+                void act('worldbuilding.setViewport', firstRead());
             },
             { defer: true },
         ),
@@ -386,7 +368,12 @@ function Page(props: Props) {
                                         rows={rows()}
                                         axes={shownAxes()}
                                         onAxes={viewActions.change}
-                                        onMore={(to) => void act('worldbuilding.showMore', { to })}
+                                        onMore={(to) =>
+                                            void act('worldbuilding.setViewport', {
+                                                layout: layout().overview,
+                                                ahead: to,
+                                            })
+                                        }
                                         onMoreResults={(pages) =>
                                             void act('worldbuilding.showResults', {
                                                 from: shownResults()?.pages[0]?.cursor ?? null,
@@ -404,7 +391,7 @@ function Page(props: Props) {
                                         worldName={shown().name}
                                         groupBy={shownOverview()?.groupBy ?? null}
                                         actions={actions}
-                                        onWorld={() => void act('worldbuilding.closeEntry', {})}
+                                        onWorld={() => void navigate({ kind: 'back' })}
                                     />
                                 )}
                             </Show>

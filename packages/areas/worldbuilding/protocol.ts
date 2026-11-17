@@ -186,6 +186,18 @@ export type RegionLayout = { columns: number; rows: number };
 
 export type OverviewLayout = { regionsByNestingLevel: RegionLayout[]; cardTextCharacters: number };
 
+export function sameLayout(one: OverviewLayout, other: OverviewLayout): boolean {
+    return (
+        one.cardTextCharacters === other.cardTextCharacters &&
+        one.regionsByNestingLevel.length === other.regionsByNestingLevel.length &&
+        one.regionsByNestingLevel.every(
+            (level, at) =>
+                level.columns === other.regionsByNestingLevel[at]?.columns &&
+                level.rows === other.regionsByNestingLevel[at].rows,
+        )
+    );
+}
+
 export type OverviewCell = (EntryCell | PlaceOfDeletedEntryCell) & { topLevelRank: number };
 
 // One read's worth of top-level entries: page `k` holds the ranks from `k * pageSize`.
@@ -631,7 +643,10 @@ const editedEntry = { ...entryNamed, version: entryVersion };
 const worldName = v.pipe(v.string(), v.trim(), v.minLength(1, 'Enter a world name.'));
 const fitsOneEntry = <T extends { layout: OverviewLayout }>(read: T) => readFitsTheBudget(1, read.layout);
 // `ahead`: how many top-level entries the page wants read to begin with, as many as fill some screens of it.
-const shownOverview = v.pipe(v.object({ layout, ahead: positiveWholeNumber }), v.check(fitsOneEntry, READ_REFUSAL));
+const shownOverview = v.pipe(
+    v.strictObject({ layout, ahead: positiveWholeNumber }),
+    v.check(fitsOneEntry, READ_REFUSAL),
+);
 const opensWorld = { overview: shownOverview };
 const pointingAtShown = v.pipe(
     v.object({ endRank: topLevelRank, layout }),
@@ -641,6 +656,33 @@ const pointingAtShown = v.pipe(
         READ_REFUSAL,
     ),
 );
+// A destination identifies what to show. Loading parameters use the same envelope for every destination.
+const navigationTarget = v.variant('kind', [
+    v.pipe(
+        v.object({
+            kind: v.literal('world'),
+            book: v.nullable(entityId),
+            groupBy: v.optional(v.nullable(kindId)),
+            around: v.optional(v.nullable(occurrenceKey), null),
+        }),
+        v.check(
+            (target) => target.book !== null || ((target.groupBy ?? null) === null && target.around === null),
+            'Open a world first.',
+        ),
+    ),
+    v.object({
+        kind: v.literal('named'),
+        world: v.pipe(v.string(), v.minLength(1)),
+        uid: v.nullable(v.pipe(wholeNumber, v.minValue(0))),
+    }),
+    v.object({ kind: v.literal('at'), book: entityId, entry: v.nullable(entityId) }),
+    v.object({ kind: v.literal('character'), character: entityId }),
+    v.object({ kind: v.literal('entry'), entry: entityId }),
+    v.object({ kind: v.literal('back') }),
+]);
+export type NavigationTarget = v.InferOutput<typeof navigationTarget>;
+const navigation = v.strictObject({ to: navigationTarget, overview: shownOverview, pointingAt: pointingAtShown });
+
 const keyText = v.pipe(v.string(), v.trim(), v.minLength(1));
 const keyAs = v.picklist(['name', 'trigger']);
 const cursor = v.pipe(v.string(), v.minLength(1));
@@ -693,24 +735,9 @@ const bulkAction = v.union([
 ]);
 
 export const actions = {
-    'worldbuilding.openOverview': v.pipe(
-        v.object({
-            book: v.nullable(entityId),
-            // Left out: the world's default grouping.
-            groupBy: v.optional(v.nullable(kindId)),
-            layout,
-            ahead: positiveWholeNumber,
-            around: v.nullable(occurrenceKey),
-        }),
-        v.check(fitsOneEntry, READ_REFUSAL),
-        v.check(
-            <T extends { book: string | null; groupBy?: string | null | undefined; around: string | null }>(open: T) =>
-                open.book !== null || ((open.groupBy ?? null) === null && open.around === null),
-            'Open a world first.',
-        ),
-    ),
-    // Reads the top-level entries up to `to` as well, keeping every one read; asking twice reads them once.
-    'worldbuilding.showMore': v.object({ to: positiveWholeNumber }),
+    // Navigation is explicit; viewport updates never select a world or clear navigation state.
+    'worldbuilding.navigate': navigation,
+    'worldbuilding.setViewport': shownOverview,
     'worldbuilding.showRelationKinds': v.object({ book: entityId }),
     'worldbuilding.createRelationKind': v.object({ book: entityId, name: kindName }),
     'worldbuilding.renameRelationKind': v.object({ book: entityId, kind: kindId, name: kindName }),
@@ -725,7 +752,6 @@ export const actions = {
     }),
     'worldbuilding.removeRelation': v.object({ ...relationNamed, loopCheckLimit }),
     'worldbuilding.setRelationWeak': v.object({ ...relationNamed, weak: v.boolean(), loopCheckLimit }),
-    'worldbuilding.openEntry': v.object({ entry: entityId, pointingAt: pointingAtShown }),
     'worldbuilding.showPointingAtRange': v.pipe(
         v.object({ kind: kindId, ...rangeFields }),
         v.check(rangeRunsForward, RANGE_REFUSAL),
@@ -734,7 +760,6 @@ export const actions = {
         v.object({ kind: kindId, from: v.nullable(pointingAtOccurrenceKey), by: v.pipe(v.number(), v.integer()) }),
         v.object({ kind: kindId, from: pointingAtOccurrenceKey, to: v.picklist(['parent', 'firstChild']) }),
     ]),
-    'worldbuilding.closeEntry': v.object({}),
     'worldbuilding.showMentions': v.object({
         from: v.nullable(cursor),
         pages: v.pipe(positiveWholeNumber, v.maxValue(MENTION_PAGES_AT_MOST)),
@@ -786,21 +811,6 @@ export const actions = {
         ascending: v.boolean(),
     }),
     'worldbuilding.openWorlds': v.object({}),
-    // A world by its name, and in it the entry with upstream's `uid` when one is named.
-    'worldbuilding.openNamed': v.object({
-        world: v.pipe(v.string(), v.minLength(1)),
-        uid: v.nullable(v.pipe(wholeNumber, v.minValue(0))),
-        overview: shownOverview,
-        pointingAt: pointingAtShown,
-    }),
-    // A world by its id, and in it that entry when one is named.
-    'worldbuilding.openAt': v.object({
-        book: entityId,
-        entry: v.nullable(entityId),
-        overview: shownOverview,
-        pointingAt: pointingAtShown,
-    }),
-    'worldbuilding.openCharacterBook': v.object({ character: entityId, ...opensWorld }),
     // `reply`: the stored reply of the tab's chat whose activation says what brought each entry up.
     'worldbuilding.showCard': v.object({
         entries: v.pipe(v.array(v.object(entryNamed)), v.minLength(1), v.maxLength(CARD_ENTRIES_AT_MOST)),

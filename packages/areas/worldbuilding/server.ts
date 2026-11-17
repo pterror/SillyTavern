@@ -20,6 +20,7 @@ import {
     POINTING_AT_VIEW,
     READ_REFUSAL,
     readFitsTheBudget,
+    sameLayout,
     RELATION_KINDS_VIEW,
     RESULTS_VIEW,
     PICKED_AT_MOST,
@@ -1447,12 +1448,48 @@ export function worldbuildingArea(ports: Ports) {
             bySession.delete(session);
         },
         actions: {
-            'worldbuilding.openOverview': (context, { book, ...shown }) => showWorld(context, book, shown),
-            'worldbuilding.showMore': withOverview(async (context, overview, { to }) => {
-                if (to <= overview.endRank) return { changed: [] };
-                rememberOverview(context.session, { ...overview, endRank: to });
-                return { changed: [OVERVIEW_VIEW] };
-            }),
+            'worldbuilding.setViewport': async (context, { layout, ahead }) => {
+                const overview = overviewOf(context.session);
+                if (!overview) return { changed: [] };
+                if (ahead <= overview.endRank && sameLayout(layout, overview.layout)) return { changed: [] };
+                rememberOverview(context.session, {
+                    ...overview,
+                    layout,
+                    endRank: Math.max(overview.endRank, ahead),
+                });
+                return { changed: [OVERVIEW_VIEW], own: [OVERVIEW_VIEW] };
+            },
+            'worldbuilding.navigate': async (context, { to, overview, pointingAt }) => {
+                switch (to.kind) {
+                    case 'world':
+                        return showWorld(context, to.book, { ...overview, groupBy: to.groupBy, around: to.around });
+                    case 'named': {
+                        const book = await ports.worldNamed(context.user, to.world);
+                        if (book === null) return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
+                        const entry = to.uid === null ? null : await ports.entryOfUid(context.user, book, to.uid);
+                        if (to.uid !== null && entry === null) return { refused: NO_SUCH_ENTRY };
+                        return openAt(context, book, entry, overview, pointingAt);
+                    }
+                    case 'at':
+                        if (to.entry !== null && !(await ports.entryIn(context.user, to.book, to.entry)))
+                            return { refused: NO_SUCH_ENTRY };
+                        return openAt(context, to.book, to.entry, overview, pointingAt);
+                    case 'character': {
+                        const book = await ports.characterBook(context.user, to.character);
+                        if (book === null) return { refused: NO_CHARACTER_BOOK };
+                        const held = overviewOf(context.session);
+                        const groupBy = held?.book === book ? held.groupBy : undefined;
+                        return showWorld(context, book, { ...overview, groupBy, around: null }, false);
+                    }
+                    case 'entry':
+                        if (!overviewOf(context.session)) return { refused: NO_WORLD_SHOWN };
+                        rememberEntry(context.session, openedNow(to.entry, pointingAt));
+                        return { changed: [], opensViews: [ENTRY_VIEW, POINTING_AT_VIEW], own: [ENTRY_VIEW] };
+                    case 'back':
+                        rememberEntry(context.session, null);
+                        return { changed: [ENTRY_VIEW, POINTING_AT_VIEW] };
+                }
+            },
             'worldbuilding.showRelationKinds': async (context, { book }) => {
                 remember(context.session, { kindsOfBook: book });
                 return { changed: [], opensViews: [RELATION_KINDS_VIEW, LAST_CHANGE_VIEW] };
@@ -1499,14 +1536,6 @@ export function worldbuildingArea(ports: Ports) {
                 relationChanged(context, { change: 'remove', ...relation }),
             'worldbuilding.setRelationWeak': (context, relation) =>
                 relationChanged(context, { change: 'setWeak', ...relation }),
-            'worldbuilding.openEntry': withOverview(async (context, _overview, { entry, pointingAt }) => {
-                rememberEntry(context.session, openedNow(entry, pointingAt));
-                return { changed: [], opensViews: [ENTRY_VIEW, POINTING_AT_VIEW], own: [ENTRY_VIEW] };
-            }),
-            'worldbuilding.closeEntry': async (context) => {
-                rememberEntry(context.session, null);
-                return { changed: [ENTRY_VIEW, POINTING_AT_VIEW] };
-            },
             'worldbuilding.showPointingAtRange': withOpenEntry(async (context, { shown }, { kind, ...range }) => {
                 const { firstRank, endRank } = range;
                 if (!readFitsTheBudget(endRank - firstRank, shown.pointingAt.layout)) return { refused: READ_REFUSAL };
@@ -1685,25 +1714,6 @@ export function worldbuildingArea(ports: Ports) {
                 return { changed: VIEWS_OF_CARDS, own: [OVERVIEW_VIEW], answer: done };
             },
             'worldbuilding.openWorlds': async () => ({ changed: [], opensViews: [WORLDS_VIEW] }),
-            'worldbuilding.openNamed': async (context, { world, uid, overview, pointingAt }) => {
-                const book = await ports.worldNamed(context.user, world);
-                if (book === null) return { refused: WORLD_GONE, changed: [WORLDS_VIEW] };
-                const entry = uid === null ? null : await ports.entryOfUid(context.user, book, uid);
-                if (uid !== null && entry === null) return { refused: NO_SUCH_ENTRY };
-                return openAt(context, book, entry, overview, pointingAt);
-            },
-            'worldbuilding.openAt': async (context, { book, entry, overview, pointingAt }) => {
-                if (entry !== null && !(await ports.entryIn(context.user, book, entry)))
-                    return { refused: NO_SUCH_ENTRY };
-                return openAt(context, book, entry, overview, pointingAt);
-            },
-            'worldbuilding.openCharacterBook': async (context, { character, overview }) => {
-                const book = await ports.characterBook(context.user, character);
-                if (book === null) return { refused: NO_CHARACTER_BOOK };
-                const held = overviewOf(context.session);
-                const groupBy = held?.book === book ? held.groupBy : undefined;
-                return showWorld(context, book, { ...overview, groupBy, around: null }, false);
-            },
             'worldbuilding.showCard': async (context, { entries, reply }) => {
                 remember(context.session, { card: { entries, reply } });
                 return { changed: [], opensViews: [CARD_VIEW] };

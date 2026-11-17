@@ -1,11 +1,11 @@
 import { createEffect, createMemo, createRoot, createSignal, on } from 'solid-js';
 import type { Client } from '@st/page/client';
 import { WORLDS_VIEW } from '../protocol.ts';
-import type { EntryAt, World, WorldsView } from '../protocol.ts';
+import type { NavigationTarget, World, WorldsView } from '../protocol.ts';
 import { chatCards } from './ChatCard.tsx';
 
 // What the old page asks the worldbuilding page to show. `character` is the character's entity id.
-export type Target = { world: string; uid: number | null } | { at: EntryAt } | { character: string } | { import: File };
+export type Target = NavigationTarget | { import: File };
 
 // `notify`: the app's toast; with `action`, a button on it that runs `run`.
 export type OldPage = {
@@ -23,7 +23,7 @@ export function worldbuildingCompat(client: Client, old: OldPage) {
         setTarget(next);
         old.showPane();
     };
-    const cards = chatCards(client, (at) => go({ at }));
+    const cards = chatCards(client, (at) => go({ kind: 'at', ...at }));
     return {
         shown,
         everShown,
@@ -34,14 +34,14 @@ export function worldbuildingCompat(client: Client, old: OldPage) {
             if (open) setEverShown(true);
         },
         openWorld: (world: string) => {
-            go({ world, uid: null });
+            go({ kind: 'named', world, uid: null });
         },
         openEntry: (world: string, uid: number) => {
-            go({ world, uid });
+            go({ kind: 'named', world, uid });
         },
         // An entry by its world's and its own ids.
         openEntryAt: (book: string, entry: string) => {
-            go({ at: { book, entry } });
+            go({ kind: 'at', book, entry });
         },
         peek: cards.peek,
         // On a phone: the card comes up from the bottom, with Open.
@@ -49,7 +49,7 @@ export function worldbuildingCompat(client: Client, old: OldPage) {
         unpeek: cards.unpeek,
         ChatCard: cards.Drawn,
         openCharacterBook: (character: string) => {
-            go({ character });
+            go({ kind: 'character', character });
         },
         importWorld: (file: File) => {
             go({ import: file });
