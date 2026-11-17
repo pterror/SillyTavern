@@ -2135,6 +2135,10 @@ input[type="range"].macro-colors-hue {
     opacity: 0.45;
 }
 
+#open_key_settings {
+    white-space: nowrap;
+}
+
 /* The key settings, keybinds' settings panel (packages/page/src/command-surfaces.ts); its buttons are .menu_button's */
 .keyBindings {
     display: flex;
@@ -4740,6 +4744,11 @@ grammarly-extension {
     align-items: center;
     justify-content: center;
     text-align: center;
+}
+
+/* Destructive icons share their warning color across button styles and surfaces. */
+:is(.fa-solid, .fa-regular):is(.fa-trash-can, .fa-trash) {
+    color: color-mix(in srgb, var(--fullred) 65%, var(--SmartThemeBodyColor));
 }
 
 .menu_button.fa-fw {
