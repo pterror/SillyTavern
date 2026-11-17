@@ -4746,11 +4746,6 @@ grammarly-extension {
     text-align: center;
 }
 
-/* Destructive icons share their warning color across button styles and surfaces. */
-:is(.fa-solid, .fa-regular):is(.fa-trash-can, .fa-trash) {
-    color: color-mix(in srgb, var(--fullred) 65%, var(--SmartThemeBodyColor));
-}
-
 .menu_button.fa-fw {
     /* Font Awesome icons that are a menu button and should be fixed width need a slight fix. 1.25em is their default, but we need to account for button spacing. */
     min-width: calc(1.25em + 12px);

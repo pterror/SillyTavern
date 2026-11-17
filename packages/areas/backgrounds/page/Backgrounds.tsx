@@ -585,7 +585,7 @@ const THUMBNAIL_BUTTONS: { action: ThumbnailAction; icon: string; title: string 
     { action: 'unlock', icon: 'jg-unlock fa-lock-open', title: 'Unlock' },
     { action: 'copy', icon: 'jg-copy fa-file-arrow-up', title: 'Copy to global' },
     { action: 'edit', icon: 'jg-edit fa-pen-to-square', title: 'Rename' },
-    { action: 'delete', icon: 'jg-delete fa-trash-can', title: 'Delete' },
+    { action: 'delete', icon: 'jg-delete red_button fa-trash-can', title: 'Delete' },
     { action: 'folder', icon: 'jg-folder fa-folder', title: 'Add to folder' },
     { action: 'set-cover', icon: 'jg-set-cover fa-image', title: 'Set as folder cover' },
 ];
@@ -709,7 +709,7 @@ function FolderTile(props: {
                     }}
                 />
                 <div
-                    class="jg-button fa-solid fa-trash-can fa-fw pointer"
+                    class="jg-button red_button fa-solid fa-trash-can fa-fw pointer"
                     attr:data-action="delete-folder"
                     title={props.t('Delete folder')}
                     onClick={(event) => {
