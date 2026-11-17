@@ -4,12 +4,10 @@ import { useUi } from '@st/page/context';
 import { inTopLayer } from '@st/page/popover';
 import { CARD_ENTRIES_AT_MOST, CARD_VIEW } from '../protocol.ts';
 import type { CardAsked, CardView, EntryAt, HoverCard } from '../protocol.ts';
-import { HoverItem, RelationsPath, broughtUpSentence, cardsFor } from './HoverCard.tsx';
-import { Label, Picture } from './Label.tsx';
+import { CARD_WIDTH, HoverItem, cardsFor } from './HoverCard.tsx';
 import { shownView } from './views.ts';
 
-const CARD_WIDTH = 360;
-const CARD_HEIGHT_GUESS = 180;
+const CARD_HEIGHT_GUESS = 480;
 const EDGE = 16;
 // A pull on the sheet's grab this far down closes it.
 const SHEET_PULL_CLOSES = 60;
@@ -18,7 +16,7 @@ const SHEET_PULL_CLOSES = 60;
 export type Peek = { entries: EntryAt[]; reply: string | null; latest: boolean };
 
 // `sheet`: tapped on a phone, drawn from the bottom until closed; otherwise pointed at, drawn by the word.
-type Pointed = Peek & { word: HTMLElement; left: number; top: number; above: boolean; sheet: boolean };
+type Pointed = Peek & { word: HTMLElement; left: number; top: number; above: boolean; sheet: boolean; height: number };
 
 const TAPPED_CLASS = 'wb-tapped';
 
@@ -42,8 +40,10 @@ export function chatCards(client: Client, open: (at: EntryAt) => void) {
         const entries = wanted.entries.slice(0, CARD_ENTRIES_AT_MOST);
         const at = word.getBoundingClientRect();
         const left = Math.max(EDGE, Math.min(at.left - 12, window.innerWidth - CARD_WIDTH - EDGE));
-        const above = at.bottom + CARD_HEIGHT_GUESS > window.innerHeight;
-        point({ ...wanted, entries, word, left, top: above ? at.top : at.bottom, above, sheet });
+        const below = window.innerHeight - at.bottom;
+        const above = below < CARD_HEIGHT_GUESS && at.top > below;
+        const height = Math.max(80, Math.min(CARD_HEIGHT_GUESS, (above ? at.top : below) - 2 * EDGE));
+        point({ ...wanted, entries, word, left, top: above ? at.top : at.bottom, above, sheet, height });
         void client.send('worldbuilding.showCard', askedOf({ ...wanted, entries }));
     };
     const peek = (word: HTMLElement, wanted: Peek) => {
@@ -83,7 +83,11 @@ export function chatCards(client: Client, open: (at: EntryAt) => void) {
                             }}
                             class="wb-chat-card-at"
                             classList={{ 'wb-hover-above': both().at.above }}
-                            style={{ left: `${both().at.left}px`, top: `${both().at.top}px` }}
+                            style={{
+                                left: `${both().at.left}px`,
+                                top: `${both().at.top}px`,
+                                '--wb-preview-height': `${both().at.height}px`,
+                            }}
                             onMouseLeave={(event) => unpeek(event.relatedTarget)}
                         >
                             <div class="st-floating wb-chat-card">
@@ -169,19 +173,7 @@ function Sheet(props: {
                             <Show when={at() > 0}>
                                 <div class="wb-chat-card-sep" />
                             </Show>
-                            <div class="wb-chat-sheet-head">
-                                <Picture url={card.picture} class="wb-chat-sheet-pic" />
-                                <div class="wb-chat-sheet-words">
-                                    <div class="wb-chat-sheet-name">
-                                        <Label named={card.label} />
-                                    </div>
-                                    <RelationsPath card={card} class="wb-chat-sheet-path" />
-                                </div>
-                            </div>
-                            <div class="wb-chat-sheet-text">{card.text}</div>
-                            <Show when={broughtUpSentence(card, props.reply, t)}>
-                                {(said) => <div class="wb-chat-sheet-why">{said()}</div>}
-                            </Show>
+                            <HoverItem card={card} reply={props.reply} />
                             <button type="button" class="wb-chat-sheet-open" onClick={() => props.onOpen(card)}>
                                 {t('Open')}
                             </button>

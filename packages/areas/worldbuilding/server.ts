@@ -2,7 +2,6 @@ import {
     actions,
     BULK_JOBS_VIEW,
     CARD_RELATIONS_SHOWN,
-    CARD_TEXT_CHARACTERS,
     CARD_VIEW,
     ENTRY_VIEW,
     CHARACTERS_FOUND_PER_QUERY,
@@ -264,12 +263,12 @@ export type Ports = {
         entry: string | null,
         file: Upload | null,
     ): Promise<'ok' | 'missing' | 'no entry' | { refused: string }>;
-    // At most `relations` of its relations and the first `textCharacters` characters of its text.
+    // Complete body and metadata, with at most `relations` relationships.
     readCard(
         user: User,
         book: string,
         entry: string,
-        shown: { relations: number; textCharacters: number },
+        shown: { relations: number },
     ): Promise<Omit<HoverCard, 'book' | 'entry' | 'broughtUpBy'> | null>;
     // For each entry, the keys that brought it into `reply`, a stored reply of the tab's chat; null where it didn't come
     // up for it, or the reply isn't one.
@@ -1365,7 +1364,7 @@ export function worldbuildingArea(ports: Ports) {
             [CARD_VIEW]: async (context: ViewContext): Promise<CardView> => {
                 const asked = stateOf(context.session).card;
                 if (asked === null) return NO_CARD;
-                const shown = { relations: CARD_RELATIONS_SHOWN, textCharacters: CARD_TEXT_CHARACTERS };
+                const shown = { relations: CARD_RELATIONS_SHOWN };
                 const [reads, why] = await Promise.all([
                     Promise.all(asked.entries.map((at) => ports.readCard(context.user, at.book, at.entry, shown))),
                     asked.reply === null

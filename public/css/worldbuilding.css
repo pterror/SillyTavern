@@ -1162,12 +1162,60 @@
 }
 
 .wb .wb-hover {
-    width: 360px;
-    padding: 12px;
+    width: 100%;
+    max-height: var(--wb-preview-height, 480px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 20px;
     display: flex;
     gap: 12px;
     flex-direction: row;
 }
+
+.wb-hover-content {
+    width: 100%;
+    min-width: 0;
+    text-align: left;
+}
+
+:is(.wb-hover, .wb-chat-card, .wb-chat-sheet) .wb-entry-head {
+    gap: 16px;
+    margin-block: 8px 16px;
+}
+
+:is(.wb-hover, .wb-chat-card, .wb-chat-sheet) .wb-entry-pic {
+    width: 80px;
+    height: 80px;
+}
+
+:is(.wb-hover, .wb-chat-card, .wb-chat-sheet) .wb-entry-title {
+    font-size: calc(var(--mainFontSize) * 1.4);
+    min-height: 0;
+    padding-top: 0;
+}
+
+.wb-entry-readonly {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    text-align: left;
+}
+
+.wb-entry-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    margin: 12px 0 20px;
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
+.wb-entry-summary > div {
+    display: flex;
+    gap: 6px;
+    overflow-wrap: anywhere;
+}
+
+.wb-entry-summary dt { color: var(--wb-ink-dim); }
+.wb-entry-summary dd { margin: 0; }
 
 .wb-entry {
     position: relative;
@@ -1246,8 +1294,11 @@
     --wb-ink-dim: var(--wb-tone-55);
     --wb-name: var(--wb-accent-100);
 
-    width: 360px;
-    padding: 12px;
+    width: min(640px, calc(100vw - 32px));
+    max-height: var(--wb-preview-height, 480px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 20px;
     display: flex;
     flex-direction: column;
     gap: 12px;

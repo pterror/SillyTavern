@@ -2,14 +2,14 @@ import { For, Show, createSignal, onCleanup } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { CARD_VIEW } from '../protocol.ts';
 import type { CardAsked, CardView, EntryAt, HoverCard } from '../protocol.ts';
-import { Label, Picture } from './Cards.tsx';
+import { EntryContent } from './EntryContent.tsx';
 import { useWb } from './context.ts';
 import { PHONE } from './layout.ts';
 import { shownView } from './views.ts';
 import { fill } from './words.ts';
 
-const CARD_WIDTH = 360;
-const CARD_HEIGHT_GUESS = 160;
+export const CARD_WIDTH = 640;
+const CARD_HEIGHT_GUESS = 480;
 
 const sameAsked = (one: CardAsked | null, other: CardAsked): boolean =>
     one !== null &&
@@ -62,33 +62,43 @@ export function RelationsPath(props: { card: HoverCard; class: string }) {
     );
 }
 
-// One entry's part of a card: its picture, its name in its look, its relations, its text's opening, and, when the card
+// One entry's shared presentation and, when the card
 // was asked about a reply, what brought it into that reply.
 export function HoverItem(props: { card: HoverCard; reply: 'latest' | 'other' }) {
     const { t } = useUi();
     return (
         <>
-            <Show when={props.card.picture}>{(url) => <Picture url={url()} class="wb-hover-pic" />}</Show>
-            <span class="wb-hover-words">
-                <span class="wb-hover-name">
-                    <Label named={props.card.label} />
-                </span>
+            <div class="wb-hover-content">
                 <RelationsPath card={props.card} class="wb-hover-path" />
-                <span class="wb-hover-text">{props.card.text}</span>
+                <Show when={props.card.moreRelations > 0}>
+                    <span class="wb-hover-path">
+                        {fill(t('+${0} more relationships'), String(props.card.moreRelations))}
+                    </span>
+                </Show>
+                <EntryContent entry={props.card} />
                 <Show when={broughtUpSentence(props.card, props.reply, t)}>
                     {(said) => <span class="wb-hover-why">{said()}</span>}
                 </Show>
-            </span>
+            </div>
         </>
     );
 }
 
 // `card`: pointed at from an entry's card, whose own click opens the entry.
-type Pointed = { asked: CardAsked; word: HTMLElement; card: boolean; left: number; top: number; above: boolean };
+type Pointed = {
+    asked: CardAsked;
+    word: HTMLElement;
+    card: boolean;
+    left: number;
+    top: number;
+    above: boolean;
+    width: number;
+    height: number;
+};
 
 // The card of a linked name, shown while the name or the card is pointed at; each name pointed at asks for its card.
 // The card's box reaches the name, so moving the pointer from one to the other never leaves both. The card of an entry's
-// card is only shown: the pointer passes through it to whatever is under it, and leaving the entry's card closes it.
+// card also stays open while the pointer moves into the preview to scroll it.
 // Pointing shows no card on a phone, where a tap opens instead, nor while a card is dragged, where it would cover what
 // the drag points at; a card pointed at before either goes with the change.
 export function hoverCards() {
@@ -113,18 +123,21 @@ export function hoverCards() {
         const frame = host.getBoundingClientRect();
         const seen = pane.getBoundingClientRect();
         const at = word.getBoundingClientRect();
-        const left = Math.max(16, Math.min(at.left - frame.left - 12, frame.width - CARD_WIDTH - 16));
-        const above = at.bottom + CARD_HEIGHT_GUESS > seen.bottom;
+        const width = Math.min(CARD_WIDTH, frame.width - 32, window.innerWidth - 32);
+        const left = Math.max(16, Math.min(at.left - frame.left - 12, frame.width - width - 16));
+        const below = seen.bottom - at.bottom;
+        const over = at.top - seen.top;
+        const above = below < CARD_HEIGHT_GUESS && over > below;
+        const height = Math.max(80, Math.min(CARD_HEIGHT_GUESS, (above ? over : below) - 16));
         const top = above ? at.top - frame.top : at.bottom - frame.top;
         const asked: CardAsked = { entries: [{ book, entry } satisfies EntryAt], reply: null };
-        setPointed({ asked, word, card: from === 'card', left, top, above });
+        setPointed({ asked, word, card: from === 'card', left, top, above, width, height });
         void wb.act('worldbuilding.showCard', asked);
     };
     const leave = (event: MouseEvent) => {
         const to = event.relatedTarget;
         const at = pointed();
-        if (to instanceof Node && ((at?.card !== true && box?.contains(to) === true) || at?.word.contains(to) === true))
-            return;
+        if (to instanceof Node && (box?.contains(to) === true || at?.word.contains(to) === true)) return;
         setPointed(null);
     };
     const shown = () => {
@@ -138,8 +151,13 @@ export function hoverCards() {
                 <div
                     ref={(element) => (box = element)}
                     class="wb-hover-at"
-                    classList={{ 'wb-hover-above': both().at.above, 'wb-hover-shown-only': both().at.card }}
-                    style={{ left: `${both().at.left}px`, top: `${both().at.top}px` }}
+                    classList={{ 'wb-hover-above': both().at.above }}
+                    style={{
+                        left: `${both().at.left}px`,
+                        top: `${both().at.top}px`,
+                        width: `${both().at.width}px`,
+                        '--wb-preview-height': `${both().at.height}px`,
+                    }}
                     onMouseLeave={leave}
                 >
                     <button

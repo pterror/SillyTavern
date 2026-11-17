@@ -41,9 +41,8 @@ export const CELL_COUNTED_UP_TO = 1000;
 // most this many cards more than its entries for each of them.
 export const CELL_HEADS_ABOVE = 2;
 export const LOOPS_SHOWN = 3;
-// The hover card's relations and the characters of its text's opening.
-export const CARD_RELATIONS_SHOWN = 6;
-export const CARD_TEXT_CHARACTERS = 300;
+// Relations are bounded; the preview carries the complete body and entry metadata.
+export const CARD_RELATIONS_SHOWN = 32;
 // The entries one hover card shows: a word can bring up several.
 export const CARD_ENTRIES_AT_MOST = 8;
 export const ENTRIES_NAMED_PER_LOOP = 3;
@@ -396,10 +395,13 @@ export type OpenWorldView = World & {
 
 export type WorldView = OpenWorldView | { id: null };
 
-// What pointing at an entry's name shows: the first CARD_RELATIONS_SHOWN of its relations, and its text's first
-// CARD_TEXT_CHARACTERS characters. `broughtUpBy`: the keys that brought it into the reply the card was asked about, in
+// What pointing at an entry's name shows: its metadata, body and first CARD_RELATIONS_SHOWN relations.
+// `broughtUpBy`: the keys that brought it into the reply the card was asked about, in
 // the order activation found them; null when no reply was named or the entry didn't come up for it.
 export type HoverCard = EntryAt & {
+    title: string | null;
+    keys: KeyOfEntry[];
+    placement: Placement | null;
     label: Named;
     picture: string | null;
     relations: RelationOnCard[];

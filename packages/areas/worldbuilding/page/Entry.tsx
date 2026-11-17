@@ -28,6 +28,7 @@ import { chooseFile } from './Switcher.tsx';
 import { SelectionMenu } from './Selection.tsx';
 import type { Selected } from './Selection.tsx';
 import { EntryText } from './Text.tsx';
+import { EntryContent } from './EntryContent.tsx';
 import { WorldChoice } from './WorldChoice.tsx';
 import { fill } from './words.ts';
 import { PHONE } from './layout.ts';
@@ -114,10 +115,10 @@ export function EntryPage(props: {
                 kinds={props.kinds}
                 onWorld={props.onWorld}
             />
-            <header class="wb-entry-head">
-                <Show when={props.entry.picture}>{(url) => <Picture url={url()} class="wb-entry-pic" />}</Show>
-                <div class="wb-entry-headwords">
-                    <div class="wb-entry-title">
+            <EntryContent
+                entry={props.entry}
+                title={
+                    <>
                         <Editable
                             class="wb-entry-name"
                             label={t('Title')}
@@ -194,21 +195,29 @@ export function EntryPage(props: {
                         <Show when={menu()}>
                             <EntryMenu entry={props.entry} opener={() => menuOpener} onClose={() => setMenu(false)} />
                         </Show>
-                    </div>
-                    <Names entry={props.entry} />
-                    <Triggers entry={props.entry} />
-                </div>
-            </header>
-            <EntryText
-                text={props.entry.text}
-                version={props.entry.version}
-                copyOf={{ ...at(), field: 'text' }}
-                links={props.entry.links}
-                onSave={(text, version) => wb.edit('worldbuilding.setEntryText', { ...at(), version, text }, 'text')}
-                onEnter={(entry, element) => hover.enter(props.entry.book, entry, element)}
-                onLeave={hover.leave}
-                onOpen={(entry) => wb.open(entry)}
-                onSelect={setSelected}
+                    </>
+                }
+                keys={
+                    <>
+                        <Names entry={props.entry} />
+                        <Triggers entry={props.entry} />
+                    </>
+                }
+                body={
+                    <EntryText
+                        text={props.entry.text}
+                        version={props.entry.version}
+                        copyOf={{ ...at(), field: 'text' }}
+                        links={props.entry.links}
+                        onSave={(text, version) =>
+                            wb.edit('worldbuilding.setEntryText', { ...at(), version, text }, 'text')
+                        }
+                        onEnter={(entry, element) => hover.enter(props.entry.book, entry, element)}
+                        onLeave={hover.leave}
+                        onOpen={(entry) => wb.open(entry)}
+                        onSelect={setSelected}
+                    />
+                }
             />
             <Show when={selected()} keyed>
                 {(shown) => (

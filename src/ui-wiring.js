@@ -21,7 +21,8 @@ import { looksPorts } from './looks-store.js';
 import { chatReadsBook, resolveChatLinkLooks } from './chat-links.js';
 import { sessionHeaderOf } from './request-session.js';
 import { References } from './world-info/references.js';
-import { worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
+import { placementOf, worldbuildingEntryPorts } from './world-info/worldbuilding-entries.js';
+import { entryAsWorld } from './world-info-engine.js';
 import { worldbuildingWorldPorts } from './world-info/worldbuilding-worlds.js';
 import { withPictureUrls } from './world-info/worldbuilding-pictures.js';
 import { worldbuildingSearchPorts } from './world-info/worldbuilding-search.js';
@@ -765,14 +766,18 @@ const worldbuildingPorts = {
         const lib = await libOf(user);
         const read = await lib.store.worldRead('worldbuildingEntry', { book: BigInt(book), entry: BigInt(entry) });
         if (read === null || read.deleted) return null;
-        const text = Array.from(/** @type {string} */ (read.text));
+        const [stored, form] = await Promise.all([lib.books.entryIn(BigInt(book), BigInt(entry)), lib.books.bookForm(BigInt(book))]);
+        const { placement } = placementOf(stored && form ? entryAsWorld(stored, form.form) : {});
         return {
+            title: read.title,
+            keys: read.keys,
+            placement: /** @type {import('@st/worldbuilding/protocol').Placement} */ (placement),
             label: read.label,
             picture: read.picture === null ? null : lookImageUrl(read.picture),
             relations: read.relations.slice(0, shown.relations),
             moreRelations: Math.max(0, read.relations.length - shown.relations),
-            text: text.slice(0, shown.textCharacters).join(''),
-            textCut: text.length > shown.textCharacters,
+            text: read.text,
+            textCut: false,
         };
     },
     async readLoopsLeftByJobs(user, book) {
