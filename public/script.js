@@ -10339,8 +10339,8 @@ jQuery(async function () {
         if (row && row.length && !isActiveChat && !fromSlashCommand) {
             const loaderHandle = loader.show({
                 slug: 'chat-delete',
-                title: t`Delete Chat`,
-                message: t`Deleting chat…`,
+                title: t`Remove saved position`,
+                message: t`Removing saved position…`,
                 toastMode: loader.ToastMode.STATIC,
             });
 
@@ -10365,8 +10365,8 @@ jQuery(async function () {
 
         const loaderHandle = loader.show({
             slug: 'chat-delete',
-            title: t`Delete Chat`,
-            message: t`Deleting chat…`,
+            title: t`Remove saved position`,
+            message: t`Removing saved position…`,
             toastMode: loader.ToastMode.STATIC,
         });
 
@@ -10404,7 +10404,7 @@ jQuery(async function () {
             return;
         }
 
-        const result = await callGenericPopup('<h3>' + t`Delete the Chat File?` + '</h3>', POPUP_TYPE.CONFIRM);
+        const result = await callGenericPopup('<h3>' + t`Remove this saved position?` + '</h3><p>' + t`Messages will be kept.` + '</p>', POPUP_TYPE.CONFIRM);
         if (result === POPUP_RESULT.AFFIRMATIVE) {
             await handleDeleteChat(deleteFileName, selected_group, false, row);
         }

@@ -31,7 +31,6 @@ import {
     openGroupChat,
     selected_group,
 } from './group-chats.js';
-import { loader } from './action-loader.js';
 import { getLastMessageId } from './macros.js';
 import { Popup } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -130,30 +129,17 @@ export function showBookmarksButtons() {
         if (chat_metadata.main_chat) {
             // In bookmark chat
             $('#option_back_to_main').show();
-            $('#option_new_bookmark').show();
         } else if (!selected_group && !getCurrentCharacter().chat) {
             // No chat recorded on character
             $('#option_back_to_main').hide();
-            $('#option_new_bookmark').hide();
         } else {
             // In main chat
             $('#option_back_to_main').hide();
-            $('#option_new_bookmark').show();
         }
     } catch {
         $('#option_back_to_main').hide();
-        $('#option_new_bookmark').hide();
         $('#option_convert_to_group').hide();
     }
-}
-
-async function saveBookmarkMenu() {
-    if (!chat.length) {
-        toastr.warning('The chat is empty.', 'Bookmark creation failed');
-        return;
-    }
-
-    return await createNewBookmark(chat.length - 1);
 }
 
 function _labelOwner() {
@@ -712,7 +698,6 @@ function registerBookmarksSlashCommands() {
 }
 
 export function initBookmarks() {
-    $('#option_new_bookmark').on('click', saveBookmarkMenu);
     $('#option_back_to_main').on('click', backToMainChat);
     $('#option_convert_to_group').on('click', convertSoloToGroupChat);
 
@@ -734,21 +719,10 @@ export function initBookmarks() {
             return;
         }
 
-        const loaderHandle = loader.show({
-            slug: 'chat-load',
-            title: t`Chat History`,
-            message: t`Loading chat…`,
-            toastMode: loader.ToastMode.STATIC,
-        });
-
-        try {
-            if (selected_group) {
-                await openGroupChat(selected_group, target);
-            } else {
-                await openCharacterChat(target);
-            }
-        } finally {
-            await loaderHandle.hide();
+        if (selected_group) {
+            await openGroupChat(selected_group, target);
+        } else {
+            await openCharacterChat(target);
         }
 
         $('#shadow_select_chat_popup').css('display', 'none');
