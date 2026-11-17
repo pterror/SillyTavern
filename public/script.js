@@ -8188,6 +8188,7 @@ async function applyGreetingOpSuccess(character, result) {
     character.card_greetings = { ids: result.ids.slice(), texts: result.greetings.slice(), default_index: result.defaultPosition };
     if (greetingPagerState.owner === character.avatar) {
         setGreetingPagerGreetings(character.avatar, { greetings: result.greetings, ids: result.ids, defaultIndex: result.defaultPosition, hashes: result.hashes });
+        if (!greetingPagerEdit) keepShownGreeting();
     }
     run.character = character;
     await takeOpenings(openingsOwnerOf(result.openings) ?? { avatar_url: character.avatar }, result.openings);
@@ -8348,6 +8349,7 @@ function endGreetingPagerEdit() {
         index: edit.position,
         id: edit.committed ? edit.id : undefined,
     });
+    keepShownGreeting();
 }
 
 /**
@@ -8368,6 +8370,7 @@ function dropUncommittedPagerSlot(position) {
         create_save.extensions[GREETING_DEFAULT_POSITION_KEY] = fields.greetingDefaultPosition;
     }
     renderGreetingPager();
+    keepShownGreeting();
 }
 
 /**
@@ -8541,14 +8544,20 @@ export async function showOpeningInCharacterInfo(mesId) {
  * @param {number} newIndex
  */
 function navigateGreetingPager(newIndex) {
-    const { greetings, index, owner, ids, hashes } = greetingPagerState;
+    const { greetings, index } = greetingPagerState;
     greetings[index] = String($('#greeting_field').val());
     const shown = ((newIndex % greetings.length) + greetings.length) % greetings.length;
     greetingPagerState.index = shown;
     renderGreetingPager();
-    const id = ids[shown];
-    const hash = hashes[shown];
-    if (owner === null || id === undefined || !Number.isFinite(hash)) return;
+    keepShownGreeting();
+}
+
+/** Keeps selections made by paging, saving a new greeting, or removing the shown greeting. */
+function keepShownGreeting() {
+    const { owner, index, ids, hashes } = greetingPagerState;
+    const id = ids[index];
+    const hash = hashes[index];
+    if (owner === null || id === undefined || !Number.isFinite(hash) || shownGreetings.get(owner)?.id === id) return;
     shownGreetings.set(owner, { id });
     void fetch('/api/characters/greetings/show', {
         method: 'POST',
