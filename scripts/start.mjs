@@ -1,6 +1,7 @@
 import { existsSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 process.chdir(fileURLToPath(new URL('../', import.meta.url)));
 process.env.NODE_ENV = 'production';
@@ -22,6 +23,24 @@ function install(includeDev) {
         ? run(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `scripts\\pnpm.cmd ${args.join(' ')}`])
         : run('bash', ['scripts/pnpm.sh', ...args]);
     if (status !== 0) process.exit(status);
+}
+
+const args = process.argv.slice(2);
+const { values, tokens } = parseArgs({
+    args,
+    options: { update: { type: 'boolean' } },
+    strict: false,
+    allowPositionals: true,
+    tokens: true,
+});
+if (values.update) {
+    const updateIndices = new Set(tokens.filter(token => token.kind === 'option' && token.name === 'update').map(token => token.index));
+    const serverArgs = args.filter((_, index) => !updateIndices.has(index));
+    console.log('Updating SillyTavern...');
+    const status = run('git', ['pull', '--rebase', '--autostash']);
+    if (status !== 0) process.exit(status);
+    // Run the updated launcher so startup uses the code just pulled.
+    process.exit(run(process.execPath, ['scripts/start.mjs', ...serverArgs]));
 }
 
 // Remove npm-created installs before pnpm installs the workspace dependencies.
@@ -50,4 +69,4 @@ if (run(process.execPath, ['scripts/build-ui.mjs', '--ensure']) !== 0) {
 }
 
 console.log('Entering SillyTavern...');
-process.exit(run(process.execPath, ['server.js', ...process.argv.slice(2)]));
+process.exit(run(process.execPath, ['server.js', ...args]));
