@@ -144,9 +144,9 @@ export function start(options: StartOptions) {
     mount(options.containers.worldbuilding, () => (
         <Worldbuilding
             shown={worldbuilding.shown()}
-            everShown={worldbuilding.everShown()}
+            started={worldbuilding.started()}
             target={worldbuilding.target()}
-            onTargetTaken={worldbuilding.targetTaken}
+            onTargetOpened={worldbuilding.targetOpened}
             notify={(words, action) => options.worldbuilding.notify(words, action)}
             activationSettings={() => <WorldInfoSettings />}
         />

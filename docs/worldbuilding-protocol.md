@@ -28,8 +28,11 @@ Only `to` changes with the destination:
 - `back`: return from the entry to its overview.
 
 The page supplies the read parameters in one place. The bridge queues the same
-validated destination shape until the drawer is visible; it does not translate
-it into a different set of navigation commands. Imports remain upload operations.
+destination shape to a page mounted while the drawer stays closed. It reveals
+the drawer only after successful navigation has applied the requested views, so
+the previous book is never exposed during opening. It does not translate the
+destination into a different set of navigation commands. Imports remain upload
+operations.
 
 ## Viewport
 

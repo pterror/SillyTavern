@@ -1,5 +1,6 @@
 import { Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
 import type { JSX } from 'solid-js';
+import type { ActionResult } from '@st/page/client';
 import { useUi } from '@st/page/context';
 import {
     AXES_VIEW,
@@ -57,19 +58,19 @@ const POINTING_AT_SHOWN = 12;
 type Props = {
     shown: boolean;
     target: Target | null;
-    onTargetTaken: () => void;
+    onTargetOpened: (target: Target, result: ActionResult) => void;
     notify: (words: string, action?: { label: string; run: () => void }) => void;
     activationSettings: () => JSX.Element;
 };
 
-// The page reads nothing until its pane is first shown.
-export function Worldbuilding(props: Props & { everShown: boolean }) {
+// Mount on first use, including a destination requested while the drawer is still closed.
+export function Worldbuilding(props: Props & { started: boolean }) {
     return (
-        <Show when={props.everShown}>
+        <Show when={props.started}>
             <Page
                 shown={props.shown}
                 target={props.target}
-                onTargetTaken={props.onTargetTaken}
+                onTargetOpened={props.onTargetOpened}
                 notify={props.notify}
                 activationSettings={props.activationSettings}
             />
@@ -254,16 +255,18 @@ function Page(props: Props) {
     });
     createEffect(
         on(
-            () => (props.shown ? props.target : null),
-            (target) => {
+            () => props.target,
+            async (target) => {
                 const element = pane();
                 if (!target || !element) return;
                 setWidth(element.clientWidth);
                 setHeight(element.clientHeight);
-                props.onTargetTaken();
                 pane()?.scrollTo({ top: 0 });
-                if ('import' in target) void act('worldbuilding.importWorld', { overview: firstRead() }, target.import);
-                else void navigate(target);
+                const result =
+                    'import' in target
+                        ? await act('worldbuilding.importWorld', { overview: firstRead() }, target.import)
+                        : await navigate(target);
+                props.onTargetOpened(target, result);
             },
         ),
     );

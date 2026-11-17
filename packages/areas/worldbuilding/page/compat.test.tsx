@@ -8,14 +8,14 @@ import { WORLD_VIEW, OVERVIEW_VIEW } from '../protocol.ts';
 import { Worldbuilding } from './Worldbuilding.tsx';
 import { worldbuildingCompat } from './compat.ts';
 
-test('opening embedded lore before the drawer has mounted opens only the requested character book', () => {
+test.each([true, false])('embedded lore loads before the drawer is revealed (success: %s)', async (ok) => {
     const sent: string[] = [];
     let request: unknown;
     const client: Client = {
         send: async (type, payload) => {
             request = payload;
             sent.push(type);
-            return { ok: true };
+            return ok ? { ok: true } : { ok: false, error: 'Character book not found.' };
         },
         view: () => () => undefined,
         receive: () => {},
@@ -34,9 +34,9 @@ test('opening embedded lore before the drawer has mounted opens only the request
                 <UiProvider value={{ client, ...testCommands(), t: (text) => text }}>
                     <Worldbuilding
                         shown={compat.shown()}
-                        everShown={compat.everShown()}
+                        started={compat.started()}
                         target={compat.target()}
-                        onTargetTaken={compat.targetTaken}
+                        onTargetOpened={compat.targetOpened}
                         notify={() => {}}
                         activationSettings={() => null}
                     />
@@ -50,6 +50,9 @@ test('opening embedded lore before the drawer has mounted opens only the request
     try {
         expect(sent).toEqual(['worldbuilding.navigate']);
         expect(request).toMatchObject({ to: { kind: 'character', character: '42' } });
+        expect(compat.shown()).toBe(false);
+        await vi.waitFor(() => expect(compat.target()).toBeNull());
+        expect(compat.shown()).toBe(ok);
     } finally {
         dispose();
         stop();
@@ -117,9 +120,9 @@ test('resizing a reopened drawer cannot reopen the old world over an embedded lo
                 <UiProvider value={{ client, ...testCommands(), t: (text) => text }}>
                     <Worldbuilding
                         shown={compat.shown()}
-                        everShown={compat.everShown()}
+                        started={compat.started()}
                         target={compat.target()}
-                        onTargetTaken={compat.targetTaken}
+                        onTargetOpened={compat.targetOpened}
                         notify={() => {}}
                         activationSettings={() => null}
                     />
@@ -143,14 +146,14 @@ test('resizing a reopened drawer cannot reopen the old world over an embedded lo
         paneWidth = 600;
         for (const resize of resizes) resize();
         expect(resizes.length).toBeGreaterThan(0);
-        expect(sent).toEqual(['worldbuilding.navigate', 'worldbuilding.setViewport']);
+        expect(sent).toEqual(['worldbuilding.navigate']);
+        expect(compat.shown()).toBe(false);
         finishOpening();
         await opened;
-        await Promise.resolve();
-        await Promise.resolve();
+        await vi.waitFor(() => expect(compat.shown()).toBe(true));
         paneWidth = 1000;
         for (const resize of resizes) resize();
-        expect(sent).toEqual(['worldbuilding.navigate', 'worldbuilding.setViewport', 'worldbuilding.setViewport']);
+        expect(sent).toEqual(['worldbuilding.navigate', 'worldbuilding.setViewport']);
     } finally {
         dispose();
         stop();

@@ -334,11 +334,34 @@ test('an embedded lorebook trigger previews and opens its specific entry', async
         // The embedded-book command must work before worldbuilding has ever mounted.
         await page.locator('#char-management-dropdown').selectOption({ label: 'View/Edit Embedded Lore' });
         await expect(page.locator('#Worldbuilding .wb-card-name')).toContainText('Embedded lantern');
+        // Leave a different book in the drawer before requesting embedded lore again.
+        await makeWorld(page, `Previous-${Date.now()}`, { 0: { ...LANTERN, comment: 'Wrong lorebook entry' } });
         await page.locator('#WIDrawerIcon').click();
         await openCharacter(page, avatar);
-        // And again after the drawer has mounted and been closed.
-        await page.locator('#char-management-dropdown').selectOption({ label: 'View/Edit Embedded Lore' });
-        await expect(page.locator('#Worldbuilding .wb-card-name')).toContainText('Embedded lantern');
+        let releaseOpening = () => {};
+        const release = new Promise(resolve => { releaseOpening = () => resolve(undefined); });
+        let openingRequested = () => {};
+        const requested = new Promise(resolve => { openingRequested = () => resolve(undefined); });
+        const routeOpening = async (route) => {
+            const request = route.request().postDataJSON();
+            if (request.type === 'worldbuilding.navigate' && request.payload.to.kind === 'character') {
+                openingRequested();
+                await release;
+            }
+            await route.continue();
+        };
+        await page.route('**/api/ui/action', routeOpening);
+        try {
+            await page.locator('#char-management-dropdown').selectOption({ label: 'View/Edit Embedded Lore' });
+            await requested;
+            // Even with a delayed response, the old book must stay out of view.
+            await expect(page.locator('#Worldbuilding')).toBeHidden();
+            releaseOpening();
+            await expect(page.locator('#Worldbuilding .wb-card-name')).toHaveText('Embedded lantern');
+        } finally {
+            releaseOpening();
+            await page.unroute('**/api/ui/action', routeOpening);
+        }
         await page.locator('#WIDrawerIcon').click();
         await connectLlamaCpp(page, mock.url);
         await chatBox(page).fill('Where is the glowstone?');

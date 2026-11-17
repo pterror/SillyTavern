@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createRoot, createSignal, on } from 'solid-js';
-import type { Client } from '@st/page/client';
+import type { ActionResult, Client } from '@st/page/client';
 import { WORLDS_VIEW } from '../protocol.ts';
 import type { NavigationTarget, World, WorldsView } from '../protocol.ts';
 import { chatCards } from './ChatCard.tsx';
@@ -15,23 +15,27 @@ export type OldPage = {
 
 export function worldbuildingCompat(client: Client, old: OldPage) {
     const [shown, setShown] = createSignal(false);
-    const [everShown, setEverShown] = createSignal(false);
+    const [started, setStarted] = createSignal(false);
     const [target, setTarget] = createSignal<Target | null>(null);
     const worldsView = client.view<WorldsView>(WORLDS_VIEW);
     const worlds = (): World[] | null => worldsView()?.worlds ?? null;
     const go = (next: Target) => {
         setTarget(next);
-        old.showPane();
+        setStarted(true);
     };
     const cards = chatCards(client, (at) => go({ kind: 'at', ...at }));
     return {
         shown,
-        everShown,
+        started,
         target,
-        targetTaken: () => setTarget(null),
+        targetOpened: (next: Target, result: ActionResult) => {
+            if (target() !== next) return;
+            setTarget(null);
+            if (result.ok) old.showPane();
+        },
         paneShown(open: boolean) {
             setShown(open);
-            if (open) setEverShown(true);
+            if (open) setStarted(true);
         },
         openWorld: (world: string) => {
             go({ kind: 'named', world, uid: null });
