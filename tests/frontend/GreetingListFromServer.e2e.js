@@ -141,6 +141,43 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('.greeting-pager-total')).toHaveText(`/${stored.greetings.length}`);
     }
 
+    test('a 1000-greeting edit sends a compact delta and library sync does not fetch the whole card', async ({ page }) => {
+        const suffix = stamp();
+        const greetings = Array.from({ length: 1000 }, (_, i) => `Greeting ${i} ${suffix}`);
+        const avatar = await createCharacter(page, `Compact-${suffix}`, greetings);
+        await openCharacter(page, avatar);
+        const fullReads = [];
+        const record = request => fullReads.push(request.url());
+        page.on('request', record);
+        const edited = page.waitForResponse(response => response.url().endsWith('/api/characters/greetings/edit'));
+        const synced = page.waitForResponse(response => response.url().endsWith('/api/characters/changes'), { timeout: 15000 });
+        const text = `Changed ${suffix}`;
+        expect(await page.evaluate(async text => (await import('/script.js')).saveGreetingField(text, { confirmed: true }), text)).toBe(true);
+        const response = await edited;
+        const payload = await response.json();
+        expect(payload.edit).toMatchObject({ text });
+        expect(payload.greetings).toBeUndefined();
+        expect(payload.ids).toBeUndefined();
+        expect(payload.hashes).toBeUndefined();
+        expect(payload.card_token_counts).toBeUndefined();
+        expect(JSON.stringify(payload).length).toBeLessThan(2000);
+        await synced;
+        page.off('request', record);
+        expect(fullReads.filter(url => /\/api\/characters\/(get|batch)$/.test(new URL(url).pathname))).toEqual([]);
+        await expect(page.locator('.greeting-pager-total')).toHaveText('/1000');
+        await expectPageHoldsServerList(page, avatar);
+    });
+
+    test('a greeting edit resolves the new text macros for the shown opening', async ({ page }) => {
+        const name = `GreetingMacros-${stamp()}`;
+        const avatar = await createCharacter(page, name, ['Hello']);
+        await openCharacter(page, avatar);
+        const text = 'Hi {{user}}, I am {{char}}.';
+        expect(await page.evaluate(async text => (await import('/script.js')).saveGreetingField(text, { confirmed: true }), text)).toBe(true);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toContainText(name);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).not.toContainText('{{');
+    });
+
     test('sidebar pager edit: another session\'s delete shows up', async ({ page }) => {
         const { s, g, avatar } = await afterRemoteDelete(page, 'ServerListPager', false);
         const saved = await page.evaluate(async (text) => {
@@ -562,7 +599,7 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(x);
     });
 
-    test('the chat\'s opening edited, then a card greeting edited to the same text: the stored opening stays under its greeting, the card offers its own beside it', async ({ page }) => {
+    test('the chat\'s opening edited, then a card greeting edited to the same text: the stored opening holds the matching greeting', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `DedupChatThenCard-${s}`, g);
@@ -575,14 +612,14 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[2], y);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[1], y]);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], g[1], y]);
         const opening = await openingSwipes(page);
-        expect(opening.nodeIds.map(isStoredId)).toEqual([false, true, false, false]);
-        expect(opening.swipe_id).toBe(1);
+        expect(opening.nodeIds.map(isStoredId)).toEqual([false, false, true]);
+        expect(opening.swipe_id).toBe(2);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y);
     });
 
-    test('the chat\'s opening edited to text with macros, then a card greeting edited to the same: the macros kept as written and shown filled in, the card\'s offered beside it', async ({ page }) => {
+    test('the chat\'s opening edited to text with macros, then a card greeting edited to the same: the entries collapse and macros stay filled in', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `DedupMacros-${s}`, g);
@@ -599,11 +636,12 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[2], y);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[1], y]);
-        expect((await openingSwipes(page)).nodeIds.map(isStoredId)).toEqual([false, true, false, false]);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], g[1], y]);
+        expect((await openingSwipes(page)).nodeIds.map(isStoredId)).toEqual([false, false, true]);
+        await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).not.toContainText('{{');
     });
 
-    test('a greeting swiped to, edited in the chat, then the same greeting on the card edited to match: the card\'s offered first, the chat stays on its own', async ({ page }) => {
+    test('a greeting swiped to, edited in the chat, then the same greeting on the card edited to match: the existing opening holds that greeting', async ({ page }) => {
         const s = stamp();
         const g = [`Zero ${s}`, `One ${s}`, `Two ${s}`];
         const avatar = await createCharacter(page, `DedupSwiped-${s}`, g);
@@ -617,10 +655,10 @@ test.describe('after a greeting save the page holds the server\'s greeting list'
         await openGreetingsList(page, 3);
         await listEdit(page, g[1], y);
 
-        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, y, g[2]]);
+        await expect.poll(async () => (await openingSwipes(page)).swipes, { timeout: 10000 }).toEqual([g[0], y, g[2]]);
         const opening = await openingSwipes(page);
-        expect(opening.swipe_id).toBe(2);
-        expect(opening.nodeIds.map(isStoredId)).toEqual([false, false, true, false]);
+        expect(opening.swipe_id).toBe(1);
+        expect(opening.nodeIds.map(isStoredId)).toEqual([false, true, false]);
         await expect(page.locator('#chat .mes[mesid="0"] .mes_text')).toHaveText(y);
     });
 

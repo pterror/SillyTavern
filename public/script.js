@@ -5,7 +5,7 @@ import {
     Popper,
 } from './lib.js';
 
-import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown, takeCardCounts } from './scripts/RossAscends-mods.js';
+import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown, takeCardCounts, keepCardCountsBeforeGreetingEdit, takeGreetingTokenCount } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, setCharacterId, holdCharacter, keepHeldCharacters } from './scripts/character-store.js';
 import { printCharacters, printCharactersDebounced, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
@@ -271,6 +271,8 @@ import {
     chatOpReadyAlternativeDelete,
     chatOpDeleteAlternativeNode,
     takeOpenings,
+    takeGreetingOpeningEdit,
+    takeMessageCounts,
     openingsOwnerOf,
     currentChatOwner,
     isComposedSlot,
@@ -943,6 +945,10 @@ function setupCharacterChangeStream() {
             }
             if (message?.type === 'state') {
                 takePushedState({ tree: message.tree, at: message.at ?? null, state: message.state });
+                return;
+            }
+            if (message?.type === 'greeting-edit') {
+                void takeGreetingEditPush(message);
                 return;
             }
             if (message?.type === 'openings') {
@@ -8127,13 +8133,16 @@ function hashGreetingText(text) {
  * @property {number[]} hashes
  * @property {number|null} defaultPosition
  * @property {number} [id] the greeting the operation added or changed
- * @property {unknown} openings the answer, carrying the character tree's openings when the server sent them
+ * @property {string} [baseRevision]
+ * @property {string} [revision]
+ * @property {{ id: number, text: string, hash: number }} [edit]
+ * @property {any} openings the answer, carrying the character tree's openings when the server sent them
  */
 
 /**
  * @param {string} opName
  * @param {object} body
- * @returns {Promise<GreetingOpResult|{ok: false, status?: number, reason?: string, same?: { position: number, id: number }}>}
+ * @returns {Promise<GreetingOpResult|{ok: false, status?: number, reason?: string, same?: { position: number, id: number, snapshot?: any }}>}
  */
 async function postGreetingOp(opName, body) {
     try {
@@ -8146,14 +8155,66 @@ async function postGreetingOp(opName, body) {
         try { payload = await response.json(); } catch { /* no body, or not JSON */ }
         if (response.ok && payload?.ok) {
             takeCardCounts(payload.card_token_counts);
-            return { ok: true, greetings: payload.greetings, ids: payload.ids, hashes: payload.hashes, defaultPosition: payload.default_position, id: payload.id, openings: payload };
+            const snapshot = payload.edit ? await greetingEditSnapshot(body.avatar_url, payload) : payload;
+            return { ok: true, greetings: snapshot.greetings, ids: snapshot.ids, hashes: snapshot.hashes, defaultPosition: snapshot.default_position, id: payload.edit?.id ?? payload.id, revision: snapshot.revision, baseRevision: snapshot.delta ? payload.base_revision : undefined, edit: payload.edit, openings: snapshot.opening_state ?? payload };
         }
-        const same = Number.isInteger(payload?.same_position) && Number.isInteger(payload?.same_id) ? { position: payload.same_position, id: payload.same_id } : undefined;
+        let same;
+        if (Number.isInteger(payload?.same_id)) {
+            const card = charactersStore.get(body.avatar_url)?.card_greetings;
+            const snapshot = payload.revision && card?.revision !== payload.revision ? await readGreetingSnapshot(body.avatar_url) : null;
+            const position = payload.same_position ?? (snapshot?.ids ?? card?.ids ?? []).indexOf(payload.same_id);
+            same = { position, id: payload.same_id, snapshot };
+        }
         return { ok: false, status: response.status, reason: payload?.reason, same };
     } catch (error) {
         console.error(`Greeting op "${opName}" request failed`, error);
         return { ok: false, reason: 'network error' };
     }
+}
+
+/** @param {string} avatar @param {any} payload */
+async function greetingEditSnapshot(avatar, payload) {
+    const card = /** @type {any} */ (charactersStore.get(avatar))?.card_greetings;
+    if (card && (card.revision === payload.base_revision || card.revision === payload.revision)) {
+        const texts = card.texts.slice();
+        const at = card.ids.indexOf(payload.edit.id);
+        if (at >= 0) {
+            texts[at] = payload.edit.text;
+            const hashes = card.hashes?.slice() ?? card.texts.map(hashGreetingText);
+            hashes[at] = payload.edit.hash;
+            return { greetings: texts, ids: card.ids.slice(), hashes, default_position: card.default_index, revision: payload.revision, delta: true };
+        }
+    }
+    return readGreetingSnapshot(avatar);
+}
+
+/** @param {string} avatar */
+async function readGreetingSnapshot(avatar) {
+    const response = await fetch('/api/characters/greetings/read', {
+        method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ avatar_url: avatar, opening_owner: currentChatOwner() }),
+    });
+    if (!response.ok) throw new Error('Could not refresh the stale greeting list');
+    return response.json();
+}
+
+/** @param {any} payload */
+async function takeGreetingEditPush(payload) {
+    const character = /** @type {any} */ (charactersStore.get(payload.avatar));
+    if (!character) {
+        if (payload.greeting_edit && !await takeGreetingOpeningEdit(payload.greeting_edit)) {
+            const snapshot = await readGreetingSnapshot(payload.avatar);
+            if (snapshot.opening_state) await takeOpenings(currentChatOwner(), snapshot.opening_state);
+        }
+        return;
+    }
+    await queueGreetingSave(payload.avatar, async () => {
+        if (character.card_greetings?.revision && Number(character.card_greetings.revision) > Number(payload.revision)) return;
+        if (character.card_greetings?.revision !== payload.revision) {
+            const snapshot = await greetingEditSnapshot(payload.avatar, payload);
+            await applyGreetingOpSuccess(character, { ok: true, greetings: snapshot.greetings, ids: snapshot.ids, hashes: snapshot.hashes,
+                defaultPosition: snapshot.default_position, revision: snapshot.revision, baseRevision: snapshot.delta ? payload.base_revision : undefined, edit: payload.edit, openings: snapshot.opening_state ?? payload });
+        } else if (payload.greeting_edit) await takeGreetingOpeningEdit(payload.greeting_edit);
+    });
 }
 
 /**
@@ -8184,14 +8245,30 @@ async function applyGreetingOpSuccess(character, result) {
     if (!run) {
         throw new Error(`applyGreetingOpSuccess: no queued greeting save for ${character?.avatar} is running`);
     }
+    if (result.baseRevision && character.card_revision === result.baseRevision) character.card_revision = result.revision;
+    if (result.edit) {
+        keepCardCountsBeforeGreetingEdit(character.avatar);
+        const before = character.card_greetings?.texts[character.card_greetings.ids.indexOf(result.edit.id)];
+        if (before !== undefined && Number.isFinite(character.data_size)) character.data_size += result.edit.text.length - before.length;
+    }
     applyGreetingsModelToCharacter(character, { greetings: result.greetings, defaultIndex: result.defaultPosition });
-    character.card_greetings = { ids: result.ids.slice(), texts: result.greetings.slice(), default_index: result.defaultPosition };
+    character.card_greetings = { ids: result.ids.slice(), texts: result.greetings.slice(), default_index: result.defaultPosition, revision: result.revision, hashes: result.hashes.slice() };
     if (greetingPagerState.owner === character.avatar) {
         setGreetingPagerGreetings(character.avatar, { greetings: result.greetings, ids: result.ids, defaultIndex: result.defaultPosition, hashes: result.hashes });
         if (!greetingPagerEdit) keepShownGreeting();
     }
     run.character = character;
-    await takeOpenings(openingsOwnerOf(result.openings) ?? { avatar_url: character.avatar }, result.openings);
+    if (result.openings?.greeting_edit) {
+        if (!await takeGreetingOpeningEdit(result.openings.greeting_edit)) {
+            const snapshot = await readGreetingSnapshot(character.avatar);
+            await applyGreetingOpSuccess(character, { ok: true, greetings: snapshot.greetings, ids: snapshot.ids, hashes: snapshot.hashes,
+                defaultPosition: snapshot.default_position, revision: snapshot.revision, openings: snapshot.opening_state });
+        }
+    } else await takeOpenings(openingsOwnerOf(result.openings) ?? { avatar_url: character.avatar }, result.openings);
+    if (result.edit) void fetch('/api/characters/greetings/count', {
+        method: 'POST', headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar_url: character.avatar, greeting_id: result.edit.id, expected_hash: result.edit.hash, opening_owner: currentChatOwner() }),
+    }).then(response => response.ok ? response.json() : null).then(answer => { takeGreetingTokenCount(answer); takeMessageCounts(answer?.message_counts); }).catch(error => console.warn('Could not count the edited greeting:', error));
     refreshOpeningActions(chatElement.children('.mes[mesid="0"]'), 0);
 }
 
@@ -8587,9 +8664,10 @@ function nextGreetingShownOrder() {
  * Says, under the greeting field, that what it holds is another greeting's text; the field stays open and unsaved.
  * @param {number} position the other greeting's place on the card
  * @param {number} [id] the other greeting, none on the create form, whose greetings have no ids
+ * @param {any} [snapshot] the current list when the duplicate was added in another session
  */
-function showSameGreeting(position, id) {
-    const link = $('<a href="#" class="greeting_same_link"></a>').text(String(position + 1)).data({ position, id });
+function showSameGreeting(position, id, snapshot = null) {
+    const link = $('<a href="#" class="greeting_same_link"></a>').text(String(position + 1)).data({ position, id, snapshot });
     $('#greeting_same_note').empty().append(document.createTextNode(`${t`Same as greeting`} `), link).removeClass('displayNone');
 }
 
@@ -8624,7 +8702,7 @@ async function saveGreetingPagerEdit(avatar, character, id, expectedHash, text) 
         return landed < 0 ? null : { position: landed, hash: result.hashes[landed] };
     }
     if (result.same !== undefined) {
-        showSameGreeting(result.same.position, result.same.id);
+        showSameGreeting(result.same.position, result.same.id, result.same.snapshot);
         return null;
     }
     console.error('Greeting save failed', { avatar, id, status: result.status, reason: result.reason });
@@ -10591,8 +10669,16 @@ jQuery(async function () {
     $('#greeting_same_note').on('click', '.greeting_same_link', function (event) {
         event.preventDefault();
         const id = $(this).data('id');
-        const position = Number.isInteger(id) ? greetingPagerState.ids.indexOf(id) : Number($(this).data('position'));
         if (!discardFieldEdit('greeting_field')) return;
+        const snapshot = $(this).data('snapshot');
+        const character = charactersStore.get(greetingPagerState.owner);
+        if (snapshot && character) {
+            keepCardCountsBeforeGreetingEdit(character.avatar);
+            applyGreetingsModelToCharacter(character, { greetings: snapshot.greetings, defaultIndex: snapshot.default_position });
+            character.card_greetings = { texts: snapshot.greetings, ids: snapshot.ids, hashes: snapshot.hashes, default_index: snapshot.default_position, revision: snapshot.revision };
+            setGreetingPagerGreetings(character.avatar, { greetings: snapshot.greetings, ids: snapshot.ids, hashes: snapshot.hashes, defaultIndex: snapshot.default_position });
+        }
+        const position = Number.isInteger(id) ? greetingPagerState.ids.indexOf(id) : Number($(this).data('position'));
         if (position >= 0) navigateGreetingPager(position);
     });
 

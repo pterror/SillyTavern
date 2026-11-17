@@ -12,6 +12,7 @@ pub mod drafts;
 pub mod entry_label;
 pub mod entry_page;
 pub mod history;
+pub mod greeting_index;
 pub mod kinds;
 pub mod library;
 pub mod library_read;
@@ -857,6 +858,18 @@ impl Store {
     pub fn pairs_mode(&self) -> StoreResult<u64> {
         self.derived(|v| Ok(crate::search::pairs::state(v)?.0))
     }
+    pub fn greeting_index_step(&self, batch: usize, done: Box<dyn FnOnce(StoreResult<bool>) + Send>) {
+        let more = Arc::new(AtomicBool::new(false));
+        let found = more.clone();
+        self.inner.submit(Job::Derive(
+            Box::new(move |view, out| {
+                found.store(greeting_index::build_step(view, out, batch)?, Ordering::Relaxed);
+                Ok(())
+            }),
+            Box::new(move |r| done(r.map(|()| more.load(Ordering::Relaxed)))),
+        ));
+    }
+
     pub fn message_order_conversion_step(
         &self,
         batch: usize,

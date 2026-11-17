@@ -1,6 +1,9 @@
 import { FIELD, TYPE } from './library-codes.js';
 import { storedValues } from './entity-values.js';
 import { greetingModelOf } from './greeting-items.js';
+import { hashGreetingText } from './greeting-ops.js';
+import { greetingGroup } from './chat-engine.js';
+import { avatarRefString } from './avatar-refs.js';
 
 /**
  * A character's card greetings, for the page's list of them, in card order: `ids[k]` is the id of `texts[k]`, an empty
@@ -53,8 +56,40 @@ export async function cardGreetingsOf(store, avatar) {
  */
 export async function openingState({ store, tree, actor }) {
     const card = await store.chats.cardGreetings(tree);
-    const read = (/** @type {{ offset?: number, limit?: number, unstored?: boolean }} */ range) => store.chats.openingAlternatives({ tree, actor, range, card });
+    const segments = await store.chats.openingSegments(tree, card);
+    const read = (/** @type {{ offset?: number, limit?: number, unstored?: boolean }} */ range) => store.chats.openingAlternatives({ tree, actor, range, card, segments });
     const openings = await read({});
     const cardOpenings = openings.total > openings.stored ? await read({ unstored: true }) : null;
-    return { openings, card_openings: cardOpenings };
+    const opening_layout = segments.map(seg => ({ group: String(seg.group), count: seg.count, held: seg.held,
+        greeting: seg.card === null ? null : { id: card.ids[seg.card], avatar: card.avatars[seg.card], hash: hashGreetingText(card.greetings[seg.card].mes) } }));
+    return { openings, card_openings: cardOpenings, opening_layout };
+}
+
+/**
+ * Only the groups touched by one greeting edit, for a tree already open on a client.
+ * @param {import('./user-stores.js').UserStore} store
+ * @param {bigint} tree
+ * @param {bigint} card
+ * @param {string} avatar
+ * @param {{ id: number, text: string, hash: number }} edit
+ * @param {any[]} moves
+ */
+export async function greetingOpeningEdit(store, tree, card, avatar, edit, moves) {
+    const own = moves.filter(move => move.tree === tree);
+    const target = String(greetingGroup(tree, card, edit.id));
+    const groups = new Set([target, ...own.flatMap(move => [move.from_group, move.to_group])]);
+    const changed = [];
+    for (const group of groups) {
+        const state = await store.lib.store.chatRead('rootGroup', { tree, group: BigInt(group) });
+        let held;
+        if (group === target) {
+            const [first] = state.first === null ? [] : await store.chats.decoded([(await store.chats.stored([state.first])).get(state.first)]);
+            held = first?.extra?.greeting_id === edit.id && first?.mes === edit.text;
+        }
+        changed.push({ group, count: Number(state.count), ...(held === undefined ? {} : { held }) });
+    }
+    const [owner] = await store.lib.store.libraryKeys([tree]);
+    const speaker = (await store.people.speakers([card])).get(card);
+    const drawn = { name: speaker?.name ?? '', ...(tree === card ? {} : { original_avatar: avatar, force_avatar: avatarRefString(TYPE.character, avatar) }) };
+    return { avatar, owner: owner?.type === TYPE.group ? { group_id: owner.key } : { avatar_url: owner?.key }, speaker: drawn, ...edit, groups: changed, moves: own.map(({ tree: _tree, id: _id, ...move }) => move) };
 }

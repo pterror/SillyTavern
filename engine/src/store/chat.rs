@@ -257,6 +257,7 @@ pub fn text_changed(
     if !text_watched(f) {
         return Ok(());
     }
+    super::greeting_index::refresh_opening(view, out, m, Some(new), None, None)?;
     let (_, rec) = require_message(view, m)?;
     let owner = id(&rec, APPEND_OWNER);
     search::index::update(
@@ -465,6 +466,7 @@ impl Deriver for MessageAppend {
     }
 
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
+        super::greeting_index::appended(out, rec);
         let m = id(rec, APPEND_ID);
         let owner = id(rec, APPEND_OWNER);
         let parent = opt_id(rec, APPEND_PARENT);
@@ -709,6 +711,7 @@ impl Deriver for MessageParent {
                 )));
             }
         }
+        super::greeting_index::refresh_opening(view, out, m, None, None, Some(new))?;
         let k = key::id(key::MESSAGE_PARENT, m);
         if let Some(v) = view.get(&k)? {
             dead(out, parse_loc(&v)?);

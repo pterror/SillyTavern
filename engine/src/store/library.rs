@@ -633,6 +633,7 @@ pub fn text_changed(
     f: &FieldRef,
     new: Option<&[u8]>,
 ) -> Result<(), StoreError> {
+    super::greeting_index::greeting_changed(view, out, e, f, new)?;
     if let Some(v) = new {
         super::book_stats::value_changed(view, out, e, f, false, Some(v))?;
     }
@@ -923,6 +924,7 @@ fn delete_entity(
     k: &[u8],
     at: Loc,
 ) -> Result<(), StoreError> {
+    super::greeting_index::identity_changed(out, e, true);
     if kind == TAG {
         tags::deleted(view, out, e, k, at)?;
     }
@@ -1070,6 +1072,10 @@ impl Deriver for JsonValue {
                     None => super::chat::shape_add(out, m, super::chat::SHAPE_EXTRA),
                 }
                 out.put(k, loc_bytes(at));
+                if *f == FieldRef::Code(18) {
+                    let speaker = std::str::from_utf8(bytes(rec, 2)).ok().and_then(|s| s.trim_matches('"').parse().ok());
+                    super::greeting_index::refresh_opening(view, out, m, None, Some(speaker), None)?;
+                }
                 return Ok(());
             }
         };
@@ -1167,6 +1173,10 @@ impl Deriver for ValueDelete {
                 )?;
                 drop_text_of(view, out, h, f)?;
                 super::chat::drop_time(view, out, m, f)?;
+                if *f == FieldRef::Code(18) {
+                    let (_, append) = super::chat::require_message(view, m)?;
+                    super::greeting_index::refresh_opening(view, out, m, None, Some(super::chat::opt_id(&append, 3)), None)?;
+                }
                 return drop_json_of(view, out, h, f);
             }
         };
@@ -1376,6 +1386,9 @@ fn hash_of(rec: &Record) -> Option<&[u8]> {
 impl Deriver for CardHash {
     fn derive(&self, rec: &Record, at: Loc, view: &View, out: &mut Out) -> Result<(), StoreError> {
         let (e, which) = (id(rec, 0), id(rec, 1));
+        if which == HASH_IDENTITY {
+            super::greeting_index::identity_changed(out, e, hash_of(rec).is_some());
+        }
         let k = key::ids(key::HASH, e, which);
         if let Some((l, old)) = pointed(view, &k)? {
             dead(out, l);

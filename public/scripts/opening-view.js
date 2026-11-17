@@ -25,6 +25,7 @@
 
 /**
  * @typedef {object} OpeningState
+ * @property {any[]} [opening_layout]
  * @property {OpeningsWindow|null} openings the tree's openings around the one the session shows
  * @property {OpeningsWindow|null} [card_openings] the card's greetings that no stored opening holds
  */

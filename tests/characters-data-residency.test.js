@@ -226,9 +226,9 @@ describe('greeting operations read and write the same place', () => {
         const edited = await post('greetings/edit', { avatar_url: 'Alice.png', greeting_id: addBody.id, expected_hash: addBody.hashes[1], text: 'second-edited' });
         expect(edited.status).toBe(200);
         const editedBody = await edited.json();
-        expect(editedBody.id).toBe(addBody.id);
+        expect(editedBody.edit.id).toBe(addBody.id);
 
-        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', greeting_id: addBody.id, expected_hash: editedBody.hashes[1] });
+        const deleted = await post('greetings/delete', { avatar_url: 'Alice.png', greeting_id: addBody.id, expected_hash: editedBody.edit.hash });
         expect(deleted.status).toBe(200);
         expect((await deleted.json()).hashes).toHaveLength(1);
     });
@@ -366,14 +366,15 @@ describe('an op whose outcome is already in place answers 200 and writes nothing
         const again = await post('greetings/edit', { avatar_url: 'Alice.png', greeting_id: id, expected_hash: hashes[1], text: 'second-edited' });
         expect(again.status).toBe(200);
         const body = await again.json();
-        expect(body.position).toBe(1);
-        expect(body.greetings).toEqual(['hello', 'second-edited']);
+        expect(body.edit).toMatchObject({ id, text: 'second-edited' });
+        expect(body.greetings).toBeUndefined();
+        expect(body.base_revision).toBe(body.revision);
         expect(await changeSeq()).toBe(seqBefore);
     });
 });
 
-describe('every greeting op answers with the greeting list as stored', () => {
-    test('add, edit and delete each return the list after the op, other writers\' changes included', async () => {
+describe('greeting edits answer with a revisioned delta', () => {
+    test('an edit stays compact after another writer changes the list, which can be read by revision', async () => {
         await post('create', { ch_name: 'Alice', description: 'd', first_mes: 'hello', file_name: 'Alice' });
         const body = async (response) => {
             expect(response.status).toBe(200);
@@ -385,10 +386,15 @@ describe('every greeting op answers with the greeting list as stored', () => {
         await body(await post('greetings/add', { avatar_url: 'Alice.png', position: 2, expected_length: 2, text: 'third' }));
 
         const edit = await body(await post('greetings/edit', { avatar_url: 'Alice.png', greeting_id: add.ids[1], expected_hash: add.hashes[1], text: 'second-edited' }));
-        expect(edit.greetings).toEqual(['hello', 'second-edited', 'third']);
-        expect(edit.hashes).toHaveLength(3);
+        expect(edit.edit).toMatchObject({ id: add.ids[1], text: 'second-edited' });
+        expect(edit.greetings).toBeUndefined();
+        expect(edit.hashes).toBeUndefined();
+        expect(edit.revision).not.toBe(edit.base_revision);
+        const refreshed = await body(await post('greetings/read', { avatar_url: 'Alice.png' }));
+        expect(refreshed.greetings).toEqual(['hello', 'second-edited', 'third']);
+        expect(refreshed.revision).toBe(edit.revision);
 
-        const deleted = await body(await post('greetings/delete', { avatar_url: 'Alice.png', greeting_id: edit.ids[0], expected_hash: edit.hashes[0] }));
+        const deleted = await body(await post('greetings/delete', { avatar_url: 'Alice.png', greeting_id: add.ids[0], expected_hash: add.hashes[0] }));
         expect(deleted.greetings).toEqual(['second-edited', 'third']);
     });
 });

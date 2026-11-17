@@ -24,3 +24,14 @@ export async function cardTokenCounts(request, { avatar, card, at = null, chatId
     if (!counted) return null;
     return { avatar, counts: counted.counts, tokenizer: counted.tokenizer, ...(counted.warnings ? { warnings: counted.warnings } : {}) };
 }
+
+/** Count just the edited greeting, independently of the write request.
+ * @param {import('express').Request} request
+ * @param {string} avatar
+ * @param {string} text
+ */
+export async function greetingTokenCount(request, avatar, text) {
+    const [filled] = await withSafeMacrosFilled(request, { avatar_url: avatar, macro_facts: {} }, [text.replace(/\r\n?/g, '\n')]);
+    const counted = await countWithConnection(request.user.directories, settingsContextOf({ avatar }), [filled]);
+    return counted ? { avatar, text, count: counted.counts[0], tokenizer: counted.tokenizer } : null;
+}

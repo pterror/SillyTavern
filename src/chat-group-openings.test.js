@@ -146,10 +146,12 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         assert.deepEqual((await edit(node, 'Ann 1')).shown, [], 'another member\'s greeting is another author\'s');
         assert.equal((await decodedOf(node)).message.mes, 'Ann 1');
         const done = await edit(node, 'Bo 4');
-        assert.deepEqual(done.shown, [{ node_id: node, same: { greeting_id: 4, avatar: 'bo.png' } }], 'a finished edit to the member\'s other greeting goes to it');
-        assert.equal((await decodedOf(node)).message.mes, 'Ann 1', 'and is not stored');
+        assert.deepEqual(done.shown, []);
+        assert.equal(done.applied, 1, 'the existing opening holds the matching greeting');
+        assert.equal((await decodedOf(node)).message.mes, 'Bo 4');
+        assert.deepEqual((await listed()).all, [['ann.png', 'Ann 0', false], ['ann.png', 'Ann 1', false], ['bo.png', 'Bo 0', false], ['bo.png', 'Bo 4', true]]);
         const [session] = await store.chatRead('ids', { space: 1, keys: [a.session] });
-        assert.deepEqual(await chats.cardChoice(session, t), { card: bo.id, id: 4, epoch: 0 });
+        assert.equal(await chats.cardChoice(session, t), null, 'the session stays on its stored opening');
 
         assert.deepEqual(await chats.showSameAlternative({ tree: t, treeSpeaker: null, after: null, content: by(bo, 'Bo 0', { greeting_id: 4 }), typing: true, actor: a }), { greeting_id: 0, avatar: 'bo.png' });
         assert.equal(await chats.showSameAlternative({ tree: t, treeSpeaker: null, after: null, content: by(ann, 'Bo 0', { greeting_id: 0 }), typing: true, actor: a }), null);

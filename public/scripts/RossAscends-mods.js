@@ -219,6 +219,7 @@ askOnChatOpen('card_token_counts', owner => (owner.type === 'character' ? { macr
 
 /** @type {{ avatar: string, counts: number[], tokenizer: any } | null} */
 let savedCardCounts = null;
+let editedCardCounts = null;
 
 /**
  * Takes the counts of a card's texts the server answered a save of it with.
@@ -226,6 +227,7 @@ let savedCardCounts = null;
  */
 export function takeCardCounts(counts) {
     if (!counts || typeof counts.avatar !== 'string' || !Array.isArray(counts.counts)) return;
+    editedCardCounts = null;
     savedCardCounts = { avatar: counts.avatar, counts: counts.counts, tokenizer: counts.tokenizer ?? null };
     countCharTokensWhenShown();
 }
@@ -237,6 +239,7 @@ export function takeCardCounts(counts) {
 function knownCardCounts() {
     if (menu_type === 'create') return null;
     const avatar = String($('#avatar_url_pole').val() ?? '');
+    if (editedCardCounts?.avatar === avatar) return editedCardCounts;
     const opened = chatOpenPart('card_token_counts', getCurrentChatId());
     const part = savedCardCounts?.avatar === avatar ? savedCardCounts : (opened?.avatar === avatar ? opened : null);
     if (!part) return null;
@@ -711,4 +714,21 @@ export function initRossMods() {
             }
         }
     });
+}
+
+/** Freeze the text/count associations before applying a greeting delta.
+ * @param {string} avatar
+ */
+export function keepCardCountsBeforeGreetingEdit(avatar) {
+    if (String($('#avatar_url_pole').val() ?? '') !== avatar) return;
+    const known = knownCardCounts();
+    editedCardCounts = { avatar, counts: new Map(known?.counts ?? []), tokenizer: known?.tokenizer ?? null };
+}
+
+/** @param {{avatar: string, text: string, count: number, tokenizer: any}|null} answer */
+export function takeGreetingTokenCount(answer) {
+    if (!answer || editedCardCounts?.avatar !== answer.avatar || !Number.isFinite(answer.count)) return;
+    editedCardCounts.counts.set(answer.text, answer.count);
+    editedCardCounts.tokenizer = answer.tokenizer;
+    countCharTokensWhenShown();
 }

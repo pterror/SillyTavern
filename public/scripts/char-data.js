@@ -119,6 +119,8 @@
  * @property {string} chat - name of the current chat file chat
  * @property {string} avatar - file name of the avatar image (acts as a unique identifier)
  * @property {string} [thing] - the character's entity id
+ * @property {{ ids: number[], texts: string[], default_index: number|null, revision?: string, hashes?: number[] }} [card_greetings]
+ * @property {string} [card_revision] - the revision of the complete card held by the page
  * @property {string} json_data - the full raw JSON data of the character
  * @property {boolean?} shallow - if the data is shallow (lazy-loaded)
  */

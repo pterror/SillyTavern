@@ -1531,6 +1531,16 @@ impl Store {
     }
 
     #[napi(ts_args_type = "batch: number", ts_return_type = "Promise<boolean>")]
+    pub fn greeting_index_step<'env>(&self, env: &'env Env, batch: u32) -> Result<Object<'env>> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.store.greeting_index_step(batch.max(1) as usize, Box::new(move |r| match r {
+            Ok(more) => deferred.resolve(move |_| Ok(more)),
+            Err(e) => deferred.reject(store_error(e)),
+        }));
+        Ok(promise)
+    }
+
+    #[napi(ts_args_type = "batch: number", ts_return_type = "Promise<boolean>")]
     pub fn message_order_conversion_step<'env>(&self, env: &'env Env, batch: u32) -> Result<Object<'env>> {
         let (deferred, promise) = env.create_deferred()?;
         self.store.message_order_conversion_step(
@@ -2587,6 +2597,40 @@ fn chat_read_job(op: String, args: &Object) -> Result<TreeRead> {
                 })
                 .map(JsTree)
             })
+        }
+        "rootGroup" => {
+            let tree = req_integer(a, "tree")?;
+            let group = req_integer(a, "group")?;
+            Box::new(move |s| s.chat_read(|v| {
+                use crate::store::order::{self, List};
+                let list = List::roots(tree, group);
+                Ok(cr::Js::Obj(vec![("count", cr::Js::Num(order::count(v, list)? as f64)), ("first", order::first(v, list)?.map_or(cr::Js::Null, cr::Js::Big))]))
+            }).map(JsTree))
+        }
+        "dirtyCardIdentities" => {
+            Box::new(move |s| s.chat_read(|v| {
+                Ok(cr::Js::Arr(crate::store::greeting_index::dirty_identities(v)?.into_iter().map(cr::Js::Big).collect()))
+            }).map(JsTree))
+        }
+        "greetingField" => {
+            let card = req_integer(a, "card")?;
+            let id = req_integer(a, "id")?;
+            Box::new(move |s| s.chat_read(|v| {
+                crate::store::greeting_index::greeting_field_of(v, card, id).map(|f| f.map_or(cr::Js::Null, |f| cr::Js::Num(f as f64)))
+            }).map(JsTree))
+        }
+        "greetingsMatchingText" | "openingsMatchingText" => {
+            let card = req_integer(a, "card")?;
+            let text = string("text", a.get::<Unknown>("text")?.ok_or_else(|| invalid("text is required".into()))?)?;
+            let openings = op == "openingsMatchingText";
+            Box::new(move |s| s.chat_read(|v| {
+                use crate::store::greeting_index as gi;
+                Ok(if openings {
+                    cr::Js::Arr(gi::matching_openings(v, card, &text)?.into_iter().map(|(tree, m)| cr::Js::Obj(vec![("tree", cr::Js::Big(tree)), ("id", cr::Js::Big(m))])).collect())
+                } else {
+                    cr::Js::Arr(gi::matching_greetings(v, card, &text)?.into_iter().map(|f| cr::Js::Num(f as f64)).collect())
+                })
+            }).map(JsTree))
         }
         "sessions" => {
             let ids = integers(a, "ids")?;

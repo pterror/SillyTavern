@@ -334,7 +334,9 @@ test('a group\'s opening is chosen by its greeting\'s id and character, never it
     assert.deepEqual(pop.texts, ['Hi.', '', 'Bye.']);
     assert.equal(pop.ids.length, pop.texts.length, 'each greeting, an empty one too, has its id');
     const { character } = (await open({ avatar_url: 'Pop.png', with_character: true }, tab)).body;
-    assert.deepEqual(character.card_greetings, { ids: pop.ids, texts: pop.texts, default_index: pop.defaultIndex }, 'the character the page gets has its greetings with their ids');
+    const { revision, ...cardGreetings } = character.card_greetings;
+    assert.match(revision, /^\d+$/);
+    assert.deepEqual(cardGreetings, { ids: pop.ids, texts: pop.texts, default_index: pop.defaultIndex }, 'the character the page gets has its greetings with their ids');
     const [hi, bye] = ['Hi.', 'Bye.'].map(text => pop.ids[pop.texts.indexOf(text)]);
 
     assert.deepEqual(await shown(), ['Pip.png', 'Hi.']);

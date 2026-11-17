@@ -1056,7 +1056,6 @@ pub fn entities_only(
         .flat_map(|&e| FIXED.iter().map(move |&s| key::id(s, e)))
         .collect();
     let got = view.get_many(&keys)?;
-    let want_field = |f: &FieldRef| only.fields.iter().position(|w| w == f);
     let mut found: Vec<Vec<Option<Cur>>> = Vec::with_capacity(ids.len());
     let mut items: Vec<Vec<(u64, u64, u64)>> = Vec::with_capacity(ids.len());
     let mut item_keys = Vec::new();
@@ -1066,18 +1065,9 @@ pub fn entities_only(
         let mut mine = Vec::new();
         let mut tags = Vec::new();
         if got[n * per].is_some() {
-            if !only.fields.is_empty() {
-                let hp = key::id(key::HEAD, e);
-                let codes_end = key::field(key::HEAD, e, &FieldRef::Code(library::ITEM_BASE));
-                let mut keyed = hp.clone();
-                keyed.push(2);
-                for (from, to) in [(hp.clone(), codes_end), (keyed, key::prefix_end(&hp))] {
-                    for (k, v) in view.scan(&from, &to, usize::MAX)? {
-                        if let Some(i) = want_field(&library::field_after(&k, key::HEAD)?) {
-                            fields[i] = Some(Cur::parse(&v)?);
-                        }
-                    }
-                }
+            let field_keys: Vec<_> = only.fields.iter().map(|f| key::field(key::HEAD, e, f)).collect();
+            for (slot, value) in fields.iter_mut().zip(view.get_many(&field_keys)?) {
+                *slot = value.as_deref().map(Cur::parse).transpose()?;
             }
             for &list in &only.lists {
                 let lp = key::ids(key::ITEM, e, list);

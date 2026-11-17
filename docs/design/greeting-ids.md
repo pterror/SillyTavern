@@ -6,9 +6,11 @@ refers to its id: the default, and each session's remembered choice of the greet
 greeting's position, so nothing is reindexed when greetings are added, deleted or moved.
 
 No two greetings of a card have the same text; texts that differ only in whitespace are different. An add or an edit
-to another greeting's text is refused with that greeting's position and id (`same_position`, `same_id`), and the page
+to another greeting's text is refused with that greeting's id (`same_id`), and the page
 keeps the field open, unsaved, saying which greeting it is the same as, with a link that pages to it by its id. The create form checks the same
-before the card is saved.
+before the card is saved. An edit conflict includes the current revision; the page finds the other greeting's
+position in its cached list, refreshing that list only if stale. Other greeting operations may also answer
+`same_position` when they already have it.
 
 ## In the store
 
@@ -25,7 +27,22 @@ delete removes the id, a new default moves its id into `first_mes_item` and the 
 A change names each greeting it acts on by its id and the hash of the text it was read with (`greetings/edit`,
 `greetings/delete`, and the alternatives list's operations: `greeting_id` / `id`, `expected_hash` / `hash`); it is
 refused when that greeting is gone or its text is no longer the one read, never applied to another greeting found by
-its text or position. An add names only where it goes. Each answer has the card's greetings with their ids (`ids`).
+its text or position. An add names only where it goes.
+
+`greetings/edit` writes only the selected text field, in the character's write lane. It answers with
+`edit: { id, text, hash }`, `base_revision`, `revision`, and a compact opening delta for an open chat. It does not
+reconstruct or validate the whole card, enumerate conversations, or return the greeting list. The page applies a
+delta only against its base revision; a stale list is explicitly refreshed through `greetings/read`. The complete
+card's revision is tracked separately, so acknowledging a greeting delta cannot hide another writer's field edits
+from library synchronization. Token counts for the edited text are requested separately through `greetings/count`.
+
+Exact-text indexes locate duplicate greetings by character and matching stored openings by their character and
+text hash, with full-text verification. Writes maintain these derived indexes; existing stores build them once,
+in resumable pages at open. An edit's work does not depend on unrelated conversations or greeting texts.
+
+The stored whole-card identity hash is invalidated by a direct edit. An index records which identities need
+recomputing; import deduplication computes them only when it needs them. Card data size changes by the edited
+text's length difference. Exports assemble the card from its stored fields as usual.
 
 ## In the card file
 
@@ -73,15 +90,19 @@ An opening's greeting is of the character it is stored as spoken by: a member's,
 character's for one by it, and for a user's own first message, in a character's tree. A user's opening in a group's
 tree is no greeting's.
 
-Texts are compared only when a first message is written (stored, edited, imported or converted): one whose text is a
+When a first message is written (stored, edited, imported or converted), one whose text is a
 card greeting of its character's is that greeting, linked with its id and `extra.greeting_hash`, the hash of the text
 it had. Any other keeps the greeting it came from, unlinked.
 Only the exact text matches, whitespace included (owner, 2026-11-16). Openings linked before by their text without surrounding whitespace hold their greeting no more
 once `scripts/convert-greeting-links-exact.mjs` has run, with the server stopped: each keeps its `greeting_id`, and
 loses `greeting_hash` unless its text is exactly another greeting's.
 
-A card greeting is left out of the openings exactly when a stored opening links to it with its current text's hash:
-editing the card greeting offers its new text again beside the opening that had the old one.
+A card greeting is left out of the openings when its group's first stored opening names that greeting and has
+exactly its current text. This is checked from the text when reading, rather than maintained by rewriting a saved
+hash after card edits. Editing a card greeting offers its new text beside an opening that retains the old text.
+An indexed lookup also finds character openings matching the new text: an opening from that greeting keeps its
+existing link, and a matching opening from elsewhere acquires that greeting's link and group placement. The
+opening's text and continuation stay intact. No conversation index is scanned.
 
 The openings are in card order (a group's: each member's card in member order): each card greeting, then the stored
 openings from it, in their group's order. After every card greeting come the openings from no greeting, then each

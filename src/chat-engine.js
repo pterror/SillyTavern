@@ -325,12 +325,12 @@ function avatarOf(o) {
 }
 
 /**
- * @param {string} nodeId
+ * @param {string|null} nodeId
  * @param {Record<string, any>} o
  * @param {boolean} itemized
  */
 function alternativeEntry(nodeId, o, itemized) {
-    /** @type {Record<string, any>} */
+    /** @type {Record<string, any> & { node_id: string|null, mes: string, extra: Record<string, any> }} */
     const entry = { node_id: nodeId, mes: o?.mes ?? '', send_date: o?.send_date, extra: o?.extra ?? {}, name: o?.name, is_user: !!o?.is_user, ...avatarOf(o) };
     if (itemized) entry.extra = { ...(entry.extra && typeof entry.extra === 'object' ? entry.extra : {}), [ITEMIZED_PROMPT_FLAG]: true };
     return entry;
@@ -479,7 +479,7 @@ export class PlaceError extends Error {}
  * @param {Record<string, any>} after
  */
 function relinked(before, after) {
-    return before?.extra?.greeting_id !== after?.extra?.greeting_id || before?.extra?.greeting_hash !== after?.extra?.greeting_hash;
+    return before?.extra?.greeting_id !== after?.extra?.greeting_id || before?.mes !== after?.mes;
 }
 
 /**
@@ -1040,6 +1040,55 @@ export class ChatEngine {
     }
 
     /**
+     * Link only roots matching this character's new greeting text. Existing origins remain valid;
+     * text equality at read time says whether they still hold the current greeting.
+     * @param {bigint} card
+     * @param {{ id: number, text: string }} greeting
+     * @param {Actor} actor
+     */
+    async linkGreetingMatches(card, greeting, actor) {
+        const matches = await this.store.chatRead('openingsMatchingText', { card, text: greeting.text });
+        /** @type {Map<bigint, bigint[]>} */
+        const trees = new Map();
+        for (const row of matches) {
+            if (!trees.has(row.tree)) trees.set(row.tree, []);
+            trees.get(row.tree).push(row.id);
+        }
+        const changed = [];
+        for (const [tree, ids] of trees) {
+            await this.serialized(tree, async () => {
+                if (tree !== card && !(await this.people.members(tree)).some(member => member.id === card)) return;
+                const places = await this.store.chatRead('places', { ids });
+                const stored = await this.stored(ids);
+                const decoded = await this.decoded(ids.map(id => stored.get(id)));
+                const records = [];
+                const { user } = await this.actorIds(actor, records);
+                const speakers = await this.people.speakers([card]);
+                const group = greetingGroup(tree, card, greeting.id);
+                const groupState = await this.store.chatRead('rootGroup', { tree, group });
+                let hasHolder = groupState.first !== null && ids.includes(groupState.first);
+                for (let i = 0; i < ids.length; i++) {
+                    const before = stored.get(ids[i]);
+                    const message = decoded[i];
+                    if (!before || before.parent !== null || message?.is_user === true || openingCard(tree, speakerIdOf(before)) !== card || message?.mes !== greeting.text) continue;
+                    const sameOrigin = message.extra?.greeting_id === greeting.id;
+                    if (sameOrigin && hasHolder) continue;
+                    const next = sameOrigin ? message : linkedToCard(message, [{ card, ...greeting }], card);
+                    if (!sameOrigin) records.push(...this.editRecords(before, next, speakers.get(card) ?? null).map(record => ({ ...record, user })));
+                    if (!sameOrigin || Number(places[i].place) !== 1 || BigInt(places[i].group) !== group) {
+                        records.push({ kind: 'messagePlace', message: ids[i], group, first: !hasHolder, user });
+                    }
+                    hasHolder = true;
+                    changed.push({ tree, id: ids[i], node: this.externalId(before), from_group: String(places[i].group), from_place: Number(places[i].place), alternative: { ...alternativeEntry(this.externalId(before), next, false), greeting: { id: greeting.id, hash: hashGreetingText(greeting.text) } } });
+                }
+                if (records.length) await this.store.commit(records);
+            });
+        }
+        const positions = changed.length ? await this.store.chatRead('places', { ids: changed.map(row => row.id) }) : [];
+        return changed.map((row, i) => ({ ...row, to_group: String(positions[i].group), to_place: Number(positions[i].place) }));
+    }
+
+    /**
      * A tree's openings in card order, as segments: each card greeting's (the greeting itself unless an opening holds
      * it, then the openings from it, in their list's order), then the openings from no greeting, then each other
      * group's (a greeting deleted from its card, or of a character no longer a member), by group. One read of the
@@ -1062,8 +1111,7 @@ export class ChatEngine {
             const g = byGroup.get(group);
             byGroup.delete(group);
             const first = g?.first == null ? undefined : firstOf.get(g.first);
-            const hash = hashGreetingText(card.greetings[k].mes);
-            const held = first?.extra?.greeting_id === greetingId && first?.extra?.greeting_hash === hash;
+            const held = first?.extra?.greeting_id === greetingId && first?.mes === card.greetings[k].mes;
             segments.push({ group, card: k, held, count: Number(g?.count ?? 0), first: g?.first ?? null });
         });
         const rest = [...byGroup.values()].map(g => ({ ...g, group: BigInt(g.group) }));
@@ -1078,10 +1126,11 @@ export class ChatEngine {
      * @param {Actor} p.actor
      * @param {{ offset?: number, limit?: number, unstored?: boolean }} [p.range] unstored: every card greeting no stored opening holds, each with its `index`
      * @param {CardGreetings} [p.card] the tree's (`cardGreetings`), when the caller has read them
+     * @param {OpeningSegment[]} [p.segments]
      */
-    async openingAlternatives({ tree, actor, range = {}, card: given }) {
+    async openingAlternatives({ tree, actor, range = {}, card: given, segments: givenSegments }) {
         const card = given ?? await this.cardGreetings(tree);
-        const segments = await this.openingSegments(tree, card);
+        const segments = givenSegments ?? await this.openingSegments(tree, card);
         const slot = (/** @type {OpeningSegment} */ seg) => (seg.card !== null && !seg.held ? 1 : 0);
         const starts = [];
         let total = 0;
@@ -1567,7 +1616,7 @@ export class ChatEngine {
         if (!Number.isInteger(greetingId) || (card === tree && (await this.owner(tree)).group)) return moving ? [{ ...base, first: false, group: 0n }] : [];
         const group = greetingGroup(tree, card, greetingId);
         const text = own.find(g => g.id === greetingId)?.text;
-        const holds = (/** @type {Record<string, any> | undefined} */ c) => text !== undefined && c?.extra?.greeting_id === greetingId && c?.extra?.greeting_hash === hashGreetingText(text);
+        const holds = (/** @type {Record<string, any> | undefined} */ c) => text !== undefined && c?.extra?.greeting_id === greetingId && c?.mes === text;
         if (holds(content)) return [{ ...base, first: true, group }];
         const [first] = (await this.store.chatRead('children', { tree, group, limit: 1 })).ids;
         if (first !== undefined && first !== id) {
@@ -1986,7 +2035,7 @@ export class ChatEngine {
                 records.push({ kind: 'messagePlace', message: id, first: false, group, user });
                 moved++;
                 const text = greetings.find(g => g.id === extra.greeting_id)?.text;
-                if (text !== undefined && extra.greeting_hash === hashGreetingText(text)) holders.push({ id, group });
+                if (text !== undefined && decoded[i]?.mes === text) holders.push({ id, group });
             }
             for (const { id, group } of holders) records.push({ kind: 'messagePlace', message: id, first: true, group, user });
             if (moved) await this.store.commit(records);

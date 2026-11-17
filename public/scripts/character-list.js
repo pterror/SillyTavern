@@ -1025,13 +1025,13 @@ export function startLibraryChangesAt(seq) {
 
 /**
  * @param {number} sinceSeq
- * @returns {Promise<{seq: number, changes: {id: string, op: 'upsert'|'delete', type?: 'group'}[], hasMore: boolean}>}
+ * @returns {Promise<{seq: number, changes: {id: string, op: 'upsert'|'delete', type?: 'group', revision?: string}[], hasMore: boolean}>}
  */
 async function fetchChangesPage(sinceSeq) {
     const changesResponse = await fetch('/api/characters/changes', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ sinceSeq }),
+        body: JSON.stringify({ sinceSeq, revisions: true }),
         signal: AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS),
     });
     if (!changesResponse.ok) {
@@ -1056,9 +1056,13 @@ async function syncHeld() {
     const groupsDeleted = new Set();
     for (;;) {
         const page = await fetchChangesPage(seq);
-        for (const { id, op, type } of page.changes) {
+        for (const { id, op, type, revision } of page.changes) {
             const [store, live, gone] = type === 'group' ? [groupsStore, groupsUpserted, groupsDeleted] : [charactersStore, upserted, deleted];
             if (!store.has(id)) continue;
+            if (type !== 'group' && op === 'upsert' && revision && charactersStore.get(id)?.card_revision === revision) {
+                live.delete(id);
+                continue;
+            }
             (op === 'delete' ? live : gone).delete(id);
             (op === 'delete' ? gone : live).add(id);
         }

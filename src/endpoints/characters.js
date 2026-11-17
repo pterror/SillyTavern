@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { pageFactsOf } from '../macro-facts.js';
-import { shownMacrosAnswer } from '../message-macros.js';
-import { cardTokenCounts } from '../card-token-counts.js';
+import { shownMacrosAnswer, sentMacroValues } from '../message-macros.js';
+import { cardTokenCounts, greetingTokenCount } from '../card-token-counts.js';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import { Buffer } from 'node:buffer';
@@ -37,8 +37,8 @@ import { savedViewsEvents } from '../saved-views.js';
 import { getAtPath, getStringHash, normalizeFav, setAtPath } from '../../public/scripts/hash-utils.js';
 import { applyGreetingsModelToCard } from '../greeting-list.js';
 import { defaultPositionOf, greetingOperation, hashGreetingText } from '../greeting-ops.js';
-import { cardGreetingsReadOf } from '../opening-state.js';
-import { countedOpeningState, MESSAGE_COUNTS_EVENT } from '../message-count-service.js';
+import { cardGreetingsReadOf, greetingOpeningEdit, openingState } from '../opening-state.js';
+import { countedOpeningState, countSent, MESSAGE_COUNTS_EVENT } from '../message-count-service.js';
 import { CHAT_LINKS_EVENT } from '../chat-links.js';
 import { showGreeting } from '../tab-views.js';
 import { withSearchTiming } from '../search-timing.js';
@@ -445,6 +445,7 @@ export async function characterObjects(request, avatars, { shallow }) {
         const json = JSON.stringify(card);
         const character = getCharaCardV2(JSON.parse(json), false);
         character.avatar = e.key;
+        character.card_revision = String(e.version);
         character.thing = String(e.id);
         assignThumbnails(character, thumbnailsOf(e, 'avatar'));
         character.avatar_ref = avatarRefString(TYPE.character, e.key);
@@ -461,7 +462,7 @@ export async function characterObjects(request, avatars, { shallow }) {
         if (allow?.json !== undefined) character.allow_global_styles = !!JSON.parse(allow.json);
         if (shallow) return toShallow(character);
         const greetings = cardGreetingsReadOf(e);
-        character.card_greetings = { ids: greetings.ids, texts: greetings.texts, default_index: greetings.defaultIndex };
+        character.card_greetings = { ids: greetings.ids, texts: greetings.texts, default_index: greetings.defaultIndex, revision: String(e.version) };
         return character;
     }));
 }
@@ -1208,16 +1209,56 @@ async function runGreetingOperation(directories, avatar, op) {
 }
 
 /**
- * @param {object} p
- * @param {import('../users.js').UserDirectoryList} p.directories
- * @param {import('../user-stores.js').UserStore} p.store
- * @param {import('../chat-engine.js').Actor | null} p.actor
- * @param {string} p.avatar
- * @param {import('../greeting-ops.js').GreetingChange} p.change
- * @param {{ tree: bigint, groupId: string }} [p.group] the group chat whose openings the answer has, one the character
+ * @typedef {object} GreetingChangeRequest
+ * @property {import('../users.js').UserDirectoryList} directories
+ * @property {import('../user-stores.js').UserStore} store
+ * @property {import('../chat-engine.js').Actor | null} actor
+ * @property {string} avatar
+ * @property {import('../greeting-ops.js').GreetingChange} change
+ * @property {{ tree: bigint, groupId: string }} [group] the group chat whose openings the answer has, one the character
  *   is a member of; the character's own chat's when absent
  */
-export async function changeGreetings({ directories, store, actor, avatar, change, group }) {
+const greetingChangeQueues = new Map();
+
+/** @param {GreetingChangeRequest} p */
+export function changeGreetings(p) {
+    const key = p.directories.root + '\0' + p.avatar;
+    const task = (greetingChangeQueues.get(key) ?? Promise.resolve()).then(() => changeGreetingsNow(p));
+    const tail = task.then(() => {}, () => {});
+    greetingChangeQueues.set(key, tail);
+    void tail.then(() => { if (greetingChangeQueues.get(key) === tail) greetingChangeQueues.delete(key); });
+    return task;
+}
+
+/**
+ * @param {import('../user-stores.js').UserStore} store
+ * @param {bigint} tree
+ * @param {bigint} card
+ * @param {string} avatar
+ * @param {{id: number, text: string, hash: number}} edit
+ * @param {any[]} moves
+ * @param {{directories: import('../users.js').UserDirectoryList, pageFacts?: unknown}} options
+ */
+async function greetingOpeningAnswer(store, tree, card, avatar, edit, moves, { directories, pageFacts }) {
+    const answer = await greetingOpeningEdit(store, tree, card, avatar, edit, moves);
+    const owner = answer.owner;
+    const opening_macros = await sentMacroValues(directories, { avatar: 'avatar_url' in owner ? owner.avatar_url : null,
+        groupId: 'group_id' in owner ? owner.group_id : null, pageFacts }, { alternatives: [{ ...answer.speaker, mes: edit.text, is_user: false }] });
+    return { ...answer, opening_macros };
+}
+
+/** @param {GreetingChangeRequest} p */
+async function changeGreetingsNow({ directories, store, actor, avatar, change, group }) {
+    if (change.op === 'edit') {
+        const result = await store.lib.editGreeting(avatar, change.id, change.hash, change.text);
+        if (!result.ok) return { result, opening: null };
+        const moves = result.changed ? await store.chats.linkGreetingMatches(result.card, { id: change.id, text: change.text }, { user: store.handle }) : [];
+        const event = { avatar, card: result.card, edit: result.edit, base_revision: result.baseRevision, revision: result.revision, moves };
+        if (result.changed) store.events.emit('greeting-edited', event);
+        const tree = group?.tree ?? result.card;
+        const opening = actor === null ? null : { greeting_edit: { ...await greetingOpeningAnswer(store, tree, result.card, avatar, result.edit, moves, { directories }), revision: result.revision } };
+        return { result, opening };
+    }
     const result = await applyGreetingOperation(directories, avatar, greetingOperation(change));
     const [tree] = actor === null ? [null] : group ? [group.tree] : await store.people.trees([{ avatar }]);
     if (!result.ok || tree === null || tree === undefined || actor === null) return { result, opening: null };
@@ -1236,7 +1277,10 @@ async function sendGreetingChange(request, response, change) {
     const actor = await sessionActorOf(request, store, avatar);
     const { result, opening } = await changeGreetings({ directories: request.user.directories, store, actor, avatar, change });
     if (!result.ok) {
-        return response.status(result.status ?? 409).send({ ok: false, reason: result.reason, ...(Number.isInteger(result.same) ? { same_position: result.same, same_id: result.sameId } : {}) });
+        return response.status(result.status ?? 409).send({ ok: false, reason: result.reason, ...(Number.isInteger(result.sameId) ? { same_id: result.sameId, ...(Number.isInteger(result.same) ? { same_position: result.same } : {}), ...('revision' in result ? { revision: result.revision } : {}) } : {}) });
+    }
+    if ('edit' in result) {
+        return response.send({ ok: true, edit: result.edit, base_revision: result.baseRevision, revision: result.revision, ...(opening ?? {}) });
     }
     const counts = await savedCardCounts(request, avatar);
     /** @type {Record<string, unknown>} */
@@ -1260,6 +1304,49 @@ async function sessionActorOf(request, store, avatar) {
     if (tree === null || tree === undefined) return null;
     return (await requestSession(store.chats, request, tree)).reader();
 }
+
+router.post('/greetings/count', validateAvatarUrlMiddleware, async (request, response) => {
+    try {
+        const { avatar_url: avatar, greeting_id: id, expected_hash: hash } = request.body;
+        if (typeof avatar !== 'string' || !Number.isInteger(id) || !Number.isFinite(hash)) return response.sendStatus(400);
+        const { lib } = await requestStore(request);
+        const greeting = await lib.readGreeting(avatar, id);
+        if (!greeting) return response.sendStatus(404);
+        const { text } = greeting;
+        if (hashGreetingText(text) !== hash) return response.sendStatus(409);
+        const owner = request.body.opening_owner;
+        const message_counts = await countSent(request, { avatar: owner?.group_id ? null : avatar, groupId: owner?.group_id ?? null }, {
+            alternatives: [{ mes: text, is_user: false, original_avatar: avatar, extra: { greeting_id: id } }],
+        });
+        return response.send({ ...await greetingTokenCount(request, avatar, text), message_counts });
+    } catch (error) {
+        console.error('Could not count the edited greeting:', error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/greetings/read', validateAvatarUrlMiddleware, async (request, response) => {
+    try {
+        const store = await requestStore(request);
+        const avatar = String(request.body.avatar_url || '');
+        const e = await store.lib.entity(TYPE.character, avatar);
+        if (!e) return response.sendStatus(404);
+        const model = cardGreetingsReadOf(e);
+        let opening;
+        const owner = request.body.opening_owner;
+        if (owner && sessionHeaderOf(request) !== undefined) {
+            const [tree] = await store.people.trees([owner.group_id ? { group: owner.group_id } : { avatar: owner.avatar_url }]);
+            if (tree !== null && tree !== undefined) {
+                const actor = (await requestSession(store.chats, request, tree)).reader();
+                opening = await openingState({ store, tree, actor });
+            }
+        }
+        return response.send({ greetings: model.texts, ids: model.ids, hashes: model.texts.map(hashGreetingText), default_position: model.defaultIndex, revision: String(e.version), ...(opening ? { opening_state: opening } : {}) });
+    } catch (error) {
+        console.error('Could not refresh greetings:', error);
+        return response.sendStatus(500);
+    }
+});
 
 router.post('/greetings/add', validateAvatarUrlMiddleware, async function (request, response) {
     try {
@@ -1323,8 +1410,7 @@ router.post('/greetings/show', validateAvatarUrlMiddleware, async function (requ
         const tab = sessionHeaderOf(request);
         if (tab === undefined || tab === 'none') return response.status(400).send({ ok: false, reason: 'the tab has no session' });
         const store = await requestStore(request);
-        const { greetings } = await store.lib.greetingModel(avatar);
-        const greeting = greetings.find(g => g.id === id);
+        const greeting = await store.lib.readGreeting(avatar, id);
         if (!greeting || hashGreetingText(greeting.text) !== expectedHash) return response.status(409).send({ ok: false, reason: 'the greeting changed or is gone' });
         await showGreeting(store.lib, tab, avatar, id, order);
         return response.send({ ok: true, greeting_shown: { id } });
@@ -2037,7 +2123,7 @@ router.post('/changes', async function (request, response) {
             return response.sendStatus(400);
         }
         const { lib } = await requestStore(request);
-        return response.send(await lib.changes(sinceSeq, CHANGES_PAGE_SIZE));
+        return response.send(await lib.changes(sinceSeq, CHANGES_PAGE_SIZE, { revisions: request.body?.revisions === true }));
     } catch (err) {
         console.error('[characters/changes] Change-feed query failed:', err);
         return response.status(500).send({ error: true });
@@ -2239,12 +2325,27 @@ router.get('/changes/stream', async function (request, response) {
             if (tab && records.some(r => CHAT_MOVES.has(/** @type {any} */ (r).kind))) {
                 ui.chatMoved(uiUser(request), tab.session).catch(error => console.error('[ui] chat views not pushed:', error));
             }
-            if (tab && records.some(r => ALTERNATIVE_CHANGES.has(/** @type {any} */ (r).kind))) {
+            if (tab && !(/** @type {any} */ (records).greetingEdit) && records.some(r => ALTERNATIVE_CHANGES.has(/** @type {any} */ (r).kind))) {
                 ui.changedFor(uiUser(request), tab.session, ALTERNATIVES_VIEWS).catch(error => console.error('[ui] alternatives not pushed:', error));
             }
         } catch (err) {
             console.error('[characters/changes/stream] A change could not be told:', err);
         }
+    };
+    let greetingPushChain = Promise.resolve();
+    const onGreetingEdited = (event) => {
+        greetingPushChain = greetingPushChain.then(async () => {
+            try {
+                let opening;
+                if (tab) {
+                    const here = await store.chats.pointer(tab.session);
+                    if (here && (here.tree === event.card || (await store.people.members(here.tree)).some(member => member.id === event.card))) {
+                        opening = { ...await greetingOpeningAnswer(store, here.tree, event.card, event.avatar, event.edit, event.moves, { directories: request.user.directories, pageFacts: pageFactsOf(request) }), revision: event.revision };
+                    }
+                }
+                send({ type: 'greeting-edit', avatar: event.avatar, edit: event.edit, base_revision: event.base_revision, revision: event.revision, greeting_edit: opening });
+            } catch (error) { console.error('Could not push the greeting edit:', error); }
+        });
     };
     const onTagChanges = () => writeTagsChanged();
     const onMessageCounts = (/** @type {object[]} */ counts) => send({ type: 'message-counts', counts });
@@ -2262,6 +2363,7 @@ router.get('/changes/stream', async function (request, response) {
     };
 
     store.events.on('commit', onCommit);
+    store.events.on('greeting-edited', onGreetingEdited);
     store.events.on(MESSAGE_COUNTS_EVENT, onMessageCounts);
     store.events.on(CHAT_LINKS_EVENT, onChatLinks);
     lib.tags.on('tag-changes', onTagChanges);
@@ -2271,6 +2373,7 @@ router.get('/changes/stream', async function (request, response) {
 
     request.on('close', () => {
         store.events.off('commit', onCommit);
+        store.events.off('greeting-edited', onGreetingEdited);
         store.events.off(MESSAGE_COUNTS_EVENT, onMessageCounts);
         store.events.off(CHAT_LINKS_EVENT, onChatLinks);
         lib.tags.off('tag-changes', onTagChanges);
@@ -2362,6 +2465,7 @@ async function tabStreamSession(request, store, send) {
     /** @type {{ tree: bigint, json: string } | null} */
     let openingsPushed = null;
     const pushOpenings = async (/** @type {any[]} */ records) => {
+        if (/** @type {any} */ (records).greetingEdit) return;
         const here = await chats.pointer(session);
         if (here === null) return;
         const owner = await ownerOf(here.tree);

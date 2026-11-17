@@ -772,6 +772,7 @@ fn drop_text_with(
     let old = materialize(view, h, f, &head)?;
     match h {
         Holder::Entity(entity) => {
+            super::greeting_index::greeting_changed(view, out, entity, f, None)?;
             if search {
                 super::searched::text_written(view, out, entity, f, Some(&old), None)?;
                 super::book_stats::value_changed(view, out, entity, f, false, None)?;
@@ -978,6 +979,7 @@ impl Deriver for TextEdit {
         let wants_old = match h {
             Holder::Entity(entity) => {
                 super::searched::wants(view, entity, f)?
+                    || super::greeting_index::greeting_field(f)
                     || library::places(f)
                     || tags::tag_field(f)
                     || super::book_stats::tracked(view, entity)?

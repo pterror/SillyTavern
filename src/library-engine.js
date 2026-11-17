@@ -6,6 +6,7 @@ import { parseCreateDateToEpochMs } from './util.js';
 import { tagDerivedColumns } from './tag-order.js';
 import { TAG_COLOR_KEYS, tagLookWritten } from './tag-looks.js';
 import { LibraryTags } from './library-engine-tags.js';
+import { hashGreetingText } from './greeting-ops.js';
 import { textEdit, wtf8Length } from './text-edit.js';
 import { itemField, pushAll, storedValues, valueRecords, withoutLook, withoutStatements } from './entity-values.js';
 import { GREETING_LIST, collapseGreetings, goneGreetings, greetingModelOf, greetingRecords, greetingTextsOf, hasSameGreetings, matchedGreetings } from './greeting-items.js';
@@ -394,7 +395,13 @@ export class LibraryEngine {
      */
     static async open(engine, dir) {
         const store = await engine.Store.open(dir);
-        return new LibraryEngine(store, await store.libraryNextId());
+        try {
+            while (await store.greetingIndexStep(500)) { /* resumable index upgrade, before requests */ }
+            return new LibraryEngine(store, await store.libraryNextId());
+        } catch (error) {
+            await store.close();
+            throw error;
+        }
     }
 
     async close() {
@@ -819,9 +826,10 @@ export class LibraryEngine {
     /**
      * @param {number} sinceSeq
      * @param {number} limit
+     * @param {{ revisions?: boolean }} [options]
      * @returns {Promise<{ seq: number, changes: { id: string, op: 'upsert' | 'delete', fields?: null, type?: 'group' }[], truncated: false, hasMore: boolean }>}
      */
-    async changes(sinceSeq, limit) {
+    async changes(sinceSeq, limit, { revisions = false } = {}) {
         const page = await this.store.chatRead('entityChanges', { after: BigInt(Math.max(0, Math.trunc(sinceSeq))), limit });
         const live = page.entries.filter((/** @type {any} */ e) => e.gone === null);
         const keys = live.length ? await this.store.libraryKeys(live.map((/** @type {any} */ e) => e.id)) : [];
@@ -835,7 +843,7 @@ export class LibraryEngine {
                 continue;
             }
             const k = keyOf.get(e.id);
-            if (k && k.type === TYPE.character) changes.push({ id: k.key, op: 'upsert', fields: null });
+            if (k && k.type === TYPE.character) changes.push({ id: k.key, op: 'upsert', fields: null, ...(revisions ? { revision: String(e.pos) } : {}) });
             if (k && k.type === TYPE.group) changes.push({ id: k.key, op: 'upsert', type: 'group' });
         }
         const last = page.entries.length ? Number(page.entries[page.entries.length - 1].pos) : null;
@@ -1034,7 +1042,11 @@ export class LibraryEngine {
      */
     async findByHash(which, hex) {
         if (hex === null) return null;
-        const [id] = await this.store.libraryByHash(which, Buffer.from(hex, 'hex'), 1);
+        let [id] = await this.store.libraryByHash(which, Buffer.from(hex, 'hex'), 1);
+        if (id === undefined && which === HASH.identity) {
+            for (const dirty of await this.store.chatRead('dirtyCardIdentities', {})) await this.refreshIdentityHash(dirty);
+            [id] = await this.store.libraryByHash(which, Buffer.from(hex, 'hex'), 1);
+        }
         return id === undefined ? null : (await this.entities([id]))[0]?.key ?? null;
     }
 
@@ -1045,8 +1057,28 @@ export class LibraryEngine {
      */
     async findByIdentityHashes(contentIdentityHash, avatarIdentityHash) {
         if (contentIdentityHash === null || avatarIdentityHash === null) return null;
-        const [id] = await this.store.libraryByHashes(HASH.identity, Buffer.from(contentIdentityHash, 'hex'), HASH.avatarIdentity, Buffer.from(avatarIdentityHash, 'hex'), 1);
+        const lookup = () => this.store.libraryByHashes(HASH.identity, Buffer.from(contentIdentityHash, 'hex'), HASH.avatarIdentity, Buffer.from(avatarIdentityHash, 'hex'), 1);
+        let [id] = await lookup();
+        if (id === undefined) {
+            const candidates = await this.store.libraryByHash(HASH.avatarIdentity, Buffer.from(avatarIdentityHash, 'hex'), Number.MAX_SAFE_INTEGER);
+            for (const candidate of candidates) await this.refreshIdentityHash(candidate);
+            [id] = await lookup();
+        }
         return id === undefined ? null : (await this.entities([id]))[0]?.key ?? null;
+    }
+
+    /** @param {bigint} id */
+    async refreshIdentityHash(id) {
+        const [key] = await this.store.libraryKeys([id]);
+        if (!key || key.type !== TYPE.character) return;
+        await this.serialized(TYPE.character, key.key, async () => {
+            const [metadata] = await this.entities([id], { fields: [], lists: [] });
+            if (!metadata || metadata.hashes.some(h => h.which === HASH.identity)) return;
+            const [e] = await this.entities([id]);
+            if (!e) return;
+            const record = await this.identityHashRecord(e);
+            if (record) await this.store.commit([record]);
+        });
     }
 
     /**
@@ -1167,10 +1199,58 @@ export class LibraryEngine {
         return (await this.store.chatRead('treeBookmarks', { tree, limit: 1 })).length > 0;
     }
 
+    /** @param {string} avatar @param {number} id */
+    async readGreeting(avatar, id) {
+        const [card] = await this.ids(TYPE.character, [avatar]);
+        if (card === null || !Number.isSafeInteger(id) || id < 0) return null;
+        const field = await this.store.chatRead('greetingField', { card, id });
+        if (field === null) return null;
+        const [entity] = await this.entities([card], { fields: [field], lists: [] });
+        return entity ? { id, text: entity.values.find(value => value.field === field)?.text ?? '' } : null;
+    }
+
     /**
+     * Edit one stored greeting in the character lane. Whole-card validation belongs to card imports/writes.
      * @param {string} avatar
-     * @returns {Promise<import('./greeting-items.js').GreetingModel>}
+     * @param {number} greetingId
+     * @param {number} expectedHash
+     * @param {string} text
      */
+    editGreeting(avatar, greetingId, expectedHash, text) {
+        return this.serialized(TYPE.character, avatar, async () => {
+            if (typeof text !== 'string' || text === '') return { ok: false, status: 400, reason: 'refused to blank stored greeting text' };
+            if (!Number.isSafeInteger(greetingId) || greetingId < 0 || !Number.isFinite(expectedHash)) return { ok: false, status: 400, reason: 'greeting_id and expected_hash are required' };
+            const [id] = await this.ids(TYPE.character, [avatar]);
+            if (id === null) return { ok: false, status: 404, reason: 'character not found' };
+            const field = await this.store.chatRead('greetingField', { card: id, id: greetingId });
+            if (field === null) return { ok: false, status: 409, reason: 'the greeting is gone' };
+            const [e] = await this.entities([id], { fields: [field, FIELD.first_mes_item], lists: [] });
+            if (!e) return { ok: false, status: 404, reason: 'character not found' };
+            const old = e.values.find(v => v.field === field)?.text ?? '';
+            if (hashGreetingText(old) !== expectedHash && old !== text) return { ok: false, status: 409, reason: 'the greeting changed since it was loaded' };
+            const same = (await this.store.chatRead('greetingsMatchingText', { card: id, text })).find(f => f !== field);
+            if (same !== undefined) {
+                const defaultId = JSON.parse(e.values.find(value => value.field === FIELD.first_mes_item)?.json ?? '0');
+                const duplicate = same === FIELD.first_mes ? defaultId : (same - 1024) / 8;
+                return { ok: false, status: 409, reason: 'same as another greeting', sameId: duplicate, revision: String(e.version) };
+            }
+            const baseRevision = String(e.version);
+            if (old !== text) {
+                /** @type {object[]} */
+                const records = [
+                    { kind: 'textEdit', entity: id, field, ...textEdit(old, text) },
+                    // The whole-card identity is computed only when needed for import deduplication.
+                    { kind: 'cardHash', entity: id, which: HASH.identity },
+                ];
+                if (e.dataSize !== undefined) records.push({ kind: 'dataSize', entity: id, size: e.dataSize + text.length - old.length });
+                Object.assign(records, { greetingEdit: true });
+                await this.store.commit(records);
+            }
+            return { ok: true, card: id, edit: { id: greetingId, text, hash: hashGreetingText(text) }, baseRevision, revision: String(await this.store.version(id)), changed: old !== text };
+        });
+    }
+
+    /** @param {string} avatar @returns {Promise<import('./greeting-items.js').GreetingModel>} */
     async greetingModel(avatar) {
         return greetingModelOf(await this.entity(TYPE.character, avatar));
     }

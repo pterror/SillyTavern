@@ -6,7 +6,7 @@ import { getCharacterCardFields } from '../character-card-fields.js';
 import { getChatCompletionModel } from '../chat-completion-model.js';
 import { apiTokenLimits, generationMacroFacts, readPageMacroFacts } from '../macro-facts.js';
 import { resolveSpeakers } from '../macro-scope.js';
-import { substituteParams } from '../macro-substitution.js';
+import { baseChatReplace, substituteParams } from '../macro-substitution.js';
 import { readSettingsFor, settingsContextOf } from '../settings-reads.js';
 import { resolveTextGenBackend } from '../textgen-backend-resolve.js';
 import { storeRoute } from '../user-stores.js';
@@ -18,6 +18,21 @@ router.use(requireSessionHeader);
 
 const MAX_MACROS = 1000;
 const MAX_MACRO_LENGTH = 100_000;
+
+// These macros need names, mention notes, persona text, or the base environment. Nested/unknown macros
+// keep the complete context; a greeting containing {{char}} must not load every other greeting.
+const BASE_MACROS = new Set(['char', 'user', 'group', 'groupnotmuted', 'notchar', 'charifnotgroup',
+    'newline', 'space', 'noop', 'trim', 'date', 'time', 'weekday', 'isodate', 'isotime', 'datetimeformat',
+    'timediff', 'model', 'maxcontext', 'maxcontexttokens', 'maxprompt', 'maxprompttokens', 'maxresponse', 'maxresponsetokens', 'ismobile',
+    'charcreatornotes', 'creatornotes', 'persona']);
+
+/** @param {string[]} macros */
+function needsOnlyBase(macros) {
+    return macros.every(source => {
+        const name = /^\{\{\s*([\w_-]+)(?:[^{}]*)\}\}$/.exec(source)?.[1]?.toLowerCase();
+        return name !== undefined && (BASE_MACROS.has(name) || /^time_utc[-+]\d+$/.test(name));
+    });
+}
 
 /**
  * @param {import('../users.js').UserDirectoryList} directories
@@ -38,10 +53,10 @@ function modelOf(directories, settingsContext, mainApi, oaiSettings) {
 /**
  * @param {any} request
  * @param {Record<string, any>} [body]
- * @param {{ withChat?: boolean }} [options] Without the chat, the context has the character and no messages.
+ * @param {{ withChat?: boolean, namesOnly?: boolean }} [options] Without the chat, the context has the character and no messages.
  * @returns {Promise<import('../macro-substitution.js').SubstituteParamsContext>}
  */
-export async function previewContext(request, body = request.body ?? {}, { withChat = true } = {}) {
+export async function previewContext(request, body = request.body ?? {}, { withChat = true, namesOnly = false } = {}) {
     const avatar = typeof body.avatar_url === 'string' && body.avatar_url !== '' ? body.avatar_url : null;
     const groupId = typeof body.group_id === 'string' && body.group_id !== '' ? body.group_id : null;
     const chat = withChat && (avatar !== null || groupId !== null) ? await chatContext(request, { avatar, group: groupId }) : null;
@@ -50,17 +65,18 @@ export async function previewContext(request, body = request.body ?? {}, { withC
         at: typeof body.at === 'string' && body.at !== '' ? body.at : null,
         name2: typeof body.name2 === 'string' ? body.name2 : null,
         pageFacts: body.macro_facts,
-    });
+    }, { namesOnly });
 }
 
 /**
  * What macros are filled in from, for a character or group, read from the chat when one is given
  * @param {import('../users.js').UserDirectoryList} directories
  * @param {{ avatar: string | null, groupId: string | null, chat?: import('../chat-request.js').ChatContext | null, at?: string | null, name2?: string | null, pageFacts?: unknown }} owner
+ * @param {{ namesOnly?: boolean }} [options]
  * @returns {Promise<import('../macro-substitution.js').SubstituteParamsContext>}
  */
-export async function macroContextOf(directories, { avatar, groupId, chat = null, at = null, name2: speaker = null, pageFacts: facts }) {
-    const speakers = await resolveSpeakers(directories, { avatar, groupId });
+export async function macroContextOf(directories, { avatar, groupId, chat = null, at = null, name2: speaker = null, pageFacts: facts }, { namesOnly = false } = {}) {
+    const speakers = await resolveSpeakers(directories, { avatar, groupId }, { namesOnly });
     const settingsContext = settingsContextOf({ avatar, groupId, chat, nodeId: at });
     const {
         power_user: powerUser = {}, extension_settings: extensionSettings = {}, oai_settings: oaiSettings = {},
@@ -80,6 +96,13 @@ export async function macroContextOf(directories, { avatar, groupId, chat = null
     const name2 = typeof speaker === 'string' ? speaker : speakers.name2;
     const isGroup = groupId !== null;
     const base = { ...macroFacts, name1, name2, isGroup, groupMembers: speakers.groupMembers, groupDisabledMembers: speakers.groupDisabledMembers, chat: messages, chatMetadata };
+    if (namesOnly) {
+        const names = { ...base, name2: speakers.character?.name || undefined };
+        return { ...base, model: modelOf(directories, settingsContext, mainApi, oaiSettings), characterCard: {
+            creatorNotes: baseChatReplace(speakers.character?.data?.creator_notes?.trim(), names),
+            persona: baseChatReplace(powerUser.persona_data?.[userAvatar]?.description?.trim(), names),
+        } };
+    }
     const characterCard = await getCharacterCardFields(directories, {
         avatar: avatar ?? undefined,
         groupId: groupId ?? undefined,
@@ -118,7 +141,7 @@ function macroValues(context, macros, all) {
  * @returns {Promise<(string | null)[]>}
  */
 export async function macroValuesIn(directories, owner, macros) {
-    return macros.length ? macroValues(await macroContextOf(directories, owner), macros, false) : [];
+    return macros.length ? macroValues(await macroContextOf(directories, owner, { namesOnly: needsOnlyBase(macros) }), macros, false) : [];
 }
 
 /**
@@ -130,7 +153,7 @@ export async function macroValuesIn(directories, owner, macros) {
 export async function withSafeMacrosFilled(request, scope, texts) {
     const macros = [...new Set(texts.flatMap(text => macrosIn(text)))];
     if (macros.length === 0) return texts.map(text => withMacroValues(text, () => null));
-    const values = new Map(macroValues(await previewContext(request, scope), macros, false).map((value, i) => [macros[i], value]));
+    const values = new Map(macroValues(await previewContext(request, scope, { namesOnly: needsOnlyBase(macros) }), macros, false).map((value, i) => [macros[i], value]));
     return texts.map(text => withMacroValues(text, source => values.get(source)));
 }
 

@@ -1,3 +1,4 @@
+import { openingGreetingEdit } from './opening-greeting-edit.js';
 import { getCurrentCharacter, getCurrentChatId, isStoredNodeId, isProvisionalNodeId, unstoredGreetingNodeId, composedOpeningNodeId, redisplayChat, refreshSwipeButtons, showMessageCount, updateMessageBlock, updateViewMessageIds, _messageSnapshots, markStoredAs, isAsStored, forgetStored, isReplyGenerating } from '../script.js';
 import { eventSource, event_types } from './events.js';
 import { openingView } from './opening-view.js';
@@ -596,6 +597,30 @@ export function openingsOwnerOf(named) {
     return null;
 }
 
+/** @type {any[] | null} */
+let currentOpeningLayout = null;
+const greetingOpeningRevisions = new Map();
+
+/** @param {any} edit */
+export async function takeGreetingOpeningEdit(edit) {
+    if (!edit || !sameOwner(edit.owner, _currentOwner())) return true;
+    if (!currentOpeningLayout) return false;
+    const revisionKey = JSON.stringify(edit.owner) + ':' + edit.avatar;
+    if (greetingOpeningRevisions.get(revisionKey) === edit.revision) return true;
+    const first = _chatAt(0);
+    if (!first) return true;
+    const owner = _currentOwner();
+    takeMacroValues(owner, edit.opening_macros);
+    const state = openingGreetingEdit(currentOpeningLayout, first, edit, {
+        name: getCurrentCharacter()?.name ?? '',
+        nodeId: alternative => unstoredGreetingNodeId(alternative, owner && 'avatar_url' in owner ? owner.avatar_url : null),
+    });
+    if (!state) return false;
+    greetingOpeningRevisions.set(revisionKey, edit.revision);
+    await takeOpenings(owner, state);
+    return true;
+}
+
 /**
  * @param {{ avatar_url: string } | { group_id: string } | null | undefined} owner the chat whose tree the openings are
  * @param {unknown} answer an answer carrying `openings` and `card_openings`
@@ -605,6 +630,8 @@ export async function takeOpenings(owner, answer, { render = true } = {}) {
     if (!answer || typeof answer !== 'object' || !('openings' in answer)) return;
     if (owner) takeMacroValues(owner, /** @type {{ opening_macros?: unknown }} */ (answer).opening_macros);
     if (!sameOwner(owner, _currentOwner())) return;
+    const layout = /** @type {{ opening_layout?: any[] }} */ (answer).opening_layout;
+    currentOpeningLayout = Array.isArray(layout) ? layout : null;
     const character = 'avatar_url' in /** @type {object} */ (owner) ? getCurrentCharacter() : null;
     const avatar = owner && 'avatar_url' in owner ? owner.avatar_url : null;
     const state = /** @type {import('./opening-view.js').OpeningState} */ (answer);
