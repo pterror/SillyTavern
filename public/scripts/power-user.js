@@ -1800,9 +1800,11 @@ export async function loadPowerUserSettings(settings, data) {
     $('#trim_spaces').prop('checked', power_user.trim_spaces);
     $('#continue_on_send').prop('checked', power_user.continue_on_send);
     $('#quick_continue').prop('checked', power_user.quick_continue);
-    $('#quick_impersonate').prop('checked', power_user.quick_continue);
+    $('#quick_impersonate').prop('checked', power_user.quick_impersonate);
     $('#mes_continue').css('display', power_user.quick_continue ? '' : 'none');
+    $('#option_continue').css('display', power_user.quick_continue ? 'none' : '');
     $('#mes_impersonate').css('display', power_user.quick_impersonate ? '' : 'none');
+    $('#option_impersonate').css('display', power_user.quick_impersonate ? 'none' : '');
     $('#gestures-checkbox').prop('checked', power_user.gestures);
     $('#auto_swipe').prop('checked', power_user.auto_swipe);
     $('#auto_swipe_minimum_length').val(power_user.auto_swipe_minimum_length);
@@ -3651,6 +3653,7 @@ jQuery(() => {
         const value = !!$(this).prop('checked');
         power_user.quick_continue = value;
         $('#mes_continue').css('display', value ? '' : 'none');
+        $('#option_continue').css('display', value ? 'none' : '');
         saveSettingsDebounced('power_user.quick_continue');
     });
 
@@ -3658,6 +3661,7 @@ jQuery(() => {
         const value = !!$(this).prop('checked');
         power_user.quick_impersonate = value;
         $('#mes_impersonate').css('display', value ? '' : 'none');
+        $('#option_impersonate').css('display', value ? 'none' : '');
         saveSettingsDebounced('power_user.quick_impersonate');
     });
 
