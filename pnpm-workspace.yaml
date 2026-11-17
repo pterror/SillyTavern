@@ -17,4 +17,5 @@ allowBuilds:
 
 patchedDependencies:
   inotify-remastered-plus@2.5.0: patches/inotify-remastered-plus@2.5.0.patch
+  '@pterror/interact-keybinds@0.1.0': patches/interact-keybinds-row-hook.patch
   png-chunks-extract@1.0.0: patches/png-chunks-extract@1.0.0.patch

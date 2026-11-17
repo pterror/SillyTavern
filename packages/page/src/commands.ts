@@ -13,6 +13,8 @@ import { mouseParse } from '@pterror/interact-keybinds/mouse-parse';
 export type Command = {
     id: string;
     label: string;
+    /** App-owned classes for this command's menu and palette rows */
+    className?: string;
     /** The heading it is listed under in the help's list, the cheatsheet and the key settings */
     category: string;
     keys?: readonly string[];

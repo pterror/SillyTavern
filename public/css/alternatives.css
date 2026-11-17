@@ -210,7 +210,7 @@ body.no-blur dialog.alternatives::backdrop {
 }
 
 .alternative-button:hover {
-    background-color: var(--white30a);
+    background-color: var(--hover-background);
 }
 
 .alternative-button[aria-disabled="true"] {

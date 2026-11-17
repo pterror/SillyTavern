@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  '@pterror/interact-keybinds@0.1.0': 921ec5677597526a4f80d71b7b208963b60757f4f775cb605b11ed45e1a97df2
   inotify-remastered-plus@2.5.0: 42566960d2550cd5e9c1d912e03f5c9a9f14d4506103f0aec4bf870fa599831f
   png-chunks-extract@1.0.0: 6346ec72f46cb45f291579c7f9925d4e8056ff4bc5bd6258408c2f72dbff136c
 
@@ -122,7 +123,7 @@ importers:
         version: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list)
       '@pterror/interact-keybinds':
         specifier: github:pterror/interact#0a80cd6be37ad69eb06150b90ee237bcb40231fe&path:/packages/keybinds
-        version: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/keybinds(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list)
+        version: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/keybinds(patch_hash=921ec5677597526a4f80d71b7b208963b60757f4f775cb605b11ed45e1a97df2)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list)
       '@pterror/interact-list':
         specifier: github:pterror/interact#0a80cd6be37ad69eb06150b90ee237bcb40231fe&path:/packages/list
         version: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list
@@ -710,7 +711,7 @@ importers:
     dependencies:
       '@pterror/interact-keybinds':
         specifier: github:pterror/interact#0a80cd6be37ad69eb06150b90ee237bcb40231fe&path:/packages/keybinds
-        version: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/keybinds(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list)
+        version: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/keybinds(patch_hash=921ec5677597526a4f80d71b7b208963b60757f4f775cb605b11ed45e1a97df2)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list)
       '@pterror/interact-list':
         specifier: github:pterror/interact#0a80cd6be37ad69eb06150b90ee237bcb40231fe&path:/packages/list
         version: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list
@@ -5986,7 +5987,7 @@ snapshots:
       '@codemirror/view': 6.43.13
       '@pterror/interact-list': https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list
 
-  '@pterror/interact-keybinds@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/keybinds(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list)':
+  '@pterror/interact-keybinds@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/keybinds(patch_hash=921ec5677597526a4f80d71b7b208963b60757f4f775cb605b11ed45e1a97df2)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list)':
     dependencies:
       '@pterror/interact-list': https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list
 

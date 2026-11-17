@@ -157,7 +157,10 @@ function messageCommands(messageOf, actions) {
         command('message.embed', t`Attach file`, exists, actions.attachFile),
         command('message.prompt', t`Show prompt`, mesId => actions.hasPrompt(chat[mesId]), actions.showPrompt),
         command('message.greeting', t`Show in character info`, canShowOpeningInCharacterInfo, showOpeningInCharacterInfo),
-        command('message.delete', t`Delete`, mesId => exists(mesId) && !messageEditOpen(), mesId => deleteMessage(mesId, undefined, power_user.confirm_message_delete)),
+        {
+            ...command('message.delete', t`Delete`, mesId => exists(mesId) && !messageEditOpen(), mesId => deleteMessage(mesId, undefined, power_user.confirm_message_delete)),
+            className: 'command-danger',
+        },
     ];
 }
 

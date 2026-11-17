@@ -135,15 +135,33 @@ function keySettingsIn(commands: Commands, element: HTMLElement, strings: String
  */
 export function commandSurfaces({ commands, focusActions, holdShowsKeys, t }: SurfaceOptions) {
     const strings = keyStrings(t);
+    let paletteCommands = new Map<string, Command>();
+    let menuCommands = new Map<string, Command>();
     const paletteElement = surface('commandPalette');
     const shown = palette({
-        commands: () =>
-            commands.available().filter((command) => command.id !== 'palette.open' && command.hidden !== true),
+        rest: 0,
+        commands: () => {
+            const list = commands
+                .available()
+                .filter((command) => command.id !== 'palette.open' && command.hidden !== true);
+            paletteCommands = new Map(list.map((command) => [command.id, command]));
+            return list;
+        },
+        row: (id, element) => {
+            element.setAttribute('class', paletteCommands.get(id)?.className ?? '');
+        },
         element: paletteElement,
         strings,
     });
     const menuElement = surface('commandMenu');
-    const menu = contextMenu({ element: menuElement, strings });
+    const menu = contextMenu({
+        element: menuElement,
+        rest: 0,
+        row: (id, element) => {
+            element.setAttribute('class', menuCommands.get(id)?.className ?? '');
+        },
+        strings,
+    });
     // Escape is taken here, so what Escape does under the surface (closing a drawer) doesn't also run
     const stopCancels = [
         focusActions.attach(paletteElement, {
@@ -171,6 +189,7 @@ export function commandSurfaces({ commands, focusActions, holdShowsKeys, t }: Su
     const makeTrigger = () => {
         stopTrigger();
         stopTrigger = cheatsheetTrigger({
+            delay: 250,
             open: sheetOpen,
             target: holdShowsKeys() ? globalThis : quiet,
             to: sheetOpen.set,
@@ -222,6 +241,7 @@ export function commandSurfaces({ commands, focusActions, holdShowsKeys, t }: Su
         palette: shown.open,
         /** Opens the menu with these commands below the anchor; with none that apply it opens nothing */
         openMenu: (anchor: Anchor, list: readonly Command[]) => {
+            menuCommands = new Map(list.map((command) => [command.id, command]));
             menu.openAt(anchor, list);
         },
         /** Shows the key settings in an element, until the returned function is called */

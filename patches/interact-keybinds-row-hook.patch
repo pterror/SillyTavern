@@ -1,0 +1,161 @@
+diff --git a/dist/cheatsheet-row.d.ts b/dist/cheatsheet-row.d.ts
+index 649f960c7..3c57c0a42 100644
+--- a/dist/cheatsheet-row.d.ts
++++ b/dist/cheatsheet-row.d.ts
+@@ -10,17 +10,18 @@ export type Entry = Readonly<{
+ }>;
+ export type CheatsheetRowOptions<E extends Entry> = Readonly<{
+     entryOf: (id: string) => E | undefined;
++    decorate?: (entry: E, element: Element) => void;
+     parts: (entry: E) => readonly (readonly string[])[];
+     watch: (listener: () => void) => () => void;
+ }>;
+ /**
+- * Fills rows
++ * Fills rows, then calls decorate(entry, element) when supplied so the app can set classes or attributes
+  * @template {Entry} E
+  * @param {CheatsheetRowOptions<E>} options - An id's entry; its bindings as display parts; and hearing either change
+  * @returns {Readonly<{ apply: (key: string | Header, element: Element) => void,
+  *   watch: (listener: () => void) => () => void }>} The facet
+  */
+-declare function cheatsheetRow<E extends Entry>({ entryOf, parts, watch }: CheatsheetRowOptions<E>): Readonly<{
++declare function cheatsheetRow<E extends Entry>({ decorate, entryOf, parts, watch }: CheatsheetRowOptions<E>): Readonly<{
+     apply: (key: string | Header, element: Element) => void;
+     watch: (listener: () => void) => () => void;
+ }>;
+diff --git a/dist/context-menu.d.ts b/dist/context-menu.d.ts
+index 639ceb96e..c7d96bee2 100644
+--- a/dist/context-menu.d.ts
++++ b/dist/context-menu.d.ts
+@@ -36,6 +36,7 @@ export type ContextMenuOptions = Readonly<{
+         get: () => ReadonlyMap<string, string> | undefined;
+     }>;
+     rest?: number;
++    row?: (id: string, element: Element) => void;
+ }>;
+ /**
+  * Builds a right-click menu in an element
+@@ -49,7 +50,7 @@ export type ContextMenuOptions = Readonly<{
+  * const menu = contextMenu({ element })
+  * keybinds([{ mouse: ['RightClick'], run: (event) => menu.openAt(pointOf(event), messageCommands) }])
+  */
+-declare function contextMenu({ element, layout, rest, strings }: ContextMenuOptions): Readonly<{
++declare function contextMenu({ element, layout, rest, row, strings }: ContextMenuOptions): Readonly<{
+     openAt: (anchor: Anchor, commands: readonly Command[]) => void;
+     close: () => void;
+     open: Readonly<{
+diff --git a/dist/palette.d.ts b/dist/palette.d.ts
+index 6528f088a..9c5278cf4 100644
+--- a/dist/palette.d.ts
++++ b/dist/palette.d.ts
+@@ -31,6 +31,7 @@ export type PaletteOptions = Readonly<{
+         get: () => ReadonlyMap<string, string> | undefined;
+     }>;
+     rest?: number;
++    row?: (id: string, element: Element) => void;
+ }>;
+ /**
+  * Builds a command palette in an element
+@@ -46,7 +47,7 @@ export type PaletteOptions = Readonly<{
+  * const shown = palette({ commands: () => commands, element })
+  * keybinds([...commands, { keys: ['$mod+k'], run: () => shown.open.set(true) }])
+  */
+-declare function palette({ commands, element, layout, matches, rest, strings }: PaletteOptions): Readonly<{
++declare function palette({ commands, element, layout, matches, rest, row, strings }: PaletteOptions): Readonly<{
+     open: Readonly<{
+         get: () => boolean;
+         set: (open: boolean) => void;
+diff --git a/src/cheatsheet-row.js b/src/cheatsheet-row.js
+index 5e1187c5a..8493a87e7 100644
+--- a/src/cheatsheet-row.js
++++ b/src/cheatsheet-row.js
+@@ -16,6 +16,7 @@
+  * @template {Entry} E
+  * @typedef {Readonly<{
+  *   entryOf: (id: string) => E | undefined,
++ *   decorate?: (entry: E, element: Element) => void,
+  *   parts: (entry: E) => readonly (readonly string[])[],
+  *   watch: (listener: () => void) => () => void,
+  * }>} CheatsheetRowOptions
+@@ -34,13 +35,13 @@ function made(tag, text) {
+ }
+ 
+ /**
+- * Fills rows
++ * Fills rows, then calls decorate(entry, element) when supplied so the app can set classes or attributes
+  * @template {Entry} E
+  * @param {CheatsheetRowOptions<E>} options - An id's entry; its bindings as display parts; and hearing either change
+  * @returns {Readonly<{ apply: (key: string | Header, element: Element) => void,
+  *   watch: (listener: () => void) => () => void }>} The facet
+  */
+-function cheatsheetRow({ entryOf, parts, watch }) {
++function cheatsheetRow({ decorate, entryOf, parts, watch }) {
+   return {
+     apply(key, element) {
+       const entry = typeof key === 'string' ? entryOf(key) : undefined
+@@ -56,6 +57,7 @@ function cheatsheetRow({ entryOf, parts, watch }) {
+         }),
+       )
+       element.replaceChildren(made('span', entry.label), bindings)
++      decorate?.(entry, element)
+     },
+     watch: (listener) =>
+       watch(() => {
+diff --git a/src/context-menu.js b/src/context-menu.js
+index 6c8853d3a..4f04ad2d0 100644
+--- a/src/context-menu.js
++++ b/src/context-menu.js
+@@ -63,6 +63,7 @@ import { withStrings } from './strings.js'
+  *   strings?: StringsOption,
+  *   layout?: Readonly<{ get: () => ReadonlyMap<string, string> | undefined }>,
+  *   rest?: number,
++ *   row?: (id: string, element: Element) => void,
+  * }>} ContextMenuOptions
+  */
+ 
+@@ -92,7 +93,7 @@ function applies(command) {
+  * const menu = contextMenu({ element })
+  * keybinds([{ mouse: ['RightClick'], run: (event) => menu.openAt(pointOf(event), messageCommands) }])
+  */
+-function contextMenu({ element, layout, rest, strings }) {
++function contextMenu({ element, layout, rest, row, strings }) {
+   const label = withStrings(strings).actions
+   made += 1
+   const prefix = `keybinds-menu-${String(made)}`
+@@ -124,6 +125,7 @@ function contextMenu({ element, layout, rest, strings }) {
+     facets: [
+       ids(idOf),
+       cheatsheetRow({
++        decorate: (command, element) => row?.(command.id, element),
+         entryOf: (id) => byId.get(id),
+         parts: (command) => bindingParts(command, layout?.get(), strings),
+         watch: () => () => undefined,
+diff --git a/src/palette.js b/src/palette.js
+index 5a04ca9a6..5a0a5562b 100644
+--- a/src/palette.js
++++ b/src/palette.js
+@@ -63,6 +63,7 @@ import { withStrings } from './strings.js'
+  *   strings?: StringsOption,
+  *   layout?: Readonly<{ get: () => ReadonlyMap<string, string> | undefined }>,
+  *   rest?: number,
++ *   row?: (id: string, element: Element) => void,
+  * }>} PaletteOptions
+  */
+ 
+@@ -108,7 +109,7 @@ function labelHasWords(command, query) {
+  * const shown = palette({ commands: () => commands, element })
+  * keybinds([...commands, { keys: ['$mod+k'], run: () => shown.open.set(true) }])
+  */
+-function palette({ commands, element, layout, matches = labelHasWords, rest, strings }) {
++function palette({ commands, element, layout, matches = labelHasWords, rest, row, strings }) {
+   const words = withStrings(strings)
+   const label = words.commands
+   made += 1
+@@ -164,6 +165,7 @@ function palette({ commands, element, layout, matches = labelHasWords, rest, str
+     facets: [
+       ids(idOf),
+       cheatsheetRow({
++        decorate: (command, element) => row?.(command.id, element),
+         entryOf: (id) => byId.get(id),
+         parts: (command) => bindingParts(command, layout?.get(), strings),
+         watch: () => () => undefined,

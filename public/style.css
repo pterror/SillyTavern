@@ -95,6 +95,8 @@
 
     --danger-bg: rgba(100, 0, 0, 0.7);
     --danger-bg-hover: rgba(255, 0, 0, 1);
+    --danger-color: var(--fullred);
+    --hover-background: color-mix(in srgb, var(--SmartThemeBodyColor) 15%, transparent);
 
     --interactable-outline-color: var(--white100);
     --interactable-outline-color-faint: var(--white20a);
@@ -2049,8 +2051,13 @@ input[type="range"].macro-colors-hue {
 
 .commandPalette [role="option"][data-active],
 .commandMenu [role="menuitem"][data-active] {
-    background-color: var(--SmartThemeQuoteColor);
-    color: var(--SmartThemeBlurTintColor);
+    background-color: var(--hover-background);
+    color: var(--SmartThemeBodyColor);
+}
+
+.commandPalette [role="option"].command-danger,
+.commandMenu [role="menuitem"].command-danger {
+    color: var(--danger-color);
 }
 
 .commandMenu {
@@ -4756,7 +4763,7 @@ grammarly-extension {
 .menu_button:not(.disabled):not([disabled]):hover,
 .menu_button:not(.disabled):not([disabled]).active,
 .keyBindings button:not([aria-disabled="true"]):hover {
-    background-color: var(--white30a);
+    background-color: var(--hover-background);
 }
 
 #dialogue_del_mes .menu_button {

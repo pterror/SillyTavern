@@ -1,5 +1,7 @@
 # Backlog
 
+- Context menu keyboard mnemonics: underline the access letter in each action and let that letter choose the action while the menu is open.
+
 - The whole app's UX, from first principles: fewer settings, settings next to what they act on; one consistent UI (prior art: ~/git/lee-app, ~/git/cyoa, ~/git/pteraworld/src/games); too many affordances. Every area held to UX principles as a whole, not to a list; among them, no unnecessary mouse travel, clicks or steps, no clutter, nothing to memorise, no condescending wording. One area at a time, each to the owner, after worldbuilding.
 - Clipping stays optional: what's behind a drawer is hidden only with a fully transparent background, and then as the user's choice ("it. fucking. shouldnt. without. a fucking. fully. transparent. background. and even then it should be user's choice", owner, 2026-10-25T10:02:51).
 - Touch: swipe gestures and swipe menus; the swipe picker trigger is too small on phones; swiping to change the character management page doesn't work. No long press: "long press is garbage ux" (owner, 2026-10-29T06:23:45). Left and right on the marking menu are previous and next: "left and right on the marking menu is fucking next/prev" (06:28:12).
