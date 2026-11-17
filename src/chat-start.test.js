@@ -42,28 +42,28 @@ async function chatWithReply() {
     return { chats, t, actor, greeting, reply, before, list };
 }
 
-test('a new chat keeps the conversation it leaves as a chat of its own, under its name and where it was', async () => {
+test('a new chat creates no bookmark and retains messages', async () => {
     const { chats, t, actor, greeting, reply, before, list } = await chatWithReply();
     const started = await chats.startChat({ tree: t, actor, node_id: greeting });
     assert.ok(started.ok);
-    assert.equal(started.kept, before);
-    assert.notEqual(started.name, before);
-    const rows = await list();
-    const kept = rows.find(r => r.name === before);
-    assert.ok(kept, `listed: ${JSON.stringify(rows.map(r => r.name ?? r.session))}`);
-    assert.equal(kept.last_mes, 'How are you?');
-    assert.equal(kept.at, reply);
+    assert.equal((await list()).some(r => r.name === before), false);
+    assert.deepEqual((await chats.bookmarks({ tree: t, limit: 10 })).rows, []);
     assert.equal(await chats.compatChatId(actor.session, actor.session, t), started.name);
-    const found = await chats.resolveChatName({ tree: t, name: before });
-    assert.ok(found !== null && 'bookmark' in found);
+    assert.equal((await chats.pointer(actor.session)).at, greeting);
+    assert.equal((await chats.load({ tree: t, at: reply })).messages.at(-1).mes, 'How are you?');
 });
 
-test('a new chat that replaces the current one leaves nothing behind', async () => {
-    const { chats, t, actor, greeting, before, list } = await chatWithReply();
-    const started = await chats.startChat({ tree: t, actor, node_id: greeting, keep: false });
-    assert.ok(started.ok);
-    assert.equal(started.kept, null);
-    assert.equal((await list()).some(r => r.name === before), false);
+test('a new chat retains a manually saved bookmark', async () => {
+    const { chats, t, actor, reply } = await chatWithReply();
+    const made = await chats.createBookmark({ tree: t, node_id: reply, name: 'Saved by me', actor });
+    assert.ok(made.ok);
+    await chats.setCurrentChat({ tree: t, bookmark: String(made.bookmark), actor });
+    assert.ok((await chats.startChat({ tree: t, actor })).ok);
+    const rows = (await chats.bookmarks({ tree: t, limit: 10 })).rows;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].name, 'Saved by me');
+    assert.equal(rows[0].at, reply);
+    assert.equal((await chats.pointer(actor.session)).at, null);
 });
 
 test('a new chat from a conversation still at its opening keeps nothing', async () => {
@@ -73,6 +73,5 @@ test('a new chat from a conversation still at its opening keeps nothing', async 
     const count = (await list()).length;
     const second = await chats.startChat({ tree: t, actor, node_id: greeting });
     assert.ok(second.ok);
-    assert.equal(second.kept, null);
     assert.equal((await list()).length, count);
 });
