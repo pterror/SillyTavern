@@ -1,6 +1,5 @@
 import { localforage } from '../lib.js';
 import { getCurrentUserHandle } from './user.js';
-import { normalizeTagIds } from './hash-utils.js';
 
 export const ROW_CACHE_QUOTA_SHARE = 0.1;
 
@@ -77,7 +76,7 @@ function keepMemory(sized) {
  */
 function sizedRows(entries) {
     return entries.map(({ key, row }) => {
-        const stored = structuredClone({ ...row, tag_ids: normalizeTagIds(row.tag_ids) });
+        const stored = structuredClone(row);
         return { key, stored, size: JSON.stringify(stored).length };
     });
 }
@@ -130,7 +129,7 @@ function locked(job) {
  * @returns {string | null}
  */
 export function characterRowKey(hashRow) {
-    return hashRow.version === null ? null : `c2:${hashRow.version}:${hashRow.tagIdsHash}:${hashRow.id}`;
+    return hashRow.version === null ? null : `c3:${hashRow.version}:${hashRow.tagIdsHash}:${hashRow.id}`;
 }
 
 /**
@@ -138,7 +137,7 @@ export function characterRowKey(hashRow) {
  * @returns {string}
  */
 export function groupRowKey(hashRow) {
-    return `g:${hashRow.favHash}:${hashRow.tagIdsHash}:${hashRow.contentHash}:${hashRow.id}`;
+    return `g2:${hashRow.favHash}:${hashRow.tagIdsHash}:${hashRow.contentHash}:${hashRow.id}`;
 }
 
 /**
