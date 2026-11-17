@@ -4351,20 +4351,23 @@
                             </div>
                         </div>
                     </div>
-                    <div name="KeysSettings" class="wide100p">
-                        <h4><span data-i18n="Keys">Keys</span></h4>
-                        <label class="checkbox_label alignItemsCenter" for="enable_md_hotkeys" data-i18n="[title]markdown_hotkeys_desc" title="Enable hotkeys for inserting markdown format characters in certain text input boxes. See '/help hotkeys'.">
-                            <input id="enable_md_hotkeys" type="checkbox" />
-                            <small>
-                                <span data-i18n="Markdown Hotkeys">Markdown Hotkeys</span>
-                                <i class="fa-brands fa-markdown"></i>
-                            </small>
-                        </label>
-                        <label class="checkbox_label alignItemsCenter" for="hotkey_overlay">
-                            <input id="hotkey_overlay" type="checkbox" />
-                            <small></small>
-                        </label>
-                        <div id="key_bindings" class="keyBindings"></div>
+                    <button id="open_key_settings" type="button" class="menu_button" aria-haspopup="dialog" aria-controls="key_settings" data-i18n="Keyboard shortcuts">Keyboard shortcuts</button>
+                    <div id="key_settings_storage" hidden>
+                        <div id="key_settings">
+                            <h2 id="key_settings_title" data-i18n="Keyboard shortcuts">Keyboard shortcuts</h2>
+                            <label class="checkbox_label alignItemsCenter" for="enable_md_hotkeys" data-i18n="[title]markdown_hotkeys_desc" title="Enable hotkeys for inserting markdown format characters in certain text input boxes. See '/help hotkeys'.">
+                                <input id="enable_md_hotkeys" type="checkbox" />
+                                <small>
+                                    <span data-i18n="Markdown Hotkeys">Markdown Hotkeys</span>
+                                    <i class="fa-brands fa-markdown"></i>
+                                </small>
+                            </label>
+                            <label class="checkbox_label alignItemsCenter" for="hotkey_overlay">
+                                <input id="hotkey_overlay" type="checkbox" />
+                                <small></small>
+                            </label>
+                            <div id="key_bindings" class="keyBindings"></div>
+                        </div>
                     </div>
                 </div>
             </div>

@@ -2139,7 +2139,7 @@ input[type="range"].macro-colors-hue {
 .keyBindings {
     display: flex;
     flex-direction: column;
-    font-size: smaller;
+    font-size: var(--mainFontSize);
 }
 
 /* Over .menu_button's size, which comes later */
@@ -2162,8 +2162,24 @@ input[type="range"].macro-colors-hue {
 }
 
 .keyBindings [role="group"] > [role="presentation"] {
+    font-size: 1.1em;
     font-weight: bold;
-    margin-bottom: 2px;
+    margin: 16px 0 6px;
+}
+
+#key_settings h2 {
+    font-size: 1.5em;
+    margin: 0 0 16px;
+}
+
+.keyBindings button:is([data-keybinds="reset-all"], [data-keybinds="remove"]) {
+    color: var(--SmartThemeBodyColor);
+    background-color: var(--crimson70a);
+    filter: none;
+}
+
+.keyBindings button:is([data-keybinds="reset-all"], [data-keybinds="remove"]):not([aria-disabled="true"]):hover {
+    background-color: var(--crimson-hover);
 }
 
 .keyBindings [role="group"] > div:not([role]) {
