@@ -1198,6 +1198,12 @@ async function runGreetingOperation(directories, avatar, op) {
     }
 
     await writeCharacter(/** @type {any} */ ({ user: { directories } }), avatar, JSON.stringify(character), { greetings: result.model });
+    const store = await userStore(directories);
+    const [card] = await store.people.trees([{ avatar }]);
+    if (card !== null && card !== undefined) {
+        const { relinkCardOpenings } = await import('../relink-card-openings.js');
+        await relinkCardOpenings(store, card, answer.greetings.map((text, i) => ({ id: answer.ids[i], text })));
+    }
     return answer;
 }
 

@@ -92,6 +92,24 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
+    test(`${kind}: matching a stored alternative reparents the displayed continuation and retains other branches`, async () => {
+        const { store, chats, t, id, send, shown, edit } = await fresh(engine);
+        await send(null, ['g', 'u1', 'b1', 'target child']);
+        await send('u1', ['b1x', 'my child', 'my end']);
+        const made = await chats.createBookmark({ tree: t, node_id: id['my end'], name: 'Continuation', actor: a });
+        assert.ok(made.ok);
+        await edit(id.b1x, 'b1');
+        assert.deepEqual(await shown(), ['g', 'u1', 'b1', 'my child', 'my end']);
+        const [target, child, other] = await chats.messageIds([id.b1, id['my child'], id['target child']]);
+        const stored = await chats.stored([child, other]);
+        assert.equal(stored.get(child).parent, target);
+        assert.equal(stored.get(other).parent, target);
+        assert.equal((await chats.bookmarks({ tree: t, limit: 10 })).rows[0].at, id['my end']);
+        await chats.select({ tree: t, node_id: id.b1x, actor: a });
+        assert.deepEqual(await shown(), ['g', 'u1', 'b1x']);
+        await store.close();
+    });
+
     test(`${kind}: a stored opening edited to another stored opening's exact text goes to that one`, async () => {
         const { store, id, send, shown, textOf, edit } = await fresh(engine);
         await send(null, ['Own A']);
@@ -103,7 +121,7 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         const done = await edit(id['Own B'], 'Own A');
         assert.deepEqual(done.shown, [{ node_id: id['Own B'], same: { node_id: id['Own A'] } }]);
         assert.equal(await textOf(id['Own B']), 'Own B');
-        assert.deepEqual(await shown(), ['Own A']);
+        assert.deepEqual(await shown(), ['Own A', 'u1']);
 
         const spaced = await edit(id['Own B'], 'Own A ');
         assert.deepEqual([spaced.applied, spaced.shown], [1, []]);
@@ -112,18 +130,17 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
     });
 
     test(`${kind}: a stored opening edited to a card greeting's exact text shows that greeting; one with other whitespace stays an edit`, async () => {
-        const { store, chats, t, id, send, shown, textOf, edit, card, chosen } = await fresh(engine);
+        const { store, chats, t, id, send, shown, textOf, edit, card } = await fresh(engine);
         await send(null, [said('Greeting 2, edited', { greeting_id: 7 })]);
         await send('Greeting 2, edited', ['u1']);
         assert.deepEqual(await shown(), ['Greeting 2, edited', 'u1']);
 
         const done = await edit(id['Greeting 2, edited'], 'Greeting 2');
-        assert.deepEqual(done.shown, [{ node_id: id['Greeting 2, edited'], same: { greeting_id: 7 } }]);
-        assert.equal(await textOf(id['Greeting 2, edited']), 'Greeting 2, edited');
-        assert.deepEqual(await shown(), [], 'the session is at the root');
-        assert.deepEqual(await chosen(), { card: t, id: 7, epoch: 0 });
+        assert.deepEqual([done.applied, done.shown], [1, []]);
+        assert.equal(await textOf(id['Greeting 2, edited']), 'Greeting 2');
+        assert.deepEqual(await shown(), ['Greeting 2', 'u1'], 'the continuation stays attached to the opening');
         const openings = /** @type {any} */ (await chats.openingAlternatives({ tree: t, actor: a, range: { limit: 10 }, card: await card() }));
-        assert.deepEqual(openings.alternatives.map((/** @type {any} */ x) => [x.mes, x.node_id === null]), [['Greeting 1', true], ['Greeting 2', true], ['Greeting 2, edited', false], ['Greeting 3', true]]);
+        assert.deepEqual(openings.alternatives.map((/** @type {any} */ x) => [x.mes, x.node_id === null]), [['Greeting 1', true], ['Greeting 2', false], ['Greeting 3', true]]);
         assert.equal(openings.alternatives[openings.default_index].mes, 'Greeting 2');
 
         const spaced = await edit(id['Greeting 2, edited'], 'Greeting 2 ');

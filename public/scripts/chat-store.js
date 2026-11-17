@@ -550,15 +550,6 @@ export async function followSameAlternative(mesId, shown) {
     await redisplayChat({ startIndex: mesId });
     updateViewMessageIds();
     refreshSwipeButtons(true);
-    const now = _chatAt(mesId);
-    if (now !== undefined) _noticeSameAlternative((now.swipe_id ?? 0) + 1);
-}
-
-/**
- * @param {number} place the alternative's number, as the swipe counter shows it
- */
-function _noticeSameAlternative(place) {
-    toastr.info(t`The text is the same as alternative ${place}, so the message shows that one.`, t`Same as alternative ${place}`);
 }
 
 /**

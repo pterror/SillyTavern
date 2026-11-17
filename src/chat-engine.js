@@ -1017,12 +1017,16 @@ export class ChatEngine {
      * @param {object} p
      * @param {bigint} p.tree a character's tree
      * @param {{ id: number, text: string }[]} p.greetings its character's
+     * @param {bigint} [p.card] the character whose greetings changed
      * @param {Actor} p.actor
      * @param {(message: Record<string, any>) => boolean} [p.only] which of them; all when absent
      * @returns {Promise<number>} how many changed
      */
-    async relinkStarts({ tree, greetings, actor, only = () => true }) {
-        const own = greetings.map(g => ({ card: tree, id: g.id, text: g.text }));
+    async relinkStarts({ tree, greetings, actor, only = () => true, card = tree }) {
+        const own = [
+            ...ChatEngine.treeGreetings(await this.cardGreetings(tree)).filter(g => g.card !== card),
+            ...greetings.map(g => ({ card, id: g.id, text: g.text })),
+        ];
         const edits = [];
         for (const { message, stored } of await this.openings(tree)) {
             if (!only(message)) continue;
@@ -1692,7 +1696,8 @@ export class ChatEngine {
 
     /**
      * An edit that gives a message the text of another of its alternatives (`sameAlternative`) is not stored: a
-     * `finished` one makes the session show that alternative (`shown`), any other is refused.
+     * `finished` one reuses that alternative, carrying the displayed continuation with it; any other is refused.
+     * A matching unstored card greeting is held by the edited opening itself.
      * @param {object} p
      * @param {bigint} p.tree
      * @param {Speaker | null} p.treeSpeaker
@@ -1751,11 +1756,21 @@ export class ChatEngine {
                 const speaker = await this.speakerFor(next, treeSpeaker);
                 const author = authorOf(next, speaker?.id ?? null);
                 const same = typeof next.mes === 'string' && next.mes !== now.mes && !isToolTurn(next) ? await this.sameAlternative(tree, s.parent, { text: next.mes, author }, { node: id }) : null;
-                if (same !== null) {
+                if (same !== null && ('node' in same || edit.finished !== true || session === null)) {
                     if (edit.finished !== true || session === null) {
                         refused.push({ node_id: edit.node_id, reason: 'an alternative with this text already exists', same: await this.sameNamed(tree, same) });
                     } else {
-                        records.push(...await this.showRecords(tree, s.parent, same, user, session));
+                        const path = await this.shownPath(tree, session);
+                        const at = path?.indexOf(s.id) ?? -1;
+                        const child = path !== null && at >= 0 ? path[at + 1] : undefined;
+                        if (path !== null && child !== undefined && 'node' in same) {
+                            records.push({ kind: 'messageParent', message: child, parent: same.node, user, session });
+                            records.push(this.moveTo(session, user, s.parent, same.node)[0]);
+                            records.push(this.moveTo(session, user, same.node, child)[0]);
+                            records.push({ kind: 'pointerMove', session, user, target: path[path.length - 1] });
+                        } else {
+                            records.push(...await this.showRecords(tree, s.parent, same, user, session));
+                        }
                         shown.push({ node_id: edit.node_id, same: await this.sameNamed(tree, same) });
                     }
                     continue;
