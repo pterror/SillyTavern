@@ -5,6 +5,7 @@ import { drawnText, PLAIN_TEXT } from './chat-text/surface.js';
 /**
  * @typedef {object} MacroRegistryView
  * @property {(name: string) => string | undefined} categoryOf
+ * @property {(name: string) => string | undefined} [descriptionOf]
  * @property {() => { name: string, category: string | undefined }[]} list
  */
 
@@ -21,6 +22,19 @@ export function setMacroRegistry(view) {
 /** @returns {{ name: string, category: string | undefined }[]} */
 export function registeredMacros() {
     return registry.list();
+}
+
+/**
+ * @param {string | null | undefined} name
+ * @returns {HTMLElement[]}
+ */
+export function macroDescription(name) {
+    const description = name ? registry.descriptionOf?.(name)?.trim() : undefined;
+    if (!description || description === '<no description>') return [];
+    const line = document.createElement('div');
+    line.className = 'macro-description';
+    line.textContent = description;
+    return [line];
 }
 
 /**

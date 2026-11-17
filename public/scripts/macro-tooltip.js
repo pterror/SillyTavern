@@ -1,4 +1,4 @@
-import { macroPersonCard } from './macro-pill.js';
+import { macroDescription, macroPersonCard } from './macro-pill.js';
 import { unclippedSpace } from './util/unclipped-space.js';
 
 const MACRO_TOOLTIP_ANCHOR = '[data-macro-source]';
@@ -25,14 +25,15 @@ let placed = '';
 function tooltipContent(el) {
     const source = el.getAttribute('data-macro-source') ?? '';
     const person = el.getAttribute('data-macro-person');
-    if (person) return [macroPersonCard(JSON.parse(person), source)];
+    const description = macroDescription(el.getAttribute('data-macro-name'));
+    if (person) return [macroPersonCard(JSON.parse(person), source), ...description];
     const code = document.createElement('code');
     code.textContent = source;
     const note = el.getAttribute('data-macro-note');
-    if (!note) return [code];
+    if (!note) return [code, ...description];
     const text = document.createElement('div');
     text.textContent = note;
-    return [code, text];
+    return [code, ...description, text];
 }
 
 function tooltipElement() {

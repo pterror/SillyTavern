@@ -1,5 +1,5 @@
 import { lookChanged, state as cmState, syntaxTree, view as cmView, walk } from '../../live-editor-lib.js';
-import { macroPersonCard, macroPill, macroPillContent, macroTooltipAttributes } from '../macro-pill.js';
+import { macroDescription, macroPersonCard, macroPill, macroPillContent, macroTooltipAttributes } from '../macro-pill.js';
 import { withFilledAbout } from '../safe-macros.js';
 
 const { StateEffect, StateField } = cmState;
@@ -96,12 +96,12 @@ function fillMacroDetails(dom, source, values, person, t) {
     }
     const shownPerson = kind === 'mention' && name ? withFilledAbout(person(name), name, other => values.get(other)) : null;
     if (shownPerson) {
-        dom.replaceChildren(macroPersonCard(shownPerson, source));
+        dom.replaceChildren(macroPersonCard(shownPerson, source), ...macroDescription(name));
         return;
     }
     const code = document.createElement('code');
     code.textContent = source;
-    dom.replaceChildren(code);
+    dom.replaceChildren(code, ...macroDescription(name));
     const line = kind === 'value' ? note || label : note;
     if (line) {
         const text = document.createElement('div');

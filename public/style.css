@@ -1778,6 +1778,11 @@ div.cm-tooltip.macro-tooltip.macro-cursor-tooltip {
     color: var(--macro-color);
 }
 
+.macro-description {
+    margin-block: 0.2em;
+    opacity: 0.8;
+}
+
 .macro-colors-editor {
     display: flex;
     flex-direction: column;

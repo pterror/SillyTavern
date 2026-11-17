@@ -55,6 +55,7 @@ function macroCategory(name) {
 
 setMacroRegistry({
     categoryOf: macroCategory,
+    descriptionOf: name => MacroRegistry.getPrimaryMacro(name)?.description,
     list: () => MacroRegistry.getAllMacros({ excludeAliases: true }).map(macro => ({ name: macro.name, category: macro.category })),
 });
 setMacroList(() => MacroRegistry.getAllMacros().map(macro => ({ name: macro.name, aliasOf: macro.aliasOf })));

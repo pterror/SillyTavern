@@ -64,6 +64,25 @@ function tooltipAt(doc, head, get, { focused = true, anchor = head } = {}) {
 }
 
 describe('the tooltip beside the cursor', () => {
+    test('includes registry descriptions alongside values, status notes, and person cards', async () => {
+        const { setMacroRegistry, macroDescription } = await import('../public/scripts/macro-pill.js');
+        setMacroRegistry({
+            categoryOf: () => undefined,
+            list: () => [],
+            descriptionOf: name => ({ time: 'Current local time.', getvar: 'Reads a variable.', user: 'Your name.', blank: '<no description>' })[name],
+        });
+        try {
+            expect(tooltipAt('{{time}}', 4, () => null)?.text).toBe('{{time}}Current local time.Filled in when sent');
+            expect(tooltipAt('{{getvar::mood}}', 4, () => 'cheerful')?.text).toBe('{{getvar::mood}}Reads a variable.cheerful');
+            expect(tooltipAt('{{user}}', 4, () => 'Sam')?.text).toContain('Your name.');
+            expect(tooltipAt('{{blank}}', 4, () => '')?.text).toBe('{{blank}}Sends nothing');
+            expect(tooltipAt('{{unknown}}', 4, () => undefined)?.text).toBe('{{unknown}}');
+            expect(macroDescription('time')[0].textContent).toBe('Current local time.');
+        } finally {
+            setMacroRegistry({ categoryOf: () => undefined, list: () => [] });
+        }
+    });
+
     test('says what a macro is and its value while the cursor is in it or beside it', () => {
         const values = (/** @type {string} */ source) => (source === '{{getvar::mood}}' ? 'cheerful' : undefined);
         const doc = 'Feeling {{getvar::mood}} today';
