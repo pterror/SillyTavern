@@ -94,13 +94,13 @@ function getReasoningEffort(settings, model, { electronHubReasoningEfforts = nul
                     return 'none';
                 }
                 if ([CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.AZURE_OPENAI].includes(settings.chat_completion_source)) {
-                    if (/^(?:gpt-5\.(?:4|5|6)|gpt-6-(?:sol|luna))/.test(model)) return 'none';
+                    if (/^(?:gpt-5\.(?:4|5|6)|gpt-6-(?:sol|luna)|gpt-6\.1-terra)/.test(model)) return 'none';
                     if (/^gpt-5/.test(model)) return reasoning_effort_types.min;
                 }
                 return reasoning_effort_types.low;
             case reasoning_effort_types.max:
                 if ([CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.AZURE_OPENAI].includes(settings.chat_completion_source)
-                    && /^gpt-6-/.test(model)) {
+                    && /^gpt-6(?:\.\d+)?-/.test(model)) {
                     return reasoning_effort_types.max;
                 }
                 if ([CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.AZURE_OPENAI].includes(settings.chat_completion_source)
@@ -178,7 +178,7 @@ export async function createGenerationParameters(settings, model, type, messages
     }
     messages = messages.filter(msg => msg && typeof msg === 'object');
 
-    const isDeepSeekVisionModel = typeof model === 'string' && model.toLowerCase().includes('deepseek-v4-flash-vision-exp');
+    const isDeepSeekVisionModel = typeof model === 'string' && /deepseek-(?:flash|v4-flash)/i.test(model);
     if (isDeepSeekVisionModel) {
         messages = messages.flatMap((message) => {
             if (!['system', 'assistant'].includes(message.role) || !Array.isArray(message.content)) {
@@ -485,10 +485,10 @@ export async function createGenerationParameters(settings, model, type, messages
         }
     }
 
-    if (gptSources.includes(settings.chat_completion_source) && /gpt-6-/.test(model)) {
+    if (gptSources.includes(settings.chat_completion_source) && /gpt-6(?:\.\d+)?-/.test(model)) {
         generate_data.max_completion_tokens = generate_data.max_tokens;
         delete generate_data.max_tokens;
-        if (model.includes('gpt-6-astra') || generate_data.reasoning_effort !== 'none') {
+        if (model.includes('gpt-6-astra') || model.includes('gpt-6.1-sol') || generate_data.reasoning_effort !== 'none') {
             delete generate_data.temperature;
             delete generate_data.top_p;
             delete generate_data.logprobs;
@@ -496,7 +496,7 @@ export async function createGenerationParameters(settings, model, type, messages
         }
     }
 
-    if (/claude-(fable|opus-5|sonnet-5)/.test(model)) {
+    if (/claude-(fable|opus-5|sonnet-5|haiku-5)/.test(model)) {
         delete generate_data.temperature;
         delete generate_data.top_p;
         delete generate_data.top_k;

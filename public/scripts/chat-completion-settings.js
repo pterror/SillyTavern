@@ -678,7 +678,7 @@ function saveModelList(data) {
         $('#model_nanogpt_select').val(oai_settings.nanogpt_model).trigger('change');
     }
 
-    if (oai_settings.chat_completion_source == chat_completion_sources.DEEPSEEK) {
+    if (oai_settings.chat_completion_source == chat_completion_sources.DEEPSEEK && model_list.length > 0) {
         $('#model_deepseek_select').empty();
         model_list.forEach((model) => {
             $('#model_deepseek_select').append($('<option>', { value: model.id, text: model.id }));
@@ -2148,6 +2148,8 @@ function isImageInliningSupported() {
         'gpt-4.1',
         'gpt-4.5-preview',
         'gpt-4o',
+        'gpt-6.1-sol',
+        'gpt-6.1-terra',
         'gpt-6-astra',
         'gpt-6-sol',
         'gpt-6-luna',
@@ -2162,6 +2164,7 @@ function isImageInliningSupported() {
         'claude-sonnet-4',
         'claude-sonnet-5',
         'claude-haiku-4',
+        'claude-haiku-5',
         'c4ai-aya-vision',
         'command-a-vision',
         'gemini-2.0',
@@ -2188,7 +2191,8 @@ function isImageInliningSupported() {
         'moonshot-v1-128k-vision-preview',
         'kimi-k2.5',
         'kimi-latest',
-        'deepseek-v4-flash-vision-exp',
+        'deepseek-flash',
+        'deepseek-v4-flash',
         'glm-4.5v',
         'glm-4.6v',
         'glm-5v-turbo',

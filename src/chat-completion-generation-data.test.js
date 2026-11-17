@@ -217,3 +217,27 @@ const messages = [{ role: 'user', content: 'hi' }];
 await assert.rejects(() => createGenerationParameters(baseSettings(), 'gpt-4o', 'normal', 'not an array'), /messages must be an array/);
 
 console.log('chat-completion-generation-data.test.js: all assertions passed');
+
+// New model IDs must get the same request restrictions as the existing families.
+for (const model of ['gpt-6.1-sol', 'gpt-6.1-terra']) {
+    const { generate_data } = await createGenerationParameters(baseSettings({ reasoning_effort: 'max' }), model, 'normal', messages);
+    assert.equal(generate_data.max_completion_tokens, 300);
+    assert.equal(generate_data.max_tokens, undefined);
+    assert.equal(generate_data.reasoning_effort, 'max');
+    assert.equal(generate_data.temperature, undefined);
+}
+{
+    const { generate_data } = await createGenerationParameters(baseSettings({ reasoning_effort: 'min' }), 'gpt-6.1-terra', 'normal', messages);
+    assert.equal(generate_data.reasoning_effort, 'none');
+    assert.equal(generate_data.temperature, 1);
+}
+{
+    const { generate_data } = await createGenerationParameters(baseSettings({ chat_completion_source: 'claude' }), 'claude-haiku-5-5', 'normal', messages);
+    assert.equal(generate_data.temperature, undefined);
+    assert.equal(generate_data.top_p, undefined);
+}
+{
+    const input = [{ role: 'system', content: [{ type: 'text', text: 'Instructions' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,aA==' } }] }];
+    const { generate_data } = await createGenerationParameters(baseSettings({ chat_completion_source: 'deepseek' }), 'deepseek-flash', 'normal', input);
+    assert.deepEqual(generate_data.messages, [{ role: 'system', content: [{ type: 'text', text: 'Instructions' }] }]);
+}

@@ -112,7 +112,7 @@ export function bucketActivatedEntries(activatedEntries) {
                     break;
                 }
                 if (Array.isArray(WIOutletEntries[entry.outletName])) {
-                    WIOutletEntries[entry.outletName].push(content);
+                    WIOutletEntries[entry.outletName].unshift(content);
                 } else {
                     WIOutletEntries[entry.outletName] = [content];
                 }

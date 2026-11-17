@@ -41,6 +41,20 @@ describe('splitReasoningBlock', () => {
         assert.deepEqual(splitReasoningBlock('\n<think>\nplan\n</think>\n\nHello', s, false), { reasoning: 'plan', content: 'Hello' });
     });
 
+    test('mixed-case tags split both complete and unfinished streamed reasoning', () => {
+        for (const streamed of [false, true]) {
+            assert.deepEqual(splitReasoningBlock('<THINK>Plan</ThInK>Answer', s, streamed), { reasoning: 'Plan', content: 'Answer' });
+        }
+        assert.deepEqual(splitReasoningBlock('<ThInK>Plan', s, true), { reasoning: 'Plan', content: '' });
+        const p = pending();
+        noteReplyText(p, '<THINK>Plan</Th');
+        noteReplyText(p, '<THINK>Plan</ThInK>Answer');
+        const finished = finishReply(p, '<THINK>Plan</ThInK>Answer');
+        assert.equal(finished.mes, 'Answer');
+        assert.equal(reasoningOf(finished.extra), 'Plan');
+        assert.equal(typeof finished.extra.reasoning_duration, 'number');
+    });
+
     test('a block that is not at the start is not split', () => {
         assert.equal(splitReasoningBlock('Hi <think>x</think> there', s, false), null);
     });

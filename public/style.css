@@ -192,6 +192,13 @@ html {
     -webkit-perspective: 1000;
 }
 
+/* Firefox loses backdrop-filter transparency with the Chromium root-layer workaround. */
+@supports (-moz-appearance: none) {
+    html {
+        -webkit-transform: none;
+    }
+}
+
 body {
     margin: 0;
     padding: 0;

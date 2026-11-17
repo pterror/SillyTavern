@@ -71,7 +71,7 @@ test('appendFileAttachments: a missing file among multiple is gracefully skipped
     assert.equal(result, 'EXISTS\n\nthe message');
 });
 
-test('appendFileAttachments: EDGE CASE - files array non-empty but every resolved text is empty/falsy still prepends a bare \\n\\n', async () => {
+test('appendFileAttachments: all missing files leave the message unchanged', async () => {
     const directories = makeFilesDir();
     const extra = {
         files: [
@@ -80,7 +80,7 @@ test('appendFileAttachments: EDGE CASE - files array non-empty but every resolve
         ],
     };
     const result = await appendFileAttachments(extra, 'the message', { directories });
-    assert.equal(result, '\n\nthe message');
+    assert.equal(result, 'the message');
 });
 
 test('readFileAttachment: returns undefined for a missing url', async () => {

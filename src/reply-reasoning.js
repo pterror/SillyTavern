@@ -190,13 +190,13 @@ function trimIf(text, trimSpaces) {
  */
 export function splitReasoningBlock(text, { prefix, suffix, trimSpaces }, streamed) {
     if (!prefix || !suffix || typeof text !== 'string') return null;
-    if (streamed && text.startsWith(prefix) && text.length > prefix.length) {
+    if (streamed && text.toLowerCase().startsWith(prefix.toLowerCase()) && text.length > prefix.length) {
         const rest = text.slice(prefix.length);
-        const end = rest.indexOf(suffix);
+        const end = rest.toLowerCase().indexOf(suffix.toLowerCase());
         if (end < 0) return { reasoning: trimIf(rest, trimSpaces), content: '' };
         return { reasoning: trimIf(rest.slice(0, end), trimSpaces), content: trimIf(rest.slice(end + suffix.length), trimSpaces) };
     }
-    const regex = new RegExp(`^\\s*?${escapeRegex(prefix)}(.*?)${escapeRegex(suffix)}`, 's');
+    const regex = new RegExp(`^\\s*?${escapeRegex(prefix)}(.*?)${escapeRegex(suffix)}`, 'si');
     let reasoning = null;
     const content = text.replace(regex, (_match, captured) => {
         reasoning = captured;
@@ -244,11 +244,11 @@ export function noteReplyText(pending, text) {
     const { prefix, suffix } = settings;
     const target = parseTarget(pending, text);
     if (target.length <= prefix.length) return;
-    if (!target.startsWith(prefix)) {
+    if (!target.toLowerCase().startsWith(prefix.toLowerCase())) {
         stream.parseOff = true;
         return;
     }
-    const end = target.indexOf(suffix, Math.max(prefix.length, stream.suffixFrom));
+    const end = target.toLowerCase().indexOf(suffix.toLowerCase(), Math.max(prefix.length, stream.suffixFrom));
     if (end < 0) {
         stream.suffixFrom = Math.max(prefix.length, target.length - suffix.length + 1);
         return;

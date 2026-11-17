@@ -1,5 +1,14 @@
 # Backlog
 
+- Upstream staging reviewed through `0a85854ee` on 2026-11-18: [integration ledger](upstream/2026-11-18-staging.md). The ancestry merge includes selected ports; the following work is still pending and won't reappear in future upstream merges:
+  - Apply the relevant dependency security updates from `3fae72272` to `pnpm-lock.yaml` (upstream changed `package-lock.json` only). Our locked body-parser, compression, DOMPurify, Handlebars, image-size, Moment, multer and simple-git versions are older than upstream's updated versions. Include the Jimp family and transitive fixes in the review, respecting the existing minimum release age.
+  - Port image URL handling from `0ea9fb617` / `21251334d` across upload, library identity, deletion and Data Maid: names containing `#`, `?` and literal `%` must round-trip without changing entity keys or allowing encoded traversal outside the image directory.
+  - Check Stop while server token counting is slow (`c01123cd4`): finalization must remain cancellable. Review import/replacement recovery in the message-tree store against upstream's pre-overwrite snapshot guarantee (`67ff8a313`), as part of store integrity.
+  - Image URLs containing `#`/`?` (`0ea9fb617`, `21251334d`): keep raw library identities separate from URL encoding; fix upload responses, deletion and Data Maid together, with literal-percent and containment tests.
+  - Verify Stop during slow server token counting (`c01123cd4`) and recovery before destructive chat replacement/import (`67ff8a313`) against our generation and message-tree storage paths; upstream's browser count race and JSONL snapshots cannot be copied directly.
+  - Carry the useful Custom provider/Profile requirements from `09715ac74` into the settings redesign: atomic endpoint/key/model changes, endpoint-bound credentials and redaction of echoed credentials. No extension registry is restored by this merge.
+  - Saved text rules must preserve original stored text on Continue when a rule only changes the prompt (`e2bd69112`). When rebuilding the removed features, retain the upstream fixes for late TTS readiness (`34c64d4ec`), ElevenLabs v4 models (`7f5b14760`), muted VN sprites (`d54404a3d`), llama.cpp embedding model selection (`a3dbc3858`), vector label association (`d4c16a106`), regex with no open chat (`44de27b9d`), and NanoGPT image URL/error responses (`94b97b7c9`).
+
 - Context menu keyboard mnemonics: underline the access letter in each action and let that letter choose the action while the menu is open.
 
 - The whole app's UX, from first principles: fewer settings, settings next to what they act on; one consistent UI (prior art: ~/git/lee-app, ~/git/cyoa, ~/git/pteraworld/src/games); too many affordances. Every area held to UX principles as a whole, not to a list; among them, no unnecessary mouse travel, clicks or steps, no clutter, nothing to memorise, no condescending wording. One area at a time, each to the owner, after worldbuilding.

@@ -54,6 +54,7 @@ export async function appendFileAttachments(extra, messageText, { directories } 
             fileTexts.push(fileText);
         }
     }
+    if (!fileTexts.length) return messageText;
     const mergedFileTexts = fileTexts.join('\n\n') + '\n\n';
     return mergedFileTexts + messageText;
 }

@@ -105,7 +105,7 @@ import { bucketActivatedEntries, world_info_position, wi_anchor_position, extens
     ];
     const result = bucketActivatedEntries(entries);
     assert.deepEqual(result.outletEntries, {
-        sidebar: ['sidebar-2', 'sidebar-1'],
+        sidebar: ['sidebar-1', 'sidebar-2'],
         footer: ['footer-1'],
     });
 }

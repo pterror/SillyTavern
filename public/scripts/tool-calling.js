@@ -617,7 +617,7 @@ export class ToolManager {
         }
 
         if ([chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)
-            && (/^gpt-6-astra/.test(model) || (/^gpt-6-(sol|luna)/.test(model) && settings.reasoning_effort !== 'min'))) {
+            && (/^gpt-(?:6-astra|6\.1-(?:sol|terra))/.test(model) || (/^gpt-6-(sol|luna)/.test(model) && settings.reasoning_effort !== 'min'))) {
             return false;
         }
 
