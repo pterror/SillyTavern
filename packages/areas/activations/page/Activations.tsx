@@ -11,7 +11,7 @@ export type OldPage = {
     openEntryAt(book: string, entry: string): void;
 };
 
-export type Look = { message: string };
+export type Look = { message: string; anchor?: HTMLElement };
 
 export function Activations(props: { look: Look | null; old: OldPage; onClose: () => void }) {
     const { client } = useUi();
@@ -50,8 +50,30 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
     void client.send('activations.open', { message: props.look.message });
     onCleanup(() => void client.send('activations.close', {}));
 
-    let dialog: HTMLDialogElement | undefined;
-    onMount(() => dialog?.showModal());
+    let panel: HTMLDivElement | undefined;
+    onMount(() => {
+        if (!panel) return;
+        const position = () => {
+            if (!panel) return;
+            const anchor = props.look.anchor;
+            const box = anchor?.isConnected === true ? anchor.getBoundingClientRect() : null;
+            const left = box?.left ?? (window.innerWidth - panel.offsetWidth) / 2;
+            const top = box?.bottom ?? 16;
+            panel.style.left = `${Math.max(8, Math.min(left, window.innerWidth - panel.offsetWidth - 8))}px`;
+            panel.style.top = `${Math.max(8, Math.min(top + 4, window.innerHeight - panel.offsetHeight - 8))}px`;
+        };
+        panel.showPopover();
+        position();
+        const observer = new ResizeObserver(position);
+        observer.observe(panel);
+        window.addEventListener('resize', position);
+        document.addEventListener('scroll', position, true);
+        onCleanup(() => {
+            observer.disconnect();
+            window.removeEventListener('resize', position);
+            document.removeEventListener('scroll', position, true);
+        });
+    });
 
     const shown = () => {
         const live = props.view();
@@ -120,17 +142,18 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
     );
 
     return (
-        <dialog
-            ref={(el: HTMLDialogElement) => (dialog = el)}
+        <div
+            ref={(el) => (panel = el)}
+            popover="auto"
+            role="region"
             class="activations"
-            aria-label={t('Lorebook entries used for this reply')}
-            onCancel={(event) => {
-                event.preventDefault();
-                props.onClose();
+            aria-label={t('Worldbuilding entries used for this reply')}
+            onToggle={(event) => {
+                if (event.newState === 'closed') props.onClose();
             }}
         >
             <header class="activations-header">
-                <h3>{t('Lorebook entries used for this reply')}</h3>
+                <h3>{t('Worldbuilding entries used for this reply')}</h3>
                 <button
                     type="button"
                     class="menu_button activations-close fa-solid fa-xmark"
@@ -196,6 +219,6 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
                     </>
                 )}
             </Show>
-        </dialog>
+        </div>
     );
 }

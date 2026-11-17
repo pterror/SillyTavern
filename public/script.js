@@ -3875,7 +3875,7 @@ async function previewFullPrompt() {
         ? built.prompt.map(m => `${m.role}:\n${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n\n')
         : built.prompt;
 
-    const pre = $('<pre class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></pre>').text(text);
+    const pre = $('<div class="justifyLeft" style="white-space: pre-wrap; word-break: break-word;"></div>').text(text);
     await callGenericPopup(pre, POPUP_TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true });
 }
 

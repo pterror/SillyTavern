@@ -190,14 +190,14 @@ async function openMarked(mark) {
     const { reply, entries } = markOf(mark);
     if (!reply) return;
     if (entries.length !== 1) {
-        newUi().activations.open(reply);
+        newUi().activations.open(reply, mark instanceof HTMLElement ? mark : undefined);
         return;
     }
     const targets = targetsOf(mark, await peek(reply));
     if (targets.length === 1) {
         const target = targets[0];
         activationsOldPage.openEntryAt(target.book, target.entry);
-    } else newUi().activations.open(reply);
+    } else newUi().activations.open(reply, mark instanceof HTMLElement ? mark : undefined);
 }
 
 export function initLoreMarks() {
@@ -210,7 +210,7 @@ export function initLoreMarks() {
             toastr.info(t`This message isn't saved yet.`);
             return;
         }
-        newUi().activations.open(String(message.node_id));
+        newUi().activations.open(String(message.node_id), event.currentTarget);
     }
     $(document).on('click', '.mes_lore', onMark);
 

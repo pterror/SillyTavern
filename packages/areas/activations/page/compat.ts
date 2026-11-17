@@ -17,8 +17,8 @@ export function activationsCompat(client: Client, setLook: Setter<Look | null>) 
         return answer.ok ? held(message) : null;
     };
     return {
-        open: (message: string) => {
-            setLook({ message });
+        open: (message: string, anchor?: HTMLElement) => {
+            setLook(anchor ? { message, anchor } : { message });
         },
         close: () => {
             setLook(null);
