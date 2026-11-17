@@ -166,13 +166,29 @@ test('the words that brought an entry in are marked where they were written; poi
         await marks.hover();
         const card = page.locator('.wb-chat-card');
         await expect(card).toBeVisible({ timeout: 5000 });
-        await expect(card.locator('.wb-hover-name')).toHaveText('The lantern');
-        await expect(card.locator('.wb-hover-text')).toHaveText('The lantern never goes out.');
+        await expect(card.locator('.wb-entry-title')).toHaveText('The lantern');
+        await expect(card.locator('.wb-entry-readonly')).toHaveText('The lantern never goes out.');
         await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “lantern” in the last reply');
         await page.mouse.move(0, 0);
         await expect(card).toBeHidden();
 
+        // Open the entry before the worldbuilding pane has mounted in this page session.
+        await page.reload();
+        await testSetup.awaitST({ page });
+        await openCharacter(page, avatar);
+        await expect(marks).toHaveText('lantern', { timeout: 15000 });
+        const opened = page.waitForRequest(request => {
+            if (!request.url().endsWith('/api/ui/action')) return false;
+            return request.postDataJSON()?.type === 'worldbuilding.openAt';
+        });
         await marks.click();
+        const opening = (await opened).postDataJSON().payload;
+        const activated = await page.evaluate(async () => {
+            const { chat } = await import('/scripts/chat-state.js');
+            return chat[2].extra.activations.entries[0].ref;
+        });
+        expect(opening.book).toBe(activated.book);
+        expect(opening.entry).toBe(activated.entry);
         await expect(page.locator('#Worldbuilding .wb-entry .wb-entry-name')).toContainText('The lantern', { timeout: 10000 });
         await expect(page.locator('#Worldbuilding .wb-switch-name')).toHaveText(book);
         await expect(page.locator('.mes_editor')).toHaveCount(0);
@@ -225,6 +241,9 @@ test('every reply marks the words that brought its entries in, each from its own
         await first.hover();
         const card = page.locator('.wb-chat-card');
         await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “beacon” in that reply', { timeout: 5000 });
+        // The expanded preview can cover the next message; leave it before pointing at that message.
+        await page.mouse.move(0, 0);
+        await expect(card).toBeHidden();
         await second.hover();
         await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “harbour” in the last reply', { timeout: 5000 });
         await page.mouse.move(0, 0);
@@ -235,6 +254,9 @@ test('every reply marks the words that brought its entries in, each from its own
         await openCharacter(page, avatar);
         await expect(page.locator('#chat .mes[mesid="4"] .mes_text')).toContainText('It hangs by the door.', { timeout: 15000 });
         await marked();
+        await first.hover();
+        await expect(card.locator('.wb-entry-readonly')).toHaveText('The beacon is lit.');
+        await expect(card.locator('.wb-hover-why')).toHaveText('Activated by “beacon” in that reply');
     } finally {
         await mock.close();
     }
@@ -283,6 +305,53 @@ test('names and marks stay drawn when the theme or the chat\'s display changes',
     } finally {
         // The worker's later tests share its settings.
         if (theme !== null) await page.evaluate((name) => { window['$']('#themes').val(name).trigger('change'); }, theme);
+        await mock.close();
+    }
+});
+
+test('an embedded lorebook trigger previews and opens its specific entry', async ({ page }) => {
+    test.setTimeout(120000);
+    const mock = await startLlamaCpp();
+    try {
+        await testSetup.awaitST({ page });
+        const avatar = await page.evaluate(async () => {
+            const { getRequestHeaders } = await import('/scripts/request-headers.js');
+            const name = `Embedded-${Date.now()}`;
+            const form = new FormData();
+            form.set('ch_name', name);
+            form.set('first_mes', 'Welcome in.');
+            form.set('json_data', JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: {
+                name, first_mes: 'Welcome in.', extensions: {},
+                character_book: { name: 'Inner book', extensions: {}, entries: [
+                    { id: 7, keys: ['glowstone'], comment: 'Embedded lantern', content: 'The embedded lantern never goes out.', enabled: true, insertion_order: 0, extensions: {} },
+                ] },
+            } }));
+            const response = await fetch('/api/characters/create', { method: 'POST', headers: getRequestHeaders({ omitContentType: true }), body: form });
+            if (!response.ok) throw new Error(`create failed: ${response.status}`);
+            return response.text();
+        });
+        await openCharacter(page, avatar);
+        await connectLlamaCpp(page, mock.url);
+        await chatBox(page).fill('Where is the glowstone?');
+        await page.locator('#send_but').click();
+        await expect(page.locator('#chat .mes[mesid="2"] .mes_text')).toContainText('It hangs by the door.', { timeout: 30000 });
+        const mark = page.locator('#chat .mes[mesid="1"] .trigger-mark');
+        await expect(mark).toHaveText('glowstone');
+        await mark.hover();
+        const preview = page.locator('.wb-chat-card');
+        await expect(preview.locator('.wb-entry-readonly')).toHaveText('The embedded lantern never goes out.');
+        await expect(preview.locator('.wb-hover-why')).toHaveText('Activated by “glowstone” in the last reply');
+        await page.mouse.move(0, 0);
+        await expect(preview).toBeHidden();
+        await mark.click();
+        await expect(page.locator('#Worldbuilding .wb-entry .wb-entry-name')).toContainText('Embedded lantern');
+        await page.locator('#WIDrawerIcon').click();
+        await page.locator('#chat .mes[mesid="2"] .mes_lore').click();
+        const panel = page.locator('dialog.activations');
+        await panel.getByRole('button', { name: 'Embedded lantern', exact: true }).click();
+        await expect(panel).toBeHidden();
+        await expect(page.locator('#Worldbuilding .wb-entry .wb-entry-name')).toContainText('Embedded lantern');
+    } finally {
         await mock.close();
     }
 });

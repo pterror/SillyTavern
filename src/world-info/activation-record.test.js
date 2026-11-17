@@ -134,7 +134,7 @@ const books = {
     const record = {
         entries: [
             { ref: { book: '1', entry: '7' }, keys: [{ key: 'Ilse', in: [] }, { key: 'ledger', in: [] }, { key: 'Ilse', in: [] }] },
-            { ref: { card: '3' }, keys: [{ key: 'ledger', in: [] }] },
+            { ref: null, keys: [{ key: 'ledger', in: [] }] },
             { ref: { book: '1', entry: '9' }, keys: [] },
         ],
         cut: [],

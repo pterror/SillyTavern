@@ -66,8 +66,8 @@ test('a name of an entry written in a message is drawn in its look and linked; p
         await link.hover();
         const card = page.locator('.wb-chat-card');
         await expect(card).toBeVisible();
-        await expect(card.locator('.wb-hover-name')).toHaveText('Ilse Varro');
-        await expect(card.locator('.wb-hover-text')).toHaveText('Ilse keeps the Lantern House and its ledger.');
+        await expect(card.locator('.wb-entry-title')).toHaveText('Ilse Varro');
+        await expect(card.locator('.wb-entry-readonly')).toHaveText('Ilse keeps the Lantern House and its ledger.');
         await expect(card.locator('.wb-hover-why')).toHaveCount(0);
         await page.mouse.move(0, 0);
         await expect(card).toBeHidden();

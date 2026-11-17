@@ -147,7 +147,7 @@ test.describe('a world of hundreds of entries, on its page', () => {
         await card(page, 5).hover();
         const hover = pane(page).locator('.wb-hover');
         await expect(hover).toBeVisible();
-        await expect(hover.locator('.wb-hover-name')).toHaveText('Entry 5');
+        await expect(hover.locator('.wb-entry-title')).toHaveText('Entry 5');
         await page.mouse.move(2, 400);
         await expect(hover).toHaveCount(0);
     });

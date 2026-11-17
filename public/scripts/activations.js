@@ -1,8 +1,6 @@
 import { t } from './i18n.js';
 import { isStoredNodeId } from './node-identity.js';
 import { attachActions, newUi } from './new-ui-page.js';
-import { openCharacterBook, openWorldEntry } from './world-links.js';
-import { charactersStore } from './character-store.js';
 import { chat } from '/scripts/chat-state.js';
 import { loreMarkRanges, loreMarksOf } from './chat-text/lore-marks.js';
 import { linkedEntry } from './chat-links.js';
@@ -16,12 +14,8 @@ export const activationsOldPage = {
         const index = chat.findIndex(message => message?.node_id === nodeId);
         return index === -1 ? null : index;
     },
-    openEntry(book, uid) {
-        openWorldEntry(book, uid);
-    },
-    openCardBook(avatar) {
-        const thing = charactersStore.get(avatar)?.thing;
-        if (thing) openCharacterBook(thing);
+    openEntryAt(book, entry) {
+        newUi().worldbuilding.openEntryAt(book, entry);
     },
 };
 
@@ -113,24 +107,6 @@ const markOf = mark => ({
     entries: (mark.getAttribute('data-lore') ?? '').split(' ').filter(Boolean).map(Number),
 });
 
-/**
- * The entries a marked word brought into its reply, as its reply's activation names them.
- * @param {Element} mark
- * @returns {{ book: string, entry: string }[]}
- */
-function broughtUp(mark) {
-    const { reply, entries } = markOf(mark);
-    const record = chat.findLast(message => message?.node_id === reply)?.extra?.activations;
-    if (!Array.isArray(record?.entries)) return [];
-    /** @type {Map<string, { book: string, entry: string }>} */
-    const found = new Map();
-    for (const i of entries) {
-        const ref = record.entries[i]?.ref;
-        if (ref && typeof ref.book === 'string' && typeof ref.entry === 'string') found.set(`${ref.book}:${ref.entry}`, { book: ref.book, entry: ref.entry });
-    }
-    return [...found.values()];
-}
-
 /** Whether the page has mobile-styles.css's layout, where a word is tapped for its card rather than pointed at. */
 const isPhone = () => window.matchMedia('screen and (max-width: 1000px)').matches;
 
@@ -148,7 +124,7 @@ function peekOf(word) {
         return thing && world ? { entries: [{ book: world, entry: thing }], reply, latest: reply !== null } : null;
     }
     const { reply } = markOf(word);
-    return { entries: broughtUp(word), reply, latest: reply === latest };
+    return { entries: [], reply, latest: reply === latest };
 }
 
 /**
@@ -156,12 +132,20 @@ function peekOf(word) {
  * @param {HTMLElement} word
  * @param {boolean} tapped
  */
-function peekAt(word, tapped) {
+async function peekAt(word, tapped) {
     const wanted = peekOf(word);
     if (!wanted) return;
+    const request = ++peekRequest;
+    if (wanted.reply && !word.matches('.chat-name')) {
+        const view = await peek(wanted.reply);
+        if (request !== peekRequest || !word.isConnected) return;
+        wanted.entries = targetsOf(word, view);
+    }
     if (tapped) newUi().worldbuilding.tap(word, wanted);
     else newUi().worldbuilding.peek(word, wanted);
 }
+
+let peekRequest = 0;
 
 /**
  * Opens the entry a name in a message names.
@@ -173,8 +157,21 @@ function openNamed(name) {
     if (thing && world) newUi().worldbuilding.openEntryAt(world, thing);
 }
 
-/** @type {Map<string, import('@st/activations/protocol').PanelView>} */
-const peeked = new Map();
+/**
+ * @param {Element} mark
+ * @param {import('@st/activations/protocol').PanelView | null} view
+ * @returns {{ book: string, entry: string }[]}
+ */
+function targetsOf(mark, view) {
+    const { reply, entries } = markOf(mark);
+    if (view?.message !== reply) return [];
+    const targets = new Map();
+    for (const index of entries) {
+        const target = view.entries[index]?.open;
+        if (target) targets.set(`${target.book}:${target.entry}`, target);
+    }
+    return [...targets.values()];
+}
 
 /**
  * @param {string} reply
@@ -182,16 +179,7 @@ const peeked = new Map();
  */
 async function peek(reply) {
     const view = await newUi().activations.peek(reply);
-    if (view) {
-        peeked.delete(reply);
-        peeked.set(reply, view);
-        newUi().names.hold(`peeked:${reply}`, view.looks);
-        while (peeked.size > 8) {
-            const oldest = /** @type {string} */ (peeked.keys().next().value);
-            peeked.delete(oldest);
-            newUi().names.drop(`peeked:${oldest}`);
-        }
-    }
+    if (view) newUi().names.hold('activation-peek', view.looks);
     return view;
 }
 
@@ -205,14 +193,11 @@ async function openMarked(mark) {
         newUi().activations.open(reply);
         return;
     }
-    const view = peeked.get(reply) ?? await peek(reply);
-    const opener = view?.entries[entries[0]]?.open;
-    if (!opener) {
-        newUi().activations.open(reply);
-        return;
-    }
-    if ('card' in opener) activationsOldPage.openCardBook(opener.card);
-    else activationsOldPage.openEntry(opener.book, opener.uid);
+    const targets = targetsOf(mark, await peek(reply));
+    if (targets.length === 1) {
+        const target = targets[0];
+        activationsOldPage.openEntryAt(target.book, target.entry);
+    } else newUi().activations.open(reply);
 }
 
 export function initLoreMarks() {
@@ -257,6 +242,7 @@ export function initLoreMarks() {
         if (inner === this && !isPhone()) peekAt(this, false);
     });
     $(document).on('mouseout', '.mes_text .chat-name, .mes_text .lore-mark', function (event) {
+        peekRequest++;
         newUi().worldbuilding.unpeek(event.relatedTarget ?? null);
     });
 }

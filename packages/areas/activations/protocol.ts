@@ -5,7 +5,8 @@ import type { Looks, Named } from '@st/protocol/looks';
 export const VIEW = 'activations.panel';
 export const PEEK_VIEW = 'activations.peek';
 
-export type Opener = { book: string; uid: number } | { card: string } | null;
+// Exact targets resolved by the server; null means the recorded entry is unavailable.
+export type Opener = { book: string; entry: string } | null;
 
 export type Where = { message: string; spans: [number, number][] } | { field: string } | { inject: string };
 

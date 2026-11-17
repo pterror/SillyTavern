@@ -29,6 +29,7 @@ import { worldbuildingSearchPorts } from './world-info/worldbuilding-search.js';
 import { worldbuildingBulkPorts } from './world-info/worldbuilding-bulk.js';
 import { worldbuildingViewPorts } from './world-info/worldbuilding-views.js';
 import { keysThatBroughtUp } from './world-info/activation-record.js';
+import { resolvedActivations } from './world-info/activation-references.js';
 import { countWithConnection } from './connection-counts.js';
 import { matchDefaultsOf } from './world-info/key-matching.js';
 import { WORLD_INFO_GLOBAL_DEFAULTS, worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
@@ -483,17 +484,6 @@ const alternativesPorts = {
     },
 };
 
-/**
- * @param {unknown} comment
- * @param {unknown} keys
- * @returns {string}
- */
-function entryTitle(comment, keys) {
-    if (typeof comment === 'string' && comment.trim()) return comment.trim();
-    const first = Array.isArray(keys) ? keys.find(k => typeof k === 'string' && k.trim()) : null;
-    return first ? first.trim() : 'Untitled entry';
-}
-
 const START_LENGTH = 200;
 
 /**
@@ -522,55 +512,28 @@ const activationsPorts = {
     looksOf: (context, view, things) => looks.looksOf(context, view, things),
     async panel(user, message) {
         const store = await userStore(directoriesOf(user), user.handle);
-        const [id] = await store.chats.messageIds([message]);
-        const stored = id === null ? undefined : (await store.chats.stored([id])).get(id);
-        if (!stored) return null;
-        const [content] = await store.chats.decoded([stored]);
-        const record = content?.extra?.activations;
-        if (!record || !Array.isArray(record.entries)) return null;
-        const refs = [...record.entries.map(e => e.ref), ...(Array.isArray(record.cut) ? record.cut.map(c => c.ref) : [])];
-
-        const entryIds = [...new Set(refs.filter(r => typeof r?.entry === 'string').map(r => r.entry))];
-        const entries = new Map((await store.lib.books.describeEntries(entryIds.map(BigInt))).map((e, i) => [entryIds[i], e]));
-        const byWorld = Map.groupBy(entryIds.filter(id => entries.get(id)), id => /** @type {any} */ (entries.get(id)).world);
-        /** @type {Map<string, import('@st/protocol/looks').Named>} */
-        const labels = new Map();
-        for (const [world, ids] of byWorld) {
-            const read = await store.lib.store.worldRead('worldbuildingLabels', { book: BigInt(world), entities: ids.map(BigInt) });
-            ids.forEach((id, i) => read[i] && labels.set(id, read[i]));
+        const record = await resolvedActivations(store, message);
+        if (!record) return null;
+        const refs = [...record.entries, ...record.cut].map(entry => entry.ref);
+        const descriptions = new Map();
+        for (const ref of refs) {
+            if (!ref || descriptions.has(ref.entry)) continue;
+            const [entry, world] = await Promise.all([
+                store.lib.store.worldRead('worldbuildingEntry', { book: BigInt(ref.book), entry: BigInt(ref.entry) }),
+                worldbuildingPorts.readWorld(user, ref.book),
+            ]);
+            if (entry && !entry.deleted && world) descriptions.set(ref.entry, {
+                label: entry.label,
+                world: { thing: ref.book, text: world.name, shownAs: 'name' },
+                start: startOf(entry.text),
+                open: ref,
+            });
         }
-
-        let avatar = typeof content.original_avatar === 'string' ? content.original_avatar : null;
-        if (avatar === null) {
-            const [key] = await store.lib.store.libraryKeys([stored.owner]);
-            avatar = key && key.type !== TYPE.group ? key.key : null;
-        }
-        const [card] = refs.some(r => typeof r?.card === 'string') && avatar ? await store.lib.cards([avatar]) : [null];
-        const cardEntries = Array.isArray(card?.data?.character_book?.entries) ? card.data.character_book.entries : [];
-        const cardName = typeof card?.data?.name === 'string' ? card.data.name : (typeof card?.name === 'string' ? card.name : '');
-
-        /** @param {string} text */
-        const plain = text => ({ thing: /** @type {null} */ (null), text });
-        /** @returns {{ label: import('@st/activations/protocol').Label, world: import('@st/activations/protocol').Label, start: string, open: import('@st/activations/protocol').Opener }} */
-        const described = ref => {
-            if (typeof ref?.card === 'string') {
-                const found = cardEntries.find((e, index) => String(e.id ?? index) === ref.card);
-                return {
-                    label: plain(found ? entryTitle(found.comment, found.keys) : 'A removed entry'),
-                    world: plain(cardName ? `${cardName}'s card` : 'The character card'),
-                    start: startOf(found?.content),
-                    open: avatar ? { card: avatar } : null,
-                };
-            }
-            const entry = entries.get(ref?.entry) ?? null;
-            if (!entry) return { label: plain('A removed entry'), world: plain('A lorebook'), start: '', open: null };
-            const uid = Number(entry.uid);
-            return {
-                label: labels.get(ref.entry) ?? plain(''),
-                world: { thing: entry.world, text: entry.bookName, shownAs: 'name' },
-                start: startOf(entry.content),
-                open: Number.isFinite(uid) ? { book: entry.book, uid } : null,
-            };
+        const described = ref => descriptions.get(ref?.entry) ?? {
+            label: { thing: null, text: 'An unavailable entry' },
+            world: { thing: null, text: 'A lorebook' },
+            start: '',
+            open: null,
         };
 
         return {
@@ -757,7 +720,7 @@ const worldbuildingPorts = {
         if (!context.chat) return entries.map(() => null);
         const store = await userStore(directoriesOf(context.user), context.user.handle);
         const shown = await store.chats.shownMessage(BigInt(context.chat.tree), reply);
-        return keysThatBroughtUp(shown?.extra?.activations, entries);
+        return keysThatBroughtUp(shown ? await resolvedActivations(store, reply) : null, entries);
     },
     async entryIn(user, book, entry) {
         return (await (await libOf(user)).books.entryIn(BigInt(book), BigInt(entry))) !== null;

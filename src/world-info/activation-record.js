@@ -141,14 +141,14 @@ export function mergeRecords(before, after) {
 /**
  * For each entry, the keys that brought it into the reply `record` belongs to, once each in the order activation found
  * them; null where it didn't come up for it.
- * @param {unknown} record a stored reply's `extra.activations`
+ * @param {import('./activation-references.js').ResolvedActivationRecord | null | undefined} record a reply's resolved record
  * @param {{ book: string, entry: string }[]} entries
  * @returns {(string[] | null)[]}
  */
 export function keysThatBroughtUp(record, entries) {
-    const found = Array.isArray(/** @type {any} */ (record)?.entries) ? /** @type {RecordEntry[]} */ (/** @type {any} */ (record).entries) : [];
+    const found = record?.entries ?? [];
     return entries.map(({ book, entry }) => {
-        const came = found.find(e => e?.ref && 'book' in e.ref && e.ref.book === book && e.ref.entry === entry);
+        const came = found.find(e => e.ref?.book === book && e.ref.entry === entry);
         if (!came) return null;
         return [...new Set((Array.isArray(came.keys) ? came.keys : []).map(k => k?.key).filter(k => typeof k === 'string' && k !== ''))];
     });

@@ -12,8 +12,6 @@ export function activationsCompat(client: Client, setLook: Setter<Look | null>) 
         return now && now.message === message ? (structuredClone(unwrap(now)) as PanelView) : null;
     };
     const peek = async (message: string): Promise<PanelView | null> => {
-        const known = held(message);
-        if (known) return known;
         peekView ??= client.view<PanelView>(PEEK_VIEW);
         const answer = await client.send('activations.peek', { message });
         return answer.ok ? held(message) : null;

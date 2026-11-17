@@ -63,14 +63,6 @@ export function openWorld(name) {
 }
 
 /**
- * @param {string} name
- * @param {number} uid
- */
-export function openWorldEntry(name, uid) {
-    page()?.openEntry(name, uid);
-}
-
-/**
  * @param {string} thing The character's entity id.
  */
 export function openCharacterBook(thing) {

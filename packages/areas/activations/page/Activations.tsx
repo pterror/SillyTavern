@@ -8,8 +8,7 @@ import type { Cut, Label, Opener, PanelView, Shown, Where } from '../protocol.ts
 
 export type OldPage = {
     messageNumber(nodeId: string): number | null;
-    openEntry(book: string, uid: number): void;
-    openCardBook(avatar: string): void;
+    openEntryAt(book: string, entry: string): void;
 };
 
 export type Look = { message: string };
@@ -102,8 +101,7 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
     const open = (opener: Opener) => {
         if (opener === null) return;
         props.onClose();
-        if ('card' in opener) props.old.openCardBook(opener.card);
-        else props.old.openEntry(opener.book, opener.uid);
+        props.old.openEntryAt(opener.book, opener.entry);
     };
 
     const Title = (p: { label: Label; open: Opener }) => (
