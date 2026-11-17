@@ -140,6 +140,7 @@ beforeAll(async () => {
     app.use('/api/avatars', (await import('../src/endpoints/avatars.js')).router);
     app.use('/api/characters', (await import('../src/endpoints/characters.js')).router);
     app.use('/api/images', (await import('../src/endpoints/images.js')).router);
+    app.use('/user/images', (req, res, next) => express.static(user.directories.userImages)(req, res, next));
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -468,6 +469,20 @@ describe('a crop', () => {
 });
 
 describe('a user image', () => {
+    test.each(['Alice #1', '100%23 # literal', 'spaces and ünicode'])('special names round-trip through upload, serving and deletion: %s', async folder => {
+        const saved = await (await post('/api/images/upload', { image: png.toString('base64'), format: 'png', ch_name: folder, filename: 'bg%23#1' })).json();
+        const rawKey = `user/images/${folder}/bg%23#1.png`;
+        expect(saved.path).toBe('/' + rawKey.split('/').map(encodeURIComponent).join('/'));
+        expect((await get(saved.path)).bytes.equals(png)).toBe(true);
+        expect((await user.store.lib.ids(codes.TYPE.userImage, [rawKey]))[0]).not.toBeNull();
+        const { DataMaidService } = await import('../src/endpoints/data-maid.js');
+        fs.writeFileSync(path.join(user.directories.groupChats, 'image-reference.jsonl'), JSON.stringify({ extra: { media: [{ url: saved.path }] } }));
+        expect((await new DataMaidService('u', user.directories).generateReport()).images).not.toContain(path.join(user.root, rawKey));
+        expect((await post('/api/images/delete', { path: saved.path })).status).toBe(200);
+        expect(fs.existsSync(path.join(user.root, rawKey))).toBe(false);
+        expect((await user.store.lib.ids(codes.TYPE.userImage, [rawKey]))[0]).toBeNull();
+    });
+
     test('uploaded is an entity with its thumbnail, and leaves the store when deleted', async () => {
         const saved = await (await post('/api/images/upload', { image: png.toString('base64'), format: 'png', ch_name: 'Alice', filename: 'bg' })).json();
         expect(saved.path).toBe('/user/images/Alice/bg.png');

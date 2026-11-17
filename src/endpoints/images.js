@@ -5,12 +5,13 @@ import { Buffer } from 'node:buffer';
 import express from 'express';
 import sanitize from 'sanitize-filename';
 
-import { clientRelativePath, removeFileExtension, isPathUnderParent } from '../util.js';
+import { clientRelativePath, removeFileExtension } from '../util.js';
 import { MEDIA_EXTENSIONS } from '../constants.js';
 import { requestStore } from '../user-stores.js';
 import { TYPE } from '../library-codes.js';
 import { removeImage, userImageKey, writeUserImage } from '../image-entities.js';
 import { normalizeCrop, thumbnailsFor } from '../thumbnail-urls.js';
+import { userImageFile, userImageUrl } from '../user-image-path.js';
 
 const IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'apng', 'bmp', 'avif']);
 
@@ -43,8 +44,8 @@ export async function saveUserImageFile(directories, lib, { buffer, format, subF
     ensureDirectoryExistence(pathToNewFile);
     await fs.promises.writeFile(pathToNewFile, new Uint8Array(buffer));
     const relative = clientRelativePath(directories.root, pathToNewFile);
-    if (!IMAGE_FORMATS.has(String(format).toLowerCase())) return { path: relative, facts: null };
-    return { path: relative, facts: await writeUserImage(lib, relative, buffer, crop) };
+    if (!IMAGE_FORMATS.has(String(format).toLowerCase())) return { path: userImageUrl(relative), facts: null };
+    return { path: userImageUrl(relative), facts: await writeUserImage(lib, relative, buffer, crop) };
 }
 
 export const router = express.Router();
@@ -95,16 +96,17 @@ router.post('/upload', async (request, response) => {
  * @returns {Promise<{ok: true}|{ok: false, status: number}>}
  */
 async function deleteOneImage(request, relativePath) {
-    const pathToDelete = path.join(request.user.directories.root, relativePath);
-    if (!isPathUnderParent(request.user.directories.userImages, pathToDelete)) {
+    const pathToDelete = userImageFile(request.user.directories, relativePath);
+    if (!pathToDelete) {
         return { ok: false, status: 400 };
     }
 
-    await removeImage((await requestStore(request)).lib, TYPE.userImage, userImageKey(relativePath));
     if (!fs.existsSync(pathToDelete)) {
         return { ok: false, status: 404 };
     }
 
+    const raw = clientRelativePath(request.user.directories.root, pathToDelete);
+    await removeImage((await requestStore(request)).lib, TYPE.userImage, userImageKey(raw));
     fs.unlinkSync(pathToDelete);
     console.info(`Deleted image: ${relativePath} from ${request.user.profile.handle}`);
     return { ok: true };

@@ -249,6 +249,23 @@ for (const [kind, engine] of Object.entries({ native: loadEngine().binding, wasm
         await store.close();
     });
 
+    test(`${kind}: importing a different chat with the same name preserves the previous messages and bookmark`, async () => {
+        const { store, chats, t } = await fresh(engine);
+        try {
+            const first = /** @type {any} */ (await chats.importChat({ tree: t, treeSpeaker: cara, name: 'Imported', messages: [msg('original greeting'), msg('original reply')], metadata: {}, actor: a }));
+            const second = /** @type {any} */ (await chats.importChat({ tree: t, treeSpeaker: cara, name: 'Imported', messages: [msg('replacement greeting'), msg('replacement reply')], metadata: {}, actor: a }));
+            assert.equal(first.ok, true);
+            assert.equal(second.ok, true);
+            assert.notEqual(second.bookmark, first.bookmark);
+            assert.notEqual(second.name, first.name);
+            const original = await chats.load({ tree: t, at: first.node_ids[1], full: true });
+            assert.deepEqual(original.messages.map(m => m.mes), ['original greeting', 'original reply']);
+            assert.deepEqual(await chats.resolveChatName({ tree: t, name: first.name }), { bookmark: first.bookmark });
+        } finally {
+            await store.close();
+        }
+    });
+
     test(`${kind}: an imported chat kept as where the user lands moves no session`, async () => {
         const { store, chats, t } = await fresh(engine);
         const imported = /** @type {any} */ (await chats.importChat({ tree: t, treeSpeaker: cara, name: 'Imported', messages: [msg('g'), msg('u1')], metadata: {}, actor: a }));

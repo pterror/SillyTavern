@@ -808,9 +808,14 @@ export class LibraryEngine {
         const found = members.length ? await this.entities(await this.ids(TYPE.character, members), { fields: [`${EXTENSION_PREFIX}avatar_crop`], lists: [] }) : [];
         const thumbnailsOfMember = new Map(members.map((m, i) => [m, thumbnailsOf(found[i], 'avatar')]));
         const avatars = groups.map(g => (typeof g.avatar_url === 'string' && g.avatar_url ? userImageKey(g.avatar_url) : null));
-        const avatarThumbnails = await imageThumbnails(this, TYPE.userImage, /** @type {string[]} */ (avatars.filter(Boolean)), 'avatar');
+        const decodedAvatars = avatars.map(key => {
+            if (key === null) return null;
+            try { return decodeURIComponent(key); } catch { return key; }
+        });
+        const avatarThumbnails = await imageThumbnails(this, TYPE.userImage, /** @type {string[]} */ ([...avatars, ...decodedAvatars].filter(Boolean)), 'avatar');
         for (const [i, g] of groups.entries()) {
-            const own = avatars[i] === null ? undefined : avatarThumbnails.get(avatars[i]);
+            const decoded = decodedAvatars[i] === null ? undefined : avatarThumbnails.get(decodedAvatars[i]);
+            const own = decoded?.thumbnail ? decoded : avatars[i] === null ? undefined : avatarThumbnails.get(avatars[i]);
             if (own?.thumbnail) assignThumbnails(g, own, 'avatar_thumbnail');
             else assignThumbnails(g, { thumbnail: null, thumbnail_still: null }, 'avatar_thumbnail');
         }

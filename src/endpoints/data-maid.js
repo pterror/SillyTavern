@@ -7,6 +7,7 @@ import { getSettingsBackupFilePrefix } from './settings.js';
 import { CHAT_BACKUPS_PREFIX } from './chats.js';
 import { isPathUnderParent, tryParse } from '../util.js';
 import { readAllSettings, settingsExist } from '../settings-store.js';
+import { userImageFile } from '../user-image-path.js';
 
 const sha256 = str => crypto.createHash('sha256').update(str).digest('hex');
 
@@ -199,7 +200,16 @@ export class DataMaidService {
                 if (image.startsWith('http') || image.startsWith('data:')) {
                     return; // Skip URLs and data URIs
                 }
-                knownImageFullPaths.add(path.normalize(path.join(this.directories.root, image)));
+                const file = userImageFile(this.directories, image);
+                if (file) {
+                    knownImageFullPaths.add(file);
+                    // A legacy raw name containing percent escapes can coexist with its decoded name.
+                    // The resolver validated both; keep both when a reference is ambiguous.
+                    knownImageFullPaths.add(path.join(this.directories.root, image));
+                }
+                // Old messages can contain literal percent escapes. Retain that spelling too.
+                const legacy = path.join(this.directories.root, image);
+                if (isPathUnderParent(this.directories.userImages, legacy)) knownImageFullPaths.add(legacy);
             });
             const images = await fs.promises.readdir(this.directories.userImages, { withFileTypes: true });
             for (const dirent of images) {

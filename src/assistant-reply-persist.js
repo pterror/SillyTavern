@@ -239,19 +239,30 @@ async function withReplyLinks(pending, reply) {
 }
 
 /**
- * @param {{ countText?: (text: string) => Promise<number> }} pending
+ * @param {{ countText?: (text: string) => Promise<number>, generationStop?: import('./generation-stop.js').StopEntry }} pending
  * @param {StoredReply} reply
  * @returns {Promise<StoredReply>}
  */
 async function withReplyCounts(pending, reply) {
     if (typeof pending.countText !== 'function') return reply;
+    const entry = pending.generationStop;
+    if (entry?.stopped) return reply;
+    /** @type {() => void} */
+    let stopped = () => {};
+    const cancelled = new Promise(resolve => { stopped = () => resolve(null); });
+    entry?.aborts.push(stopped);
     try {
         const counted = countedText(reply.extra, reply.mes);
-        const [tokenCount, textTokenCount] = await Promise.all([pending.countText(counted), pending.countText(reply.mes)]);
+        const counts = await Promise.race([Promise.all([pending.countText(counted), pending.countText(reply.mes)]), cancelled]);
+        if (!counts) return reply;
+        const [tokenCount, textTokenCount] = counts;
         return { ...reply, extra: { ...reply.extra, token_count: tokenCount, token_count_hash: getStringHash(counted), text_token_count: textTokenCount } };
     } catch (error) {
         console.warn('Could not count the stored reply:', error);
         return reply;
+    } finally {
+        const index = entry?.aborts.indexOf(stopped) ?? -1;
+        if (index >= 0) entry.aborts.splice(index, 1);
     }
 }
 

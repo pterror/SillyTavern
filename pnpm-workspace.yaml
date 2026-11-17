@@ -8,6 +8,11 @@ packages:
 # Minutes: a version installs once it has been published for a week.
 minimumReleaseAge: 10080
 
+# Security fixes from the 2026-11-18 upstream integration; other versions still wait a week.
+minimumReleaseAgeExclude:
+  - dompurify@3.4.18
+  - ws@8.23.0
+
 # A dependency's build script runs only when it is listed here as true. inotify-remastered-plus builds with a C/C++
 # toolchain and Python; it's optional, so where they're missing its build fails without failing the install.
 allowBuilds:

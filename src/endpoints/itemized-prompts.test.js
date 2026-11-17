@@ -13,6 +13,7 @@ setConfigFilePath(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 
 
 const { router } = await import('./itemized-prompts.js');
 const { persistAssistantReply } = await import('../assistant-reply-persist.js');
+const { openGenerationStop, closeGenerationStop, stopGenerationById } = await import('../generation-stop.js');
 const { encodeStoredReplyFrame } = await import('./backends/llamacpp-compact-stream.js');
 const { newSessionKey } = await import('../chat-engine.js');
 const ITEMIZED_PROMPT_FLAG = 'has_itemized_prompt';
@@ -74,6 +75,42 @@ async function chatOf(session = newSessionKey()) {
 const record = (nodeId, entry) => user.store.chats.recordItemization({ node_id: nodeId, entry });
 
 describe('recording and reading one message', () => {
+    test('normal completion returns final counts and removes its Stop hook', async () => {
+        const { ids } = await makeChat('Counted');
+        const response = { locals: {}, headersSent: false, setHeader() {} };
+        const entry = openGenerationStop(/** @type {any} */ ({ user: user.user }), /** @type {any} */ (response));
+        try {
+            const saved = await persistAssistantReply({
+                chat: await chatOf(), anchorNodeId: ids[4], name2: 'Alice', isSwipe: false, isContinue: false, anchorContent: null,
+                generationStop: entry, countText: async () => 7,
+            }, 'a counted reply');
+            assert.equal(saved?.extra.token_count, 7);
+            assert.equal(saved?.extra.text_token_count, 7);
+            assert.equal(entry.aborts.length, 0);
+        } finally {
+            closeGenerationStop(entry);
+        }
+    });
+
+    test('Stop returns the saved reply while its final token count is stalled', { timeout: 1500 }, async () => {
+        const { ids } = await makeChat('Slow count');
+        const response = { locals: {}, headersSent: false, setHeader() {} };
+        const entry = openGenerationStop(/** @type {any} */ ({ user: user.user }), /** @type {any} */ (response));
+        const counting = Promise.withResolvers();
+        const finished = persistAssistantReply({
+            chat: await chatOf(), anchorNodeId: ids[4], name2: 'Alice', isSwipe: false, isContinue: false, anchorContent: null,
+            generationStop: entry,
+            countText: () => { counting.resolve(); return new Promise(() => {}); },
+        }, 'already saved').finally(() => closeGenerationStop(entry));
+        await counting.promise;
+        const stopped = await stopGenerationById(entry.id, user.user.profile.handle);
+        assert.equal(stopped.state, 'stopped');
+        assert.equal(stopped.mes, 'already saved');
+        assert.ok(stopped.node_id);
+        assert.equal((await finished)?.node_id, stopped.node_id);
+        assert.equal(entry.aborts.length, 0);
+    });
+
     test('a stored reply records the itemization the server built with its prompt', async () => {
         const { ids } = await makeChat('Recorded');
         const itemization = { api: 'openai', rawPrompt: 'server prompt', total: 3, parts: [{ part: 'main', tokens: 3 }] };

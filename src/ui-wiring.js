@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import sanitize from 'sanitize-filename';
+import { userImageFile, userImageUrl } from './user-image-path.js';
 import { createUi } from '@st/server-ui';
 import { backgroundsArea } from '@st/backgrounds/server';
 import { settingsArea } from '@st/settings/server';
@@ -39,7 +40,7 @@ import { readUserSettings } from './settings-reads.js';
 import { onUserStoreOpened, userStore } from './user-stores.js';
 import { TYPE } from './library-engine.js';
 import { LOOK_FIELD } from './library-codes.js';
-import { clientRelativePath, humanizedDateTime, isPathUnderParent } from './util.js';
+import { clientRelativePath, humanizedDateTime } from './util.js';
 import { createFolder, deleteFolder, readFolders, retargetCovers, updateFolder } from './background-folders.js';
 import { backgroundOf, changeBackgroundFolders, imageThumbnails, imagesOf, removeImage, renameImage, userImageKey, writeBackground, writeUserImage } from './image-entities.js';
 import { settingsDocumentOf } from './settings-documents.js';
@@ -127,8 +128,8 @@ const backgroundPorts = {
         },
         async copyIn(user, from, name) {
             const directories = directoriesOf(user);
-            const source = path.join(directories.root, from);
-            if (!isPathUnderParent(directories.userImages, source)) throw new Error(`Not a user image: ${from}`);
+            const source = userImageFile(directories, from);
+            if (!source) throw new Error(`Not a user image: ${from}`);
             const file = sanitize(name);
             await putBackground(user, file, source);
             return file;
@@ -221,18 +222,22 @@ const backgroundPorts = {
             await fs.promises.writeFile(target, image);
             const relative = clientRelativePath(directories.root, target);
             await writeUserImage(chat.store.lib, relative, image);
-            return relative;
+            return userImageUrl(relative);
         },
         async deleteImage(context, relative) {
             const directories = directoriesOf(context.user);
-            const target = path.join(directories.root, relative);
-            if (!isPathUnderParent(directories.userImages, target)) throw new Error(`Not a user image: ${relative}`);
-            await removeImage(await libOf(context.user), TYPE.userImage, userImageKey(relative));
+            const target = userImageFile(directories, relative);
+            if (!target) throw new Error(`Not a user image: ${relative}`);
+            await removeImage(await libOf(context.user), TYPE.userImage, userImageKey(clientRelativePath(directories.root, target)));
             await fs.promises.rm(target, { force: true });
         },
         async images(context, paths) {
             const lib = await libOf(context.user);
-            const keys = paths.map(userImageKey);
+            const directories = directoriesOf(context.user);
+            const keys = paths.map(p => {
+                const file = userImageFile(directories, p);
+                return file ? userImageKey(clientRelativePath(directories.root, file)) : '';
+            });
             const shown = await imageThumbnails(lib, TYPE.userImage, keys, 'bg');
             return Object.fromEntries(paths.map((p, i) => {
                 const found = shown.get(keys[i]);
