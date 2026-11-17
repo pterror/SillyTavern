@@ -93,6 +93,9 @@
     --active: rgb(88, 182, 0);
     --preferred: rgb(244, 67, 54);
 
+    --danger-bg: rgba(100, 0, 0, 0.7);
+    --danger-bg-hover: rgba(255, 0, 0, 1);
+
     --interactable-outline-color: var(--white100);
     --interactable-outline-color-faint: var(--white20a);
 
@@ -4548,12 +4551,12 @@ grammarly-extension {
 
 .danger-button,
 .redWarningBG {
-    background-color: var(--crimson70a) !important;
+    background-color: var(--danger-bg) !important;
 }
 
 .danger-button:hover,
 .redWarningBG:hover {
-    background-color: var(--fullred) !important;
+    background-color: var(--danger-bg-hover) !important;
 }
 
 #result_info {
