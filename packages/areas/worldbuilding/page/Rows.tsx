@@ -45,8 +45,9 @@ const WIDTHS: Record<RowField, string> = {
 const NUMERIC = new Set<RowField>(['order', 'chance', 'tokens']);
 
 const COMES: { comes: EntryFacts['comesIn']; words: string; change: Partial<Placement> }[] = [
-    { comes: 'broughtUp', words: 'Normal', change: { constant: false, disable: false } },
-    { comes: 'always', words: 'Constant', change: { constant: true, disable: false } },
+    { comes: 'broughtUp', words: 'Keyword', change: { constant: false, vectorized: false, disable: false } },
+    { comes: 'always', words: 'Constant', change: { constant: true, vectorized: false, disable: false } },
+    { comes: 'found', words: 'Vectorized', change: { constant: false, vectorized: true, disable: false } },
     { comes: 'never', words: 'Disabled', change: { constant: false, disable: true } },
 ];
 

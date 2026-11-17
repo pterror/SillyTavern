@@ -7,6 +7,7 @@ import { CharacterFilterSentence, filterIsSet } from './CharacterFilter.tsx';
 import type { FilterChange } from './CharacterFilter.tsx';
 import { dismissOn } from './dismiss.ts';
 import { count, fill } from './words.ts';
+import { StatusLegend } from './Status.tsx';
 
 // Where an entry goes, in the order the sentence offers them, with upstream's `position` for each.
 export const WHERES: { position: Placement['position']; words: string }[] = [
@@ -29,7 +30,7 @@ export const comesOf = (placement: Pick<Placement, 'constant' | 'disable' | 'vec
 const COMES: { comes: Comes; words: string; change: Partial<Placement> }[] = [
     {
         comes: 'brought up',
-        words: 'Normal',
+        words: 'Keyword',
         change: { constant: false, vectorized: false, disable: false },
     },
     { comes: 'always', words: 'Constant', change: { constant: true, vectorized: false, disable: false } },
@@ -604,7 +605,7 @@ export function PlacementPopover(props: {
     onClose: () => void;
 }) {
     const { t } = useUi();
-    const [list, setList] = createSignal<'comes' | 'where' | 'role' | 'more' | null>(null);
+    const [list, setList] = createSignal<'more' | null>(null);
     const [adding, setAdding] = createSignal<ExtraField | null>(null);
     const [filtering, setFiltering] = createSignal(false);
     const filterShown = () => filterIsSet(props.characterFilter) || filtering();
@@ -613,8 +614,7 @@ export function PlacementPopover(props: {
     const p = () => props.placement;
     const chance = () => chanceOf(p());
     const wheres = () => [...WHERES, { position: OUTLET, words: 'Outlet' }];
-    const whereWords = () => t(wheres().find((where) => where.position === p().position)?.words ?? '');
-    const toggle = (which: 'comes' | 'where' | 'role' | 'more') => setList(list() === which ? null : which);
+    const toggle = (which: 'more') => setList(list() === which ? null : which);
     const shownExtras = () => EXTRAS.filter((extra) => extraValue(p(), extra) !== null || adding() === extra.field);
     const offered = () => EXTRAS.filter((extra) => extraValue(p(), extra) === null && adding() !== extra.field);
     const add = (extra: Extra) => {
@@ -630,171 +630,179 @@ export function PlacementPopover(props: {
                 <Show when={props.tokens !== null}>
                     <span>{fill(t('${0} tokens'), count(props.tokens ?? 0))}</span>
                 </Show>
+                <button
+                    type="button"
+                    class="wb-place-close"
+                    aria-label={t('Close entry settings')}
+                    onClick={props.onClose}
+                >
+                    ×
+                </button>
             </div>
             <div class="wb-place-body">
-                <p>
-                    {t('Status: ')}
-                    <button
-                        type="button"
-                        class="wb-tok"
-                        aria-expanded={list() === 'comes'}
-                        onClick={() => toggle('comes')}
-                    >
-                        {t(COMES.find((item) => item.comes === comesOf(p()))?.words ?? '')}
-                    </button>
-                    {', '}
-                    <Token
-                        shown={
-                            chance() >= 100 ? t('Probability: 100%') : fill(t('Probability: ${0}%'), String(chance()))
-                        }
-                        value={String(chance())}
-                        label={t('Probability (%)')}
-                        onSet={(typed) => {
-                            const n = Number(typed);
-                            if (!Number.isFinite(n) || n < 0 || n > 100) return;
-                            props.onSet({ probability: n, useProbability: n < 100 });
-                        }}
-                    />
-                    <Show when={list() === 'comes'}>
-                        <Choices
-                            label={t('Status')}
-                            items={COMES.map((item) => ({ value: item.comes, words: item.words }))}
-                            chosen={comesOf(p())}
-                            onPick={(comes) => {
-                                setList(null);
-                                props.onSet(COMES.find((item) => item.comes === comes)?.change ?? {});
+                <StatusLegend />
+                <div class="wb-place-fields">
+                    <label>
+                        <span>{t('Status')}</span>
+                        <select
+                            class="text_pole margin0"
+                            aria-label={t('Status')}
+                            value={comesOf(p())}
+                            onChange={(event) =>
+                                props.onSet(
+                                    COMES.find((item) => item.comes === event.currentTarget.value)?.change ?? {},
+                                )
+                            }
+                        >
+                            <For each={COMES}>{(item) => <option value={item.comes}>{t(item.words)}</option>}</For>
+                        </select>
+                    </label>
+                    <label>
+                        <span>{t('Probability (%)')}</span>
+                        <input
+                            class="text_pole margin0"
+                            type="number"
+                            step="any"
+                            min="0"
+                            max="100"
+                            value={chance()}
+                            onChange={(event) => {
+                                const n = event.currentTarget.valueAsNumber;
+                                if (Number.isFinite(n) && n >= 0 && n <= 100)
+                                    props.onSet({ probability: n, useProbability: n < 100 });
+                                else event.currentTarget.value = String(chance());
                             }}
                         />
-                    </Show>
-                </p>
-                <p>
-                    {t('Position: ')}
-                    <button
-                        type="button"
-                        class="wb-tok"
-                        aria-expanded={list() === 'where'}
-                        onClick={() => toggle('where')}
-                    >
-                        {whereWords()}
-                    </button>
+                    </label>
+                    <label class="wb-place-full">
+                        <span>{t('Position')}</span>
+                        <select
+                            class="text_pole margin0"
+                            aria-label={t('Position')}
+                            value={p().position}
+                            onChange={(event) =>
+                                props.onSet({ position: Number(event.currentTarget.value) as Placement['position'] })
+                            }
+                        >
+                            <For each={wheres()}>
+                                {(item) => <option value={item.position}>{t(item.words)}</option>}
+                            </For>
+                        </select>
+                    </label>
                     <Show when={p().position === OUTLET}>
-                        {' '}
-                        <Token
-                            shown={p().outletName.trim() === '' ? t('Outlet name') : `“${p().outletName}”`}
-                            value={p().outletName}
-                            label={t('Outlet name')}
-                            wide
-                            onSet={(typed) => props.onSet({ outletName: typed.trim() })}
-                        />
+                        <label class="wb-place-full">
+                            <span>{t('Outlet name')}</span>
+                            <input
+                                class="text_pole margin0"
+                                value={p().outletName}
+                                onChange={(event) => props.onSet({ outletName: event.currentTarget.value.trim() })}
+                            />
+                        </label>
                     </Show>
                     <Show when={p().position === IN_CHAT}>
-                        {' '}
-                        <Token
-                            shown={String(p().depth)}
-                            value={String(p().depth)}
-                            label={t('Depth')}
-                            onSet={(typed) => {
-                                const n = Number(typed);
-                                if (Number.isInteger(n) && n >= 0) props.onSet({ depth: n });
+                        <label>
+                            <span>{t('Depth')}</span>
+                            <input
+                                class="text_pole margin0"
+                                type="number"
+                                step="1"
+                                min="0"
+                                value={p().depth}
+                                onChange={(event) => {
+                                    const n = event.currentTarget.valueAsNumber;
+                                    if (Number.isFinite(n) && Number.isInteger(n) && n >= 0) props.onSet({ depth: n });
+                                    else event.currentTarget.value = String(p().depth);
+                                }}
+                            />
+                        </label>
+                        <label class="">
+                            <span>{t('Role')}</span>
+                            <select
+                                class="text_pole margin0"
+                                aria-label={t('Role')}
+                                value={p().role}
+                                onChange={(event) =>
+                                    props.onSet({ role: Number(event.currentTarget.value) as Placement['role'] })
+                                }
+                            >
+                                <For each={ROLES}>{(item) => <option value={item.value}>{t(item.words)}</option>}</For>
+                            </select>
+                        </label>
+                    </Show>
+                    <label>
+                        <span>{t('Order')}</span>
+                        <input
+                            class="text_pole margin0"
+                            type="number"
+                            step="any"
+                            value={p().order}
+                            onChange={(event) => {
+                                const n = event.currentTarget.valueAsNumber;
+                                if (Number.isFinite(n)) props.onSet({ order: n });
+                                else event.currentTarget.value = String(p().order);
                             }}
                         />
-                        {t(' as ')}
+                    </label>
+                </div>
+                <div class="wb-place-advanced">
+                    <b>{t('Advanced settings')}</b>
+                    <For each={shownExtras()}>
+                        {(extra) => (
+                            <ExtraSentence
+                                extra={extra}
+                                placement={p()}
+                                adding={adding() === extra.field}
+                                onSet={props.onSet}
+                                onAdded={() => setAdding(null)}
+                            />
+                        )}
+                    </For>
+                    <Show when={filterShown()}>
+                        <CharacterFilterSentence
+                            filter={props.characterFilter}
+                            adding={filtering()}
+                            onAdding={setFiltering}
+                            onChange={props.onFilter}
+                        />
+                    </Show>
+                    <Show when={offered().length > 0 || !filterShown()}>
                         <button
                             type="button"
-                            class="wb-tok"
-                            aria-expanded={list() === 'role'}
-                            onClick={() => toggle('role')}
+                            class="menu_button margin0 whitespacenowrap wb-place-more"
+                            aria-expanded={list() === 'more'}
+                            onClick={() => toggle('more')}
                         >
-                            {t(ROLES.find((role) => role.value === p().role)?.words ?? '')}
+                            {t('Add setting')}
                         </button>
-                    </Show>
-                    <Show when={list() === 'where'}>
-                        <Choices
-                            label={t('Position')}
-                            items={wheres().map((where) => ({ value: where.position, words: where.words }))}
-                            chosen={p().position}
-                            onPick={(position) => {
-                                setList(null);
-                                props.onSet({ position });
-                            }}
-                        />
-                    </Show>
-                    <Show when={list() === 'role'}>
-                        <Choices
-                            label={t('Role')}
-                            items={ROLES}
-                            chosen={p().role}
-                            onPick={(role) => {
-                                setList(null);
-                                props.onSet({ role });
-                            }}
-                        />
-                    </Show>
-                </p>
-                <p>
-                    {t('Order: ')}
-                    <Token
-                        shown={String(p().order)}
-                        value={String(p().order)}
-                        label={t('Order')}
-                        onSet={(typed) => {
-                            const n = Number(typed);
-                            if (Number.isFinite(n)) props.onSet({ order: n });
-                        }}
-                    />
-                </p>
-                <For each={shownExtras()}>
-                    {(extra) => (
-                        <ExtraSentence
-                            extra={extra}
-                            placement={p()}
-                            adding={adding() === extra.field}
-                            onSet={props.onSet}
-                            onAdded={() => setAdding(null)}
-                        />
-                    )}
-                </For>
-                <Show when={filterShown()}>
-                    <CharacterFilterSentence
-                        filter={props.characterFilter}
-                        adding={filtering()}
-                        onAdding={setFiltering}
-                        onChange={props.onFilter}
-                    />
-                </Show>
-                <Show when={offered().length > 0 || !filterShown()}>
-                    <button
-                        type="button"
-                        class="menu_button margin0 whitespacenowrap wb-place-more"
-                        aria-expanded={list() === 'more'}
-                        onClick={() => toggle('more')}
-                    >
-                        {t('+ More')}
-                    </button>
-                    <Show when={list() === 'more'}>
-                        <span class="list-group wb-choices wb-choices-static">
-                            <For each={offered()}>
-                                {(extra) => (
-                                    <button type="button" class="list-group-item wb-choice" onClick={() => add(extra)}>
-                                        {t(extra.offer)}
+                        <Show when={list() === 'more'}>
+                            <span class="list-group wb-choices wb-choices-static">
+                                <For each={offered()}>
+                                    {(extra) => (
+                                        <button
+                                            type="button"
+                                            class="list-group-item wb-choice"
+                                            onClick={() => add(extra)}
+                                        >
+                                            {t(extra.offer)}
+                                        </button>
+                                    )}
+                                </For>
+                                <Show when={!filterShown()}>
+                                    <button
+                                        type="button"
+                                        class="list-group-item wb-choice"
+                                        onClick={() => {
+                                            setList(null);
+                                            setFiltering(true);
+                                        }}
+                                    >
+                                        {t(CHARACTERS_OFFER)}
                                     </button>
-                                )}
-                            </For>
-                            <Show when={!filterShown()}>
-                                <button
-                                    type="button"
-                                    class="list-group-item wb-choice"
-                                    onClick={() => {
-                                        setList(null);
-                                        setFiltering(true);
-                                    }}
-                                >
-                                    {t(CHARACTERS_OFFER)}
-                                </button>
-                            </Show>
-                        </span>
+                                </Show>
+                            </span>
+                        </Show>
                     </Show>
-                </Show>
+                </div>
             </div>
         </div>
     );

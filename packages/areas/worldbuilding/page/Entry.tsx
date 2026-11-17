@@ -23,6 +23,7 @@ import { hoverCards } from './HoverCard.tsx';
 import { Icon } from './icons.tsx';
 import { Names, Triggers } from './Keys.tsx';
 import { PlacementPopover } from './Placement.tsx';
+import { StatusDot, statusOf } from './Status.tsx';
 import { RelationsLine } from './Relations.tsx';
 import { chooseFile } from './Switcher.tsx';
 import { SelectionMenu } from './Selection.tsx';
@@ -162,7 +163,7 @@ export function EntryPage(props: {
                                 setPlacing(!placing());
                             }}
                         >
-                            <Icon name="prompt" />
+                            <StatusDot status={statusOf(props.entry.placement)} />
                             <Show when={props.entry.placementDiffersFromDefaults}>
                                 <span class="wb-dot" aria-hidden="true" />
                             </Show>

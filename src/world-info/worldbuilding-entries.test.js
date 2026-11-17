@@ -312,3 +312,17 @@ test('an edit made against an older version merges with what another tab changed
     assert.equal(read.text, 'Ilse keeps the old lamp by the gate. She wakes early.');
     assert.equal(read.title, 'Ilse Varro');
 });
+
+test('card facts distinguish vector search and preserve disabled and constant precedence', async () => {
+    await lib.books.write('Status dots', { entries: {
+        1: { uid: 1, vectorized: true },
+        2: { uid: 2, vectorized: true, constant: true },
+        3: { uid: 3, vectorized: true, constant: true, disable: true },
+        4: { uid: 4 },
+    } });
+    const { id } = await lib.books.find('Status dots');
+    const entries = await lib.books.storedEntries(id);
+    const ids = [1, 2, 3, 4].map(uid => String(entries.find(({ entity }) => entity.key.endsWith(`:${uid}`)).entity.id));
+    const facts = await ports.readFacts(uiUser, String(id), ids, false);
+    assert.deepEqual(facts.map(fact => fact.comesIn), ['found', 'always', 'never', 'broughtUp']);
+});

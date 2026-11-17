@@ -408,7 +408,7 @@ export function worldbuildingEntryPorts({ libOf, referencesOf, countTokens }) {
                 const chance = placement.useProbability && Number(placement.probability) < 100 ? Number(placement.probability) : null;
                 return {
                     version: String(versions[at]),
-                    comesIn: placement.disable ? 'never' : placement.constant ? 'always' : 'broughtUp',
+                    comesIn: placement.disable ? 'never' : placement.constant ? 'always' : placement.vectorized ? 'found' : 'broughtUp',
                     keysecondary: /** @type {string[]} */ (placement.keysecondary),
                     selectiveLogic: /** @type {import('@st/worldbuilding/protocol').Placement['selectiveLogic']} */ (placement.selectiveLogic),
                     position: /** @type {import('@st/worldbuilding/protocol').Placement['position']} */ (placement.position),

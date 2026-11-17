@@ -448,7 +448,7 @@ export type ConflictAnswer = { conflict: EntryConflict };
 
 export type EntryFacts = {
     version: EntryVersion;
-    comesIn: 'always' | 'broughtUp' | 'never';
+    comesIn: 'always' | 'broughtUp' | 'found' | 'never';
     keysecondary: string[];
     selectiveLogic: Placement['selectiveLogic'];
     position: Placement['position'];

@@ -1,3 +1,4 @@
+import { StatusDot, StatusControl } from './Status.tsx';
 import { For, Match, Show, Switch, createSignal, onCleanup } from 'solid-js';
 import type { Command } from '@st/page/commands';
 import { useUi } from '@st/page/context';
@@ -223,14 +224,22 @@ function Facts(props: { cell: EntryCell; actions: CardActions }) {
         <Show when={props.cell.facts}>
             {(facts) => (
                 <div class="wb-card-facts">
-                    <Show when={props.actions.book()}>
+                    <Show when={props.actions.book()} fallback={<StatusDot status={facts().comesIn} />}>
                         {(book) => (
-                            <OnOff
-                                book={book()}
-                                entry={props.cell.entry}
-                                name={props.cell.label.text}
-                                facts={facts()}
-                            />
+                            <>
+                                <OnOff
+                                    book={book()}
+                                    entry={props.cell.entry}
+                                    name={props.cell.label.text}
+                                    facts={facts()}
+                                />
+                                <StatusControl
+                                    book={book()}
+                                    entry={props.cell.entry}
+                                    name={props.cell.label.text}
+                                    facts={facts()}
+                                />
+                            </>
                         )}
                     </Show>
                     <span

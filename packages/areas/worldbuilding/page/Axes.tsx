@@ -1,3 +1,4 @@
+import { StatusControl } from './Status.tsx';
 import { For, Show, createSignal } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { LOOP_CHECK_VISITS_PER_WRITE } from '../protocol.ts';
@@ -95,6 +96,12 @@ function SmallCard(props: { card: CellCard; cell: AxisCell; at: CardsAt }) {
                 {(facts) => (
                     <div class="wb-card-facts">
                         <OnOff
+                            book={props.at.book}
+                            entry={props.card.entry}
+                            name={props.card.label.text}
+                            facts={facts()}
+                        />
+                        <StatusControl
                             book={props.at.book}
                             entry={props.card.entry}
                             name={props.card.label.text}
