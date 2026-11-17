@@ -161,6 +161,7 @@ export function commandSurfaces({ commands, focusActions, holdShowsKeys, t }: Su
         element: paletteElement,
         strings,
     });
+    paletteElement.querySelector('input')?.classList.add('text_pole');
     const menuElement = surface('commandMenu');
     const menu = contextMenu({
         element: menuElement,
