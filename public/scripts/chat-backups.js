@@ -176,7 +176,7 @@ class BackupsBrowser {
             });
 
             const deleteButton = document.createElement('div');
-            deleteButton.classList.add('right_menu_button', 'red_button', 'fa-solid', 'fa-trash');
+            deleteButton.classList.add('right_menu_button', 'danger-button', 'fa-solid', 'fa-trash');
             deleteButton.title = t`Delete backup`;
             deleteButton.addEventListener('click', async () => {
                 const isDeleted = await this.deleteBackup(backup.file_name);

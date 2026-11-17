@@ -797,7 +797,7 @@ function Dialog(props: {
                                                 />
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-delete-greeting red_button fa-solid fa-trash-can"
+                                                    class="alternative-button alternative-delete-greeting danger-button fa-solid fa-trash-can"
                                                     title={t('Delete from card')}
                                                     aria-label={t('Delete from card')}
                                                     onClick={() => void removeGreeting(item)}

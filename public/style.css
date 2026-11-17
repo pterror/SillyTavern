@@ -4546,12 +4546,12 @@ grammarly-extension {
     filter: grayscale(0.5);
 }
 
-.red_button,
+.danger-button,
 .redWarningBG {
     background-color: var(--crimson70a) !important;
 }
 
-.red_button:hover,
+.danger-button:hover,
 .redWarningBG:hover {
     background-color: var(--fullred) !important;
 }

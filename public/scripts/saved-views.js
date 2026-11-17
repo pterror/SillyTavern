@@ -333,7 +333,7 @@ function makeRow(saved, index) {
     const button = (icon, title, action, onClick) => {
         const b = document.createElement('i');
         b.className = `fa-solid ${icon} view_picker_action`;
-        if (action === 'delete') b.classList.add('red_button');
+        if (action === 'delete') b.classList.add('danger-button');
         b.title = title;
         b.dataset.action = action;
         b.tabIndex = 0;
