@@ -69,3 +69,41 @@ test('holding the modifier opens shortcuts after 250 ms and releasing it closes 
     document.body.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
     expect(document.querySelector('.commandCheatsheet')?.matches(':popover-open')).toBe(false);
 });
+
+test('shortcuts evaluate availability once per opening and refresh it on reopening', () => {
+    vi.useFakeTimers();
+    const { commands } = setup();
+    let enabled = true;
+    const when = vi.fn(() => enabled);
+    stops.push(
+        commands.register(
+            Array.from({ length: 100 }, (_, index) => ({
+                id: `shortcut-${index}`,
+                label: `Shortcut ${index}`,
+                category: 'Test',
+                keys: ['Control+k'],
+                run: () => undefined,
+                when,
+            })),
+        ),
+    );
+    const open = () => {
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', ctrlKey: true, bubbles: true }));
+        vi.advanceTimersByTime(250);
+    };
+    const rows = () =>
+        [...document.querySelectorAll('.commandCheatsheet [role="group"] > div')].filter((row) =>
+            row.textContent.startsWith('Shortcut '),
+        );
+    when.mockClear();
+    open();
+    expect(when).toHaveBeenCalledTimes(100);
+    expect(rows()).toHaveLength(100);
+    expect(rows().every((row) => !row.hasAttribute('aria-disabled'))).toBe(true);
+    document.body.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    enabled = false;
+    when.mockClear();
+    open();
+    expect(when).toHaveBeenCalledTimes(100);
+    expect(rows().every((row) => row.getAttribute('aria-disabled') === 'true')).toBe(true);
+});

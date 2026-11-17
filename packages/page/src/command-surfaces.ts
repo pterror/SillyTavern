@@ -52,9 +52,17 @@ function cheatsheetOver(
     open: ReturnType<typeof cell<boolean>>,
     strings: Strings,
 ) {
+    let available = new Set<string>();
+    const refreshAvailable = () => {
+        if (open.get()) available = new Set(commands.available().map((command) => command.id));
+    };
+    // Snapshot before rendering: availability predicates may read layout, so never run them per row.
+    const stopAvailable = open.watch(refreshAvailable);
+    refreshAvailable();
     let current = bound(commands.schema(), commands.overrides.get());
     const stopBindings = commands.watch(() => {
         current = bound(commands.schema(), commands.overrides.get());
+        refreshAvailable();
     });
     const bindings = { get: () => current, watch: commands.watch };
     const keys = cheatsheetKeys({ bindings, open, strings });
@@ -72,8 +80,7 @@ function cheatsheetOver(
                 attribute: 'aria-disabled',
                 on: 'true',
                 test: {
-                    has: (key) =>
-                        typeof key === 'string' && !commands.available().some((command) => command.id === key),
+                    has: (key) => typeof key === 'string' && !available.has(key),
                     watch: () => () => undefined,
                 },
             }),
@@ -84,6 +91,7 @@ function cheatsheetOver(
         getBoundingClientRect: () => ({ bottom: window.innerHeight, left: 0, right: window.innerWidth, top: 0 }),
     };
     const stops = [
+        stopAvailable,
         stopBindings,
         rendered.stop,
         popover({ anchor: viewport, element, open, side: 'center' }),
