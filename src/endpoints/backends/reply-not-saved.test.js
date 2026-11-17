@@ -75,7 +75,7 @@ function textSettings(type, url) {
 function chatSettings(url) {
     return {
         username: 'Tester',
-        power_user: { console_log_prompts: false, pin_examples: false, request_token_probabilities: false },
+        power_user: { pin_examples: false, request_token_probabilities: false },
         world_info: { globalSelect: [], charLore: [] },
         oai_settings: {
             chat_completion_source: 'custom', custom_model: 'test-model', custom_url: url,

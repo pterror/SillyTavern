@@ -98,7 +98,6 @@ import { worldInfoGlobalsOf } from '../public/scripts/world-info-globals.js';
  * @property {boolean} [prefer_character_jailbreak]
  * @property {Record<string, import('../public/scripts/power-user.js').PersonaRecord>} [persona_data]
  * @property {string} [user_prompt_bias]
- * @property {boolean} [console_log_prompts]
  * @property {boolean} [pin_examples]
  * @property {string} [media_display]
  */

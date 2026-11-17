@@ -708,7 +708,6 @@
     "Show tags in responses": "응답에서 태그 표시",
     "Allow AI messages in groups to contain lines spoken by other group members": "그룹의 AI 메시지가 다른 그룹 멤버가 말한 줄을 포함 할 수 있도록 허용",
     "Relax message trim in Groups": "그룹에서 메시지 트리밍 완화",
-    "Log prompts to console": "콘솔에 프롬프트 기록",
     "Requests logprobs from the API for the Token Probabilities feature": "토큰 확률 기능에 대한 API에서 로그 확률 요청",
     "Request token probabilities": "토큰 확률 요청",
     "Automatically reject and re-generate AI message based on configurable criteria": "구성 가능한 기준에 따라 AI 메시지를 자동으로 거부하고 다시 생성",

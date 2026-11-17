@@ -693,7 +693,6 @@
     "Show tags in responses": "Tags weergeven in reacties",
     "Allow AI messages in groups to contain lines spoken by other group members": "Sta toe dat AI-berichten in groepen regels bevatten die zijn uitgesproken door andere groepsleden",
     "Relax message trim in Groups": "Trimbericht ontspannen in groepen",
-    "Log prompts to console": "Logt prompts naar console",
     "Requests logprobs from the API for the Token Probabilities feature": "Vraagt logprobs aan van de API voor de Token Probabilities-functie",
     "Request token probabilities": "Aanvraag tokenkansen",
     "Automatically reject and re-generate AI message based on configurable criteria": "Automatisch AI-bericht afwijzen en opnieuw genereren op basis van configureerbare criteria",

@@ -85,7 +85,7 @@ test.describe('Auto-fix Markdown, with an old settings file that has it on', () 
         await page.evaluate(async () => {
             const { saveSettings } = await import('/script.js');
             const { power_user } = await import('/scripts/power-user.js');
-            power_user.console_log_prompts = !power_user.console_log_prompts;
+            power_user.quick_continue = !power_user.quick_continue;
             await saveSettings();
         });
         expect(await storedAutoFix(page)).toEqual({ has: false, value: undefined });

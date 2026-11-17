@@ -44,7 +44,7 @@ export async function createTextCompletionParameters(connection, {
     ephemeralStoppingStrings = [], bannedWordsSink = [], cfgValues = {}, thisMaxContext = connection.thisMaxContext, macroContext,
     encodeTokens, encodeTokensByType, novelTokenizerType, koboldFlags = {}, isHorde = false, novelDataTier, presetOrder,
 }) {
-    const { mainApi, settings, model, amountGen, maxContext, requestTokenProbabilities, consoleLogPrompts, apiServer } = connection;
+    const { mainApi, settings, model, amountGen, maxContext, requestTokenProbabilities, apiServer } = connection;
     const stoppingStringsParams = {
         namesAsStopStrings: connection.namesAsStopStrings, name1, name2, chat, isGroup, groupMemberNames,
         singleLine: connection.singleLine, instructPreset: connection.instructPreset, contextSettings: connection.contextSettings,
@@ -72,7 +72,7 @@ export async function createTextCompletionParameters(connection, {
     } else if (mainApi === 'novel') {
         generate_data = await createNovelGenerationData({
             finalPrompt: prompt, settings, maxLength: amountGen, isImpersonate, isContinue, type, novelDataTier, presetOrder,
-            consoleLogPrompts, requestTokenProbabilities, stoppingStringsParams, tokenizerType: novelTokenizerType,
+            requestTokenProbabilities, stoppingStringsParams, tokenizerType: novelTokenizerType,
             encodeTokens: encodeTokensByType, dropped: droppedEntries, macroContext,
         });
     } else {

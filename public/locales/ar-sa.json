@@ -697,7 +697,6 @@
     "Show tags in responses": "عرض الوسوم في الردود",
     "Allow AI messages in groups to contain lines spoken by other group members": "السماح لرسائل الذكاء الاصطناعي في المجموعات بأن تحتوي على أسطر يتحدثها أعضاء المجموعة الآخرين",
     "Relax message trim in Groups": "تخفيف تقليم الرسائل في المجموعات",
-    "Log prompts to console": "تسجيل التعليمات إلى وحدة التحكم",
     "Requests logprobs from the API for the Token Probabilities feature": "يطلب logprobs من الواجهة البرمجية التطبيقية لميزة الرموز الاحتمالية",
     "Request token probabilities": "احتماليات طلب الرمز",
     "Automatically reject and re-generate AI message based on configurable criteria": "رفض الرسالة التي تم إنشاؤها تلقائيًا وإعادة إنشاءها بناءً على معايير قابلة للتكوين",

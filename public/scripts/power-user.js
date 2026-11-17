@@ -195,7 +195,6 @@ export const power_user = {
     auto_swipe_blacklist_threshold: 2,
     auto_scroll_chat_to_bottom: true,
     send_on_enter: send_on_enter_options.AUTO,
-    console_log_prompts: false,
     request_token_probabilities: false,
     show_group_chat_queue: false,
     allow_name1_display: false,
@@ -1701,6 +1700,7 @@ export async function loadPowerUserSettings(settings, data) {
             settings.power_user.tag_sort_mode = settings.power_user.auto_sort_tags ? tag_sort_mode.ALPHABETICAL : tag_sort_mode.MANUAL;
             delete settings.power_user.auto_sort_tags;
         }
+        delete settings.power_user.console_log_prompts;
         for (const [key, value] of Object.entries(settings.power_user)) {
             if (newUiStarted() && SERVER_OWNED.has(`power_user.${key}`)) continue;
             power_user[key] = value;
@@ -1823,7 +1823,6 @@ export async function loadPowerUserSettings(settings, data) {
     $('#context_derived').parent().find('i').toggleClass('toggleEnabled', !!power_user.context_derived);
     $('#context_size_derived').prop('checked', !!power_user.context_size_derived);
 
-    $('#console_log_prompts').prop('checked', power_user.console_log_prompts);
     $('#request_token_probabilities').prop('checked', power_user.request_token_probabilities);
     $('#show_group_chat_queue').prop('checked', power_user.show_group_chat_queue);
     $('#auto_scroll_chat_to_bottom').prop('checked', power_user.auto_scroll_chat_to_bottom);
@@ -3470,11 +3469,6 @@ jQuery(() => {
             power_user.auto_swipe_blacklist_threshold = number;
             saveSettingsDebounced('power_user.auto_swipe_blacklist_threshold');
         }
-    });
-
-    $('#console_log_prompts').on('input', function () {
-        power_user.console_log_prompts = !!$(this).prop('checked');
-        saveSettingsDebounced('power_user.console_log_prompts');
     });
 
     $('#request_token_probabilities').on('input', function () {

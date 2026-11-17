@@ -103,7 +103,6 @@ function buildSettingsFixture() {
             persona_data: {
                 'Tester.png': { description: 'A curious {{user}}.', position: 1 },
             },
-            console_log_prompts: false,
             pin_examples: false,
             prefer_character_prompt: true,
             prefer_character_jailbreak: false,

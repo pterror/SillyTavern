@@ -695,7 +695,6 @@
     "Show tags in responses": "Показати <теги> в відповідях",
     "Allow AI messages in groups to contain lines spoken by other group members": "Дозволяти повідомленням ШІ у групах містити рядки, сказані іншими учасниками групи",
     "Relax message trim in Groups": "Послаблення обрізання повідомлень у групах",
-    "Log prompts to console": "Записуйте запити у консоль",
     "Requests logprobs from the API for the Token Probabilities feature": "Запитувати імовірності з API для функції ймовірностей токенів",
     "Request token probabilities": "Запитувати ймовірності токенів",
     "Automatically reject and re-generate AI message based on configurable criteria": "Автоматично відхиляти та знову генерувати повідомлення ШІ на основі налаштованих критеріїв",

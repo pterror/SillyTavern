@@ -695,7 +695,6 @@
     "Show tags in responses": "Sýna merki í svörum",
     "Allow AI messages in groups to contain lines spoken by other group members": "Leyfa AI skilaboð í hópum að innihalda línur talaðar af öðrum hópmeðlimum",
     "Relax message trim in Groups": "Slaka á skurðboðum í hópum",
-    "Log prompts to console": "Skráðu boð í tölvuna",
     "Requests logprobs from the API for the Token Probabilities feature": "Óskar logprobs frá API fyrir sýnileika áhlutum",
     "Request token probabilities": "Beiðni um tóka líkur",
     "Automatically reject and re-generate AI message based on configurable criteria": "Hafnaðu sjálfkrafa og endurheimtu AI skilaboð miðað við stillanlega skilyrði",

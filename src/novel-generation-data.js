@@ -249,7 +249,6 @@ export function getNovelMaxResponseTokens(novelDataTier) {
  * @property {string} [type]
  * @property {number} [novelDataTier]
  * @property {number[]} [presetOrder]
- * @property {boolean} [consoleLogPrompts]
  * @property {boolean} [requestTokenProbabilities]
  * @property {import('./stopping-strings.js').GetStoppingStringsParams} [stoppingStringsParams]
  * @property {number} tokenizerType
@@ -271,7 +270,6 @@ export async function createNovelGenerationData({
     type,
     novelDataTier,
     presetOrder,
-    consoleLogPrompts = false,
     requestTokenProbabilities = false,
     stoppingStringsParams = {},
     tokenizerType,
@@ -340,10 +338,6 @@ export async function createNovelGenerationData({
     const logitBias = (Array.isArray(settings.logit_bias) && settings.logit_bias.length)
         ? await calculateNovelLogitBias(settings.logit_bias, tokenizerType, encodeTokens, dropped)
         : [];
-
-    if (consoleLogPrompts) {
-        console.log(finalPrompt);
-    }
 
     if (isErato) {
         finalPrompt = '<|startoftext|><|reserved_special_token81|>' + finalPrompt;

@@ -130,7 +130,6 @@ const DEPTH_ROLE_ORDER = { [extension_prompt_roles.ASSISTANT]: 0, [extension_pro
  * @property {string} [apiServer]
  * @property {number} [novelDataTier]
  * @property {number[]} [presetOrder]
- * @property {boolean} [consoleLogPrompts]
  * @property {import('../macro-substitution.js').SubstituteParamsContext} [macroFacts]
  */
 
@@ -218,7 +217,7 @@ export async function buildTextCompletionPrompt(input) {
         ephemeralStoppingStrings = [], groupMemberNames = [], groupDisabledMembers = [],
         bannedTokensRaw = '', globalBannedTokensRaw = '', sendBannedTokens = false, logitBiasEntries = [],
         settings = {}, model,
-        koboldFlags = {}, isHorde = false, apiServer, novelDataTier, presetOrder, consoleLogPrompts = false,
+        koboldFlags = {}, isHorde = false, apiServer, novelDataTier, presetOrder,
         macroFacts = {},
     } = input;
 
@@ -497,7 +496,7 @@ export async function buildTextCompletionPrompt(input) {
 
     const { generate_data, droppedEntries, stoppingStrings, bannedTokens, bannedStrings, logitBias } = await createTextCompletionParameters({
         mainApi, settings, model, amountGen, maxContext: input.maxContext ?? input.thisMaxContext, thisMaxContext: input.thisMaxContext,
-        requestTokenProbabilities, consoleLogPrompts, apiServer, isInstruct, instructPreset, contextSettings,
+        requestTokenProbabilities, apiServer, isInstruct, instructPreset, contextSettings,
         namesAsStopStrings, singleLine, customStoppingStringsRaw, customStoppingStringsMacro,
         bannedTokensRaw, globalBannedTokensRaw, sendBannedTokens, logitBiasEntries,
     }, {

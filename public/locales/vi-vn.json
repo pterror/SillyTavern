@@ -695,7 +695,6 @@
     "Show tags in responses": "Hiển thị thẻ trong các phản hồi",
     "Allow AI messages in groups to contain lines spoken by other group members": "Cho phép các tin nhắn của trí tuệ nhân tạo trong các nhóm chứa các dòng được nói bởi các thành viên khác trong nhóm",
     "Relax message trim in Groups": "Giảm nhẹ việc cắt đoạn tin nhắn trong Nhóm",
-    "Log prompts to console": "Ghi nhận các Prompt vào bảng điều khiển",
     "Requests logprobs from the API for the Token Probabilities feature": "Yêu cầu logprobs từ API cho bảng Xác suất Token",
     "Request token probabilities": "Yêu cầu bảng xác suất token",
     "Automatically reject and re-generate AI message based on configurable criteria": "Tự động từ chối và tạo lại tin nhắn của trí tuệ nhân tạo dựa trên các tiêu chí có thể cấu hình",

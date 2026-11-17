@@ -694,7 +694,6 @@
     "Show tags in responses": "在回應中顯示標籤",
     "Allow AI messages in groups to contain lines spoken by other group members": "允許群組中的 AI 訊息包含其他群組成員說的話",
     "Relax message trim in Groups": "放寬群組中的訊息修剪",
-    "Log prompts to console": "將提示詞記錄到控制台",
     "Requests logprobs from the API for the Token Probabilities feature": "從 API 請求 logprobs 用於符元機率功能。",
     "Request token probabilities": "請求符元機率",
     "Automatically reject and re-generate AI message based on configurable criteria": "根據可設定標準自動拒絕並重新生成 AI 訊息。",

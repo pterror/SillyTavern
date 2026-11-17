@@ -49,7 +49,6 @@ const DEFAULT_STORY_STRING_ROLE = extension_prompt_roles.SYSTEM;
  * @property {boolean} [single_line]
  * @property {string} [custom_stopping_strings]
  * @property {boolean} [custom_stopping_strings_macro]
- * @property {boolean} [console_log_prompts]
  * @property {boolean} [collapse_newlines]
  * @property {boolean} [strip_examples]
  * @property {boolean} [pin_examples]
@@ -177,7 +176,6 @@ export function readTextCompletionConnection(directories, settingsContext, mainA
         sendBannedTokens: Boolean(textgenSettings.send_banned_tokens ?? true),
         logitBiasEntries: textgenSettings.logit_bias ?? [],
         apiServer: mainApi === 'kobold' ? (koboldSettings.api_server ?? '') : undefined,
-        consoleLogPrompts: Boolean(powerUser.console_log_prompts ?? false),
     };
 }
 

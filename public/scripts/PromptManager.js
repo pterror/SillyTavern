@@ -6,7 +6,6 @@ import { is_send_press, substituteParams } from '../script.js';
 import { main_api } from './generation-params.js';
 import { event_types, eventSource } from './events.js';
 import { is_group_generating } from './group-chats.js';
-import { power_user } from './power-user.js';
 import { debounce, waitUntilCondition, escapeHtml, uuidv4 } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { chatCompletionDefaultPrompts, promptManagerDefaultPromptOrder } from './prompt-manager-defaults.js';
@@ -512,7 +511,6 @@ class PromptManager {
             if ('nsfw' === promptId) this.updateQuickEdit('nsfw', prompt);
             if ('jailbreak' === promptId) this.updateQuickEdit('jailbreak', prompt);
 
-            this.log('Saved prompt: ' + promptId);
 
             this.hidePopup();
             this.clearEditForm();
@@ -609,7 +607,6 @@ class PromptManager {
                     const promptIndex = this.getPromptIndexById(promptID);
                     this.serviceSettings.prompts.splice(Number(promptIndex), 1);
 
-                    this.log('Deleted prompt: ' + prompt.identifier);
 
                     this.hidePopup();
                     this.clearEditForm();
@@ -746,7 +743,6 @@ class PromptManager {
                     this.setEditFormContent(prompt.content);
                 }
 
-                this.log('Saved prompt: ' + promptId);
                 this.saveServiceSettings().then(() => this.render());
             };
 
@@ -837,8 +833,6 @@ class PromptManager {
             this.clearEditForm();
             this.renderDebounced();
         });
-
-        this.log('Initialized');
     }
 
     /**
@@ -872,26 +866,20 @@ class PromptManager {
         waitUntilCondition(() => !is_send_press && !is_group_generating, 1024 * 1024, 100).then(async () => {
             if (true === afterTryGenerate) {
                 // Executed during dry-run for determining context composition
-                this.profileStart('filling context');
                 this.tryGenerate().finally(async () => {
-                    this.profileEnd('filling context');
-                    this.profileStart('render');
                     const scrollPosition = this.#getScrollPosition();
                     await this.renderPromptManager();
                     await this.renderPromptManagerListItems();
                     this.makeDraggable();
                     this.#setScrollPosition(scrollPosition);
-                    this.profileEnd('render');
                 });
             } else {
                 // Executed during live communication
-                this.profileStart('render');
                 const scrollPosition = this.#getScrollPosition();
                 await this.renderPromptManager();
                 await this.renderPromptManagerListItems();
                 this.makeDraggable();
                 this.#setScrollPosition(scrollPosition);
-                this.profileEnd('render');
             }
         }).catch(() => {
             console.log('Timeout while waiting for send press to be false');
@@ -1028,7 +1016,6 @@ class PromptManager {
                 const reference = promptReferences[i];
                 if (reference && -1 === this.serviceSettings.prompts.findIndex(prompt => prompt.identifier === reference.identifier)) {
                     promptReferences.splice(i, 1);
-                    this.log('Removed unused reference: ' + reference.identifier);
                 }
             }
         }
@@ -1051,7 +1038,6 @@ class PromptManager {
             const defaultPrompt = chatCompletionDefaultPrompts.prompts.find(prompt => prompt?.identifier === identifier);
             if (defaultPrompt) {
                 prompts.push(defaultPrompt);
-                this.log(`Missing system prompt: ${defaultPrompt.identifier}. Added default.`);
             }
         });
     }
@@ -1850,17 +1836,14 @@ class PromptManager {
         const prompts = mergeKeepNewer(this.serviceSettings.prompts, importData.data.prompts);
 
         this.setPrompts(prompts);
-        this.log('Prompt import succeeded');
 
         if ('global' === this.configuration.promptOrder.strategy) {
             const promptOrder = this.getPromptOrderForCharacter({ id: this.configuration.promptOrder.dummyId });
             Object.assign(promptOrder, importData.data.prompt_order);
-            this.log('Prompt order import succeeded');
         } else if ('character' === this.configuration.promptOrder.strategy) {
             if ('character' === importData.type) {
                 const promptOrder = this.getPromptOrderForCharacter(this.activeCharacter);
                 Object.assign(promptOrder, importData.data.prompt_order);
-                this.log(`Prompt order import for character ${this.activeCharacter.name} succeeded`);
             }
         } else {
             throw new Error('Prompt order strategy not supported.');
@@ -1932,7 +1915,6 @@ class PromptManager {
                 this.removePromptOrderForCharacter(this.activeCharacter);
                 this.addPromptOrderForCharacter(this.activeCharacter, updatedPromptOrder);
 
-                this.log(`Prompt order updated for ${this.activeCharacter.name}.`);
 
                 this.saveServiceSettings();
             },
@@ -1968,36 +1950,6 @@ class PromptManager {
      */
     getUuidv4() {
         return uuidv4();
-    }
-
-    /**
-     * Write to console with prefix
-     *
-     * @param output
-     */
-    log(output) {
-        if (power_user.console_log_prompts) console.log('[PromptManager] ' + output);
-    }
-
-    /**
-     * Start a profiling task
-     *
-     * @param identifier
-     */
-    profileStart(identifier) {
-        if (power_user.console_log_prompts) console.time(identifier);
-    }
-
-    /**
-     * End a profiling task
-     *
-     * @param identifier
-     */
-    profileEnd(identifier) {
-        if (power_user.console_log_prompts) {
-            this.log('Profiling of "' + identifier + '" finished. Result below.');
-            console.timeEnd(identifier);
-        }
     }
 }
 

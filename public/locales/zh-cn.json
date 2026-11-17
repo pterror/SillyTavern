@@ -945,7 +945,6 @@
     "Experimental feature. Currently in development to test.": "实验性功能。目前正在开发测试中。",
     "Allow AI messages in groups to contain lines spoken by other group members": "允许群聊中的 AI 输出群中其他成员说的话",
     "Relax message trim in Groups": "减轻群聊中的消息修剪",
-    "Log prompts to console": "将提示词记录到控制台",
     "Requests logprobs from the API for the Token Probabilities feature": "从 API 请求对数概率数据，用于实现 Token 概率功能。",
     "Request token probabilities": "请求 Token 概率",
     "In group chat, highlight the character(s) that are currently queued to generate responses and the order in which they will respond.": "在群聊中，突出显示当前排队等待生成响应的角色以及他们响应的顺序。",

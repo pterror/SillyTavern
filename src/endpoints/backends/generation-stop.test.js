@@ -73,7 +73,7 @@ function chatSettings(source, url) {
     else { oai.reverse_proxy = url; oai.proxy_password = 'test-proxy-password'; }
     return {
         username: 'Tester',
-        power_user: { console_log_prompts: false, pin_examples: false, request_token_probabilities: false },
+        power_user: { pin_examples: false, request_token_probabilities: false },
         world_info: { globalSelect: [], charLore: [] },
         oai_settings: oai,
     };

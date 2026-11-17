@@ -71,7 +71,6 @@ function buildSettingsFixture() {
     return {
         username: 'Tester',
         power_user: {
-            console_log_prompts: false,
             pin_examples: false,
             request_token_probabilities: false,
         },

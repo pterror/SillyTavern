@@ -695,7 +695,6 @@
     "Show tags in responses": "Mostrar tags em respostas",
     "Allow AI messages in groups to contain lines spoken by other group members": "Permitir que mensagens de IA em grupos contenham linhas faladas por outros membros do grupo",
     "Relax message trim in Groups": "Reduzir corte de mensagem em Grupos",
-    "Log prompts to console": "Registrar prompts no console",
     "Requests logprobs from the API for the Token Probabilities feature": "Solicita logprobs da API para o recurso de Probabilidades de Token",
     "Request token probabilities": "Solicitar probabilidades de token",
     "Automatically reject and re-generate AI message based on configurable criteria": "Rejeitar automaticamente e recriar mensagem de IA com base em critérios configuráveis",

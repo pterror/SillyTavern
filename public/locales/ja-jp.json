@@ -697,7 +697,6 @@
     "Show tags in responses": "応答でタグを表示",
     "Allow AI messages in groups to contain lines spoken by other group members": "グループ内のAIメッセージに、他のグループメンバーによって話された行を含めることを許可する",
     "Relax message trim in Groups": "グループ内のメッセージトリムを緩和する",
-    "Log prompts to console": "プロンプトをコンソールに記録",
     "Requests logprobs from the API for the Token Probabilities feature": "トークン確率機能のAPIからのlogprobsをリクエストします",
     "Request token probabilities": "トークンの確率を要求",
     "Automatically reject and re-generate AI message based on configurable criteria": "設定可能な基準に基づいてAIメッセージを自動的に拒否して再生成します",

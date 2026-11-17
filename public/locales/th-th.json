@@ -703,7 +703,6 @@
   "Show tags in responses": "แสดง HTML tag ในข้อความ",
   "Allow AI messages in groups to contain lines spoken by other group members": "อนุญาตให้ข้อความ AI ในกลุ่มมีบรรทัดที่พูดโดยสมาชิกกลุ่มอื่น",
   "Relax message trim in Groups": "ผ่อนปรนการตัดข้อความในกลุ่ม",
-  "Log prompts to console": "บันทึกพรอมต์ไปยังคอนโซล",
   "Requests logprobs from the API for the Token Probabilities feature": "ขอ logprobs จาก API สำหรับฟีเจอร์ Token Probabilities",
   "Request token probabilities": "ขอความน่าจะเป็นของโทเค็น",
   "Automatically reject and re-generate AI message based on configurable criteria": "ปฏิเสธและสร้างข้อความ AI ใหม่โดยอัตโนมัติตามเกณฑ์ที่กำหนดได้",
