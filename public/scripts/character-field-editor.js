@@ -92,6 +92,40 @@ function getTextarea(id) {
     return /** @type {JQuery<HTMLTextAreaElement>} */ ($(`#${id}`));
 }
 
+// Form values retain the portable card text; only the editor hides the prefix.
+const originalPrefixes = new Map();
+const ORIGINAL_MACRO = /\{\{original\}\}/i;
+
+/** @param {string} id @returns {string} */
+function projectOriginal(id) {
+    const value = String(getTextarea(id).val() ?? '');
+    if (!$(`.field_include_original[data-for="${id}"]`).length) return value;
+    const prefix = value.match(/^\{\{original\}\}(?:\r?\n)?/i)?.[0] ?? '';
+    originalPrefixes.set(id, prefix);
+    const body = value.slice(prefix.length);
+    updateOriginalControl(id, body);
+    return body;
+}
+
+/** @param {string} id @param {string} body */
+function updateOriginalControl(id, body) {
+    const custom = ORIGINAL_MACRO.test(body);
+    $(`.field_include_original[data-for="${id}"]`)
+        .prop('checked', Boolean(originalPrefixes.get(id)))
+        .prop('disabled', custom || Boolean(activeEdit?.saving))
+        .closest('label')
+        .attr('title', custom
+            ? deps.t`Edit the {{original}} macro in the text to change its placement.`
+            : id === 'system_prompt_textarea'
+                ? deps.t`Prepend {{original}} to include the default System Prompt before this text.`
+                : deps.t`Prepend {{original}} to include the default Post-History Instructions before this text.`);
+}
+
+/** @param {string} id @param {string} body @returns {string} */
+function originalValue(id, body) {
+    return (originalPrefixes.get(id) ?? '') + body;
+}
+
 /** @param {string} id */
 function getPreview(id) {
     return $(`.field_preview[data-for="${id}"]`);
@@ -167,6 +201,7 @@ let previewRenderCount = 0;
  * @param {MacroValues} [values]
  */
 function refreshFieldPreview(id, values = new MacroValues(() => macroScopeOf(id))) {
+    projectOriginal(id);
     refreshCharInfoTabDimming();
     const field = FIELDS[id];
     const preview = getPreview(id);
@@ -220,7 +255,8 @@ export function beginEdit(id, at = 0) {
     getPanel(id).addClass('field_editing');
     drawerStackChanged();
     deps.onEditStart?.(id);
-    void mountFieldEditor(id, text, at);
+    const body = projectOriginal(id);
+    void mountFieldEditor(id, body, Math.max(0, at - (text.length - body.length)));
 }
 
 /** @type {{ id: string, editor: import('./chat-text/editor.js').ChatEditor | null, ended: boolean, values: MacroValues } | null} */
@@ -258,7 +294,7 @@ async function mountFieldEditor(id, text, at) {
             initial: text,
             edited: edited => fieldEdited(id, edited),
             save: async (saved) => {
-                if (!await FIELDS[id].save()(saved)) throw new Error('The field was not saved');
+                if (!await FIELDS[id].save()(originalValue(id, saved))) throw new Error('The field was not saved');
             },
             className: `field_editor ${previewTextClasses(preview)}`,
             placeholder: textarea.placeholder,
@@ -291,6 +327,8 @@ function unmountFieldEditor() {
  */
 function fieldEdited(id, text) {
     if (!isFieldInEdit(id)) return;
+    updateOriginalControl(id, text);
+    text = originalValue(id, text);
     getTextarea(id).val(text);
     activeEdit.userText = text;
     writeDraft(id, text, activeEdit.original);
@@ -327,7 +365,7 @@ function scheduleAutoSave(id) {
         autoSaveTimer = null;
         const editor = fieldEditor?.id === id ? fieldEditor.editor : null;
         if (!editor) return;
-        const value = editor.text();
+        const value = originalValue(id, editor.text());
         const save = editor.save().then(() => true, (error) => {
             console.error('Field autosave failed', { id, error });
             return false;
@@ -748,6 +786,20 @@ function beginEditAtClick(preview, event) {
 export function initCharacterFieldEditor(dependencies) {
     deps = dependencies;
     initTabSwitchGuard();
+
+    $(document).on('change', '.field_include_original', function () {
+        const id = String($(this).attr('data-for'));
+        const checked = this.checked;
+        if (!isFieldInEdit(id)) beginEdit(id);
+        if (!isFieldInEdit(id) || activeEdit.saving) {
+            projectOriginal(id);
+            return;
+        }
+        const value = String(getTextarea(id).val() ?? '');
+        const body = value.slice((originalPrefixes.get(id) ?? '').length);
+        originalPrefixes.set(id, checked ? '{{original}}\n' : '');
+        fieldEdited(id, body);
+    });
 
     $(document).on('click', '.field_edit_toggle', function () {
         beginEdit(String($(this).attr('data-for')));

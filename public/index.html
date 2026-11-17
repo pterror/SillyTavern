@@ -4886,7 +4886,7 @@
                                 </label>
                                 <div id="charInfoTab_mainPrompt" class="char_info_tab_panel tab-contents">
                                     <div id="mainPromptOverride">
-                                        <small data-i18n="Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default Main Prompt from system settings. For Chat Completion and Instruct Mode.</small>
+                                        <small data-i18n="Insert {{original}} to include the default System Prompt from system settings. For Chat Completion and Instruct Mode.">Insert {{original}} to include the default System Prompt from system settings. For Chat Completion and Instruct Mode.</small>
                                         <h4 class="flex-container alignItemsBaseline">
                                             <i class="field_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
                                             <i class="field_edit_toggle fa-solid fa-pencil right_menu_button" data-for="system_prompt_textarea" title="Edit" data-i18n="[title]Edit"></i>
@@ -4894,7 +4894,11 @@
                                             <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="system_prompt_textarea" title="Cancel" data-i18n="[title]Cancel"></i>
                                             <small>(<span data-token-counter="system_prompt_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
-                                        <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" class="field_edit_textarea text_pole autoSetHeight" autocomplete="off" rows="3"></textarea>
+                                        <label class="checkbox_label" title="Prepend {{original}} to include the default System Prompt before this text." data-i18n="[title]Prepend {{original}} to include the default System Prompt before this text.">
+                                            <input type="checkbox" class="field_include_original" data-for="system_prompt_textarea">
+                                            <span data-i18n="Include default System Prompt first">Include default System Prompt first</span>
+                                        </label>
+                                        <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default System Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default System Prompt used for this character.&#10;(v2 spec: system_prompt)" class="field_edit_textarea text_pole autoSetHeight" autocomplete="off" rows="3"></textarea>
                                         <div class="field_preview macro_preview_content mes_text" data-for="system_prompt_textarea"></div>
                                     </div>
                                 </div>
@@ -4912,6 +4916,10 @@
                                             <i class="field_edit_cancel fa-solid fa-xmark right_menu_button" data-for="post_history_instructions_textarea" title="Cancel" data-i18n="[title]Cancel"></i>
                                             <small>(<span data-token-counter="post_history_instructions_textarea">counting...</span> <span data-i18n="tokens">tokens</span>)</small>
                                         </h4>
+                                        <label class="checkbox_label" title="Prepend {{original}} to include the default Post-History Instructions before this text." data-i18n="[title]Prepend {{original}} to include the default Post-History Instructions before this text.">
+                                            <input type="checkbox" class="field_include_original" data-for="post_history_instructions_textarea">
+                                            <span data-i18n="Include default Post-History Instructions first">Include default Post-History Instructions first</span>
+                                        </label>
                                         <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" class="field_edit_textarea text_pole autoSetHeight" autocomplete="off" rows="3"></textarea>
                                         <div class="field_preview macro_preview_content mes_text" data-for="post_history_instructions_textarea"></div>
                                     </div>
