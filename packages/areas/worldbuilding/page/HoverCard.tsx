@@ -1,5 +1,6 @@
 import { For, Show, createSignal, onCleanup } from 'solid-js';
 import { useUi } from '@st/page/context';
+import { inTopLayer } from '@st/page/popover';
 import { CARD_VIEW } from '../protocol.ts';
 import type { CardAsked, CardView, EntryAt, HoverCard } from '../protocol.ts';
 import { EntryContent } from './EntryContent.tsx';
@@ -115,21 +116,17 @@ export function hoverCards() {
     phone.addEventListener('change', layoutChanged);
     onCleanup(() => phone.removeEventListener('change', layoutChanged));
     let box: HTMLElement | undefined;
+    const fromWord = inTopLayer(() => pointed()?.word);
     const enter = (book: string, entry: string, word: HTMLElement, from: 'word' | 'card' = 'word') => {
         if (onPhone() || wb.drag.held() !== null || pointed()?.word === word) return;
-        const host = word.closest('.wb-hover-host');
-        const pane = word.closest('.wb-pane');
-        if (!(host instanceof HTMLElement) || !(pane instanceof HTMLElement)) return;
-        const frame = host.getBoundingClientRect();
-        const seen = pane.getBoundingClientRect();
         const at = word.getBoundingClientRect();
-        const width = Math.min(CARD_WIDTH, frame.width - 32, window.innerWidth - 32);
-        const left = Math.max(16, Math.min(at.left - frame.left - 12, frame.width - width - 16));
-        const below = seen.bottom - at.bottom;
-        const over = at.top - seen.top;
+        const width = Math.min(CARD_WIDTH, window.innerWidth - 32);
+        const left = Math.max(16, Math.min(at.left - 12, window.innerWidth - width - 16));
+        const below = window.innerHeight - at.bottom;
+        const over = at.top;
         const above = below < CARD_HEIGHT_GUESS && over > below;
         const height = Math.max(80, Math.min(CARD_HEIGHT_GUESS, (above ? over : below) - 16));
-        const top = above ? at.top - frame.top : at.bottom - frame.top;
+        const top = above ? at.top : at.bottom;
         const asked: CardAsked = { entries: [{ book, entry } satisfies EntryAt], reply: null };
         setPointed({ asked, word, card: from === 'card', left, top, above, width, height });
         void wb.act('worldbuilding.showCard', asked);
@@ -149,7 +146,10 @@ export function hoverCards() {
         <Show when={shown()}>
             {(both) => (
                 <div
-                    ref={(element) => (box = element)}
+                    ref={(element) => {
+                        box = element;
+                        fromWord(element);
+                    }}
                     class="wb-hover-at"
                     classList={{ 'wb-hover-above': both().at.above }}
                     style={{

@@ -1145,9 +1145,14 @@
 }
 
 .wb-hover-at {
-    position: absolute;
-    z-index: 7;
-    padding-top: 8px;
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    border: 0;
+    padding: 8px 0 0;
+    background: none;
+    color: inherit;
+    overflow: visible;
 }
 
 .wb-hover-at.wb-hover-shown-only,
