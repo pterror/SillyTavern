@@ -145,6 +145,21 @@ export function updateCharacterListRow(id) {
     return true;
 }
 
+const refreshSavedCharacterList = debounce(() => onCharacterListShown(), 100);
+
+/**
+ * Finish a successful character write. Re-query because an edit can change search
+ * membership, ordering, counts and favorites, even when its row isn't on this page.
+ * Hidden lists are refreshed by onCharacterListShown when opened.
+ * @param {Character} character
+ * @returns {Promise<void>}
+ */
+export function characterSaved(character) {
+    updateCharacterListRow(character.avatar);
+    refreshSavedCharacterList();
+    return eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character } });
+}
+
 export function renameCharacterListRow(previousId, id) {
     const character = charactersStore.get(id);
     if (!character) return false;

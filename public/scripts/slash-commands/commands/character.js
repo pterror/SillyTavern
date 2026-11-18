@@ -1,11 +1,10 @@
 import { SlashCommandParser } from '../SlashCommandParser.js';
 import { SlashCommand } from '../SlashCommand.js';
 import { Generate, deleteCharacter, duplicateCharacter, getCurrentCharacter, characterThumbnail, replaceShownImage, is_send_press, reloadCurrentChat, renameCharacter, chatOpCut, selectCharacterByAvatar, select_selected_character } from '../../../script.js';
-import { getCharacters, getOneCharacter } from '../../character-list.js';
+import { characterSaved, getCharacters, getOneCharacter } from '../../character-list.js';
 import { chat } from '../../chat-state.js';
 import { getRequestHeaders } from '../../request-headers.js';
 import { charactersStore } from '../../character-store.js';
-import { eventSource, event_types } from '../../events.js';
 import { is_group_generating } from '../../group-chats.js';
 import { t } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';
@@ -287,7 +286,7 @@ async function updateCharacterCallback(args) {
 
         const edited = charactersStore.get(character.avatar)
             ?? await (await import('../../character-repository.js')).characterRepository.full(character.avatar);
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: edited } });
+        await characterSaved(edited);
 
         if (character.avatar === getCurrentCharacter()?.avatar) {
             select_selected_character(character.avatar, { switchMenu: false });

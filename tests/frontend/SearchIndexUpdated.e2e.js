@@ -199,6 +199,34 @@ test.describe('change message ({}) on /changes/stream', () => {
         await waitForQuiet(log);
     });
 
+    test('a local character edit enters and leaves an active search without a stream message', async ({ page }) => {
+        const name = `Localedit${Date.now()}`;
+        const term = `${name}match`;
+        await page.evaluate(async name => {
+            const headers = window['stTest'].context().getRequestHeaders({ omitContentType: true });
+            const form = new FormData();
+            form.set('ch_name', name);
+            const response = await fetch('/api/characters/create', { method: 'POST', headers, body: form });
+            if (!response.ok) throw new Error(`create failed: ${response.status}`);
+        }, name);
+        await setSearchTerm(page, log, `description:${term}`);
+        const rows = page.locator('#rm_print_characters_block .character_select');
+        await expect(rows).toHaveCount(0);
+
+        async function editDescription(description) {
+            await page.evaluate(async ({ name, description }) => {
+                const { executeSlashCommandsWithOptions } = window['stTest'].context();
+                await executeSlashCommandsWithOptions(`/char-update char="${name}" description="${description}"`);
+            }, { name, description });
+        }
+
+        await editDescription(term);
+        await expect(rows).toHaveCount(1);
+        await expect(rows).toContainText(name);
+        await editDescription('Changed');
+        await expect(rows).toHaveCount(0);
+    });
+
     test('with a search term, syncs and re-queries the visible page once, not the top-500 search', async ({ page }) => {
         await setSearchTerm(page, log, 'zq');
         const from = log.queries.length;
@@ -659,6 +687,19 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
             const select = window['$']('#aux_field');
             select.val(select.val() === 'creator' ? 'character_version' : 'creator').trigger('change');
         });
+        await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
+        await waitForQuiet(log);
+
+        await expectPage2Kept(page, from);
+    });
+
+    test('on saving a character outside the current page with /char-update', async ({ page }) => {
+        const from = await toPage2Scrolled(page);
+
+        await page.evaluate(async name => {
+            const { executeSlashCommandsWithOptions } = window['stTest'].context();
+            await executeSlashCommandsWithOptions(`/char-update char="${name}" description="Updated"`);
+        }, `${term} 00`);
         await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
         await waitForQuiet(log);
 

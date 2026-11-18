@@ -7,7 +7,7 @@ import {
 
 import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown, takeCardCounts, keepCardCountsBeforeGreetingEdit, takeGreetingTokenCount } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, setCharacterId, holdCharacter, keepHeldCharacters } from './scripts/character-store.js';
-import { printCharacters, printCharactersDebounced, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, updateCharacterListRow, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
+import { printCharacters, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, characterSaved, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
 export { entitiesFilter };
 import {
@@ -713,8 +713,7 @@ export function saveCharacterField(avatar, formId, value, baseline = undefined) 
                 baseline.hash = chain.hash;
             }
 
-            await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character } });
-            updateCharacterListRow(avatar);
+            await characterSaved(character);
             return true;
         } catch (error) {
             console.error(`Failed to save ${formId} for ${avatar}`, error);
@@ -8278,7 +8277,8 @@ async function applyGreetingOpSuccess(character, result) {
  */
 function emitGreetingSaveEdited(run) {
     if (!run.character) return Promise.resolve();
-    return eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: run.character } });
+    charactersStore.update(run.character.avatar, run.character);
+    return characterSaved(run.character);
 }
 
 /**
@@ -9085,8 +9085,7 @@ async function saveCharacterAvatar(avatar, file) {
         crop_data = undefined;
 
         await getOneCharacter(avatar);
-        await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { character: charactersStore.get(avatar) } });
-        updateCharacterListRow(avatar);
+        await characterSaved(charactersStore.get(avatar));
         return true;
     } catch (error) {
         console.error('Failed to save the avatar image', error);
@@ -10711,9 +10710,8 @@ jQuery(async function () {
             if (!response.ok) throw new Error(String(response.status));
             character.fav = newState;
             if (character.data?.extensions) character.data.extensions.fav = newState;
-            updateCharacterListRow(character.avatar);
             await getOneCharacter(character.avatar);
-            printCharactersDebounced();
+            await characterSaved(character);
         } catch (error) {
             console.error('Failed to update favorite status', error);
             toastr.error(t`Failed to update favorite status.`);
