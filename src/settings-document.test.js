@@ -17,6 +17,7 @@ const { openSettingsDocument } = await import('./settings-document.js');
 const { setSettingsDocument } = await import('./settings-documents.js');
 const { deleteBundle, listBundles, readBundle, renameBundle, writeBundle } = await import('./bundle-store.js');
 const { loadEngine } = await import('../engine/load.js');
+const { presetPorts } = await import('./preset-ui-ports.js');
 
 const CONTENT = path.join(here, '../default/content');
 const SHIPPED = JSON.parse(fs.readFileSync(path.join(CONTENT, 'settings.json'), 'utf8'));
@@ -57,6 +58,42 @@ async function reopen(directories, handle) {
     setSettingsDocument(directories, undefined);
     await openSettingsDocument(directories, handle);
 }
+
+test('the Solid preset ports capture canonical values and preserve connection settings when binding is off', async () => {
+    const handle = 'preset-ui';
+    const directories = seedUser(handle);
+    await openSettingsDocument(directories, handle);
+    const user = { handle, directories };
+    await settingsStore.writeSettingsKeys(directories, { 'oai_settings.temp_openai': 0.43, 'oai_settings.bind_preset_to_connection': false });
+    const before = settingsStore.readAllSettings(directories).oai_settings.chat_completion_source;
+    const current = await presetPorts.current(user, 'openai');
+    assert.equal(current.temperature, 0.43);
+    await presetPorts.save(user, 'openai', { name: 'UI custom', data: { temperature: 0.29, chat_completion_source: 'custom', custom_url: 'http://localhost:1234' } });
+    await presetPorts.select(user, 'openai', 'UI custom');
+    let shown = settingsStore.readAllSettings(directories);
+    assert.equal(shown.oai_settings.temp_openai, 0.29);
+    assert.equal(shown.oai_settings.chat_completion_source, before);
+    await reopen(directories, handle);
+    shown = settingsStore.readAllSettings(directories);
+    assert.equal(shown.oai_settings.temp_openai, 0.29);
+    assert.equal(shown.oai_settings.preset_settings_openai, 'UI custom');
+    assert.equal(await presetPorts.save(user, 'openai', { name: 'UI/custom', data: {} }), null);
+});
+
+test('the Solid preset ports interpret imported NovelAI lengths in the right units', async () => {
+    const handle = 'preset-ui-novel';
+    const directories = seedUser(handle);
+    await openSettingsDocument(directories, handle);
+    const user = { handle, directories };
+    await presetPorts.save(user, 'novel', { name: 'UI novel', data: { temperature: 1.1, max_length: 123, max_context: 8000 } });
+    await presetPorts.select(user, 'novel', 'UI novel');
+    const shown = settingsStore.readAllSettings(directories);
+    assert.equal(shown.amount_gen, 123);
+    assert.equal(shown.max_context, 8000);
+    const current = await presetPorts.current(user, 'novel');
+    assert.equal(current.genamt, 123);
+    assert.equal(current.max_length, 8000);
+});
 
 test('opening converts the files, moves them aside, and reads the settings from the model', async () => {
     const directories = seedUser('fresh');

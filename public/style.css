@@ -7883,3 +7883,11 @@ div.cm-tooltip.paste-picker {
     color: inherit;
     overflow: visible;
 }
+.st-preset-legacy { display: none !important; }
+.st-preset-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.st-preset-controls > .st-select { flex: 1; min-width: 8em; }
+.st-preset-controls .st-select-trigger { width: 100%; }
+.st-presets button { margin: 0; }
+.st-preset-order ol { padding-inline-start: 1.5em; }
+.st-preset-order li { display: flex; align-items: center; gap: 5px; }
+.st-preset-order li > span { flex: 1; overflow-wrap: anywhere; }

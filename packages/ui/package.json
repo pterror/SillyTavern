@@ -11,6 +11,7 @@
         "@st/looks": "workspace:*",
         "@st/occlusion": "workspace:*",
         "@st/page": "workspace:*",
+        "@st/presets": "workspace:*",
         "@st/protocol": "workspace:*",
         "@st/recent-history": "workspace:*",
         "@st/settings": "workspace:*",

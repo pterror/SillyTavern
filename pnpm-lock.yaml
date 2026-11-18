@@ -148,6 +148,9 @@ importers:
       '@st/looks':
         specifier: workspace:*
         version: link:packages/areas/looks
+      '@st/presets':
+        specifier: workspace:*
+        version: link:packages/areas/presets
       '@st/protocol':
         specifier: workspace:*
         version: link:packages/protocol
@@ -598,6 +601,31 @@ importers:
         specifier: 1.1.0
         version: 1.1.0(@types/node@22.20.1)(@vitest/ui@5.0.3)(happy-dom@21.0.1)(playwright@1.61.1)(typescript@5.9.3)(yaml@2.8.3)
 
+  packages/areas/presets:
+    dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
+      '@st/page':
+        specifier: workspace:*
+        version: link:../../page
+      '@st/protocol':
+        specifier: workspace:*
+        version: link:../../protocol
+      '@st/server-ui':
+        specifier: workspace:*
+        version: link:../../server-ui
+      solid-js:
+        specifier: 2.0.0
+        version: 2.0.0
+      valibot:
+        specifier: 1.5.0
+        version: 1.5.0(typescript@5.9.3)
+    devDependencies:
+      vite-plus:
+        specifier: 1.1.0
+        version: 1.1.0(@types/node@22.20.1)(@vitest/ui@5.0.3)(happy-dom@21.0.1)(playwright@1.61.1)(typescript@5.9.3)(yaml@2.8.3)
+
   packages/areas/recent-history:
     dependencies:
       '@solidjs/web':
@@ -842,6 +870,9 @@ importers:
       '@st/page':
         specifier: workspace:*
         version: link:../page
+      '@st/presets':
+        specifier: workspace:*
+        version: link:../areas/presets
       '@st/protocol':
         specifier: workspace:*
         version: link:../protocol

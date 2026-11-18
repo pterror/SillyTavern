@@ -6,6 +6,8 @@ import { userImageFile, userImageUrl } from './user-image-path.js';
 import { createUi } from '@st/server-ui';
 import { backgroundsArea } from '@st/backgrounds/server';
 import { settingsArea } from '@st/settings/server';
+import { presetsArea } from '@st/presets/server';
+import { presetPorts } from './preset-ui-ports.js';
 import { alternativesArea } from '@st/alternatives/server';
 import { activationsArea } from '@st/activations/server';
 import { worldbuildingArea } from '@st/worldbuilding/server';
@@ -257,7 +259,7 @@ const backgroundPorts = {
     },
 };
 
-export const SETTINGS_VIEWS = ['settings'];
+export const SETTINGS_VIEWS = ['settings', 'presets'];
 
 export const WORLD_LIST_VIEWS = ['worldbuilding.worlds', 'worldbuilding.world'];
 
@@ -818,7 +820,7 @@ const worldbuildingPorts = {
     },
 };
 
-export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts), looks.area, usageStats.area, helpArea(), recentHistory.area], {
+export const ui = createUi([backgroundsArea(backgroundPorts), settingsArea(settingsPorts), presetsArea(presetPorts), alternativesArea(alternativesPorts), activationsArea(activationsPorts), worldbuildingArea(worldbuildingPorts), looks.area, usageStats.area, helpArea(), recentHistory.area], {
     userOf: request => (request.user ? uiUser(request) : null),
     async chatOf(user, owner) {
         const store = await userStore(directoriesOf(user), user.handle);

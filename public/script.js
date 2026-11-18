@@ -216,7 +216,7 @@ import { readerSelection, textSettingsChanged } from './scripts/chat-text/surfac
 import { beginEdit, blockFieldEditStart, blockWhileFieldEditing, discardFieldEdit, initCharacterFieldEditor, isFieldBeingEdited, setFieldValue } from './scripts/character-field-editor.js';
 import { initCharInfoTabDimming, refreshCharInfoTabDimming } from './scripts/char-info-tab-dimming.js';
 import { pagerSelection, selectedGreetingIndex } from './scripts/greeting-pager-selection.js';
-import { initPresetManager } from './scripts/preset-manager.js';
+import { initPresetManager, presetUi } from './scripts/preset-manager.js';
 import { getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/user.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs, raiseToasts } from './scripts/popup.js';
@@ -1142,6 +1142,18 @@ export function settingsValueStored(key, value) {
 }
 
 /**
+ * A server-owned surface changed these settings. Acknowledge only its paths so unrelated pending edits keep
+ * their original conflict checks.
+ * @param {Record<string, number>} hashes
+ * @param {string[]} paths
+ */
+export function settingsHashesStored(hashes, paths) {
+    const owned = key => paths.some(path => key === path || key.startsWith(`${path}.`));
+    for (const key of Object.keys(serverKeyHashes)) if (owned(key)) delete serverKeyHashes[key];
+    for (const [key, hash] of Object.entries(hashes)) if (owned(key)) serverKeyHashes[key] = hash;
+}
+
+/**
  * @param {Record<string, number> | undefined} keyHashes
  * @param {string[] | null} tops
  * @returns {boolean}
@@ -1362,6 +1374,7 @@ async function firstLoadInit() {
 
     setStage('Loading user data');
     startNewUi({
+        presets: presetUi(),
         quietPrompt: prompt => generateQuietPrompt({ quietPrompt: prompt }),
         currentChat: () => {
             if (selected_group != null) return { group: String(selected_group) };

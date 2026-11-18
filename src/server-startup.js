@@ -81,6 +81,7 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/worldinfo', worldInfoRouter);
     /** @type {[RegExp, string[]][]} */
     const OLD_WRITES = [
+        [/^\/api\/presets\/(save|rename|delete|save-partial)$/, SETTINGS_VIEWS],
         [/^\/api\/settings\/(save|save-partial)$/, [...SETTINGS_VIEWS, ...WORLD_LIST_VIEWS]],
         [/^\/api\/worldinfo\/create$/, WORLD_LIST_VIEWS],
         [/^\/api\/worldinfo\/entry\/(create|set)$/, [...WORLD_LIST_VIEWS, ...WORLD_ENTRY_VIEWS]],

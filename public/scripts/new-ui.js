@@ -50,9 +50,9 @@ const helpOldPage = {
 };
 
 /**
- * @param {{ quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], worldbuilding: import('/ui/entry.js').StartOptions['worldbuilding'], shownCharacter: () => string | null, holdShowsKeys: () => boolean }} options
+ * @param {{ presets: import('/ui/entry.js').StartOptions['presets'], quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], worldbuilding: import('/ui/entry.js').StartOptions['worldbuilding'], shownCharacter: () => string | null, holdShowsKeys: () => boolean }} options
  */
-export function startNewUi({ quietPrompt, currentChat, alternatives, activations, worldbuilding, shownCharacter, holdShowsKeys }) {
+export function startNewUi({ quietPrompt, currentChat, alternatives, activations, worldbuilding, shownCharacter, holdShowsKeys, presets }) {
     if (newUiStarted()) return newUi();
     const element = (/** @type {string} */ id) => {
         const found = document.getElementById(id);
@@ -65,6 +65,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
         return found;
     };
     const started = start({
+        presets,
         headers: () => getRequestHeaders(),
         t: (text, key) => translate(text, key ?? null),
         quietPrompt,
