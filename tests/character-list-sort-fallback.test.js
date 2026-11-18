@@ -55,6 +55,7 @@ jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     includesIgnoreCaseAndAccents: (text, term) => String(text ?? '').toLowerCase().includes(String(term).toLowerCase()),
 }));
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
+    characterTagFilterUi: () => ({}),
     registerFolderCaseHandlers: noop,
     tagQuerySortField: () => 'manual',
     takeInExtensionTagWrites: noop,
@@ -75,7 +76,7 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     heldTagsForIds: () => [],
     isTagAssignedToKey: () => { throw new Error('the list never reads tag assignments in the browser'); },
 }));
-jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({ getRandomSortSeed: () => 42 }));
+jest.unstable_mockModule('../public/scripts/random-sort.js', () => ({ getRandomSortSeed: () => 42, rerollRandomSortSeed: () => 43 }));
 jest.unstable_mockModule('../public/scripts/i18n.js', () => ({ t: (strings, ...values) => String.raw(strings, ...values) }));
 jest.unstable_mockModule('../public/scripts/personas.js', () => ({ updatePersonaConnectionsAvatarList: noop }));
 jest.unstable_mockModule('../public/scripts/popup.js', () => ({ Popup: { show: { text: async () => {} } } }));
@@ -84,6 +85,7 @@ jest.unstable_mockModule('../public/scripts/util/AccountStorage.js', () => ({ ac
 jest.unstable_mockModule('../public/scripts/welcome-screen.js', () => ({ getPermanentAssistantAvatar: () => '' }));
 jest.unstable_mockModule('../public/scripts/events.js', () => ({ event_types: {}, eventSource: { on: noop, emit: async () => {} } }));
 jest.unstable_mockModule('../public/script.js', () => ({
+    saveSettingsDebounced: noop,
     default_avatar: '',
     getCurrentCharacter: noop,
     characterThumbnail: () => '',

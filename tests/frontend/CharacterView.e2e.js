@@ -267,6 +267,24 @@ test.describe('character view', () => {
         });
 
         await expect.poll(async () => (await lastQuery(page))?.sort).toEqual({ field: 'create_date', order: 'asc' });
-        await expect(page.locator('#character_sort_order option:checked')).toHaveText('Oldest');
+        await expect(page.locator('#character_sort_order')).toContainText('Oldest');
     });
+    test('the sort picker changes the query and rerolls random order', async ({ page }) => {
+        const picker = page.locator('#character_sort_order');
+        await picker.click();
+        await page.getByRole('option', { name: 'Z-A', exact: true }).click();
+        await expect.poll(async () => (await lastQuery(page))?.sort).toEqual({ field: 'name', order: 'desc' });
+        await expect(picker).toContainText('Z-A');
+        await expect(page.locator('#charListRandomReroll')).toBeHidden();
+
+        await picker.click();
+        await picker.press('End');
+        await picker.press('Enter');
+        await expect.poll(async () => (await lastQuery(page))?.sort?.field).toBe('random');
+        const first = (await lastQuery(page)).sort.seed;
+        await page.locator('#charListRandomReroll').click();
+        await expect.poll(async () => (await lastQuery(page))?.sort?.seed).not.toBe(first);
+        await expect(picker).toContainText('Random');
+    });
+
 });

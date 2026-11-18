@@ -1,6 +1,15 @@
 import { createSignal } from 'solid-js';
-import { BrowserRows, BrowserPagination, createBrowser } from '@st/character-browser/page';
-import type { OldPage as CharacterBrowserOldPage } from '@st/character-browser/page';
+import {
+    BrowserRows,
+    BrowserPagination,
+    createBrowser,
+    Search,
+    SortPicker,
+    SavedViews,
+    TagFilters,
+    createControls,
+} from '@st/character-browser/page';
+import type { OldPage as CharacterBrowserOldPage, ControlPorts } from '@st/character-browser/page';
 import { Presets, presetsCompat } from '@st/presets/page';
 import type { OldPage as PresetsOldPage, Family as PresetFamily } from '@st/presets/page';
 import type { ChatOwner, ViewPush } from '@st/protocol';
@@ -55,7 +64,16 @@ import { render } from '@solidjs/web';
 import type { JSX } from '@solidjs/web';
 
 export type StartOptions = {
-    characterBrowser: { rows: HTMLElement; pagination: HTMLElement; old: CharacterBrowserOldPage };
+    characterBrowser: {
+        rows: HTMLElement;
+        pagination: HTMLElement;
+        search: HTMLElement;
+        sort: HTMLElement;
+        saved: HTMLElement;
+        tagFilters: HTMLElement;
+        old: CharacterBrowserOldPage;
+        controls: ControlPorts;
+    };
     presets: { hosts: { family: string; id: string; element: HTMLElement }[]; old: PresetsOldPage };
     headers: () => Record<string, string>;
     t: (text: string, key?: string) => string;
@@ -102,6 +120,12 @@ export function start(options: StartOptions) {
 
     const presets = presetsCompat(client, options.presets.old);
     const characterBrowser = createBrowser();
+    const characterControls = createControls();
+    const controls = options.characterBrowser.controls;
+    mount(options.characterBrowser.search, () => <Search controls={characterControls} old={controls} />);
+    mount(options.characterBrowser.sort, () => <SortPicker controls={characterControls} old={controls} />);
+    mount(options.characterBrowser.saved, () => <SavedViews controls={characterControls} old={controls} />);
+    mount(options.characterBrowser.tagFilters, () => <TagFilters controls={characterControls} old={controls} />);
     mount(options.characterBrowser.rows, () => (
         <BrowserRows browser={characterBrowser} old={options.characterBrowser.old} />
     ));
@@ -246,7 +270,7 @@ export function start(options: StartOptions) {
         },
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         presets,
-        characterBrowser,
+        characterBrowser: { ...characterBrowser, controls: characterControls },
         alternatives: alternativesCompat(setLook),
         activations,
         worldbuilding,

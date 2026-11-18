@@ -6,15 +6,14 @@ import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav } from './hash-utils.js';
 import { debounce, delay } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, tagQuerySortField } from './tags.js';
+import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, tagQuerySortField, characterTagFilterUi } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow } from './character-repository.js';
-import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
-import { initViewPills, makeSearchGuide } from './character-view-pills.js';
-import { applyKeptView, initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
+import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState, canonicalSearchField, SEARCH_FIELDS, RANGE_FIELDS } from './character-view.js';
+import { applyKeptView, initSavedViews, refreshSavedViewState, restoreCurrentView, savedViewsUi } from './saved-views.js';
 import { searchReadDivider } from './search-read-progress.js';
-import { getRandomSortSeed } from './random-sort.js';
+import { getRandomSortSeed, rerollRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
 import { Popup } from './popup.js';
@@ -22,10 +21,10 @@ import { accountStorage } from './util/AccountStorage.js';
 import { getPermanentAssistantAvatar } from './welcome-screen.js';
 import { event_types, eventSource } from './events.js';
 import { getRequestHeaders } from './request-headers.js';
-import { characterThumbnail, per_page_default, selectCharacterByAvatar } from '../script.js';
+import { characterThumbnail, per_page_default, selectCharacterByAvatar, saveSettingsDebounced } from '../script.js';
 import { holdLooks } from './names.js';
 import { LIST_LOOKS } from './name-holders.js';
-import { newUi, newUiStarted } from './new-ui-page.js';
+import { newUi, newUiStarted, onceStarted } from './new-ui-page.js';
 
 let saveCharactersPage = 0;
 
@@ -54,7 +53,35 @@ export const DEFAULT_PRINT_TIMEOUT = debounce_timeout.quick;
 
 export const printCharactersDebounced = debounce(() => { printCharacters(false); }, DEFAULT_PRINT_TIMEOUT);
 
-let showViewInSearchBox = () => {};
+let pendingSearchView = null;
+let changeSearchView = (view, typing) => setCharacterView(view, { fromSearchBox: typing });
+let characterSorts = [];
+let searchSortAvailable = false;
+let searchSortSelected = false;
+const fieldLabels = { name: 'Name', tag: 'Tag name', creator: 'Creator', description: 'Description', personality: 'Personality', scenario: 'Scenario', greeting: 'Greeting', alternate: 'Other greetings', example: 'Example messages', notes: 'Creator\'s notes', member: 'Group member', id: 'Group id' };
+const rangeLabels = { create_date: 'Created', date_last_chat: 'Last chat', chat_size: 'Chat history size', data_size: 'Card length' };
+function showViewInSearchBox() {
+    if (!newUiStarted()) return;
+    const view = pendingSearchView ?? getCharacterView();
+    newUi().characterBrowser.controls.showSearch({ view, sort: view.sort.field === 'search' ? 'search:desc' : power_user.sort_order === 'random' ? 'name:random' : `${power_user.sort_field}:${power_user.sort_order}`,
+        searchSort: searchSortAvailable, random: power_user.sort_order === 'random' });
+}
+export function refreshCharacterSearchControls() { showViewInSearchBox(); }
+export function setCharacterSort(value) {
+    const sort = characterSorts.find(sort => sort.value === value);
+    if (!sort) return;
+    searchSortSelected = sort.search;
+    if (!sort.search) {
+        power_user.sort_field = sort.field;
+        power_user.sort_order = sort.order;
+        power_user.sort_rule = sort.rule;
+        saveSettingsDebounced('power_user.sort_field', 'power_user.sort_order', 'power_user.sort_rule');
+    }
+    resetListPositionOnNextPrint = true;
+    showViewInSearchBox();
+    refreshSavedViewState();
+    printCharactersDebounced();
+}
 let drawSearchReadDivider = null;
 
 export const entitiesFilter = new FilterHelper(printCharactersDebounced);
@@ -348,10 +375,45 @@ async function drawCharacterRows() {
 }
 
 export function characterBrowserUi() {
+    const nativeSort = document.getElementById('character_sort_order');
+    characterSorts = [...nativeSort.options].map(option => ({ value: `${option.dataset.field}:${option.dataset.order}`, field: option.dataset.field, order: option.dataset.order,
+        rule: option.dataset.rule, label: option.textContent, search: option.dataset.field === 'search' }));
+    const sort = document.createElement('span'); sort.className = 'st-character-sort'; nativeSort.replaceWith(sort);
+    document.getElementById('charListRandomReroll')?.remove();
+    const search = document.getElementById('character_search_bar_wrapper');
+    search.replaceChildren();
+    const saved = document.createElement('div'); search.before(saved);
+    const tagFilters = document.querySelector('#rm_characters_block .rm_tag_filter');
+    tagFilters.replaceChildren();
+    const tagUi = characterTagFilterUi();
+    onceStarted(() => { showViewInSearchBox(); refreshSavedViewState(); printTagFilters(tag_filter_type.character); return () => {}; });
     const pagination = document.createElement('div');
     document.getElementById('rm_print_characters_pagination').append(pagination);
     return {
-        rows: document.getElementById('rm_print_characters_block'), pagination,
+        rows: document.getElementById('rm_print_characters_block'), pagination, search, sort, saved, tagFilters,
+        controls: {
+            change: (view, typing) => changeSearchView(view, typing),
+            token(raw) {
+                if (!raw.endsWith(' ')) return null;
+                const text = raw.slice(0, -1);
+                const match = text.match(/(?:^|\s)(-)?([A-Za-z][A-Za-z0-9_]*):("[^"]*"|\S+)$/);
+                const field = match ? canonicalSearchField(match[2]) : null;
+                return match && field ? { text: text.slice(0, match.index), condition: { field, op: match[1] ? 'not_contains' : 'contains', value: match[3] } } : null;
+            },
+            searchTags: async term => {
+                const page = await searchTagsByName(term); return page ? page.rows.map(tag => ({ id: String(tag.id), name: String(tag.name), thing: tag.thing })) : null;
+            },
+            tagNames: async ids => {
+                const answer = await readTagsForIds(ids); if (!answer) return null;
+                return ids.map(id => { const tag = answer.tags.get(id); return { id, name: tag ? String(tag.name) : '', thing: tag?.thing, deleted: answer.gone.has(id), shownAs: tag?.id }; });
+            },
+            sort: setCharacterSort,
+            reroll() { rerollRandomSortSeed(accountStorage); void printCharacters(true); },
+            sorts: characterSorts,
+            fields: Object.entries(SEARCH_FIELDS).map(([value, aliases]) => ({ value, aliases: [...aliases], label: fieldLabels[value] ?? value })),
+            ranges: Object.entries(RANGE_FIELDS).map(([field, { unit }]) => ({ field, unit, label: rangeLabels[field] ?? field })),
+            tagAction: tagUi.activate, moreTags: tagUi.more, saved: savedViewsUi(),
+        },
         old: {
             page: goToCharacterListPage,
             async size(size) {
@@ -379,20 +441,10 @@ export function characterBrowserUi() {
 }
 
 function verifyCharactersSearchSortRule() {
-    const searchTerm = entitiesFilter.getFilterData(FILTER_TYPES.SEARCH);
-    const searchOption = $('#character_sort_order option[data-field="search"]');
-    const isHidden = searchOption.attr('hidden') !== undefined;
-
-    if (searchTerm && isHidden) {
-        searchOption.removeAttr('hidden');
-        searchOption.prop('selected', true);
-    }
-    if (!searchTerm && !isHidden) {
-        searchOption.attr('hidden', '');
-        if (searchOption.is(':selected')) {
-            $(`#character_sort_order option[data-order="${power_user.sort_order}"][data-field="${power_user.sort_field}"]`).prop('selected', true);
-        }
-    }
+    const searching = hasActiveCharacterSearch();
+    if (searching && !searchSortAvailable) searchSortSelected = true;
+    if (!searching) searchSortSelected = false;
+    searchSortAvailable = searching;
 }
 
 /**
@@ -431,9 +483,7 @@ export function tagToEntity(tag) {
     return { item: structuredClone(tag), id: tag.id, type: 'tag', entities: [] };
 }
 
-function isSearchSortSelected() {
-    return $('#character_sort_order option[data-field="search"]').is(':selected');
-}
+function isSearchSortSelected() { return searchSortSelected; }
 
 const warnedUnsupportedSorts = new Set();
 
@@ -609,15 +659,14 @@ export function setCharacterView(view, { fromSearchBox = false } = {}) {
     writeFolderCase(next.folderCase);
     entitiesFilter.setFilterData(FILTER_TYPES.FAV, booleanToTriState(next.fav), true);
     entitiesFilter.setFilterData(FILTER_TYPES.GROUP, booleanToTriState(next.group), true);
-    if (JSON.stringify(current.sort) !== JSON.stringify(next.sort) && next.sort.field !== 'search') {
-        const isRandom = next.sort.field === 'random';
-        const option = isRandom
-            ? $('#character_sort_order option[data-order="random"]')
-            : $('#character_sort_order option').filter((_, el) => el.dataset.field === next.sort.field && el.dataset.order === next.sort.order);
-        option.first().prop('selected', true);
-        power_user.sort_field = isRandom ? String(option.data('field') ?? 'name') : next.sort.field;
-        power_user.sort_order = isRandom ? 'random' : next.sort.order;
-        power_user.sort_rule = option.data('rule');
+    if (JSON.stringify(current.sort) !== JSON.stringify(next.sort)) {
+        searchSortSelected = next.sort.field === 'search';
+        if (!searchSortSelected) {
+            const random = next.sort.field === 'random';
+            power_user.sort_field = random ? 'name' : next.sort.field;
+            power_user.sort_order = random ? 'random' : next.sort.order;
+            power_user.sort_rule = next.sort.field === 'fav' ? 'boolean' : undefined;
+        }
     }
     resetListPositionOnNextPrint = true;
     if (!fromSearchBox) showViewInSearchBox();
@@ -997,58 +1046,26 @@ function isApproxTotal(total) {
 export function initCharacterSearch() {
     drawSearchReadDivider = searchReadDivider(accountStorage, isCharacterListShowing, () => t`↑ Unread ↑`);
     /** @type {Partial<import('./character-view.js').CharacterView> | null} */
-    let pendingTypedView = null;
+    pendingSearchView = null;
     const debouncedCharacterSearch = debounce(() => {
-        const view = pendingTypedView;
-        pendingTypedView = null;
+        const view = pendingSearchView;
+        pendingSearchView = null;
         if (view) setCharacterView(view, { fromSearchBox: true });
     });
     window.addEventListener('pagehide', () => {
-        const view = pendingTypedView;
-        pendingTypedView = null;
+        const view = pendingSearchView;
+        pendingSearchView = null;
         if (view) setCharacterView(view, { fromSearchBox: true });
     });
 
     const searchForm = $('#form_character_search_form');
-    const searchInput = $('#character_search_bar');
     const searchButton = $('#rm_button_search');
-    const pillsContainer = $('#character_search_pills');
-
     const storageKey = 'characterSearchFormVisible';
-
-    showViewInSearchBox = initViewPills({
-        container: pillsContainer,
-        input: searchInput,
-        getView: getCharacterView,
-        translate: t,
-        setView: (view, fromSearchBox) => {
-            if (fromSearchBox) {
-                pendingTypedView = view;
-                debouncedCharacterSearch();
-                return;
-            }
-            pendingTypedView = null;
-            setCharacterView(view, { fromSearchBox: true });
-        },
-        searchTags: async (term) => {
-            const page = await searchTagsByName(term);
-            return page ? page.rows.map(tag => ({ id: String(tag.id), name: String(tag.name), thing: tag.thing })) : null;
-        },
-        tagNames: async (ids) => {
-            const answer = await readTagsForIds(ids);
-            if (!answer) return null;
-            return {
-                names: new Map([...answer.tags].map(([id, tag]) => [id, String(tag.name)])),
-                things: new Map([...answer.tags].flatMap(([id, tag]) => (tag.thing ? [[id, tag.thing]] : []))),
-                gone: answer.gone,
-                shownAs: new Map([...answer.tags].map(([id, tag]) => [id, String(tag.id)])),
-            };
-        },
-    });
+    changeSearchView = (view, fromSearchBox) => {
+        if (fromSearchBox) { pendingSearchView = view; debouncedCharacterSearch(); } else { pendingSearchView = null; setCharacterView(view, { fromSearchBox: true }); showViewInSearchBox(); }
+    };
     showViewInSearchBox();
-    $('#character_search_bar_wrapper').after(makeSearchGuide());
     initSavedViews({
-        before: $('#character_search_bar_wrapper').get(0),
         getView: getCharacterView,
         setView: view => setCharacterView(view),
         sameView,
@@ -1081,7 +1098,7 @@ export function initCharacterSearch() {
         searchButton.toggleClass('active', newVisibility);
         accountStorage.setItem(storageKey, String(newVisibility));
         if (newVisibility) {
-            searchInput.trigger('focus');
+            document.getElementById('character_search_bar')?.focus();
         }
     });
 

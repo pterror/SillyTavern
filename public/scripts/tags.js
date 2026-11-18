@@ -34,7 +34,7 @@ import { dropOldTagsCache } from './tags-cache.js';
 import { mergedTagTarget, shownTagIds, tagReadDrops, takeInMergedTags } from './tag-merges.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository } from './character-repository.js';
-import { attachActions, newUi } from './new-ui-page.js';
+import { attachActions, newUi, newUiStarted } from './new-ui-page.js';
 import { addLooks, nameNode, nameOn } from './names.js';
 import { TAG_LOOKS } from './name-holders.js';
 
@@ -1831,6 +1831,22 @@ function chooseTagFilterFolder(source, tagId, remove) {
     // Instead of manually updating the filter conditions, we just "click" on the filter tag
     // We search inside which filter block we are located in and use that one
     const FILTER_SELECTOR = ($(source).closest('#rm_characters_block') ?? $(source).closest('#rm_group_chats_block')).find('.rm_tag_filter');
+    const filterHelper = getFilterHelper(FILTER_SELECTOR);
+    if (isMainCharacterList(filterHelper) && newUiStarted()) {
+        const state = remove ? 'UNDEFINED' : 'SELECTED';
+        const current = filterHelper.getFilterData(FILTER_TYPES.TAG);
+        const tag = tagsStore.get(tagId);
+        const prefix = getFilterStorageKey(filterHelper);
+        accountStorage.setItem(`${prefix}_tag_${tagId}`, state);
+        saveTagFilterName(prefix, tagId, state, tag?.name);
+        if (tag) setTagFilterState(tag, state);
+        setFilterDataFromUser(filterHelper, FILTER_TYPES.TAG, {
+            selected: [...current.selected.filter(id => id !== tagId), ...(!remove ? [tagId] : [])],
+            excluded: current.excluded.filter(id => id !== tagId),
+        });
+        printTagFilters(tag_filter_type.character);
+        return;
+    }
     let tagElement = $(FILTER_SELECTOR).find(`.tag[id=${tagId}]`);
     const tag = tagsStore.get(tagId);
     if (!tagElement.length && tag) {
@@ -3569,6 +3585,22 @@ function printTagFilters(type = tag_filter_type.character) {
 
     const inListActionTags = Object.values(InListActionable);
 
+    if (type === tag_filter_type.character && newUiStarted()) {
+        const actions = [...Object.values(ACTIONABLE_TAGS), ...inListActionTags];
+        newUi().characterBrowser.controls.showTags({
+            tags: [...actions, ...tagsToDisplay].map(tag => ({ id: String(tag.id), name: String(tag.name), thing: tag.thing,
+                icon: tag.icon ?? '', className: tag.class ?? '', title: tag.title ?? '', action: actions.includes(tag),
+                state: tag.class === 'showTagList' ? getTagFilterVisibility(type) ? 'SELECTED' : 'UNDEFINED'
+                    : actions.includes(tag) && !('filter_state' in tag) ? 'UNDEFINED' : determineTagFilterState(filterHelper, tag, actions.includes(tag)),
+            })),
+            visible: getTagFilterVisibility(type), tail, expanded,
+        });
+        const drilldown = $filterContainer.siblings('.rm_tag_bogus_drilldown');
+        drilldown.empty();
+        printTagList(drilldown, { tags: getOpenBogusFolders(), tagOptions: { removable: true } });
+        return;
+    }
+
     const actionAndInListTags = [...Object.values(ACTIONABLE_TAGS), ...inListActionTags];
     for (const tag of actionAndInListTags) {
         $filterContainer.find(`.tag[id="${tag.id}"]`).remove();
@@ -3591,6 +3623,24 @@ function printTagFilters(type = tag_filter_type.character) {
     }
 
     updateTagFilterVisibility(type, FILTER_SELECTOR);
+}
+
+/** The Solid bar keeps the existing filter intents and tag-management actions. */
+export function characterTagFilterUi() {
+    return {
+        async activate(id, element, event) {
+            const action = Object.values(ACTIONABLE_TAGS).find(tag => String(tag.id) === id);
+            if (action) await action.action.call($(element), entitiesFilter, event);
+            else onTagFilterClick.call($(element), $(CHARACTER_FILTER_SELECTOR));
+            printTagFilters(tag_filter_type.character);
+        },
+        more(element, retry) {
+            const event = { stopPropagation() {} };
+            if (retry) onUsedTagBarRetryClick.call(element, entitiesFilter, event);
+            else onUsedTagBarMoreClick.call(element, entitiesFilter, event);
+            printTagFilters(tag_filter_type.character);
+        },
+    };
 }
 
 /**
@@ -4600,6 +4650,32 @@ function onClearAllFiltersClick(filterHelper) {
     const context = getFilterContext(filterHelper);
     if (!context) {
         console.warn('Unknown filter helper in onClearAllFiltersClick');
+        return;
+    }
+
+    if (isMainCharacterList(filterHelper) && newUiStarted()) {
+        const prefix = getFilterStorageKey(filterHelper);
+        const current = filterHelper.getFilterData(FILTER_TYPES.TAG);
+        for (const id of new Set([...current.selected, ...current.excluded])) {
+            accountStorage.setItem(`${prefix}_tag_${id}`, 'UNDEFINED');
+            saveTagFilterName(prefix, id, 'UNDEFINED');
+            const tag = tagsStore.get(id);
+            if (tag) setTagFilterState(tag, 'UNDEFINED');
+        }
+        for (const [type, key, action] of [
+            [FILTER_TYPES.FAV, ACTIONABLE_FILTER_STORAGE_KEYS.FAV, ACTIONABLE_TAGS.FAV],
+            [FILTER_TYPES.GROUP, ACTIONABLE_FILTER_STORAGE_KEYS.GROUP, ACTIONABLE_TAGS.GROUP],
+        ]) {
+            accountStorage.setItem(`${prefix}_${key}`, 'UNDEFINED');
+            action.filter_state = 'UNDEFINED';
+            filterHelper.setFilterData(type, 'UNDEFINED', true);
+        }
+        setFilterDataFromUser(filterHelper, FILTER_TYPES.TAG, { selected: [], excluded: [] });
+        const input = document.querySelector(context.searchInput);
+        if (input instanceof HTMLInputElement) {
+            input.value = '';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
         return;
     }
 

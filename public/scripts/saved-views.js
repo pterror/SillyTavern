@@ -1,6 +1,5 @@
 import { contentHashOf } from './hash-utils.js';
-import { attachActions } from './new-ui-page.js';
-import { nameNode } from './names.js';
+import { newUi, newUiStarted } from './new-ui-page.js';
 
 let t = (/** @type {TemplateStringsArray} */ strings, /** @type {any[]} */ ...values) => String.raw({ raw: strings }, ...values);
 
@@ -60,18 +59,10 @@ let firstPageOnly = false;
 let listedFilter = '';
 let filterText = '';
 
-/** @type {HTMLElement|null} */
-let picker = null;
-/** @type {HTMLElement|null} */
-let popover = null;
-/** @type {{ id: string, row: HTMLElement, index: number } | null} */
-let editing = null;
+let picker = false;
+let popover = false;
+let currentName = '';
 
-/**
- * @param {string} route
- * @param {object} body
- * @returns {Promise<any>}
- */
 async function call(route, body) {
     try {
         const response = await fetch(`/api/views/${route}`, { method: 'POST', headers: deps.headers(), body: JSON.stringify(body) });
@@ -132,21 +123,22 @@ function hasUnsavedViewChanges() {
     return !!deps && !deps.sameView(deps.getView(), baseView());
 }
 
-export function refreshSavedViewState() {
-    if (!deps || !picker || !restored) return;
-    const dirty = hasUnsavedViewChanges();
-    picker.classList.toggle('unsaved', dirty);
-    picker.title = dirty
-        ? t`Views: ${picker.querySelector('.view_picker_name').textContent}, with unsaved changes. Click to save or discard them.`
-        : t`Views: ${picker.querySelector('.view_picker_name').textContent}. Click to switch or save one.`;
-    safeSet(DRAFT_KEY, dirty ? JSON.stringify({ id: currentId, view: deps.getView() }) : null);
-    if (popover) drawUnsavedBar();
+function publish() {
+    if (!newUiStarted()) return;
+    newUi().characterBrowser.controls.showSaved({
+        current: currentId, name: currentId ? currentName || safeGet(CURRENT_NAME_KEY) || t`Saved view` : t`All characters`,
+        dirty: restored && hasUnsavedViewChanges(), pending: pendingSwitch !== null, open: popover,
+        filter: filterText, views: loaded.map(({ id, name }) => ({ id, name })), folders: loadedFolders,
+        more: nextCursor !== null, moreFolders: foldersCursor !== null,
+    });
 }
 
-/**
- * @param {string|null} id
- * @param {string} name
- */
+export function refreshSavedViewState() {
+    if (!deps || !picker) return;
+    if (restored) safeSet(DRAFT_KEY, hasUnsavedViewChanges() ? JSON.stringify({ id: currentId, view: deps.getView() }) : null);
+    publish();
+}
+
 function setCurrent(id, name) {
     currentId = id;
     safeSet(CURRENT_ID_KEY, id);
@@ -164,16 +156,10 @@ function keepCurrentView(name = safeGet(CURRENT_NAME_KEY) ?? '') {
 
 /** @param {string} [name] */
 function drawPicker(name) {
-    if (!picker) return;
-    const label = currentId ? (name ?? safeGet(CURRENT_NAME_KEY) ?? t`Saved view`) : t`All characters`;
-    picker.querySelector('.view_picker_name').textContent = label;
-    picker.dataset.viewId = currentId ?? '';
-    picker.title = t`Views: ${label}. Click to switch or save one.`;
+    currentName = currentId ? name ?? safeGet(CURRENT_NAME_KEY) ?? t`Saved view` : t`All characters`;
+    publish();
 }
 
-/**
- * @param {SavedView|null} saved
- */
 function applyView(saved) {
     const view = saved ? fullView(saved.view) : allCharactersView();
     appliedView = saved ? view : null;
@@ -216,67 +202,10 @@ function discardChanges() {
     refreshSavedViewState();
 }
 
-function drawUnsavedBar() {
-    if (!popover) return;
-    popover.querySelector('.view_picker_unsaved')?.remove();
-    const dirty = hasUnsavedViewChanges();
-    if (!dirty) pendingSwitch = null;
-    if (!dirty) return;
-    const bar = document.createElement('div');
-    bar.className = 'view_picker_unsaved';
-    const label = document.createElement('span');
-    const name = currentId ? picker.querySelector('.view_picker_name').textContent : t`All characters`;
-    label.textContent = pendingSwitch ? t`Unsaved changes to "${name}":` : t`Unsaved changes to "${name}"`;
-    bar.append(label);
-    /**
-     * @param {string} text
-     * @param {string} action
-     * @param {() => void | Promise<void>} onClick
-     */
-    const button = (text, action, onClick) => {
-        const b = document.createElement('div');
-        b.className = 'menu_button';
-        b.dataset.action = action;
-        b.textContent = text;
-        b.addEventListener('click', () => void onClick());
-        bar.append(b);
-    };
-    const thenSwitch = () => {
-        const target = pendingSwitch?.target ?? null;
-        pendingSwitch = null;
-        closePopover();
-        applyView(target);
-    };
-    if (currentId && !isFolderViewId(currentId)) {
-        button(t`Save`, 'save', async () => {
-            if (await saveCurrent() && pendingSwitch) thenSwitch();
-        });
-    }
-    if (pendingSwitch || isFolderViewId(currentId)) {
-        button(t`Save as new`, 'save-as', () => {
-            const input = popover.querySelector('.view_picker_save input');
-            if (input instanceof HTMLInputElement) input.focus();
-        });
-    }
-    button(t`Discard`, 'discard', () => {
-        if (pendingSwitch) {
-            thenSwitch();
-            return;
-        }
-        discardChanges();
-    });
-    if (pendingSwitch) {
-        button(t`Keep editing`, 'keep', () => {
-            pendingSwitch = null;
-            closePopover();
-        });
-    }
-    popover.prepend(bar);
-}
-
-/** @param {boolean} more */
 async function readFolders(more) {
-    const page = await deps.folders.list(filterText, more ? foldersCursor : null);
+    const term = filterText;
+    const page = await deps.folders.list(term, more ? foldersCursor : null);
+    if (term !== filterText) return true;
     if (!page) return false;
     loadedFolders = more ? [...loadedFolders, ...page.rows] : page.rows;
     foldersCursor = page.cursor;
@@ -286,9 +215,11 @@ async function readFolders(more) {
 /** @param {boolean} more */
 async function readViews(more) {
     const sameList = !more && listedFilter === filterText && firstPageOnly;
-    const answer = await call('list', { contains: filterText, limit: PAGE_SIZE, cursor: more ? nextCursor : undefined, known: sameList ? contentHashOf(loaded) : undefined });
+    const term = filterText;
+    const answer = await call('list', { contains: term, limit: PAGE_SIZE, cursor: more ? nextCursor : undefined, known: sameList ? contentHashOf(loaded) : undefined });
+    if (term !== filterText) return true;
     if (!answer || answer.notFound) return false;
-    listedFilter = filterText;
+    listedFilter = term;
     if (answer.unchanged) return true;
     loaded = more ? [...loaded, ...answer.views] : answer.views;
     nextCursor = answer.cursor ?? null;
@@ -298,280 +229,101 @@ async function readViews(more) {
     return true;
 }
 
-function closePopover() {
-    popover?.remove();
-    popover = null;
-    editing = null;
-    pendingSwitch = null;
-}
-
-/**
- * @param {SavedView|null} saved
- * @param {number} index
- */
-function makeRow(saved, index) {
-    const row = document.createElement('div');
-    row.className = 'view_picker_row';
-    row.dataset.viewId = saved?.id ?? '';
-    if ((saved?.id ?? null) === currentId) row.classList.add('current');
-    const name = document.createElement('span');
-    name.className = 'view_picker_row_name';
-    name.textContent = saved ? saved.name : t`All characters`;
-    name.tabIndex = 0;
-    name.setAttribute('role', 'button');
-    name.addEventListener('click', () => switchTo(saved));
-    attachActions(name, { activate: () => switchTo(saved) });
-    row.append(name);
-    if (!saved) return row;
-
-    /**
-     * @param {string} icon
-     * @param {string} title
-     * @param {string} action
-     * @param {() => void} onClick
-     */
-    const button = (icon, title, action, onClick) => {
-        const b = document.createElement('i');
-        b.className = `fa-solid ${icon} view_picker_action`;
-        if (action === 'delete') b.classList.add('danger-button');
-        b.title = title;
-        b.dataset.action = action;
-        b.tabIndex = 0;
-        b.setAttribute('role', 'button');
-        b.addEventListener('click', event => {
-            event.stopPropagation();
-            onClick();
-        });
-        return b;
-    };
-    const previous = loaded[index - 1];
-    const following = loaded[index + 1];
-    if (previous) row.append(button('fa-arrow-up', t`Move up`, 'up', () => void moveView(saved, previous, 'before')));
-    if (following) row.append(button('fa-arrow-down', t`Move down`, 'down', () => void moveView(saved, following, 'after')));
-    row.append(button('fa-pencil', t`Rename`, 'rename', () => startRename(row, saved, index)));
-    row.append(button('fa-trash-can', t`Delete`, 'delete', () => confirmDelete(row, saved, index)));
-    return row;
-}
-
-/**
- * @param {SavedView} saved
- * @param {SavedView} anchor
- * @param {'before'|'after'} side
- */
 async function moveView(saved, anchor, side) {
     const answer = await call('move', { id: saved.id, anchor: anchor.id, side });
     if (!answer || answer.notFound) toastr.error(t`The view could not be moved.`);
     await refreshPopover();
 }
 
-/**
- * @param {HTMLElement} row
- * @param {SavedView} saved
- * @param {number} index
- */
-function startRename(row, saved, index) {
-    editing = { id: saved.id, row, index };
-    row.replaceChildren();
-    const input = document.createElement('input');
-    input.className = 'text_pole textarea_compact view_picker_rename';
-    input.value = saved.name;
-    const finish = async (/** @type {boolean} */ keep) => {
-        const name = input.value.trim();
-        if (keep && name && name !== saved.name) {
-            const answer = await call('change', { id: saved.id, name });
-            if (!answer || answer.notFound) toastr.error(t`The view could not be renamed.`);
-            else if (saved.id === currentId) setCurrent(saved.id, answer.name);
-        }
-        editing = null;
-        await refreshPopover();
-    };
-    attachActions(input, { confirm: () => void finish(true), cancel: () => void finish(false) });
-    row.append(input);
-    input.focus();
-    input.select();
+function drawUnsavedBar() {
+    if (!hasUnsavedViewChanges()) pendingSwitch = null;
+    publish();
 }
 
-/**
- * @param {HTMLElement} row
- * @param {SavedView} saved
- * @param {number} index
- */
-function confirmDelete(row, saved, index) {
-    editing = { id: saved.id, row, index };
-    row.replaceChildren();
-    const text = document.createElement('span');
-    text.textContent = t`Delete "${saved.name}"?`;
-    const yes = document.createElement('div');
-    yes.className = 'menu_button view_picker_confirm';
-    yes.textContent = t`Delete`;
-    const no = document.createElement('div');
-    no.className = 'menu_button';
-    no.textContent = t`Keep`;
-    yes.addEventListener('click', async () => {
-        const answer = await call('delete', { id: saved.id });
-        if (!answer) toastr.error(t`The view could not be deleted.`);
-        else {
-            deps.pinView(saved.id, null);
-            if (saved.id === currentId) setCurrent(null, t`All characters`);
-        }
-        editing = null;
-        await refreshPopover();
-    });
-    no.addEventListener('click', () => {
-        editing = null;
-        void refreshPopover();
-    });
-    row.append(text, yes, no);
-}
-
-function makeSaveRow() {
-    const row = document.createElement('div');
-    row.className = 'view_picker_save';
-    const input = document.createElement('input');
-    input.className = 'text_pole textarea_compact';
-    input.placeholder = t`Name for a new view`;
-    const save = document.createElement('div');
-    save.className = 'menu_button';
-    save.textContent = t`Save as new view`;
-    const submit = async () => {
-        const name = input.value.trim();
-        if (!name) {
-            input.focus();
-            return;
-        }
-        const view = deps.getView();
-        const answer = await call('create', { name, view });
-        if (!answer || answer.notFound) {
-            toastr.error(t`The view could not be saved.`);
-            return;
-        }
-        appliedView = fullView(answer.view);
-        setCurrent(answer.id, answer.name);
-        deps.pinView(answer.id, appliedView);
-        refreshSavedViewState();
-        const target = pendingSwitch ? pendingSwitch.target : undefined;
-        pendingSwitch = null;
-        closePopover();
-        if (target !== undefined) applyView(target);
-    };
-    save.addEventListener('click', () => void submit());
-    attachActions(input, {
-        confirm: () => void submit(),
-        cancel: () => {
-            closePopover();
-            picker?.focus();
-        },
-    });
-    row.append(input, save);
-    return row;
-}
-
-function drawPopover() {
-    if (!popover) return;
-    const list = popover.querySelector('.view_picker_list');
-    const focused = editing && editing.row.contains(document.activeElement) ? /** @type {HTMLElement} */ (document.activeElement) : null;
-    list.replaceChildren();
-    if (!filterText) list.append(makeRow(null, -1));
-    const rows = loaded.map((view, index) => (editing?.id === view.id ? editing.row : makeRow(view, index)));
-    if (editing && !loaded.some(view => view.id === editing.id)) rows.splice(Math.min(editing.index, rows.length), 0, editing.row);
-    list.append(...rows);
-    focused?.focus();
-    if (loaded.length === 0 && filterText) {
-        const empty = document.createElement('div');
-        empty.className = 'view_picker_empty';
-        empty.textContent = t`No view has that name.`;
-        list.append(empty);
-    }
-    if (nextCursor) {
-        const more = document.createElement('div');
-        more.className = 'menu_button view_picker_more';
-        more.textContent = t`Show more`;
-        more.addEventListener('click', async () => {
-            if (await readViews(true)) drawPopover();
-        });
-        list.append(more);
-    }
-    if (loadedFolders.length === 0) return;
-    const heading = document.createElement('div');
-    heading.className = 'view_picker_heading';
-    heading.textContent = t`Folders`;
-    list.append(heading);
-    for (const folder of loadedFolders) list.append(makeFolderRow(folder));
-    if (foldersCursor) {
-        const more = document.createElement('div');
-        more.className = 'menu_button view_picker_more';
-        more.textContent = t`Show more folders`;
-        more.addEventListener('click', async () => {
-            if (await readFolders(true)) drawPopover();
-        });
-        list.append(more);
-    }
-}
-
-/**
- * @param {OpenFolder} folder
- */
-function makeFolderRow(folder) {
-    const saved = folderView(folder);
-    const row = document.createElement('div');
-    row.className = 'view_picker_row view_picker_folder';
-    row.dataset.viewId = saved.id;
-    if (saved.id === currentId) row.classList.add('current');
-    const icon = document.createElement('i');
-    icon.className = 'fa-solid fa-folder-open';
-    const name = document.createElement('span');
-    name.className = 'view_picker_row_name';
-    name.append(nameNode(folder.thing, folder.name));
-    name.tabIndex = 0;
-    name.setAttribute('role', 'button');
-    name.addEventListener('click', () => switchTo(saved));
-    attachActions(name, { activate: () => switchTo(saved) });
-    row.append(icon, name);
-    return row;
+function closePopover() {
+    popover = false;
+    pendingSwitch = null;
+    publish();
 }
 
 async function refreshPopover() {
     const [views, folders] = await Promise.all([readViews(false), readFolders(false)]);
     if (!views) toastr.error(t`Views could not be loaded.`);
     if (!folders) toastr.error(t`Folders could not be loaded.`);
-    drawPopover();
+    publish();
 }
 
-async function openPopover() {
+function finishSwitch() {
+    const target = pendingSwitch?.target ?? null;
+    pendingSwitch = null;
     closePopover();
-    popover = document.createElement('div');
-    popover.className = 'view_pill_popover view_picker_popover';
-    const search = document.createElement('input');
-    search.type = 'search';
-    search.className = 'text_pole textarea_compact';
-    search.placeholder = t`Find a view`;
-    search.value = filterText;
-    let timer = 0;
-    search.addEventListener('input', () => {
-        clearTimeout(timer);
-        timer = window.setTimeout(() => {
-            filterText = search.value.trim();
-            void refreshPopover();
-        }, 150);
-    });
-    attachActions(search, {
-        cancel: () => {
-            closePopover();
-            picker?.focus();
+    applyView(target);
+}
+
+export function savedViewsUi() {
+    return {
+        async open() { popover = true; publish(); await refreshPopover(); },
+        close: closePopover,
+        choose(id) {
+            let target = null;
+            if (id?.startsWith(FOLDER_VIEW_PREFIX)) {
+                const folder = loadedFolders.find(folder => `${FOLDER_VIEW_PREFIX}${folder.id}` === id);
+                if (!folder) return;
+                target = folderView(folder);
+            } else if (id !== null) {
+                target = loaded.find(view => view.id === id);
+                if (!target) return;
+            }
+            switchTo(target);
         },
-    });
-    const list = document.createElement('div');
-    list.className = 'view_picker_list';
-    popover.append(search, list, makeSaveRow());
-    document.body.append(popover);
-    popover.popover = 'manual';
-    popover.showPopover({ source: picker });
-    const box = picker.getBoundingClientRect();
-    popover.style.left = `${Math.max(4, Math.min(box.left, window.innerWidth - popover.offsetWidth - 4))}px`;
-    popover.style.top = `${box.bottom + 4}px`;
-    search.focus();
-    drawUnsavedBar();
-    await refreshPopover();
+        async search(term) { filterText = term.trim(); await refreshPopover(); },
+        async more(folders) { if (folders) await readFolders(true); else await readViews(true); publish(); },
+        async save(name) {
+            if (name === undefined) {
+                if (await saveCurrent() && pendingSwitch) finishSwitch();
+                return;
+            }
+            if (!name.trim()) return;
+            const answer = await call('create', { name: name.trim(), view: deps.getView() });
+            if (!answer || answer.notFound) { toastr.error(t`The view could not be saved.`); return; }
+            appliedView = fullView(answer.view);
+            setCurrent(answer.id, answer.name);
+            deps.pinView(answer.id, appliedView);
+            refreshSavedViewState();
+            const target = pendingSwitch ? pendingSwitch.target : undefined;
+            pendingSwitch = null;
+            closePopover();
+            if (target !== undefined) applyView(target);
+        },
+        discard() { if (pendingSwitch) finishSwitch(); else discardChanges(); },
+        keep() { pendingSwitch = null; closePopover(); },
+        async rename(id, name) {
+            if (!name) return;
+            const answer = await call('change', { id, name });
+            if (!answer || answer.notFound) toastr.error(t`The view could not be renamed.`);
+            else if (id === currentId) setCurrent(id, answer.name);
+            await refreshPopover();
+        },
+        async remove(id) {
+            const answer = await call('delete', { id });
+            if (!answer) toastr.error(t`The view could not be deleted.`);
+            else { deps.pinView(id, null); if (id === currentId) setCurrent(null, t`All characters`); }
+            await refreshPopover();
+        },
+        async move(id, direction) {
+            const index = loaded.findIndex(view => view.id === id);
+            const saved = loaded[index], anchor = loaded[index + direction];
+            if (saved && anchor) await moveView(saved, anchor, direction < 0 ? 'before' : 'after');
+        },
+    };
+}
+
+export function initSavedViews({ getView, setView, sameView, headers, storage, translate, folders, pinView }) {
+    t = translate;
+    deps = { getView, setView, sameView, headers, storage, folders, pinView };
+    picker = true;
+    window.addEventListener('pagehide', () => refreshSavedViewState());
+    drawPicker();
 }
 
 export async function onSavedViewsChanged() {
@@ -598,40 +350,6 @@ export async function onSavedViewsChanged() {
         if (unchanged) deps.setView(saved);
     }
     refreshSavedViewState();
-}
-
-/**
- * @param {object} options
- * @param {HTMLElement} options.before
- * @param {() => import('./character-view.js').CharacterView} options.getView
- * @param {(view: import('./character-view.js').CharacterView) => void} options.setView
- * @param {(a: any, b: any) => boolean} options.sameView
- * @param {() => Record<string, string>} options.headers
- * @param {{ getItem(key: string): string|null, setItem(key: string, value: string): void, removeItem(key: string): void }} options.storage
- * @param {typeof t} options.translate
- * @param {FolderReads} options.folders
- * @param {(id: string, view: import('./character-view.js').CharacterView | null) => void} options.pinView
- */
-export function initSavedViews({ before, getView, setView, sameView, headers, storage, translate, folders, pinView }) {
-    document.addEventListener('pointerdown', event => {
-        if (popover && event.target instanceof Node && !popover.contains(event.target) && !picker?.contains(event.target)) closePopover();
-    }, true);
-    t = translate;
-    deps = { getView, setView, sameView, headers, storage, folders, pinView };
-    picker = document.createElement('div');
-    picker.id = 'character_view_picker';
-    picker.className = 'menu_button view_picker';
-    picker.tabIndex = 0;
-    picker.setAttribute('role', 'button');
-    const icon = document.createElement('i');
-    icon.className = 'fa-solid fa-layer-group';
-    const name = document.createElement('span');
-    name.className = 'view_picker_name';
-    picker.append(icon, name);
-    picker.addEventListener('click', () => (popover ? closePopover() : void openPopover()));
-    before.before(picker);
-    window.addEventListener('pagehide', () => refreshSavedViewState());
-    drawPicker();
 }
 
 export function applyKeptView() {

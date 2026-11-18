@@ -7897,3 +7897,9 @@ div.cm-tooltip.paste-picker {
 .st-character-pagination .paginationjs-pages button { margin: 0; min-width: 28px; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .st-character-pagination button:disabled { cursor: default; opacity: .5; }
 #rm_print_characters_block > [tabindex]:focus-visible { outline: 2px solid var(--SmartThemeQuoteColor); outline-offset: -2px; }
+.st-character-sort { display: flex; flex: 1; min-width: 7em; align-items: center; gap: 5px; }
+.st-character-sort .st-select-trigger { width: auto; flex: 1; min-width: 0; }
+.search_pill button, button.view_pill_add, button.view_pill_field_option, button.view_picker_row_name, button.view_picker_action { color: inherit; background: transparent; border: 0; cursor: pointer; }
+.search_pill button:not(.fa-solid), button.view_pill_field_option, button.view_picker_row_name { font: inherit; }
+button.view_picker_row_name, button.view_pill_field_option { text-align: start; }
+button.search_pill_remove { padding: 0; }

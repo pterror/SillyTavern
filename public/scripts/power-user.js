@@ -18,7 +18,7 @@ import {
     deleteMessage,
     getMessageDeletionStartId,
 } from '../script.js';
-import { printCharactersDebounced, printCharacters, entitiesFilter, resetCharacterListPositionOnNextPrint } from './character-list.js';
+import { printCharactersDebounced, entitiesFilter, getCharacterView, refreshCharacterSearchControls } from './character-list.js';
 import { chat } from './chat-state.js';
 import { messageStyles } from './message-text.js';
 import { textSettingsChanged } from './chat-text/surface.js';
@@ -48,7 +48,7 @@ import { renderTemplateAsync } from './templates.js';
 
 import { debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isTrueBoolean, resetScrollHeight, sortMoments, stringToRange, timestampToMoment } from './utils.js';
 import { normalizeFav } from './hash-utils.js';
-import { compareByRandomSeed, getRandomSortSeed, mintRandomSortSeed, rerollRandomSortSeed } from './random-sort.js';
+import { compareByRandomSeed, getRandomSortSeed, mintRandomSortSeed } from './random-sort.js';
 import { characterRepository, buildCharacterQuery } from './character-repository.js';
 import { FILTER_TYPES } from './filters.js';
 import { PARSER_FLAG, SlashCommandParser } from './slash-commands/SlashCommandParser.js';
@@ -1935,7 +1935,7 @@ export async function loadPowerUserSettings(settings, data) {
     }
 
 
-    $(`#character_sort_order option[data-order="${power_user.sort_order}"][data-field="${power_user.sort_field}"]`).prop('selected', true);
+    refreshCharacterSearchControls();
     updateRandomSortRerollVisibility();
     switchReducedMotion();
     switchCompactInputArea();
@@ -2452,7 +2452,7 @@ const compareFunc = (first, second) => {
 };
 
 function updateRandomSortRerollVisibility() {
-    $('#charListRandomReroll').toggle(power_user.sort_order === 'random');
+    refreshCharacterSearchControls();
 }
 
 /**
@@ -2467,7 +2467,7 @@ export function sortEntitiesList(entities, forceSearch, filterHelper = null) {
         return;
     }
 
-    const isSearch = forceSearch || $('#character_sort_order option[data-field="search"]').is(':selected');
+    const isSearch = forceSearch || getCharacterView().sort.field === 'search';
     const isRandom = !isSearch && power_user.sort_order === 'random';
     const randomSeed = isRandom ? getRandomSortSeed(accountStorage) : null;
 
@@ -3417,24 +3417,6 @@ jQuery(() => {
         saveSettingsDebounced('power_user.auto_save_msg_edits');
     });
 
-    $('#character_sort_order').on('change', function () {
-        const field = String($(this).find(':selected').data('field'));
-        // Save sort order, but do not save search sorting, as this is a temporary sorting option
-        if (field !== 'search') {
-            power_user.sort_field = field;
-            power_user.sort_order = $(this).find(':selected').data('order');
-            power_user.sort_rule = $(this).find(':selected').data('rule');
-        }
-        updateRandomSortRerollVisibility();
-        resetCharacterListPositionOnNextPrint();
-        printCharactersDebounced();
-        saveSettingsDebounced('power_user.sort_field', 'power_user.sort_order', 'power_user.sort_rule');
-    });
-
-    $('#charListRandomReroll').on('click', function () {
-        rerollRandomSortSeed(accountStorage);
-        printCharacters(true);
-    });
     updateRandomSortRerollVisibility();
 
     $('#gestures-checkbox').on('change', function () {

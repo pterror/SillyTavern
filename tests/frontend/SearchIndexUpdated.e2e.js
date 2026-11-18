@@ -769,13 +769,10 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
         test('the sort', async ({ page }) => {
             const from = await toPage2Scrolled(page);
 
-            await page.evaluate(() => {
-                const select = window['$']('#character_sort_order');
-                const target = select.find('option[data-field="name"][data-order="desc"]').is(':selected')
-                    ? 'option[data-field="name"][data-order="asc"]'
-                    : 'option[data-field="name"][data-order="desc"]';
-                select.find(target).prop('selected', true);
-                select.trigger('change');
+            await page.evaluate(async () => {
+                const { getCharacterView, setCharacterSort } = await import('/scripts/character-list.js');
+                const sort = getCharacterView().sort;
+                setCharacterSort(sort.field === 'name' && sort.order === 'desc' ? 'name:asc' : 'name:desc');
             });
             await expect.poll(() => listPageQueries(from).length).toBeGreaterThan(0);
             await waitForQuiet(log);
