@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createSignal, onSettled } from 'solid-js';
 import type { Client } from '@st/page/client';
 import { useUi } from '@st/page/context';
 import { inTopLayer } from '@st/page/popover';
@@ -81,8 +81,7 @@ export function chatCards(client: Client, open: (at: EntryAt) => void) {
                                 box = element;
                                 fromWord(element);
                             }}
-                            class="wb-chat-card-at"
-                            classList={{ 'wb-hover-above': both().at.above }}
+                            class={['wb-chat-card-at', { 'wb-hover-above': both().at.above }]}
                             style={{
                                 left: `${both().at.left}px`,
                                 top: `${both().at.top}px`,
@@ -135,21 +134,19 @@ function Sheet(props: {
     const { commands, t } = useUi();
     let pulledFrom: number | null = null;
     // Wherever focus is, before a field's own Escape and the old page's drawers.
-    onMount(() =>
-        onCleanup(
-            commands.register(
-                [
-                    {
-                        id: 'worldbuilding.closeCard',
-                        label: t('Close the card'),
-                        category: t('Worldbuilding'),
-                        keys: ['Escape'],
-                        typing: true,
-                        run: () => props.onClose(),
-                    },
-                ],
-                { capture: true, everywhere: true },
-            ),
+    onSettled(() =>
+        commands.register(
+            [
+                {
+                    id: 'worldbuilding.closeCard',
+                    label: t('Close the card'),
+                    category: t('Worldbuilding'),
+                    keys: ['Escape'],
+                    typing: true,
+                    run: () => props.onClose(),
+                },
+            ],
+            { capture: true, everywhere: true },
         ),
     );
     return (

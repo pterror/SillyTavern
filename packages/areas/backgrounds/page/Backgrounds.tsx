@@ -244,13 +244,15 @@ export function Backgrounds(props: {
         if (next !== columns()) void act('backgrounds.options', { columns: next });
     };
 
-    createEffect(() => {
-        props.container.classList.toggle('bg-selection-mode', ticking());
-        props.container.classList.toggle('in-folder-view', activeFolder() !== null);
-        const chosen = chosenColumns();
-        if (chosen === null) props.container.style.removeProperty('--bg-thumb-columns');
-        else props.container.style.setProperty('--bg-thumb-columns', String(chosen));
-    });
+    createEffect(
+        () => ({ container: props.container, ticking: ticking(), folder: activeFolder(), chosen: chosenColumns() }),
+        ({ container, ticking, folder, chosen }) => {
+            container.classList.toggle('bg-selection-mode', ticking);
+            container.classList.toggle('in-folder-view', folder !== null);
+            if (chosen === null) container.style.removeProperty('--bg-thumb-columns');
+            else container.style.setProperty('--bg-thumb-columns', String(chosen));
+        },
+    );
 
     const [scrolled, setScrolled] = createSignal(false);
     let panels: HTMLDivElement | undefined;
@@ -612,11 +614,11 @@ function Thumbnail(props: {
                 'folder-group-selected': props.ticked,
                 'mobile-menu-open': menuOpen(),
             })}
-            tabIndex={0}
+            tabindex={0}
             title={props.background.title}
-            attr:bgfile={props.background.file}
-            attr:custom={String(props.chat)}
-            attr:animated={String(props.background.animated)}
+            bgfile={props.background.file}
+            custom={String(props.chat)}
+            animated={String(props.background.animated)}
             style={props.background.aspect !== null ? { 'aspect-ratio': String(props.background.aspect) } : {}}
             onClick={(event) => props.onPick(event)}
             onFocusOut={(event) => {
@@ -651,7 +653,7 @@ function Thumbnail(props: {
                         return (
                             <div
                                 class={buttonClasses}
-                                attr:data-action={action}
+                                data-action={action}
                                 title={props.t(label)}
                                 onClick={(event) => {
                                     event.stopPropagation();
@@ -677,8 +679,8 @@ function FolderTile(props: {
     return (
         <div
             class={classes('bg_folder_tile', { 'mobile-menu-open': menuOpen() })}
-            tabIndex={0}
-            attr:data-folder-id={props.folder.id}
+            tabindex={0}
+            data-folder-id={props.folder.id}
             onClick={() => props.onOpen(props.folder.id)}
         >
             <div
@@ -701,7 +703,7 @@ function FolderTile(props: {
             <div class="bg_folder_tile_menu jg-menu">
                 <div
                     class="jg-button fa-solid fa-pen-to-square fa-fw pointer"
-                    attr:data-action="rename-folder"
+                    data-action="rename-folder"
                     title={props.t('Rename folder')}
                     onClick={(event) => {
                         event.stopPropagation();
@@ -710,7 +712,7 @@ function FolderTile(props: {
                 />
                 <div
                     class="jg-button danger-button fa-solid fa-trash-can fa-fw pointer"
-                    attr:data-action="delete-folder"
+                    data-action="delete-folder"
                     title={props.t('Delete folder')}
                     onClick={(event) => {
                         event.stopPropagation();

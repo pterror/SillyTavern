@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createRoot, on } from 'solid-js';
+import { createEffect, createMemo, createRoot } from 'solid-js';
 import { FIELDS, SERVER_FAMILIES, VIEW, samplerSelectOf } from '../protocol.ts';
 import type { SamplerSelect, SettingsView } from '../protocol.ts';
 import type { Client } from '@st/page/client';
@@ -50,7 +50,13 @@ export function settingsCompat(client: Client) {
         watchSamplers(run: () => void) {
             createRoot(() => {
                 const key = createMemo(() => JSON.stringify([view()?.samplerSelects, view()?.api.textgen]));
-                createEffect(on(key, () => run(), { defer: true }));
+                createEffect(
+                    key,
+                    () => {
+                        run();
+                    },
+                    { defer: true },
+                );
             });
         },
         value: (path: string): unknown => view()?.values[path],
@@ -59,8 +65,7 @@ export function settingsCompat(client: Client) {
         mirror(path: string, apply: (value: unknown) => void) {
             createRoot(() => {
                 const value = createMemo(() => view()?.values[path]);
-                createEffect(() => {
-                    const current = value();
+                createEffect(value, (current) => {
                     if (current !== undefined) apply(current);
                 });
             });
@@ -69,7 +74,13 @@ export function settingsCompat(client: Client) {
         watch(paths: string[], run: () => void) {
             createRoot(() => {
                 const values = paths.map((path) => createMemo(() => view()?.values[path]));
-                createEffect(on(values, () => run(), { defer: true }));
+                createEffect(
+                    () => values.map((value) => value()),
+                    () => {
+                        run();
+                    },
+                    { defer: true },
+                );
             });
         },
     };

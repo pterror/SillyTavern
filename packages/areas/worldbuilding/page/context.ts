@@ -24,10 +24,8 @@ export type Wb = {
 
 const WbContext = createContext<Wb>();
 
-export const WbProvider = WbContext.Provider;
+export const WbProvider = WbContext;
 
 export function useWb(): Wb {
-    const wb = useContext(WbContext);
-    if (!wb) throw new Error('A part of the worldbuilding page was drawn outside it');
-    return wb;
+    return useContext(WbContext);
 }

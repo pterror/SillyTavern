@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
+import { For, Match, Show, Switch, createEffect, createSignal, onSettled } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { Name } from '@st/page/name';
@@ -104,7 +104,7 @@ export function EntryPage(props: {
                     type="button"
                     class="right_menu_button interactable wb-icon-button"
                     aria-label={t('More')}
-                    aria-expanded={menu()}
+                    aria-expanded={menu() ? 'true' : 'false'}
                     onClick={(event) => toggleMenu(event.currentTarget)}
                 >
                     <Icon name="more" />
@@ -157,7 +157,7 @@ export function EntryPage(props: {
                             class="right_menu_button interactable wb-icon-button"
                             aria-label={t('Entry settings')}
                             title={t('Entry settings')}
-                            aria-expanded={placing()}
+                            aria-expanded={placing() ? 'true' : 'false'}
                             onClick={() => {
                                 setMenu(false);
                                 setPlacing(!placing());
@@ -173,7 +173,7 @@ export function EntryPage(props: {
                             type="button"
                             class="right_menu_button interactable wb-icon-button wb-entry-more"
                             aria-label={t('More')}
-                            aria-expanded={menu()}
+                            aria-expanded={menu() ? 'true' : 'false'}
                             onClick={(event) => toggleMenu(event.currentTarget)}
                         >
                             <Icon name="more" />
@@ -282,29 +282,27 @@ export function EntryPage(props: {
 function carryCopies(entry: () => OpenEntryView) {
     const wb = useWb();
     createEffect(
-        on(
-            () => `${entry().book}:${entry().entry}`,
-            () => {
-                const { book, entry: id } = entry();
-                void (async () => {
-                    for (const copy of copies.of(book, id)) {
-                        const shown = entry();
-                        if (shown.book !== book || shown.entry !== id) return;
-                        const now = copy.field === 'text' ? shown.text : (shown.title ?? '');
-                        if (copy.text !== now) {
-                            const type =
-                                copy.field === 'text' ? 'worldbuilding.setEntryText' : 'worldbuilding.setEntryTitle';
-                            await wb.edit(
-                                type,
-                                { book, entry: id, version: copy.version, [copy.field]: copy.text },
-                                copy.field,
-                            );
-                        }
-                        copies.drop(copy);
+        () => `${entry().book}:${entry().entry}`,
+        () => {
+            const { book, entry: id } = entry();
+            void (async () => {
+                for (const copy of copies.of(book, id)) {
+                    const shown = entry();
+                    if (shown.book !== book || shown.entry !== id) return;
+                    const now = copy.field === 'text' ? shown.text : (shown.title ?? '');
+                    if (copy.text !== now) {
+                        const type =
+                            copy.field === 'text' ? 'worldbuilding.setEntryText' : 'worldbuilding.setEntryTitle';
+                        await wb.edit(
+                            type,
+                            { book, entry: id, version: copy.version, [copy.field]: copy.text },
+                            copy.field,
+                        );
                     }
-                })();
-            },
-        ),
+                    copies.drop(copy);
+                }
+            })();
+        },
     );
 }
 
@@ -321,7 +319,7 @@ function PointingAt(props: { section: PointingAtSection; entry: OpenEntryView; a
     const here = () => ({ entry: props.entry.entry, label: props.entry.label });
     let end: HTMLDivElement | undefined;
     const shownEnd = () => props.section.firstRank + props.section.entries.length;
-    onMount(() => {
+    onSettled(() => {
         const watch = new IntersectionObserver((seen) => {
             if (!seen.some((one) => one.isIntersecting) || shownEnd() >= props.section.count) return;
             const endRank = Math.min(props.section.count, Math.max(shownEnd() * 2, shownEnd() + 8));
@@ -329,7 +327,7 @@ function PointingAt(props: { section: PointingAtSection; entry: OpenEntryView; a
             void wb.act('worldbuilding.showPointingAtRange', { kind: props.section.kind, firstRank, endRank });
         });
         if (end) watch.observe(end);
-        onCleanup(() => watch.disconnect());
+        return () => watch.disconnect();
     });
     return (
         <section
@@ -342,11 +340,7 @@ function PointingAt(props: { section: PointingAtSection; entry: OpenEntryView; a
             <div class="wb-grid">
                 <For each={props.section.entries}>
                     {(cell) => (
-                        <div
-                            class="wb-top-cell"
-                            classList={{ 'wb-wide': cell.region.length > 0 }}
-                            data-entry={cell.entry}
-                        >
+                        <div class={['wb-top-cell', { 'wb-wide': cell.region.length > 0 }]} data-entry={cell.entry}>
                             <Cell cell={cell} region={here()} actions={actions} />
                         </div>
                     )}
@@ -367,7 +361,7 @@ function Mentions(props: {
     let end: HTMLDivElement | undefined;
     const pages = () => props.entry.mentionedIn.pages;
     const rows = () => pages().flatMap((page: MentionsPage) => page.entries);
-    onMount(() => {
+    onSettled(() => {
         const watch = new IntersectionObserver((seen) => {
             const last = pages().at(-1);
             if (!seen.some((one) => one.isIntersecting) || !last || last.next === null) return;
@@ -375,7 +369,7 @@ function Mentions(props: {
             void wb.act('worldbuilding.showMentions', { from: pages()[0]?.cursor ?? null, pages: pages().length + 1 });
         });
         if (end) watch.observe(end);
-        onCleanup(() => watch.disconnect());
+        return () => watch.disconnect();
     });
     return (
         <Show when={rows().length > 0}>

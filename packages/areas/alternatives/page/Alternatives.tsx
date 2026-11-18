@@ -1,6 +1,7 @@
-import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from 'solid-js';
+import { elementSetup } from '@st/page/element';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onSettled, untrack } from 'solid-js';
 import type { Accessor } from 'solid-js';
-import { unwrap } from 'solid-js/store';
+import { snapshot } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { COUNTS_VIEW, LIST_VIEW, MATCHES_VIEW } from '../protocol.ts';
@@ -145,20 +146,23 @@ function Dialog(props: {
             .send('alternatives.open', { target: props.look.target, tokenizer: props.old.tokenizer() })
             .then(() => setOpened(true));
     open();
-    createEffect(() => {
-        if (opened() && props.views.list() !== undefined && props.views.list()!.target === null) {
-            setOpened(false);
-            open();
-        }
-    });
+    createEffect(
+        () => opened() && props.views.list()?.target === null,
+        (reopen) => {
+            if (reopen) {
+                setOpened(false);
+                open();
+            }
+        },
+    );
     onCleanup(() => {
         const live = props.views.list();
         if (isOurs(live) && live!.complete) {
             void props.seen.keep({
                 key,
                 version: client.version(LIST_VIEW),
-                list: structuredClone(unwrap(live!)),
-                counts: structuredClone(unwrap(props.views.counts() ?? { counts: {} })),
+                list: structuredClone(snapshot(live!)),
+                counts: structuredClone(snapshot(props.views.counts() ?? { counts: {} })),
                 used: Date.now(),
             });
         }
@@ -167,7 +171,7 @@ function Dialog(props: {
 
     let dialog: HTMLDialogElement | undefined;
     let scroller: HTMLOListElement | undefined;
-    onMount(() => dialog?.showModal());
+    onSettled(() => dialog?.showModal());
 
     const rows = new Map<string, RowState>();
     const spansOf = (id: string) => matches()?.[id] ?? null;
@@ -218,40 +222,42 @@ function Dialog(props: {
     };
     onCleanup(() => rows.clear());
 
-    const register = (item: Item, li: HTMLLIElement, body: HTMLElement) => {
-        const row: RowState = { li, body, item, shown: null, painted: '', visible: false };
-        rows.set(item.id, row);
-        body.textContent = item.text;
-        observer.observe(li);
+    const register = (item: Item) => {
+        let row: RowState | undefined;
         onCleanup(() => {
-            observer.unobserve(li);
+            if (!row) return;
+            observer.unobserve(row.li);
             row.shown?.stop();
             if (rows.get(item.id) === row) rows.delete(item.id);
         });
         createEffect(
-            on(
-                () => item.text,
-                () => {
-                    if (row.painted !== '' && !row.painted.startsWith(`${item.text}\u0000`)) {
-                        if (row.visible) paint(row);
-                        else paintRest();
-                    }
-                },
-                { defer: true },
-            ),
+            () => item.text,
+            () => {
+                if (row && row.painted !== '' && !row.painted.startsWith(`${item.text}\u0000`)) {
+                    if (row.visible) paint(row);
+                    else paintRest();
+                }
+            },
+            { defer: true },
         );
+        return (li: HTMLLIElement) => {
+            const body = li.querySelector<HTMLElement>('.alternative-text');
+            if (!body) return;
+            row = { li, body, item, shown: null, painted: '', visible: false };
+            rows.set(item.id, row);
+            body.textContent = item.text;
+            observer.observe(li);
+        };
     };
 
-    createEffect(
-        on(matchesKey, (now, before) => {
-            for (const row of rows.values()) if (row.visible) paint(row);
-            paintRest();
-            measure();
-            if (now === 'null' && before !== undefined && before !== 'null') {
-                queueMicrotask(() => scrollTo(current() ?? 0, false));
-            }
-        }),
-    );
+    createEffect(matchesKey, (now, before) => {
+        for (const row of rows.values()) if (row.visible) paint(row);
+        paintRest();
+        measure();
+        if (now === 'null' && before !== undefined && before !== 'null') {
+            queueMicrotask(() => scrollTo(current() ?? 0, false));
+        }
+    });
 
     const rowOf = (index: number) => {
         const item = itemAt(index);
@@ -280,30 +286,32 @@ function Dialog(props: {
         setReach(reach() * 4);
         requestAnimationFrame(widen);
     };
-    createEffect(() => {
-        if (placed || items().length === 0) return;
-        placed = true;
-        const at = props.look.at ?? current() ?? 0;
-        const view = scroller?.clientHeight ?? 0;
-        const lay = (row: RowState) => {
-            paint(row);
-            row.li.classList.add('laid');
-            return row.li.offsetHeight;
-        };
-        for (let i = at, below = 0; below < view; i++) {
-            const row = rowOf(i);
-            if (!row) break;
-            below += lay(row);
-        }
-        for (let i = at - 1, above = 0; above < view; i--) {
-            const row = rowOf(i);
-            if (!row) break;
-            above += lay(row);
-        }
-        scrollTo(at, false);
-        paintRest();
-        requestAnimationFrame(() => requestAnimationFrame(widen));
-    });
+    createEffect(
+        () => [items().length, props.look.at ?? current() ?? 0] as const,
+        ([count, at]) => {
+            if (placed || count === 0) return;
+            placed = true;
+            const view = scroller?.clientHeight ?? 0;
+            const lay = (row: RowState) => {
+                paint(row);
+                row.li.classList.add('laid');
+                return row.li.offsetHeight;
+            };
+            for (let i = at, below = 0; below < view; i++) {
+                const row = rowOf(i);
+                if (!row) break;
+                below += lay(row);
+            }
+            for (let i = at - 1, above = 0; above < view; i--) {
+                const row = rowOf(i);
+                if (!row) break;
+                above += lay(row);
+            }
+            scrollTo(at, false);
+            paintRest();
+            requestAnimationFrame(() => requestAnimationFrame(widen));
+        },
+    );
 
     let measuring = false;
     const measure = () => {
@@ -328,7 +336,7 @@ function Dialog(props: {
             setTicks([...marks].map(([top, isCurrent]) => ({ top, current: isCurrent })));
         });
     };
-    createEffect(on([items, current], measure));
+    createEffect(() => [items(), current()] as const, measure);
 
     const search = (text: string) => {
         setQuery(text);
@@ -426,7 +434,7 @@ function Dialog(props: {
         }
         setNotice(null);
         if (at !== undefined) forgetSame(at);
-        if (card) props.old.greetingsChanged(structuredClone(unwrap(card)), result.answer);
+        if (card) props.old.greetingsChanged(structuredClone(snapshot(card)), result.answer);
         return true;
     };
     const add = async (text: string) => {
@@ -547,7 +555,7 @@ function Dialog(props: {
         if (!target) return false;
         move(item, target, side);
     };
-    onMount(() => {
+    onSettled(() => {
         if (!scroller) return;
         const category = t('Alternatives');
         const moving = (id: string, label: string, key: string, place: Parameters<typeof keyMove>[0]) => ({
@@ -558,16 +566,14 @@ function Dialog(props: {
             when: () => handled() !== undefined,
             run: keyMove(place),
         });
-        onCleanup(
-            commands.register(
-                [
-                    moving('alternatives.moveUp', t('Move up'), 'ArrowUp', (at) => [at - 1, 'before']),
-                    moving('alternatives.moveDown', t('Move down'), 'ArrowDown', (at) => [at + 1, 'after']),
-                    moving('alternatives.moveFirst', t('Move to the top'), 'Home', () => [0, 'before']),
-                    moving('alternatives.moveLast', t('Move to the bottom'), 'End', (_, last) => [last, 'after']),
-                ],
-                { target: scroller },
-            ),
+        return commands.register(
+            [
+                moving('alternatives.moveUp', t('Move up'), 'ArrowUp', (at) => [at - 1, 'before']),
+                moving('alternatives.moveDown', t('Move down'), 'ArrowDown', (at) => [at + 1, 'after']),
+                moving('alternatives.moveFirst', t('Move to the top'), 'Home', () => [0, 'before']),
+                moving('alternatives.moveLast', t('Move to the bottom'), 'End', (_, last) => [last, 'after']),
+            ],
+            { target: scroller },
         );
     });
 
@@ -643,13 +649,15 @@ function Dialog(props: {
                                 aria-label={t('Select by number')}
                                 value={selected() === null ? '' : selected()! + 1}
                                 onInput={(event) => select(event.currentTarget.value)}
-                                ref={(field) => onCleanup(focusActions.attach(field, { confirm: goSelected }))}
+                                ref={elementSetup<HTMLInputElement>((field) =>
+                                    focusActions.attach(field, { confirm: goSelected }),
+                                )}
                             />
                         </label>
                         <button
                             type="submit"
                             class="menu_button alternatives-go"
-                            aria-disabled={selectedWhy() !== null}
+                            aria-disabled={selectedWhy() !== null ? 'true' : 'false'}
                             title={selectedWhy() ?? undefined}
                         >
                             {greetingsList ? t('Show in chat') : t('Switch')}
@@ -687,14 +695,22 @@ function Dialog(props: {
                     {/* A search hides what doesn't match by one class on the list (rows only say they match), so it
                         changes as many rows as it finds, not every row. */}
                     <ol
-                        class="alternatives-list"
-                        classList={{ filtering: matches() !== null }}
+                        class={['alternatives-list', { filtering: matches() !== null }]}
                         ref={(el: HTMLOListElement) => (scroller = el)}
                     >
                         <For each={mounted()}>
                             {(item) => (
                                 <li
-                                    class="alternative"
+                                    class={[
+                                        'alternative',
+                                        {
+                                            matched: matches()?.[item.id] !== undefined,
+                                            current: item.index === current(),
+                                            selected: item.index === selected(),
+                                            'drop-before': drop()?.id === item.id && drop()?.side === 'before',
+                                            'drop-after': drop()?.id === item.id && drop()?.side === 'after',
+                                        },
+                                    ]}
                                     data-id={item.id}
                                     tabindex="-1"
                                     onClick={(event) => {
@@ -703,17 +719,7 @@ function Dialog(props: {
                                         )
                                             setPicked(item.index);
                                     }}
-                                    classList={{
-                                        matched: matches()?.[item.id] !== undefined,
-                                        current: item.index === current(),
-                                        selected: item.index === selected(),
-                                        'drop-before': drop()?.id === item.id && drop()?.side === 'before',
-                                        'drop-after': drop()?.id === item.id && drop()?.side === 'after',
-                                    }}
-                                    ref={(li: HTMLLIElement) => {
-                                        const body = li.querySelector<HTMLElement>('.alternative-text');
-                                        if (body) untrack(() => register(item, li, body));
-                                    }}
+                                    ref={register(item)}
                                 >
                                     <div class="alternative-head">
                                         <Show when={canReorder(item)}>
@@ -724,10 +730,12 @@ function Dialog(props: {
                                                 title={t('Drag to reorder')}
                                                 aria-label={t('Reorder')}
                                                 onPointerDown={(event) => dragFrom(item, event)}
-                                                ref={(handle) => {
+                                                ref={elementSetup<HTMLSpanElement>((handle) => {
                                                     handles.set(handle, item);
-                                                    onCleanup(() => handles.delete(handle));
-                                                }}
+                                                    return () => {
+                                                        handles.delete(handle);
+                                                    };
+                                                })}
                                             />
                                         </Show>
                                         <span class="alternative-number">#{item.index + 1}</span>
@@ -762,7 +770,7 @@ function Dialog(props: {
                                             <button
                                                 type="button"
                                                 class="alternative-button alternative-go"
-                                                aria-disabled={whyNotGo(item, item.index) !== null}
+                                                aria-disabled={whyNotGo(item, item.index) !== null ? 'true' : 'false'}
                                                 title={whyNotGo(item, item.index) ?? undefined}
                                                 onClick={() => void go(item, item.index)}
                                             >
@@ -778,14 +786,16 @@ function Dialog(props: {
                                             <Show when={isCardRow(item)}>
                                                 <button
                                                     type="button"
-                                                    class="alternative-button alternative-default fa-star"
-                                                    classList={{
-                                                        'fa-solid': isDefault(item),
-                                                        'fa-regular': !isDefault(item),
-                                                    }}
+                                                    class={[
+                                                        'alternative-button alternative-default fa-star',
+                                                        {
+                                                            'fa-solid': isDefault(item),
+                                                            'fa-regular': !isDefault(item),
+                                                        },
+                                                    ]}
                                                     title={t('Default greeting')}
                                                     aria-label={t('Default greeting')}
-                                                    aria-pressed={isDefault(item)}
+                                                    aria-pressed={isDefault(item) ? 'true' : 'false'}
                                                     onClick={() => setDefault(item)}
                                                 />
                                                 <button
@@ -843,8 +853,7 @@ function Dialog(props: {
                         <For each={ticks()}>
                             {(tick) => (
                                 <span
-                                    class="alternatives-marker"
-                                    classList={{ current: tick.current }}
+                                    class={['alternatives-marker', { current: tick.current }]}
                                     style={{ top: `${tick.top}%` }}
                                 />
                             )}
@@ -921,17 +930,13 @@ function AddBox(props: {
                     setText(event.currentTarget.value);
                     props.onInput();
                 }}
-                ref={(field) =>
-                    onCleanup(
-                        focusActions.attach(field, {
-                            confirm: (event) =>
-                                event instanceof KeyboardEvent && (event.ctrlKey || event.metaKey)
-                                    ? void submit()
-                                    : false,
-                            cancel: () => (text() === '' ? false : void setText('')),
-                        }),
-                    )
-                }
+                ref={elementSetup<HTMLTextAreaElement>((field) =>
+                    focusActions.attach(field, {
+                        confirm: (event) =>
+                            event instanceof KeyboardEvent && (event.ctrlKey || event.metaKey) ? void submit() : false,
+                        cancel: () => (text() === '' ? false : void setText('')),
+                    }),
+                )}
             />
             <button type="submit" class="menu_button" disabled={busy() || text().trim() === ''}>
                 {t('Add')}
@@ -962,7 +967,7 @@ function Editor(props: {
 }) {
     const { t } = useUi();
     const editor = props.make(() => props.onInput());
-    onMount(() => editor.focus(props.at));
+    onSettled(() => editor.focus(props.at));
     onCleanup(() => editor.stop());
     return (
         <div class="alternative-editor">

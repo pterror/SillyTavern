@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createSignal, onSettled } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
 import type { Named } from '@st/page/name';
@@ -25,7 +25,12 @@ export function CharacterFilterSentence(props: {
     const [which, setWhich] = createSignal(false);
     return (
         <p class="wb-filter">
-            <button type="button" class="wb-tok" aria-expanded={which()} onClick={() => setWhich(!which())}>
+            <button
+                type="button"
+                class="wb-tok"
+                aria-expanded={which() ? 'true' : 'false'}
+                onClick={() => setWhich(!which())}
+            >
                 {props.filter.exclude ? t('Not for ') : t('Only for ')}
             </button>
             <Show when={which()}>
@@ -35,9 +40,8 @@ export function CharacterFilterSentence(props: {
                             <button
                                 type="button"
                                 role="option"
-                                class="list-group-item wb-choice"
-                                classList={{ 'wb-on': props.filter.exclude === exclude }}
-                                aria-selected={props.filter.exclude === exclude}
+                                class={['list-group-item wb-choice', { 'wb-on': props.filter.exclude === exclude }]}
+                                aria-selected={props.filter.exclude === exclude ? 'true' : 'false'}
                                 onClick={() => {
                                     setWhich(false);
                                     if (props.filter.exclude !== exclude) props.onChange({ exclude });
@@ -89,7 +93,7 @@ export function CharacterFilterSentence(props: {
             <button
                 type="button"
                 class="menu_button margin0 whitespacenowrap wb-key-add"
-                aria-expanded={props.adding}
+                aria-expanded={props.adding ? 'true' : 'false'}
                 onClick={() => props.onAdding(!props.adding)}
             >
                 {t('+ Character or tag')}
@@ -131,19 +135,17 @@ function CharacterPicker(props: { leaveOut: string[]; onPick: (item: FilterItem)
     const [query, setQuery] = createSignal('');
     const [at, setAt] = createSignal(0);
     let field: HTMLInputElement | undefined;
-    onMount(() => {
+    onSettled(() => {
         if (!field) return;
         field.focus();
-        onCleanup(
-            focusActions.attach(field, {
-                next: () => void setAt(Math.min(rows().length - 1, at() + 1)),
-                previous: () => void setAt(Math.max(0, at() - 1)),
-                confirm: () => {
-                    const chosen = rows()[at()];
-                    if (chosen) props.onPick(chosen.item);
-                },
-            }),
-        );
+        return focusActions.attach(field, {
+            next: () => void setAt(Math.min(rows().length - 1, at() + 1)),
+            previous: () => void setAt(Math.max(0, at() - 1)),
+            confirm: () => {
+                const chosen = rows()[at()];
+                if (chosen) props.onPick(chosen.item);
+            },
+        });
     });
     const shown = () => {
         const view = found();
@@ -184,9 +186,8 @@ function CharacterPicker(props: { leaveOut: string[]; onPick: (item: FilterItem)
                                 <button
                                     type="button"
                                     role="option"
-                                    class="list-group-item wb-pick-row"
-                                    classList={{ 'wb-on': index() === at() }}
-                                    aria-selected={index() === at()}
+                                    class={['list-group-item wb-pick-row', { 'wb-on': index() === at() }]}
+                                    aria-selected={index() === at() ? 'true' : 'false'}
                                     onPointerEnter={() => setAt(index())}
                                     onClick={() => props.onPick(row.item)}
                                 >

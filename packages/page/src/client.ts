@@ -1,6 +1,6 @@
-import { createSignal, untrack } from 'solid-js';
+import { createSignal, flush } from 'solid-js';
 import type { Accessor, Signal } from 'solid-js';
-import { createStore, produce, reconcile } from 'solid-js/store';
+import { createStore, reconcile } from 'solid-js';
 import type { ActionAnswer, ChatOwner, ViewFrame, ViewPush } from '@st/protocol';
 import { isLooks } from './looks.ts';
 import type { LookSheet } from './looks.ts';
@@ -57,6 +57,8 @@ export function createClient({ headers, looks }: ClientOptions): Client {
         { set: (value: unknown) => void; patch: (change: unknown) => void; get: Accessor<unknown> }
     >();
     const versions = new Map<string, Signal<number>>();
+    // Versions are checked while a batch is being staged, before its signals commit.
+    const receivedVersions = new Map<string, number>();
     const versionOf = (key: string): Signal<number> => {
         let found = versions.get(key);
         if (!found) {
@@ -72,13 +74,11 @@ export function createClient({ headers, looks }: ClientOptions): Client {
             const [store, setStore] = createStore<{ value: unknown }>({ value: undefined });
             found = {
                 get: () => store.value,
-                set: (value) => setStore('value', reconcile(value, { key: 'id', merge: true })),
+                set: (value) => setStore(reconcile({ value }, 'id')),
                 patch: (change) =>
-                    setStore(
-                        produce((held) => {
-                            held.value = merged(held.value, change);
-                        }),
-                    ),
+                    setStore((held) => {
+                        held.value = merged(held.value, change);
+                    }),
             };
             views.set(key, found);
         }
@@ -86,20 +86,23 @@ export function createClient({ headers, looks }: ClientOptions): Client {
     };
 
     const apply = (frames: ViewFrame[]) => {
-        for (const frame of frames) {
-            const target = entry(frame.key);
-            const [version, setVersion] = versionOf(frame.key);
-            if (frame.version <= untrack(version)) continue;
-            if ('patch' in frame) target.patch(frame.patch);
-            else target.set(frame.value);
-            setVersion(frame.version);
-            const carried = 'patch' in frame ? frame.patch : frame.value;
-            const drawn = isRecord(carried) ? carried['looks'] : undefined;
-            if (looks && isLooks(drawn)) {
-                if ('patch' in frame) looks.add(frame.key, drawn);
-                else looks.hold(frame.key, drawn);
+        flush(() => {
+            for (const frame of frames) {
+                const target = entry(frame.key);
+                const [, setVersion] = versionOf(frame.key);
+                if (frame.version <= (receivedVersions.get(frame.key) ?? 0)) continue;
+                receivedVersions.set(frame.key, frame.version);
+                if ('patch' in frame) target.patch(frame.patch);
+                else target.set(frame.value);
+                setVersion(frame.version);
+                const carried = 'patch' in frame ? frame.patch : frame.value;
+                const drawn = isRecord(carried) ? carried['looks'] : undefined;
+                if (looks && isLooks(drawn)) {
+                    if ('patch' in frame) looks.add(frame.key, drawn);
+                    else looks.hold(frame.key, drawn);
+                }
             }
-        }
+        });
     };
 
     const post = async (type: string, payload: unknown, file?: File): Promise<ActionAnswer> => {
@@ -189,6 +192,7 @@ export function createClient({ headers, looks }: ClientOptions): Client {
             apply(Array.isArray(push.views) ? push.views : []);
         },
         async reconnected(chat) {
+            receivedVersions.clear();
             for (const [, setVersion] of versions.values()) setVersion(0);
             apply((await post(chat ? 'chat.show' : 'chat.close', chat ?? {})).views);
             await Promise.all([...views.keys()].map((key) => open(key)));

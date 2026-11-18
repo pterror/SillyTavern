@@ -1,6 +1,7 @@
-import { Show, createSignal, onCleanup, onMount } from 'solid-js';
-import type { JSX } from 'solid-js';
+import { Show, createSignal, onSettled } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { useUi } from '@st/page/context';
+import { elementSetup } from '@st/page/element';
 
 // Text drawn as it reads, edited in place when clicked: Enter (a line) or leaving the field keeps it, Escape doesn't.
 export function Editable(props: {
@@ -24,12 +25,12 @@ export function Editable(props: {
                 <div
                     class={props.class}
                     role="button"
-                    tabIndex={0}
+                    tabindex={0}
                     aria-label={props.label}
                     onClick={() => setEditing(true)}
-                    ref={(element) =>
-                        onCleanup(focusActions.attach(element, { activate: () => void setEditing(true) }))
-                    }
+                    ref={elementSetup<HTMLDivElement>((element) =>
+                        focusActions.attach(element, { activate: () => void setEditing(true) }),
+                    )}
                 >
                     {props.children}
                 </div>
@@ -67,17 +68,15 @@ function Field(props: {
             field.style.height = `${field.scrollHeight}px`;
         }
     };
-    onMount(() => {
+    onSettled(() => {
         fit();
         if (!field) return;
         const shown = field;
         shown.focus();
-        onCleanup(
-            focusActions.attach(shown, {
-                cancel: () => finish(null),
-                ...(props.multiline ? {} : { confirm: () => finish(shown.value) }),
-            }),
-        );
+        return focusActions.attach(shown, {
+            cancel: () => finish(null),
+            ...(props.multiline ? {} : { confirm: () => finish(shown.value) }),
+        });
     });
     return props.multiline ? (
         <textarea

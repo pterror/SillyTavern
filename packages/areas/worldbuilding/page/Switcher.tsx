@@ -1,5 +1,5 @@
 import { For, Show, createSignal } from 'solid-js';
-import type { JSX } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { WORLDS_VIEW } from '../protocol.ts';
@@ -68,7 +68,7 @@ export function Switcher(props: {
                 type="button"
                 class="menu_button menu_button_icon margin0 whitespacenowrap wb-switch"
                 aria-label={t('Switch world')}
-                aria-expanded={open()}
+                aria-expanded={open() ? 'true' : 'false'}
                 onClick={() => setOpen(!open())}
             >
                 <Show when={props.world?.picture !== null && props.world !== null}>
@@ -141,7 +141,7 @@ function WorldsMenu(props: {
         <div class="wb-menu list-group wb-worlds" role="menu" ref={(element) => (menu = element)}>
             <For each={worlds()?.worlds ?? []}>
                 {(world) => (
-                    <div class="list-group-item wb-world-row" classList={{ 'wb-on': world.id === props.world?.id }}>
+                    <div class={['list-group-item wb-world-row', { 'wb-on': world.id === props.world?.id }]}>
                         <button
                             type="button"
                             role="menuitem"

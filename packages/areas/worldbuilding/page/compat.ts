@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createRoot, createSignal, on } from 'solid-js';
+import { createEffect, createMemo, createRoot, createSignal } from 'solid-js';
 import type { ActionResult, Client } from '@st/page/client';
 import { WORLDS_VIEW } from '../protocol.ts';
 import type { NavigationTarget, World, WorldsView } from '../protocol.ts';
@@ -66,7 +66,7 @@ export function worldbuildingCompat(client: Client, old: OldPage) {
                 const key = createMemo(() =>
                     JSON.stringify(worlds()?.map(({ id, name, usedInEveryChat }) => [id, name, usedInEveryChat])),
                 );
-                createEffect(on(key, () => run(), { defer: true }));
+                createEffect(key, () => run(), { defer: true });
             });
         },
         // `changes` are written together; null when they were, else why not.

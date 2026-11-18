@@ -1,4 +1,5 @@
-import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
+import { elementSetup } from '@st/page/element';
+import { For, Show, createEffect, createSignal, onSettled } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { FOUND_VIEW, LAST_CHANGE_VIEW, LOOP_CHECK_VISITS_PER_WRITE } from '../protocol.ts';
 import type { FoundView, LastChangeView, OpenEntryView, RelationKind } from '../protocol.ts';
@@ -35,7 +36,7 @@ export function RelationsLine(props: {
                 ref={(element) => (button = element)}
                 type="button"
                 class="menu_button margin0 whitespacenowrap wb-rels-add"
-                aria-expanded={adding()}
+                aria-expanded={adding() ? 'true' : 'false'}
                 onClick={() => setAdding(!adding())}
             >
                 {t('+ Relation')}
@@ -70,17 +71,15 @@ function NewRelation(props: {
     let target: HTMLInputElement | undefined;
     dismissOn(() => box, props.onClose, props.opener);
     createEffect(
-        on(
-            () => lastChange()?.createdKind,
-            (created) => {
-                if (!madeKind() || !created || created.book !== props.entry.book) return;
-                setMadeKind(false);
-                setKind(created.kind);
-                target?.focus();
-            },
-        ),
+        () => lastChange()?.createdKind,
+        (created) => {
+            if (!madeKind() || !created || created.book !== props.entry.book) return;
+            setMadeKind(false);
+            setKind(created.kind);
+            target?.focus();
+        },
     );
-    onMount(() => target?.focus());
+    onSettled(() => target?.focus());
     const typed = (text: string) => {
         setQuery(text);
         if (text.trim() !== '') void wb.act('worldbuilding.findEntries', { book: props.entry.book, query: text });
@@ -129,37 +128,33 @@ function NewRelation(props: {
                         class="text_pole margin0 wb-relpop-field"
                         placeholder={t('New relation…')}
                         aria-label={t('New relation')}
-                        ref={(field) =>
-                            onCleanup(
-                                focusActions.attach(field, {
-                                    confirm: () => {
-                                        const name = field.value.trim();
-                                        if (name === '') return false;
-                                        field.value = '';
-                                        setMadeKind(true);
-                                        void wb.act('worldbuilding.createRelationKind', {
-                                            book: props.entry.book,
-                                            name,
-                                        });
-                                    },
-                                }),
-                            )
-                        }
+                        ref={elementSetup<HTMLInputElement>((field) =>
+                            focusActions.attach(field, {
+                                confirm: () => {
+                                    const name = field.value.trim();
+                                    if (name === '') return false;
+                                    field.value = '';
+                                    setMadeKind(true);
+                                    void wb.act('worldbuilding.createRelationKind', {
+                                        book: props.entry.book,
+                                        name,
+                                    });
+                                },
+                            }),
+                        )}
                     />
                 </span>
                 <input
-                    ref={(element) => {
+                    ref={elementSetup<HTMLInputElement>((element) => {
                         target = element;
-                        onCleanup(
-                            focusActions.attach(element, {
-                                confirm: () => {
-                                    const first = results()[0];
-                                    if (!first) return false;
-                                    relate(first.label.thing);
-                                },
-                            }),
-                        );
-                    }}
+                        return focusActions.attach(element, {
+                            confirm: () => {
+                                const first = results()[0];
+                                if (!first) return false;
+                                relate(first.label.thing);
+                            },
+                        });
+                    })}
                     class="text_pole margin0 wb-relpop-field wb-relpop-wide"
                     placeholder={t('Search entries')}
                     aria-label={t('Search entries')}

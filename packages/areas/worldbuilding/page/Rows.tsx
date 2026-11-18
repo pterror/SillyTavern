@@ -1,5 +1,6 @@
-import { For, Match, Show, Switch, createSignal, onCleanup } from 'solid-js';
-import type { JSX } from 'solid-js';
+import { elementSetup } from '@st/page/element';
+import { For, Match, Show, Switch, createSignal } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { LOOP_CHECK_VISITS_PER_WRITE, SELECTION_COUNTED_UP_TO } from '../protocol.ts';
@@ -90,7 +91,7 @@ export function RowsHead(props: { fields: RowField[]; selection: Selected | null
             <span class="wb-th-on">{t('On')}</span>
             <span>{t('Name')}</span>
             <For each={props.fields}>
-                {(field) => <span classList={{ 'wb-num': NUMERIC.has(field) }}>{t(FIELD_WORDS[field])}</span>}
+                {(field) => <span class={{ 'wb-num': NUMERIC.has(field) }}>{t(FIELD_WORDS[field])}</span>}
             </For>
         </div>
     );
@@ -211,8 +212,7 @@ function Row(props: { cell: EntryCell; depth: number; context: RowsContext }) {
     };
     return (
         <div
-            class="wb-tr"
-            classList={{ 'wb-tr-sel': selected(), 'wb-tr-off': facts()?.comesIn === 'never' }}
+            class={['wb-tr', { 'wb-tr-sel': selected(), 'wb-tr-off': facts()?.comesIn === 'never' }]}
             data-entry={props.cell.entry}
             data-pick={props.cell.entry}
             style={{ 'grid-template-columns': columnsOf(props.context.fields) }}
@@ -378,20 +378,18 @@ function NumberCell(props: {
                     type="number"
                     aria-label={props.label}
                     value={props.value ?? ''}
-                    ref={(element) => {
+                    ref={elementSetup<HTMLInputElement>((element) => {
                         queueMicrotask(() => element.select());
-                        onCleanup(
-                            focusActions.attach(element, {
-                                cancel: () => void setEditing(false),
-                                confirm: () => {
-                                    const value = Number(element.value);
-                                    setEditing(false);
-                                    if (Number.isFinite(value) && element.value.trim() !== '')
-                                        setPlacement(wb, props.book, props.entry, props.version, props.set(value));
-                                },
-                            }),
-                        );
-                    }}
+                        return focusActions.attach(element, {
+                            cancel: () => void setEditing(false),
+                            confirm: () => {
+                                const value = Number(element.value);
+                                setEditing(false);
+                                if (Number.isFinite(value) && element.value.trim() !== '')
+                                    setPlacement(wb, props.book, props.entry, props.version, props.set(value));
+                            },
+                        });
+                    })}
                     onBlur={() => setEditing(false)}
                 />
             </Show>

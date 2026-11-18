@@ -1,10 +1,15 @@
-import { createEffect, onCleanup, onMount } from 'solid-js';
+import { createEffect, onCleanup, onSettled } from 'solid-js';
 import { dismiss } from '@pterror/interact-list/dismiss';
 import { popover } from '@pterror/interact-list/popover';
 import { useUi } from '../context.ts';
 
 export type Box = { left: number; top: number; right: number; bottom: number };
 export type Anchor = { getBoundingClientRect(): Box };
+
+// The browser's source option is newer than the pinned DOM declarations.
+interface AnchoredPopover extends HTMLElement {
+    showPopover(options?: { source?: HTMLElement }): void;
+}
 
 // `start`: under the anchor from its left edge; `end`: under it, ending at its right edge; `right`: beside it.
 export type Align = 'start' | 'end' | 'right';
@@ -44,9 +49,9 @@ function placedAt(anchor: Box, element: HTMLElement, align: Align): Box {
 // Either takes the key, so dismiss's own Escape, which closes on a key nothing took, doesn't run as well.
 export function float(element: () => HTMLElement | undefined, options: FloatOptions) {
     const { commands, focusActions, t } = useUi();
-    onMount(() => {
+    onSettled(() => {
         const shown = element();
-        if (!shown) return;
+        if (shown?.isConnected !== true) return;
         shown.classList.add(FLOAT_CLASS);
         if (options.framed !== false) shown.classList.add(FLOATING_CLASS);
         const align = options.align ?? 'start';
@@ -85,12 +90,12 @@ export function float(element: () => HTMLElement | undefined, options: FloatOpti
             ],
             { capture: true, everywhere: true },
         );
-        onCleanup(() => {
+        return () => {
             unregister();
             detach();
             stopDismissing();
             stopShowing();
-        });
+        };
     });
 }
 
@@ -100,16 +105,20 @@ export { hostPopoversInModals } from './modal-host.ts';
 // it gives one, and opened again from each one it gives after. Placing and closing it are the caller's. It is hidden
 // before it goes, so a modal it was shown in gives it back to its place first (`hostPopoversInModals`).
 export function inTopLayer(source?: () => HTMLElement | undefined) {
-    return (element: HTMLElement) => {
+    let element: HTMLElement | undefined;
+    onCleanup(() => {
+        if (element?.matches(':popover-open') === true) element.hidePopover();
+    });
+    createEffect(
+        () => source?.(),
+        (from) => {
+            if (element?.isConnected !== true) return;
+            if (element.matches(':popover-open')) element.hidePopover();
+            (element as AnchoredPopover).showPopover(from ? { source: from } : {});
+        },
+    );
+    return (shown: HTMLElement) => {
+        element = shown;
         element.popover = 'manual';
-        onCleanup(() => {
-            if (element.matches(':popover-open')) element.hidePopover();
-        });
-        createEffect(() => {
-            const from = source?.();
-            if (!element.isConnected) return;
-            if (element.matches(':popover-open')) element.hidePopover();
-            element.showPopover(from ? { source: from } : {});
-        });
     };
 }

@@ -61,7 +61,7 @@ function FieldShown(props: { field: ConflictField; t: (text: string) => string }
                             <For each={diff()}>
                                 {(run) => (
                                     <span
-                                        classList={{
+                                        class={{
                                             'wb-diff-mine': run.in === 'mine',
                                             'wb-diff-theirs': run.in === 'theirs',
                                         }}

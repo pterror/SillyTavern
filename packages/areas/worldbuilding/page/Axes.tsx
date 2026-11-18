@@ -59,8 +59,7 @@ function SmallCard(props: { card: CellCard; cell: AxisCell; at: CardsAt }) {
             : (props.card.text.split(/\n/u).find((line) => line.trim() !== '') ?? '');
     return (
         <div
-            class="wb-ec"
-            classList={{ 'wb-card-off': props.card.facts?.comesIn === 'never' }}
+            class={['wb-ec', { 'wb-card-off': props.card.facts?.comesIn === 'never' }]}
             data-entry={props.card.entry}
             ref={(element) => (root = element)}
             onMouseEnter={(event) => props.at.hover?.enter(props.card.entry, event.currentTarget)}
@@ -433,7 +432,7 @@ export function AxisControl(props: {
                     class="menu_button margin0 whitespacenowrap wb-padd"
                     ref={(element) => (plus = element)}
                     aria-label={fill(t('Add to ${0}'), props.label)}
-                    aria-expanded={adding()}
+                    aria-expanded={adding() ? 'true' : 'false'}
                     onClick={() => setAdding(!adding())}
                 >
                     +

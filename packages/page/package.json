@@ -9,16 +9,21 @@
         "./commands": "./src/commands.ts",
         "./context": "./src/context.ts",
         "./dialog": "./src/layers/dialog.tsx",
+        "./element": "./src/element.ts",
         "./focus-actions": "./src/focus-actions.ts",
         "./looks": "./src/looks.ts",
         "./name": "./src/name.tsx",
-        "./popover": "./src/layers/popover.ts"
+        "./popover": "./src/layers/popover.ts",
+        "./select": "./src/select.tsx"
     },
     "dependencies": {
+        "@pterror/interact-core": "github:pterror/interact#54747345d58f1713a36ea9e041967d99e8d76ea1&path:/packages/core",
         "@pterror/interact-keybinds": "github:pterror/interact#0a80cd6be37ad69eb06150b90ee237bcb40231fe&path:/packages/keybinds",
         "@pterror/interact-list": "github:pterror/interact#0a80cd6be37ad69eb06150b90ee237bcb40231fe&path:/packages/list",
+        "@pterror/interact-solid": "github:pterror/interact#54747345d58f1713a36ea9e041967d99e8d76ea1&path:/packages/solid",
+        "@solidjs/web": "2.0.0",
         "@st/protocol": "workspace:*",
-        "solid-js": "1.9.17"
+        "solid-js": "2.0.0"
     },
     "devDependencies": {
         "vite-plus": "1.1.0"

@@ -68,7 +68,7 @@ export function StatusControl(props: { book: string; entry: string; name: string
                         <button
                             type="button"
                             class="wb-status-option"
-                            aria-pressed={props.facts.comesIn === status.value}
+                            aria-pressed={props.facts.comesIn === status.value ? 'true' : 'false'}
                             onClick={(event) => {
                                 event.stopPropagation();
                                 close();
@@ -101,7 +101,7 @@ export function StatusControl(props: { book: string; entry: string; name: string
                 class="wb-status-control"
                 aria-label={fill(t('Change status of ${0}'), props.name)}
                 aria-haspopup="dialog"
-                aria-expanded={open()}
+                aria-expanded={open() ? 'true' : 'false'}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                     event.stopPropagation();

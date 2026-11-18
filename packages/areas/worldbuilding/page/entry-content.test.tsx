@@ -1,4 +1,4 @@
-import { render } from 'solid-js/web';
+import { render } from '@solidjs/web';
 import { expect, test } from 'vite-plus/test';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';

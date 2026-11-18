@@ -1,3 +1,4 @@
+import { flush as flushSync } from 'solid-js';
 import { createRoot } from 'solid-js';
 import { afterEach, expect, test } from 'vite-plus/test';
 import { NO_LOOK_STYLE, markCss } from '@st/protocol/looks';
@@ -39,14 +40,17 @@ function sheet() {
 test("a thing's rules come from the newest holder that draws it, and go when none does", async () => {
     const { looks, last } = sheet();
     looks.hold('a', looksOf({ 1: look('red'), 2: look('blue') }));
+    flushSync();
     await settled();
     expect(last()).toContain('.look-1 { color: red; }');
     expect(last()).toContain('.look-2 { color: blue; }');
     looks.hold('b', looksOf({ 1: look('teal') }));
+    flushSync();
     await settled();
     expect(last()).toContain('.look-1 { color: teal; }');
     expect(last()).not.toContain('color: red');
     looks.hold('a', looksOf({ 2: look('blue') }));
+    flushSync();
     await settled();
     expect(last()).toContain('.look-1 { color: teal; }');
     looks.drop('b');
@@ -61,7 +65,9 @@ test("a thing's rules come from the newest holder that draws it, and go when non
 test('a newer holder that draws a thing with no look takes its older look away', async () => {
     const { looks, last } = sheet();
     looks.hold('chat', looksOf({ 7: look('gold') }));
+    flushSync();
     looks.hold('looks.drawn', looksOf({ 7: none }));
+    flushSync();
     await settled();
     expect(last()).not.toContain('.look-7');
 });
@@ -69,12 +75,14 @@ test('a newer holder that draws a thing with no look takes its older look away',
 test('a holder adds what more it draws; the stylesheet is written once per change and only when it changed', async () => {
     const { looks, written, last } = sheet();
     looks.hold('list', looksOf({ 1: look('red') }));
+    flushSync();
     looks.add('list', looksOf({ 2: look('blue') }));
     await settled();
     expect(written).toHaveLength(1);
     expect(last()).toContain('.look-1 { color: red; }');
     expect(last()).toContain('.look-2 { color: blue; }');
     looks.hold('list', looksOf({ 1: look('red'), 2: look('blue') }));
+    flushSync();
     await settled();
     expect(written).toHaveLength(1);
 });
@@ -93,6 +101,7 @@ test('the picture sides and the note are rules on the name box, and fonts come o
             2: look('red', { fonts: [face] }),
         }),
     );
+    flushSync();
     await settled();
     expect(last()).toContain('.look-box-1 > .name-picture-before { display: inline-block; }');
     expect(last()).not.toContain('name-picture-after { display');
@@ -133,16 +142,20 @@ test('the trigger mark is drawn by the newest view that carries it, and says whe
     looks.onMarkShown((shown) => told.push(shown));
     expect(looks.markShown()).toBe(true);
     looks.hold('looks.drawn', { styles: {}, things: {}, mark: markOf('dashed') });
+    flushSync();
     await settled();
     expect(last()).toContain(markCss(markOf('dashed')));
     expect(told).toEqual([]);
     looks.hold('worldbuilding.overview', looksOf({ '7': look('red') }));
+    flushSync();
     await settled();
     expect(last()).toContain(markCss(markOf('dashed')));
     looks.hold('looks.drawn', { styles: {}, things: {}, mark: markOf('none') });
+    flushSync();
     await settled();
     expect(looks.markShown()).toBe(false);
     expect(told).toEqual([false]);
     looks.hold('looks.drawn', { styles: {}, things: {}, mark: markOf('dotted') });
+    flushSync();
     expect(told).toEqual([false, true]);
 });

@@ -1,5 +1,6 @@
+import { flush as flushSync } from 'solid-js';
 import { createRoot, createSignal } from 'solid-js';
-import { render } from 'solid-js/web';
+import { render } from '@solidjs/web';
 import { expect, test } from 'vite-plus/test';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
@@ -39,6 +40,7 @@ function mount(refuse = false) {
                             return;
                         }
                         setView({ of: null });
+                        flushSync();
                         resolve({ ok: true });
                     });
                 });
@@ -46,6 +48,7 @@ function mount(refuse = false) {
             if (refuse) return { ok: false, error: 'internal' };
             const of = payload as { of: 'all' } | { of: 'character'; avatar: string };
             setView(of.of === 'all' ? { of: 'all', counts, oldStatsFile: 'old.json' } : { ...of, counts });
+            flushSync();
             return { ok: true };
         },
         view: <T,>() => {
@@ -111,6 +114,7 @@ test('the user stats are shown once the server answers, and closed at once, the 
     const stand = mount();
     expect(stand.viewsRead()).toBe(0);
     stand.all.click();
+    flushSync();
     await stand.settle();
     expect(stand.sent).toEqual([{ type: 'usageStats.show', payload: { of: 'all' } }]);
     const dialog = stand.host.querySelector('dialog');
@@ -129,6 +133,7 @@ test('the user stats are shown once the server answers, and closed at once, the 
     expect(stand.host.querySelector('small')?.textContent).toContain('old.json');
 
     stand.host.querySelector<HTMLElement>('.popup-button-ok')?.click();
+    flushSync();
     expect(dialog?.open).toBe(false);
     expect(stand.host.querySelector('dialog')).toBeNull();
     expect(stand.layers.at(-1)).toBe(0);
@@ -143,9 +148,11 @@ test('the user stats are shown once the server answers, and closed at once, the 
 test('a close the server refuses shows no error, and the stats stay closed', async () => {
     const stand = mount();
     stand.all.click();
+    flushSync();
     await stand.settle();
     const dialog = stand.host.querySelector('dialog');
     dialog?.dispatchEvent(new Event('cancel', { cancelable: true }));
+    flushSync();
     expect(dialog?.open).toBe(false);
     expect(stand.sent.at(-1)).toEqual({ type: 'usageStats.close', payload: {} });
     await stand.answerClose(false);
@@ -156,6 +163,7 @@ test('a close the server refuses shows no error, and the stats stay closed', asy
 test('stats the server says are closed close here too, and no close is sent', async () => {
     const stand = mount();
     stand.all.click();
+    flushSync();
     await stand.settle();
     stand.push({ of: null });
     await stand.settle();
@@ -167,6 +175,7 @@ test('stats the server says are closed close here too, and no close is sent', as
 test('the character stats are of the character the panel shows; with none shown nothing is sent', async () => {
     const stand = mount();
     stand.character.click();
+    flushSync();
     await stand.settle();
     expect(stand.sent).toEqual([{ type: 'usageStats.show', payload: { of: 'character', avatar: 'rex.png' } }]);
     expect(stand.host.querySelector('h3')?.textContent).toBe('Character Stats');
@@ -174,11 +183,13 @@ test('the character stats are of the character the panel shows; with none shown 
     expect(stand.host.querySelector('small')).toBeNull();
 
     stand.host.querySelector<HTMLElement>('.popup-button-close')?.click();
+    flushSync();
     expect(stand.host.querySelector('dialog')).toBeNull();
     expect(stand.sent.at(-1)).toEqual({ type: 'usageStats.close', payload: {} });
     await stand.answerClose(true);
     stand.noCharacter();
     stand.character.click();
+    flushSync();
     await stand.settle();
     expect(stand.sent.filter((s) => s.type === 'usageStats.show')).toHaveLength(1);
 });
@@ -186,6 +197,7 @@ test('the character stats are of the character the panel shows; with none shown 
 test('a refused show says the stats could not be loaded and shows nothing', async () => {
     const stand = mount(true);
     stand.all.click();
+    flushSync();
     await stand.settle();
     expect(stand.failed).toEqual(['Couldn’t load stats. Reload the page.']);
     expect(stand.host.querySelector('dialog')).toBeNull();

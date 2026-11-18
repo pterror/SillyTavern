@@ -7,14 +7,19 @@ export function BackgroundLayer(props: { element: HTMLElement }) {
     const { client } = useUi();
     const view = client.view<BackgroundsView>(VIEW);
     const chatView = client.view<ChatBackgroundsView>(CHAT_VIEW);
-    createEffect(() => {
-        const shown = chatView()?.shown;
-        if (shown) props.element.style.backgroundImage = `url("${shown.url}")`;
-    });
-    createEffect(() => {
-        const fitting = view()?.options.fitting;
-        if (fitting !== undefined) for (const each of FITTINGS) props.element.classList.toggle(each, each === fitting);
-    });
+    createEffect(
+        () => chatView()?.shown,
+        (shown) => {
+            if (shown) props.element.style.backgroundImage = `url("${shown.url}")`;
+        },
+    );
+    createEffect(
+        () => view()?.options.fitting,
+        (fitting) => {
+            if (fitting !== undefined)
+                for (const each of FITTINGS) props.element.classList.toggle(each, each === fitting);
+        },
+    );
     return null;
 }
 

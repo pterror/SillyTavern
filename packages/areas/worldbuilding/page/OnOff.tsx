@@ -13,9 +13,8 @@ export function OnOff(props: { book: string; entry: string; name: string; facts:
         <button
             type="button"
             role="switch"
-            class="wb-onoff fa-solid fa-fw"
-            classList={{ 'fa-toggle-on': on(), 'fa-toggle-off': !on(), 'wb-onoff-off': !on() }}
-            aria-checked={on()}
+            class={['wb-onoff fa-solid fa-fw', { 'fa-toggle-on': on(), 'fa-toggle-off': !on(), 'wb-onoff-off': !on() }]}
+            aria-checked={on() ? 'true' : 'false'}
             aria-label={fill(t('${0} enabled'), props.name)}
             title={on() ? t('Enabled') : t('Disabled')}
             onClick={(event) => {

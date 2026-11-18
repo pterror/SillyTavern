@@ -8,10 +8,22 @@ packages:
 # Minutes: a version installs once it has been published for a week.
 minimumReleaseAge: 10080
 
-# Security fixes from the 2026-11-18 upstream integration; other versions still wait a week.
+# Exact exceptions for the upstream security fixes and coordinated Solid 2 migration; other versions wait a week.
 minimumReleaseAgeExclude:
   - dompurify@3.4.18
   - ws@8.23.0
+  # Solid 2 migration: runtime, DOM renderer and JSX compiler are upgraded together.
+  - solid-js@2.0.0
+  - '@solidjs/web@2.0.0'
+  - '@solidjs/vite-plugin@3.0.1'
+  - '@solidjs/signals@2.0.0'
+  - '@solidjs/compiler@2.0.0'
+  - '@solidjs/compiler-darwin-arm64@2.0.0'
+  - '@solidjs/compiler-darwin-x64@2.0.0'
+  - '@solidjs/compiler-linux-arm64-gnu@2.0.0'
+  - '@solidjs/compiler-linux-x64-gnu@2.0.0'
+  - '@solidjs/compiler-wasm32-wasi@2.0.0'
+  - '@solidjs/compiler-win32-x64-msvc@2.0.0'
 
 # A dependency's build script runs only when it is listed here as true. inotify-remastered-plus builds with a C/C++
 # toolchain and Python; it's optional, so where they're missing its build fails without failing the install.

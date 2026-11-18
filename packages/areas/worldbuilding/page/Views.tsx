@@ -1,5 +1,5 @@
 import { For, Show, createSignal } from 'solid-js';
-import type { JSX } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { ROW_FIELDS, WORLD_SORT } from '../protocol.ts';
@@ -119,9 +119,8 @@ export function ViewTabs(props: {
             <Show when={props.selectable}>
                 <button
                     type="button"
-                    class="menu_button margin0 whitespacenowrap wb-select-mode"
-                    classList={{ 'wb-on': props.selecting }}
-                    aria-pressed={props.selecting}
+                    class={['menu_button margin0 whitespacenowrap wb-select-mode', { 'wb-on': props.selecting }]}
+                    aria-pressed={props.selecting ? 'true' : 'false'}
                     onClick={() => props.onSelecting(!props.selecting)}
                 >
                     {t('Select')}
@@ -143,7 +142,7 @@ function ViewMenuButton(props: { name: string; onRename: (name: string) => void;
                 type="button"
                 class="right_menu_button interactable wb-vt-more"
                 aria-label={fill(t('More for ${0}'), props.name)}
-                aria-expanded={open()}
+                aria-expanded={open() ? 'true' : 'false'}
                 onClick={(event) => {
                     event.preventDefault();
                     setOpen(!open());
@@ -400,7 +399,7 @@ function Fields(props: { chosen: RowField[]; onChoose: (fields: RowField[]) => v
             <button
                 type="button"
                 class="menu_button margin0 whitespacenowrap"
-                aria-expanded={open()}
+                aria-expanded={open() ? 'true' : 'false'}
                 ref={(element) => (button = element)}
                 onClick={() => setOpen(!open())}
             >

@@ -1,5 +1,7 @@
-import { For, Match, Show, Switch, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
-import type { Accessor, JSX } from 'solid-js';
+import { elementSetup } from '@st/page/element';
+import { For, Match, Show, Switch, createMemo, createSignal, onSettled } from 'solid-js';
+import type { Accessor } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { Name } from '@st/page/name';
@@ -172,34 +174,37 @@ function Screen(props: { view: Open }) {
     };
     // Escape with focus in the screen is its Cancel, after a menu's or a field's in it; with focus behind it, a
     // command run before the old page's drawers close.
-    onMount(() => {
+    onSettled(() => {
         if (!screen) return;
         const shown = screen;
-        onCleanup(focusActions.attach(shown, { cancel: back }));
-        onCleanup(
-            commands.register(
-                [
-                    {
-                        id: 'looks.back',
-                        hidden: true,
-                        label: t('Back'),
-                        category: t('Look'),
-                        keys: ['Escape'],
-                        typing: true,
-                        when: () => !shown.contains(document.activeElement),
-                        run: back,
-                    },
-                ],
-                { capture: true },
-            ),
+        const detach = focusActions.attach(shown, { cancel: back });
+        const unregister = commands.register(
+            [
+                {
+                    id: 'looks.back',
+                    hidden: true,
+                    label: t('Back'),
+                    category: t('Look'),
+                    keys: ['Escape'],
+                    typing: true,
+                    when: () => !shown.contains(document.activeElement),
+                    run: back,
+                },
+            ],
+            { capture: true },
         );
+        return () => {
+            unregister();
+            detach();
+        };
     });
 
+    const topLayer = inTopLayer();
     return (
         <div
             ref={(element) => {
                 screen = element;
-                inTopLayer()(element);
+                topLayer(element);
             }}
             class="look-screen"
             role="dialog"
@@ -223,17 +228,19 @@ function Screen(props: { view: Open }) {
                             <button
                                 type="button"
                                 role="radio"
-                                aria-checked={state() === each}
+                                aria-checked={state() === each ? 'true' : 'false'}
                                 aria-label={t(STATE_LABELS[each])}
                                 title={t(STATE_LABELS[each])}
-                                class={`look-sth look-sth-${each}`}
-                                classList={{ 'look-sel': state() === each, 'look-draft': state() === each }}
+                                class={[
+                                    `look-sth look-sth-${each}`,
+                                    { 'look-sel': state() === each, 'look-draft': state() === each },
+                                ]}
                                 onClick={() => {
                                     setDraft(null);
                                     setState(each);
                                 }}
                             >
-                                <span class="look-stl" classList={stateClasses(each)}>
+                                <span class={['look-stl', stateClasses(each)]}>
                                     <span class="look-std" aria-hidden="true" />
                                     <span class="look-stw">
                                         <Name named={props.view.named} selected={each === 'selected'} />
@@ -269,11 +276,10 @@ function Screen(props: { view: Open }) {
                     </For>
                     <button
                         type="button"
-                        class="look-tool look-csst"
-                        classList={{ 'look-open': panel() === 'css' }}
+                        class={['look-tool look-csst', { 'look-open': panel() === 'css' }]}
                         aria-label="CSS"
                         title="CSS"
-                        aria-expanded={panel() === 'css'}
+                        aria-expanded={panel() === 'css' ? 'true' : 'false'}
                         onClick={() => setPanel(panel() === 'css' ? null : 'css')}
                     >
                         <svg
@@ -353,9 +359,8 @@ function Stage(props: { view: Open; state: LookState }) {
     const slot = (side: 'before' | 'after') => (
         <button
             type="button"
-            class="look-slot"
-            classList={{ 'look-on': placed(side) }}
-            aria-pressed={placed(side)}
+            class={['look-slot', { 'look-on': placed(side) }]}
+            aria-pressed={placed(side) ? 'true' : 'false'}
             aria-label={`${side === 'before' ? t('Picture before name') : t('Picture after name')}: ${props.view.named.text}`}
             onClick={() =>
                 void (async () => {
@@ -382,7 +387,7 @@ function Stage(props: { view: Open; state: LookState }) {
     );
     return (
         <div class="look-stage1">
-            <div class="look-rd look-big1 look-draft" classList={stateClasses(props.state)}>
+            <div class={['look-rd look-big1 look-draft', stateClasses(props.state)]}>
                 <div class="look-big">
                     <NoteInput view={props.view} />
                     <div class="look-nline">
@@ -435,7 +440,9 @@ function NoteInput(props: { view: Open }) {
                     note: next === '' ? null : next,
                 });
             }}
-            ref={(element) => onCleanup(focusActions.attach(element, { confirm: () => element.blur() }))}
+            ref={elementSetup<HTMLInputElement>((element) =>
+                focusActions.attach(element, { confirm: () => element.blur() }),
+            )}
         />
     );
 }
@@ -454,12 +461,12 @@ function PicturePop(props: {
     const thing = () => ({ thing: props.view.thing });
     const whole = () => props.view.picture.crop === null && props.view.picture.image === null;
     const url = () => props.view.picture.image ?? props.view.picture.own;
-    onMount(() => {
+    onSettled(() => {
         const pressed = (event: PointerEvent) => {
             if (box?.contains(event.target as Node) !== true) props.onClose();
         };
         document.addEventListener('pointerdown', pressed, true);
-        onCleanup(() => document.removeEventListener('pointerdown', pressed, true));
+        return () => document.removeEventListener('pointerdown', pressed, true);
     });
     const drag = (event: PointerEvent) => {
         const start = crop();
@@ -509,16 +516,14 @@ function PicturePop(props: {
             <div class="look-hopts">
                 <button
                     type="button"
-                    class="menu_button margin0 whitespacenowrap"
-                    classList={{ active: whole() }}
+                    class={['menu_button margin0 whitespacenowrap', { active: whole() }]}
                     onClick={() => void client.send('looks.useOwnPicture', thing())}
                 >
                     {t('Full image')}
                 </button>
                 <button
                     type="button"
-                    class="menu_button margin0 whitespacenowrap"
-                    classList={{ active: props.view.picture.crop !== null }}
+                    class={['menu_button margin0 whitespacenowrap', { active: props.view.picture.crop !== null }]}
                     onClick={() => {
                         if (props.view.picture.crop === null)
                             void client.send('looks.cropPicture', { ...thing(), crop: DEFAULT_CROP });
@@ -593,7 +598,7 @@ function Uses(props: { view: Open }) {
                 type="button"
                 class="menu_button margin0 whitespacenowrap look-uadd"
                 ref={(el) => (plus = el)}
-                aria-expanded={adding()}
+                aria-expanded={adding() ? 'true' : 'false'}
                 onClick={() => setAdding(!adding())}
             >
                 {t('+ Shared look')}
@@ -676,11 +681,10 @@ function Tool(props: {
     return (
         <button
             type="button"
-            class="look-tool"
-            classList={{ 'look-on': on(), 'look-open': props.open }}
+            class={['look-tool', { 'look-on': on(), 'look-open': props.open }]}
             aria-label={t(EFFECT_LABELS[props.id])}
             title={t(EFFECT_LABELS[props.id])}
-            aria-expanded={props.open}
+            aria-expanded={props.open ? 'true' : 'false'}
             onClick={() => props.onPick()}
         >
             <span class="look-glyph" style={style()}>
@@ -825,8 +829,7 @@ function EffectPanel(props: {
                                 <div class="look-seg">
                                     <button
                                         type="button"
-                                        class="menu_button margin0 whitespacenowrap"
-                                        classList={{ active: solid() }}
+                                        class={['menu_button margin0 whitespacenowrap', { active: solid() }]}
                                         onClick={() =>
                                             write('color', { mode: 'solid', color: stops()[0] ?? '#f6cf86' })
                                         }
@@ -835,8 +838,7 @@ function EffectPanel(props: {
                                     </button>
                                     <button
                                         type="button"
-                                        class="menu_button margin0 whitespacenowrap"
-                                        classList={{ active: !solid() }}
+                                        class={['menu_button margin0 whitespacenowrap', { active: !solid() }]}
                                         onClick={() =>
                                             write('color', {
                                                 mode: 'gradient',
@@ -976,8 +978,10 @@ function EffectPanel(props: {
                             {(style) => (
                                 <button
                                     type="button"
-                                    class="menu_button margin0 whitespacenowrap"
-                                    classList={{ active: controls('underline').style === style }}
+                                    class={[
+                                        'menu_button margin0 whitespacenowrap',
+                                        { active: controls('underline').style === style },
+                                    ]}
                                     onClick={() => write('underline', { ...controls('underline'), style })}
                                 >
                                     {t(style === 'solid' ? 'Solid' : style === 'double' ? 'Double' : 'Wavy')}
@@ -1026,9 +1030,8 @@ function EffectPanel(props: {
                     <div class="look-seg">
                         <button
                             type="button"
-                            class="menu_button margin0 whitespacenowrap"
-                            classList={{ active: controls('letters').italic }}
-                            aria-pressed={controls('letters').italic}
+                            class={['menu_button margin0 whitespacenowrap', { active: controls('letters').italic }]}
+                            aria-pressed={controls('letters').italic ? 'true' : 'false'}
                             onClick={() =>
                                 write('letters', { ...controls('letters'), italic: !controls('letters').italic })
                             }
@@ -1037,9 +1040,8 @@ function EffectPanel(props: {
                         </button>
                         <button
                             type="button"
-                            class="menu_button margin0 whitespacenowrap"
-                            classList={{ active: controls('letters').caps }}
-                            aria-pressed={controls('letters').caps}
+                            class={['menu_button margin0 whitespacenowrap', { active: controls('letters').caps }]}
+                            aria-pressed={controls('letters').caps ? 'true' : 'false'}
                             onClick={() =>
                                 write('letters', { ...controls('letters'), caps: !controls('letters').caps })
                             }
@@ -1072,8 +1074,7 @@ function EffectPanel(props: {
                             {(motion) => (
                                 <button
                                     type="button"
-                                    class="look-tile"
-                                    classList={{ 'look-on': controls('motion').motion === motion }}
+                                    class={['look-tile', { 'look-on': controls('motion').motion === motion }]}
                                     onClick={() => write('motion', { ...controls('motion'), motion })}
                                 >
                                     <span class="look-tv">
@@ -1120,8 +1121,7 @@ function Typefaces(props: { view: Open; current: Controls['typeface']; onPick: (
     const button = (font: Open['fonts'][number]) => (
         <button
             type="button"
-            class="menu_button margin0 whitespacenowrap"
-            classList={{ active: props.current.font === font.id }}
+            class={['menu_button margin0 whitespacenowrap', { active: props.current.font === font.id }]}
             style={{ 'font-family': `"${font.family}"` }}
             onClick={() => props.onPick({ font: font.id, uploaded: font.uploaded })}
         >
@@ -1229,8 +1229,7 @@ function MarkPanel(props: { view: Open; state: LookState }) {
                     {([style, label]) => (
                         <button
                             type="button"
-                            class="menu_button margin0 whitespacenowrap"
-                            classList={{ active: shown().style === style }}
+                            class={['menu_button margin0 whitespacenowrap', { active: shown().style === style }]}
                             onClick={() => set({ style })}
                         >
                             <span class={`look-mark-sample look-mark-${style}`}>{t(label)}</span>
@@ -1299,8 +1298,7 @@ function Renders(props: { view: Open; markOpen: boolean; onMark: () => void }) {
                         {t('. She still has my')}{' '}
                         <button
                             type="button"
-                            class="look-mkbtn"
-                            classList={{ 'look-open': props.markOpen }}
+                            class={['look-mkbtn', { 'look-open': props.markOpen }]}
                             aria-label={t('Key highlight')}
                             onClick={() => props.onMark()}
                         >

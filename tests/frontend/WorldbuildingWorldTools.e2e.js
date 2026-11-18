@@ -64,6 +64,33 @@ test.describe('a world\'s tools in the world switcher and the rows', () => {
         })).toBe(7);
     });
 
+    test('the themed settings select keeps its label, chooses by keys and pointer, and stays inside its panel', async ({ page }) => {
+        await pane(page).getByRole('button', { name: 'Switch world' }).click();
+        await pane(page).getByRole('menuitem', { name: 'Activation settings…' }).click();
+        const panel = pane(page).getByRole('dialog', { name: 'Activation settings' });
+        const control = panel.getByRole('combobox', { name: 'Insertion strategy' });
+        await expect(control).toHaveAttribute('id', 'wi_character_strategy');
+        await panel.locator('.wi-settings-name').getByText('Insertion strategy', { exact: true }).click();
+        await expect(control).toBeFocused();
+        await expect(control).toHaveAttribute('aria-expanded', 'true');
+        await control.press('g');
+        const option = panel.getByRole('option', { name: 'Global lore first', exact: true });
+        await expect(option).toHaveAttribute('data-active', '');
+        await expect(control).toHaveAttribute('aria-activedescendant', await option.getAttribute('id'));
+        await control.press('Enter');
+        await expect(control).toHaveAttribute('aria-expanded', 'false');
+        await expect(control).toContainText('Global lore first');
+        await control.click();
+        await panel.getByRole('option', { name: 'Character lore first', exact: true }).click();
+        await expect(control).toContainText('Character lore first');
+        await expect(control).toHaveAttribute('aria-expanded', 'false');
+        await expect(panel).toBeVisible();
+        await expect.poll(() => page.evaluate(async () => {
+            const { newUi } = await import('/scripts/new-ui-page.js');
+            return newUi().settings.value('world_info_settings.world_info_character_strategy');
+        })).toBe(1);
+    });
+
     test('several worlds are used in every chat from the switcher\'s list, and a row opens its world', async ({ page }) => {
         await pane(page).getByRole('button', { name: 'Switch world' }).click();
         await pane(page).getByRole('checkbox', { name: `${LIBRARY}: used in every chat` }).click();

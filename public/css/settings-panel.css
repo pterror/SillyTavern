@@ -122,3 +122,7 @@
 .wi-settings-name {
     min-width: 0;
 }
+
+.wi-settings-label:has(.wi-settings-select) .wi-settings-name {
+    grid-column: 1 / -1;
+}

@@ -1,5 +1,6 @@
+import { flush as flushSync } from 'solid-js';
 import { createSignal } from 'solid-js';
-import { render } from 'solid-js/web';
+import { render } from '@solidjs/web';
 import { expect, test } from 'vite-plus/test';
 import type { Named } from '@st/protocol/looks';
 import { Name, inlineName, nameElement } from '../src/name.tsx';
@@ -20,6 +21,7 @@ test("a name is its look's box around one span with the thing's class, following
     expect(span?.textContent).toBe('Ilse Varro');
     expect(span?.getAttribute('style')).toBeNull();
     setNamed({ thing: '43', text: 'The tide goes out', shownAs: 'opening' });
+    flushSync();
     expect(host.firstElementChild).toBe(box);
     expect(box?.className).toBe('name-box look-box-43');
     expect(span?.className).toBe('named named-opening look-43');
@@ -40,6 +42,7 @@ test('a place with a picture puts it on both sides, outside the name span, and s
     expect(box.querySelector('.name-picture')?.getAttribute('style')).toBe('--name-picture: url("/thumb/ilse.png");');
     expect(box.querySelector('.named')?.hasAttribute('data-selected')).toBe(false);
     setSelected(true);
+    flushSync();
     expect(box.querySelector('.named')?.hasAttribute('data-selected')).toBe(true);
     dispose();
 });

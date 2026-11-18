@@ -1,5 +1,5 @@
-import { Index, Show, createEffect, createMemo, on, onCleanup, onMount } from 'solid-js';
-import type { JSX } from 'solid-js';
+import { For, Show, createEffect, createMemo, onSettled } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import type { OverviewCell, OverviewView } from '../protocol.ts';
 import { Cell } from './Cards.tsx';
 import type { CardActions } from './Cards.tsx';
@@ -54,41 +54,38 @@ export function TopLevel(props: {
         asked = { to, drawn };
         props.onMore(to);
     };
-    onMount(() => {
+    onSettled(() => {
         props.pane.addEventListener('scroll', askIfNear, { passive: true });
-        onCleanup(() => {
+        return () => {
             props.pane.removeEventListener('scroll', askIfNear);
-        });
+        };
     });
     createEffect(
-        on(
-            () => [props.view.book, props.view.groupBy, props.view.pageSize],
-            () => {
-                asked = { to: 0, drawn: 0 };
-            },
-        ),
+        () => [props.view.book, props.view.groupBy, props.view.pageSize],
+        () => {
+            asked = { to: 0, drawn: 0 };
+        },
     );
     createEffect(
-        on(
-            () => [entries().length, props.view.topLevelCount],
-            () => requestAnimationFrame(askIfNear),
-        ),
+        () => [entries().length, props.view.topLevelCount],
+        () => {
+            requestAnimationFrame(askIfNear);
+        },
     );
 
     return (
         <>
             <div class={props.rows ? 'wb-trs' : 'wb-grid wb-top'} ref={(element) => (list = element)}>
-                <Index each={entries()}>
+                <For keyed={false} each={entries()}>
                     {(cell) => (
                         <Show
                             when={props.rows}
                             fallback={
                                 <div
-                                    class="wb-top-cell"
+                                    class={['wb-top-cell', { 'wb-wide': cell().region.length > 0 }]}
                                     data-rank={cell().topLevelRank}
                                     data-entry={entryOf(cell())}
                                     data-name={nameOf(cell())}
-                                    classList={{ 'wb-wide': cell().region.length > 0 }}
                                 >
                                     <Cell cell={cell()} region={null} actions={props.actions} />
                                 </div>
@@ -106,7 +103,7 @@ export function TopLevel(props: {
                             )}
                         </Show>
                     )}
-                </Index>
+                </For>
             </div>
         </>
     );

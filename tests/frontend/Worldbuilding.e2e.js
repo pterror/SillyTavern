@@ -340,9 +340,8 @@ test.describe('the worlds page', () => {
         await button.click();
         const sentence = pane(page).getByRole('dialog', { name: 'Entry settings' });
         await expect(sentence).toContainText('tokens');
-        await sentence.getByRole('button', { name: 'Before character' }).click();
-        await sentence.getByRole('option', { name: 'After character' }).click();
-        await expect(sentence).toContainText('Position: After character');
+        await sentence.getByRole('combobox', { name: 'Position', exact: true }).selectOption({ label: 'After character' });
+        await expect(sentence.getByRole('combobox', { name: 'Position', exact: true })).toHaveValue('1');
         await page.keyboard.press('Escape');
         await expect(button.locator('.wb-dot')).toHaveCount(1);
         const stored = await page.evaluate(async (name) => {

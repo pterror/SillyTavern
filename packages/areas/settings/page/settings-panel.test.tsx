@@ -1,7 +1,8 @@
+import { flush as flushSync } from 'solid-js';
 import { createRoot, createSignal } from 'solid-js';
-import type { JSX } from 'solid-js';
-import { render } from 'solid-js/web';
-import { expect, test } from 'vite-plus/test';
+import type { JSX } from '@solidjs/web';
+import { render } from '@solidjs/web';
+import { expect, test, vi } from 'vite-plus/test';
 import { FIELDS } from '../protocol.ts';
 import type { SettingsView } from '../protocol.ts';
 import type { Client } from '@st/page/client';
@@ -114,6 +115,7 @@ test("a chat's level is marked; a range above the defaults dims what nothing in 
     const block = character.host.querySelector('[data-field="temp_openai"]');
     expect(block?.getAttribute('data-settings-level')).toBe('character');
     block?.querySelector<HTMLButtonElement>('.settings_unset')?.click();
+    flushSync();
     expect(character.sent.at(-1)).toEqual({ type: 'settings.unset', payload: { path: 'oai_settings.temp_openai' } });
 
     const above = mount(viewOf({ range: { from: 'user', to: 'character' }, sources: {} }), () => <CcSamplers />);
@@ -126,6 +128,7 @@ test("an edit is sent as the field's value; a refused one goes back and says why
     if (!temp) throw new Error('no control');
     temp.value = '1.9';
     temp.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
     await settle();
     expect(sent).toEqual([{ type: 'settings.set', payload: { path: 'oai_settings.temp_openai', value: 1.9 } }]);
     expect(temp.value).toBe('1.2');
@@ -137,6 +140,7 @@ test('a choice is its radios under their old ids, its choice named in the header
     expect(host.querySelector<HTMLInputElement>('#character_names_default')?.checked).toBe(true);
     expect(host.querySelector('#character_names_display')?.textContent).toBe('Default');
     host.querySelector<HTMLInputElement>('#character_names_completion')?.click();
+    flushSync();
     expect(sent.at(-1)).toEqual({ type: 'settings.set', payload: { path: 'oai_settings.names_behavior', value: 1 } });
 });
 
@@ -152,9 +156,11 @@ test('what depends on another field follows its value: tool reasoning, the prefi
             values: { ...viewOf().values, 'oai_settings.assistant_prefill': 'Sure,' },
         }),
     );
+    flushSync();
     expect(host.querySelector('#claude_function_prefill_warning')).not.toBeNull();
 
     setCurrent(viewOf({ api: { main: 'openai', source: 'openrouter', textgen: '' } }));
+    flushSync();
     expect(host.querySelector<HTMLSelectElement>('#tool_reasoning_mode')?.disabled).toBe(true);
     expect(host.querySelector('#openrouter_interleaved_thinking_disabled_hint')).not.toBeNull();
 });
@@ -162,6 +168,7 @@ test('what depends on another field follows its value: tool reasoning, the prefi
 test('a restore button sets the default', () => {
     const { host, sent } = mount(viewOf(), () => <CcUtility />);
     host.querySelector<HTMLElement>('#wi_format_restore')?.click();
+    flushSync();
     expect(sent.at(-1)).toEqual({ type: 'settings.reset', payload: { path: 'oai_settings.wi_format' } });
 });
 
@@ -172,12 +179,14 @@ test('the slider sends the range; a level shows how many fields it sets', () => 
     if (!to) throw new Error('no slider');
     to.value = '4';
     to.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
     expect(sent.at(-1)).toEqual({ type: 'settings.range', payload: { from: 'default', to: 'character' } });
 });
 
 test('a view the server sends redraws the panel', () => {
     const { host, setCurrent } = mount(viewOf(), () => <CcSamplers />);
     setCurrent(viewOf({ values: { 'oai_settings.temp_openai': 0.4 } }));
+    flushSync();
     expect(host.querySelector<HTMLInputElement>('#temp_openai')?.value).toBe('0.4');
 });
 
@@ -194,6 +203,7 @@ test("upstream's settings object reads the view and writes actions; a value alre
     oai['custom_url'] = 'http://y';
     expect(oai['custom_url']).toBe('http://y');
     setCurrent(viewOf({ values: { 'oai_settings.temp_openai': 0.5 } }));
+    flushSync();
     await Promise.resolve();
     expect(oai['temp_openai']).toBe(0.5);
     expect(JSON.parse(JSON.stringify(oai))).toMatchObject({ temp_openai: 0.5 });
@@ -214,9 +224,12 @@ test('a watch runs when its paths change in the view, not for the first', () => 
     const { client, setCurrent } = stand(viewOf());
     let runs = 0;
     settingsCompat(client).watch(['oai_settings.openai_max_context'], () => runs++);
+    flushSync();
     setCurrent(viewOf({ values: { 'oai_settings.temp_openai': 0.3 } }));
+    flushSync();
     expect(runs).toBe(0);
     setCurrent(viewOf({ values: { 'oai_settings.openai_max_context': 9000 } }));
+    flushSync();
     expect(runs).toBe(1);
 });
 
@@ -237,9 +250,11 @@ test("a text generation field shows for its backends; the user's chosen samplers
     expect(host.querySelector('#temp_textgenerationwebui')).not.toBeNull();
     expect(host.querySelector('#top_a_textgenerationwebui')).toBeNull();
     setCurrent(textgen({ samplerSelects: { llamacpp: { manual: true, shown: ['top_a'] } } }));
+    flushSync();
     expect(host.querySelector('#top_a_textgenerationwebui')).not.toBeNull();
     expect(host.querySelector('#temp_textgenerationwebui')).toBeNull();
     setCurrent(textgen({ samplerSelects: { llamacpp: { manual: false, shown: ['top_a'] } } }));
+    flushSync();
     expect(host.querySelector('#top_a_textgenerationwebui')).toBeNull();
 });
 
@@ -249,6 +264,7 @@ test('with zen sliders a slider shows its value in its handle, Off at its off va
     expect(host.querySelector('#min_p_textgenerationwebui_zenslider .ui-slider-handle')?.textContent).toBe('Off');
     expect(host.querySelector<HTMLInputElement>('#temp_textgenerationwebui')?.value).toBe('0.7');
     setCurrent(textgen({ zen: false }));
+    flushSync();
     expect(host.querySelector('#temp_textgenerationwebui_zenslider')).toBeNull();
     expect(host.querySelector('#temp_counter_textgenerationwebui')).not.toBeNull();
 });
@@ -256,6 +272,7 @@ test('with zen sliders a slider shows its value in its handle, Off at its off va
 test('neutralize is one action', () => {
     const { host, sent } = mount(textgen(), () => <TgTop />);
     host.querySelector<HTMLElement>('#samplerResetButton')?.click();
+    flushSync();
     expect(sent).toEqual([{ type: 'settings.neutralize', payload: {} }]);
 });
 
@@ -265,11 +282,13 @@ test("a JSON schema is sent parsed; text that isn't JSON isn't sent and stays", 
     if (!area) throw new Error('no schema');
     area.value = '{ "type": "object" ';
     area.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
     await settle();
     expect(sent).toEqual([]);
     expect(area.value).toBe('{ "type": "object" ');
     area.value = '{ "type": "object" }';
     area.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
     await settle();
     expect(sent).toEqual([
         {
@@ -290,8 +309,10 @@ test("the shared lengths show for the text APIs, each API's streaming under the 
     expect(host.querySelector('#streaming_kobold')).not.toBeNull();
     expect(host.querySelector('#streaming_novel')).toBeNull();
     setCurrent(view('novel'));
+    flushSync();
     expect(host.querySelector('#streaming_novel')).not.toBeNull();
     setCurrent(view('openai'));
+    flushSync();
     expect(host.querySelector('#amount_gen')).toBeNull();
 });
 
@@ -319,18 +340,27 @@ test('how worlds are used in replies: every World Info field once, with its word
     const depth = host.querySelector<HTMLInputElement>('#wi_scan_depth');
     expect(depth?.value).toBe('2');
     expect(depth?.closest('label')?.textContent).toContain('Scan depth');
-    expect(host.querySelector<HTMLSelectElement>('#wi_character_strategy')?.value).toBe('1');
+    expect(host.querySelector<HTMLButtonElement>('#wi_character_strategy')?.value).toBe('1');
     expect(host.querySelector<HTMLInputElement>('#wi_recursive')?.checked).toBe(true);
 
     const least = host.querySelector<HTMLInputElement>('#wi_min_activations');
     if (!least || !depth) throw new Error('no control');
     least.value = '4';
     least.dispatchEvent(new Event('change', { bubbles: true }));
-    const strategy = host.querySelector<HTMLSelectElement>('#wi_character_strategy');
+    flushSync();
+    const strategy = host.querySelector<HTMLButtonElement>('#wi_character_strategy');
     if (!strategy) throw new Error('no strategy');
-    strategy.value = '2';
-    strategy.dispatchEvent(new Event('change', { bubbles: true }));
+    strategy.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+    flushSync();
+    await vi.waitFor(() =>
+        expect(document.getElementById(strategy.getAttribute('aria-activedescendant') ?? '')?.textContent).toBe(
+            'Global lore first',
+        ),
+    );
+    strategy.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    flushSync();
     host.querySelector<HTMLInputElement>('#wi_overflow_alert')?.click();
+    flushSync();
     await settle();
     expect(sent).toEqual([
         { type: 'settings.set', payload: { path: 'world_info_settings.world_info_min_activations', value: 4 } },
@@ -344,6 +374,7 @@ test('how worlds are used in replies: every World Info field once, with its word
             'world_info_settings.world_info_max_recursion_steps': 0,
         }),
     );
+    flushSync();
     expect(host.querySelector<HTMLInputElement>('#wi_max_recursion_steps')?.value).toBe('0');
 });
 
@@ -352,5 +383,6 @@ test("the old page reads a setting's value from the view", () => {
     const settings = settingsCompat(client);
     expect(settings.value('world_info_settings.world_info_overflow_alert')).toBeUndefined();
     setCurrent(worldInfo({ 'world_info_settings.world_info_overflow_alert': true }));
+    flushSync();
     expect(settings.value('world_info_settings.world_info_overflow_alert')).toBe(true);
 });

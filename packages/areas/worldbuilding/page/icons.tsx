@@ -15,8 +15,7 @@ export function Icon(props: { name: IconName; size?: number }) {
     const size = () => `${props.size ?? 18}px`;
     return (
         <svg
-            class="wb-ic"
-            classList={{ 'wb-ic-dots': props.name === 'more' }}
+            class={['wb-ic', { 'wb-ic-dots': props.name === 'more' }]}
             style={{ width: size(), height: size() }}
             viewBox="0 0 24 24"
             aria-hidden="true"

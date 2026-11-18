@@ -1,5 +1,6 @@
+import { elementSetup } from '@st/page/element';
 import { StatusDot, StatusControl } from './Status.tsx';
-import { For, Match, Show, Switch, createSignal, onCleanup } from 'solid-js';
+import { For, Match, Show, Switch, createSignal } from 'solid-js';
 import type { Command } from '@st/page/commands';
 import { useUi } from '@st/page/context';
 import { LOOP_CHECK_VISITS_PER_WRITE } from '../protocol.ts';
@@ -110,7 +111,9 @@ function arranging(props: { entry: string; label: Named; region: Membership; act
     };
     const keyed = (button: HTMLElement) => {
         movers.set(button, { applies: () => placed() !== null, move: (back) => reorder(button, back) });
-        onCleanup(() => movers.delete(button));
+        return () => {
+            movers.delete(button);
+        };
     };
     const open = (event: MouseEvent) => {
         if (wb.drag.clickIsDrop() || props.actions.pick?.click(props.entry, event) === true) return;
@@ -179,13 +182,15 @@ export function Card(props: { cell: EntryCell; region: Membership; actions: Card
     });
     return (
         <div
-            class="wb-card"
-            classList={{
-                'wb-card-menu-open': arrange.menu(),
-                'wb-card-off': props.cell.facts?.comesIn === 'never',
-                'wb-sel': picked(props.actions, props.cell.entry),
-                'wb-picking': props.actions.pick?.showing() === true,
-            }}
+            class={[
+                'wb-card',
+                {
+                    'wb-card-menu-open': arrange.menu(),
+                    'wb-card-off': props.cell.facts?.comesIn === 'never',
+                    'wb-sel': picked(props.actions, props.cell.entry),
+                    'wb-picking': props.actions.pick?.showing() === true,
+                },
+            ]}
             data-entry={props.cell.entry}
             data-pick={props.actions.pick ? props.cell.entry : undefined}
             ref={arrange.ref}
@@ -197,7 +202,7 @@ export function Card(props: { cell: EntryCell; region: Membership; actions: Card
                 type="button"
                 class="wb-card-open"
                 onPointerDown={arrange.press}
-                ref={arrange.keyed}
+                ref={elementSetup(arrange.keyed)}
                 onClick={arrange.open}
             >
                 <Picture url={props.cell.picture} class="wb-card-pic" />
@@ -295,13 +300,15 @@ export function Region(props: { cell: EntryCell; region: Membership; actions: Ca
     });
     return (
         <section
-            class="wb-region"
-            classList={{
-                'wb-card-menu-open': arrange.menu(),
-                'wb-card-off': props.cell.facts?.comesIn === 'never',
-                'wb-sel': picked(props.actions, props.cell.entry),
-                'wb-picking': props.actions.pick?.showing() === true,
-            }}
+            class={[
+                'wb-region',
+                {
+                    'wb-card-menu-open': arrange.menu(),
+                    'wb-card-off': props.cell.facts?.comesIn === 'never',
+                    'wb-sel': picked(props.actions, props.cell.entry),
+                    'wb-picking': props.actions.pick?.showing() === true,
+                },
+            ]}
             aria-label={fill(t('${0} and its contents'), label())}
             data-entry={props.cell.entry}
             data-pick={props.actions.pick ? props.cell.entry : undefined}
@@ -321,7 +328,7 @@ export function Region(props: { cell: EntryCell; region: Membership; actions: Ca
                     type="button"
                     class="wb-region-head"
                     onPointerDown={arrange.press}
-                    ref={arrange.keyed}
+                    ref={elementSetup(arrange.keyed)}
                     onClick={arrange.open}
                 >
                     <Picture url={props.cell.picture} class="wb-region-pic" />

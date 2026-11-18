@@ -1,3 +1,5 @@
+import { elementSetup } from '@st/page/element';
+import { Portal } from '@solidjs/web';
 import {
     For,
     Match,
@@ -5,14 +7,13 @@ import {
     Switch,
     createEffect,
     createMemo,
-    createResource,
     createSignal,
-    on,
     onCleanup,
-    onMount,
+    onSettled,
     untrack,
 } from 'solid-js';
-import type { Accessor, JSX } from 'solid-js';
+import type { Accessor } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { shownBindings } from '@st/page/commands';
 import type { Command } from '@st/page/commands';
 import { useUi } from '@st/page/context';
@@ -161,7 +162,13 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
     const [typed, setTyped] = createSignal('');
 
     const topic = () => props.view().topic;
-    createEffect(on(topic, () => setTyped(''), { defer: true }));
+    createEffect(
+        topic,
+        () => {
+            setTyped('');
+        },
+        { defer: true },
+    );
     const query = () => typed().trim();
     const searching = createMemo(() => query() !== '');
     const show = (next: Topic) => {
@@ -171,9 +178,10 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
 
     let content: HTMLDivElement | undefined;
     createEffect(
-        on([topic, query], () => {
+        () => [topic(), query()] as const,
+        () => {
             if (content) content.scrollTop = 0;
-        }),
+        },
     );
 
     const found = createMemo(() => (searching() ? search(t, query, props.old, show) : null));
@@ -181,9 +189,9 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
     const matched = () => (found() ?? []).filter((f) => (f.count() ?? 0) > 0);
     const listed = createMemo<Listed[]>((before) => {
         if (!searching()) return EVERY_TOPIC;
-        if (!settled()) return before;
+        if (!settled()) return before ?? EVERY_TOPIC;
         return matched().map((f) => ({ topic: f.topic, count: f.count() ?? 0 }));
-    }, EVERY_TOPIC);
+    });
 
     const pick = (next: Topic) => {
         setNavOpen(false);
@@ -193,15 +201,14 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
         }
         show(next);
     };
-    const activates = (act: () => void) => (element: HTMLElement) =>
-        onCleanup(focusActions.attach(element, { activate: act }));
+    const activates = (act: () => void) =>
+        elementSetup<HTMLElement>((element) => focusActions.attach(element, { activate: act }));
 
     const TopicItem = (item: { topic: Topic; count?: number }) => (
         <li
-            class="helpTopic"
-            classList={{ active: item.count === undefined && item.topic === topic() }}
+            class={['helpTopic', { active: item.count === undefined && item.topic === topic() }]}
             data-topic={item.topic}
-            tabIndex={0}
+            tabindex={0}
             role="button"
             onClick={() => pick(item.topic)}
             ref={activates(() => pick(item.topic))}
@@ -214,12 +221,12 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
     );
 
     const panel = (
-        <div class="helpPanel" classList={{ helpNavOpen: navOpen() }}>
+        <div class={['helpPanel', { helpNavOpen: navOpen() }]}>
             <div class="helpHeader">
                 <div
                     class="helpMenuButton menu_button fa-solid fa-bars"
                     role="button"
-                    tabIndex={0}
+                    tabindex={0}
                     title={t('Help topics')}
                     onClick={() => setNavOpen((now) => !now)}
                     ref={activates(() => setNavOpen((now) => !now))}
@@ -263,7 +270,9 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
         </div>
     ) as HTMLElement;
 
-    const layer = props.old.layer(panel, {
+    const host = document.createElement('div');
+    host.style.display = 'contents';
+    const layer = props.old.layer(host, {
         className: 'helpLayer',
         closeTitle: t('Close help'),
         requestClose: () => props.onClose(),
@@ -273,14 +282,14 @@ function Panel(props: Handlers & { view: Accessor<Open> }) {
         props.onRaise(null);
         layer.close();
     });
-    return null;
+    return <Portal mount={host}>{panel}</Portal>;
 }
 
 function TopicSection(props: { topic: Topic; old: OldPage; onTopic: (topic: Topic) => void }) {
     const { t } = useUi();
     const [failed, setFailed] = createSignal(false);
     let section: HTMLDivElement | undefined;
-    onMount(() => {
+    onSettled(() => {
         const kind = BROWSERS[props.topic];
         if (kind === undefined || !section) return;
         props.old.browser(kind, section).catch((error: unknown) => {
@@ -325,12 +334,22 @@ function search(t: T, query: Accessor<string>, old: OldPage, onTopic: (topic: To
     };
     const browser = (topic: Topic, kind: Browser): Found => {
         const body = (<div />) as HTMLElement;
-        const [list] = createResource(() =>
-            old.browser(kind, body).catch((error: unknown) => {
-                console.error(`Help topic "${topic}" failed to search:`, error);
-                return null;
-            }),
-        );
+        const [list, setList] = createSignal<{ search(query: string): number } | null>();
+        onSettled(() => {
+            let disposed = false;
+            void old
+                .browser(kind, body)
+                .catch((error: unknown) => {
+                    console.error(`Help topic "${topic}" failed to search:`, error);
+                    return null;
+                })
+                .then((shown) => {
+                    if (!disposed) setList(shown);
+                });
+            return () => {
+                disposed = true;
+            };
+        });
         const count = createMemo(() => {
             const shown = list();
             if (shown === undefined) return null;

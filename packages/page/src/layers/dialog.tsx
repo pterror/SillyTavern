@@ -1,6 +1,6 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
-import type { JSX } from 'solid-js';
-import { render } from 'solid-js/web';
+import { For, Show, createSignal, onSettled } from 'solid-js';
+import type { JSX } from '@solidjs/web';
+import { render } from '@solidjs/web';
 
 // `pick`: one of `options`, as buttons, under what `body` draws; the answer is the option's id.
 export type Question =
@@ -86,7 +86,7 @@ function dialog(
     const options = question.kind === 'choose' ? question.options : undefined;
     const isInput = question.kind === 'input';
     let element: HTMLDialogElement | undefined;
-    onMount(() => element?.showModal());
+    onSettled(() => element?.showModal());
 
     return (
         <dialog

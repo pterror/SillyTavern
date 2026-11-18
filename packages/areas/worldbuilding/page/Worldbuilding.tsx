@@ -1,5 +1,5 @@
-import { Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
-import type { JSX } from 'solid-js';
+import { Show, createEffect, createMemo, createSignal, onSettled } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import type { ActionResult } from '@st/page/client';
 import { useUi } from '@st/page/context';
 import {
@@ -80,7 +80,7 @@ export function Worldbuilding(props: Props & { started: boolean }) {
 
 function Page(props: Props) {
     const { client, commands, t } = useUi();
-    onMount(() => onCleanup(commands.register(cardMoveCommands(t))));
+    onSettled(() => commands.register(cardMoveCommands(t)));
     const world = shownView<WorldView>(client, WORLD_VIEW);
     const overview = shownView<OverviewView>(client, OVERVIEW_VIEW);
     const kinds = shownView<RelationKindsView>(client, RELATION_KINDS_VIEW);
@@ -95,7 +95,7 @@ function Page(props: Props) {
     const [pane, setPane] = createSignal<HTMLElement>();
     const [width, setWidth] = createSignal(0);
     const [height, setHeight] = createSignal(0);
-    const layout = createMemo<PageLayout>(() => pageLayout(width() > 0 ? width() : 1280), pageLayout(1280), {
+    const layout = createMemo<PageLayout>(() => pageLayout(width() > 0 ? width() : 1280), {
         equals: (a, b) => sameLayout(a.overview, b.overview) && a.columns === b.columns,
     });
     const resultsPageSize = () => Math.min(MAX_CARDS_PER_READ, 2 * PLAIN_ROWS_PER_SCREEN * layout().columns);
@@ -212,11 +212,11 @@ function Page(props: Props) {
         void act('worldbuilding.setFilter', { book, ...filterOf(next), pageSize: resultsPageSize() });
     };
     createEffect(
-        on(
-            () => shownWorld()?.id,
-            () => setTyped(NOTHING_TYPED),
-            { defer: true },
-        ),
+        () => shownWorld()?.id,
+        () => {
+            setTyped(NOTHING_TYPED);
+        },
+        { defer: true },
     );
 
     const actions: CardActions = {
@@ -238,7 +238,7 @@ function Page(props: Props) {
         },
     };
 
-    onMount(() => {
+    onSettled(() => {
         const element = pane();
         if (!element) return;
         setWidth(element.clientWidth);
@@ -248,15 +248,18 @@ function Page(props: Props) {
             setHeight(element.clientHeight);
         });
         watch.observe(element);
-        onCleanup(() => watch.disconnect());
-        if (props.target) return;
+        const stopObserving = () => {
+            watch.disconnect();
+        };
+        if (props.target) return stopObserving;
         const held = shownOverview();
         void openWorld(held?.book ?? null, held ? held.groupBy : undefined);
+        return stopObserving;
     });
     createEffect(
-        on(
-            () => props.target,
-            async (target) => {
+        () => props.target,
+        (target) => {
+            void (async () => {
                 const element = pane();
                 if (!target || !element) return;
                 setWidth(element.clientWidth);
@@ -267,24 +270,22 @@ function Page(props: Props) {
                         ? await act('worldbuilding.importWorld', { overview: firstRead() }, target.import)
                         : await navigate(target);
                 props.onTargetOpened(target, result);
-            },
-        ),
+            })();
+        },
     );
     createEffect(
-        on(
-            layout,
-            (_now, before) => {
-                const shown = shownOverview();
-                if (!before || !shown || !props.shown) return;
-                void act('worldbuilding.setViewport', firstRead());
-            },
-            { defer: true },
-        ),
+        layout,
+        (_now, before) => {
+            const shown = shownOverview();
+            if (!before || !shown || !props.shown) return;
+            void act('worldbuilding.setViewport', firstRead());
+        },
+        { defer: true },
     );
 
     return (
         <WbProvider value={wb}>
-            <div class="wb" classList={{ 'wb-entry-shown': Boolean(shownEntry()) }} ref={setRoot}>
+            <div class={['wb', { 'wb-entry-shown': Boolean(shownEntry()) }]} ref={setRoot}>
                 <div class="wb-head">
                     <Switcher
                         world={

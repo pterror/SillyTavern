@@ -1,7 +1,7 @@
 /// <reference types="vitest/config" />
 import path from 'node:path';
 import { defineConfig } from 'vite';
-import solid from 'vite-plugin-solid';
+import solid from '@solidjs/vite-plugin';
 
 export default defineConfig({
     base: '/ui/',
@@ -13,7 +13,7 @@ export default defineConfig({
         setupFiles: [path.resolve(import.meta.dirname, 'test/popovers.ts')],
         dir: path.resolve(import.meta.dirname, '..'),
         include: ['{ui,page}/{src,test}/**/*.test.{ts,tsx}', 'areas/*/page/**/*.test.{ts,tsx}'],
-        server: { deps: { inline: [/solid-js/] } },
+        server: { deps: { inline: [/solid-js/, /@solidjs\//, /@pterror\/interact-(core|solid)/] } },
     },
     build: {
         outDir: 'dist',

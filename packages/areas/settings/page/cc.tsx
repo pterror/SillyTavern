@@ -1,5 +1,5 @@
 import { For, Show } from 'solid-js';
-import type { JSX } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { VIEW } from '../protocol.ts';
 import type { SettingsView } from '../protocol.ts';
 import { useUi } from '@st/page/context';
@@ -305,7 +305,7 @@ function ChoiceDrawer(props: {
     };
     return (
         <Show when={field.shown()}>
-            <div class={props.class} attr:data-field={props.id} attr:data-settings-level={field.level()}>
+            <div class={props.class} data-field={props.id} data-settings-level={field.level()}>
                 <div class="inline-drawer-toggle inline-drawer-header">
                     <div class="flex-container alignItemsCenter">
                         <b>{t(props.title)}</b>
@@ -341,7 +341,7 @@ function ChoiceDrawer(props: {
 function SupportIcon(props: { id: string; supported: boolean; icon: string; sources?: string }) {
     const { t } = useUi();
     const icons = (
-        <div id={props.id} attr:data-cc-toggle={String(props.supported)}>
+        <div id={props.id} data-cc-toggle={String(props.supported)}>
             <i class={`icon-supported fa-solid ${props.icon}`} title={t('Supported by the current model')} />
             <i class={`icon-unsupported fa-solid ${props.icon}`} title={t('Unsupported by the current model')} />
         </div>
@@ -771,7 +771,7 @@ function ClaudePrefills() {
     const maximize = (id: string) => (
         <i
             class="editor_maximize fa-solid fa-maximize right_menu_button"
-            attr:data-for={id}
+            data-for={id}
             title={t('Expand the editor')}
         />
     );
@@ -781,8 +781,8 @@ function ClaudePrefills() {
                 <div class="wide100p">
                     <div
                         class="flex-container alignItemsCenter"
-                        attr:data-field="claude_assistant_prefill"
-                        attr:data-settings-level={prefill.level()}
+                        data-field="claude_assistant_prefill"
+                        data-settings-level={prefill.level()}
                     >
                         <span id="claude_assistant_prefill_text">{t('Assistant Prefill')}</span>
                         {maximize('claude_assistant_prefill')}
@@ -796,8 +796,8 @@ function ClaudePrefills() {
                     />
                     <div
                         class="flex-container alignItemsCenter"
-                        attr:data-field="claude_assistant_impersonation"
-                        attr:data-settings-level={impersonation.level()}
+                        data-field="claude_assistant_impersonation"
+                        data-settings-level={impersonation.level()}
                     >
                         <span id="claude_assistant_impersonation_text">{t('Assistant Impersonation Prefill')}</span>
                         {maximize('claude_assistant_impersonation')}

@@ -1,5 +1,6 @@
+import { flush as flushSync } from 'solid-js';
 import { createSignal } from 'solid-js';
-import { render } from 'solid-js/web';
+import { render } from '@solidjs/web';
 import { expect, test } from 'vite-plus/test';
 import { PANEL_VIEW } from '../protocol.ts';
 import type { PanelView } from '../protocol.ts';
@@ -30,6 +31,7 @@ function stand(first: PanelView = { open: false }, browsersLoaded: Promise<void>
     const [panel, setPanel] = createSignal<PanelView>(first);
     const commands = createCommands();
     commands.register(REGISTERED);
+    flushSync();
     const sent: { type: string; payload: unknown }[] = [];
     const read: string[] = [];
     let held = false;
@@ -140,6 +142,7 @@ const flush = async () => {
 const type = (input: HTMLInputElement, value: string) => {
     input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
 };
 
 const text = (element: Element | null | undefined) => element?.textContent ?? '';
@@ -171,15 +174,20 @@ test('the topic shown is the one the view names; a pick and an overview link ask
     const root = s.panelElement() as HTMLElement;
     expect(topics(root)).toEqual(['overview', 'slash', 'format', 'hotkeys', 'macros']);
     root.querySelector<HTMLElement>('.helpTopic[data-topic="format"]')?.click();
+    flushSync();
     expect(s.sent.at(-1)).toEqual({ type: 'help.show', payload: { topic: 'format' } });
     expect(text(root.querySelector('.helpContent'))).toContain('Choose a topic:');
     s.setPanel({ open: true, topic: 'format' });
+    flushSync();
     expect(text(root.querySelector('.helpContent'))).toContain('italics');
     expect(root.querySelector('.helpTopic.active')?.getAttribute('data-topic')).toBe('format');
     s.setPanel({ open: true, topic: 'overview' });
+    flushSync();
     [...root.querySelectorAll<HTMLAnchorElement>('.helpContent a')].find((a) => a.textContent === 'Hotkeys')?.click();
+    flushSync();
     expect(s.sent.at(-1)).toEqual({ type: 'help.show', payload: { topic: 'hotkeys' } });
     s.setPanel({ open: true, topic: 'slash' });
+    flushSync();
     await flush();
     expect(root.querySelector('.helpSection[data-topic="slash"] .browser-slash')).not.toBeNull();
     s.dispose();
@@ -200,6 +208,7 @@ test("the hotkeys topic lists the registered commands that have keys and aren't 
     const s = stand();
     await s.compat.open('hotkeys');
     s.setPanel({ open: true, topic: 'hotkeys' });
+    flushSync();
     const root = s.panelElement() as HTMLElement;
     expect(groups(root)).toEqual([
         {
@@ -216,14 +225,17 @@ test("the hotkeys topic lists the registered commands that have keys and aren't 
     const stop = s.commands.register([
         { id: 'field.save', label: 'Save the field', category: 'Editing', keys: ['ctrl+s'], run },
     ]);
+    flushSync();
     expect(groups(root).map((group) => group.category)).toEqual(['Chat', 'General', 'Editing']);
     s.commands.keepBindingsIn({ load: () => ({}), save: () => undefined });
     s.commands.overrides.set({ 'palette.open': { keys: ['ctrl+p'] } });
+    flushSync();
     expect(groups(root)[1]).toEqual({
         category: 'General',
         hotkeys: [{ keys: [['Ctrl', 'P']], label: 'Command palette' }],
     });
     stop();
+    flushSync();
     expect(groups(root).map((group) => group.category)).toEqual(['Chat', 'General']);
     s.dispose();
 });
@@ -257,6 +269,7 @@ test('a search finds hotkeys by label, category and keys as shown, and counts th
     await flush();
     expect(count()).toBe('1');
     s.commands.register([{ id: 'chat.swipeLeft', label: 'Swipe left', category: 'Chat', keys: ['ArrowLeft'], run }]);
+    flushSync();
     await flush();
     expect(labels()).toEqual(['Swipe right', 'Swipe left']);
     expect(count()).toBe('2');
@@ -293,6 +306,7 @@ test('a search filters what the panel holds as it is typed, asking the server no
     type(input, 'bold');
     await flush();
     root.querySelector<HTMLElement>('.helpTopic[data-topic="format"]')?.click();
+    flushSync();
     expect(s.sent.length).toBe(sentBefore);
 
     type(input, '');
@@ -308,10 +322,12 @@ test('a topic shown ends the search', async () => {
     type(input, 'hotkeys');
     await flush();
     [...root.querySelectorAll<HTMLAnchorElement>('.helpContent a')].find((a) => a.textContent === 'Hotkeys')?.click();
+    flushSync();
     expect(s.sent.at(-1)).toEqual({ type: 'help.show', payload: { topic: 'hotkeys' } });
     expect(input.value).toBe('');
     type(input, 'ctrl');
     s.setPanel({ open: true, topic: 'slash' });
+    flushSync();
     await flush();
     expect(input.value).toBe('');
     expect(text(root.querySelector('.helpHeaderTitle'))).not.toBe('Search results');
@@ -340,14 +356,18 @@ test('the close button closes the layer at once and tells the server afterwards;
     await s.compat.open('');
     const layer = s.layers[0];
     s.hold();
+    flushSync();
     layer?.requestClose();
+    flushSync();
     expect(layer?.closed).toBe(true);
     expect(s.panelElement()).toBeNull();
     expect(s.sent.at(-1)).toEqual({ type: 'help.close', payload: {} });
     s.setPanel({ open: true, topic: 'slash' });
+    flushSync();
     await flush();
     expect(s.panelElement()).toBeNull();
     s.letGo();
+    flushSync();
     await flush();
     expect(s.panelElement()).toBeNull();
     expect(await s.compat.open('')).toBeNull();
@@ -360,6 +380,7 @@ test('help the server says is closed closes here too', async () => {
     const s = stand();
     await s.compat.open('');
     s.setPanel({ open: false });
+    flushSync();
     expect(s.layers[0]?.closed).toBe(true);
     expect(s.sent.filter((sent) => sent.type === 'help.close')).toHaveLength(0);
     s.dispose();

@@ -1,5 +1,5 @@
 import { For, Show } from 'solid-js';
-import type { JSX } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { useUi } from '@st/page/context';
 import type { HoverCard } from '../protocol.ts';
 import { Label, Picture } from './Label.tsx';

@@ -1,8 +1,8 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
-import type { JSX } from 'solid-js';
+import { For, Show, createSignal, onSettled } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { SAMPLER_NAMES, VIEW, samplerSelectOf } from '../protocol.ts';
 import type { Field, SettingsView } from '../protocol.ts';
-import { Portal } from 'solid-js/web';
+import { Portal } from '@solidjs/web';
 import { useUi } from '@st/page/context';
 import {
     Checkbox,
@@ -179,7 +179,7 @@ function SamplerSelectDialog(props: { onClose: () => void }) {
     };
     return (
         <dialog
-            ref={(element: HTMLDialogElement) => onMount(() => element.showModal())}
+            ref={(element: HTMLDialogElement) => onSettled(() => element.showModal())}
             id="sampler_view_list"
             class="popup wide_dialogue_popup large_dialogue_popup"
             onCancel={(event) => {
@@ -204,8 +204,7 @@ function SamplerSelectDialog(props: { onClose: () => void }) {
                                 </div>
                                 <div
                                     id="prioritizeManuallySelectedSamplers"
-                                    class="menu_button menu_button_icon"
-                                    classList={{ toggleEnabled: select().manual }}
+                                    class={['menu_button menu_button_icon', { toggleEnabled: select().manual }]}
                                     title={t('Prioritize showing samplers manually selected from this popup.')}
                                     onClick={() => void client.send('settings.samplers', { manual: !select().manual })}
                                 >
@@ -714,8 +713,10 @@ function BannedTokens() {
                             </span>
                             <small>
                                 <i
-                                    class="fa-solid fa-power-off menu_button togglable margin0"
-                                    classList={{ toggleEnabled: send.value() === true }}
+                                    class={[
+                                        'fa-solid fa-power-off menu_button togglable margin0',
+                                        { toggleEnabled: send.value() === true },
+                                    ]}
                                 />
                             </small>
                         </label>

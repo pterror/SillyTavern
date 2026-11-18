@@ -1,5 +1,7 @@
-import { For, Show, createRenderEffect, createSignal, onCleanup } from 'solid-js';
-import type { JSX } from 'solid-js';
+import { elementSetup } from '@st/page/element';
+import { Select as PageSelect } from '@st/page/select';
+import { Show, createEffect, createSignal } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { FIELDS, VIEW, samplerSelectOf, zenOf } from '../protocol.ts';
 import type { Field, Level, Range, SamplerSelect, SettingsView } from '../protocol.ts';
 import { useUi } from '@st/page/context';
@@ -93,8 +95,8 @@ export function FieldBlock(props: {
             <div
                 id={props.blockId}
                 class={props.class ?? 'range-block'}
-                attr:data-field={props.id}
-                attr:data-settings-level={state.level()}
+                data-field={props.id}
+                data-settings-level={state.level()}
             >
                 {props.children(state)}
                 <Show when={state.refusal()}>{(text) => <small class="settings_refusal">{text()}</small>}</Show>
@@ -118,9 +120,11 @@ export function UnsetButton(props: { field: FieldState }) {
 }
 
 function numeric(field: FieldState) {
-    return (input: HTMLInputElement) => {
-        createRenderEffect(() => {
-            const { min, max, step } = field.range();
+    let input: HTMLInputElement | undefined;
+    createEffect(
+        () => ({ ...field.range(), value: field.number() }),
+        ({ min, max, step, value }) => {
+            if (!input) return;
             for (const [name, bound] of [
                 ['min', min],
                 ['max', max],
@@ -129,8 +133,11 @@ function numeric(field: FieldState) {
                 if (bound === undefined) input.removeAttribute(name);
                 else input.setAttribute(name, String(bound));
             }
-            input.value = String(field.number());
-        });
+            input.value = String(value);
+        },
+    );
+    return (element: HTMLInputElement) => {
+        input = element;
     };
 }
 
@@ -171,7 +178,7 @@ function PlainSlider(props: { field: FieldState; counterId: string; look: 'block
             class="neo-range-input"
             type="number"
             id={props.counterId}
-            attr:data-for={field().field.id}
+            data-for={field().field.id}
             ref={numeric(field())}
             disabled={field().disabled()}
             onChange={(event) => send(event.currentTarget)}
@@ -192,7 +199,7 @@ function PlainSlider(props: { field: FieldState; counterId: string; look: 'block
                 onChange={(event) => send(event.currentTarget)}
             />
             <Show when={props.look === 'neo-wide'} fallback={counter()}>
-                <div attr:data-randomization-disabled="true" class="wide100p">
+                <div data-randomization-disabled="true" class="wide100p">
                     {counter()}
                 </div>
             </Show>
@@ -219,7 +226,7 @@ function BlockSlider(props: { field: FieldState; counterId: string }) {
                 <input
                     type="number"
                     id={props.counterId}
-                    attr:data-for={field().field.id}
+                    data-for={field().field.id}
                     ref={numeric(field())}
                     disabled={field().disabled()}
                     onChange={(event) => send(event.currentTarget)}
@@ -273,25 +280,23 @@ export function Select(props: {
     const { t } = useUi();
     const field = () => props.field;
     return (
-        <select
+        <PageSelect
             class={props.class}
             id={field().field.id}
+            label={t(field().field.label)}
             value={field().text()}
             disabled={field().disabled() || props.disabled === true}
-            onChange={(event) => {
-                const select = event.currentTarget;
-                const option = field().field.options?.find((o) => String(o.value) === select.value);
-                void field().set(option ? option.value : select.value, () => (select.value = field().text()));
+            options={(field().field.options ?? []).map((option) => ({
+                value: String(option.value),
+                label: t(option.label, props.keys?.[String(option.value)]),
+            }))}
+            onChange={(value, refuse) => {
+                const option = field().field.options?.find((option) => String(option.value) === value);
+                void field().set(option ? option.value : value, () => {
+                    if (field().text() !== value) refuse();
+                });
             }}
-        >
-            <For each={field().field.options ?? []}>
-                {(option) => (
-                    <option value={String(option.value)} selected={String(option.value) === field().text()}>
-                        {t(option.label, props.keys?.[String(option.value)])}
-                    </option>
-                )}
-            </For>
-        </select>
+        />
     );
 }
 
@@ -412,7 +417,9 @@ function ZenSlider(props: { field: FieldState; unlocked: boolean }) {
                         'margin-left': `${-fraction() * 50}px`,
                         color: valueAt(position()) === zen().off ? 'rgba(128,128,128,0.5)' : '',
                     }}
-                    ref={(handle) => onCleanup(focusActions.attach(handle, { confirm: () => handle.blur() }))}
+                    ref={elementSetup<HTMLSpanElement>((handle) =>
+                        focusActions.attach(handle, { confirm: () => handle.blur() }),
+                    )}
                     onBlur={(event) => {
                         if (values() !== undefined) return;
                         const typed = Number.parseFloat(event.currentTarget.textContent);

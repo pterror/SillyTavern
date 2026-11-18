@@ -1,4 +1,5 @@
-import { render } from 'solid-js/web';
+import { flush as flushSync } from 'solid-js';
+import { render } from '@solidjs/web';
 import { expect, test } from 'vite-plus/test';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
@@ -149,9 +150,11 @@ test('the screen names the thing, its uses with where they live, and each state 
 test('a dim tool turns its effect on for just this name, in the state picked, with one action', () => {
     const { host, sent } = stand(VIEW);
     byLabel(host, 'Word hover or focus').click();
+    flushSync();
     const outline = byLabel(host, 'Outline');
     expect(outline.classList.contains('look-on')).toBe(false);
     outline.click();
+    flushSync();
     expect(sent).toEqual([
         {
             type: 'looks.setDeclarations',
@@ -172,7 +175,9 @@ test('a dim tool turns its effect on for just this name, in the state picked, wi
 test('Applies to lists the thing’s chain and moves the effect to the level chosen; Reset takes it off its level', () => {
     const { host, sent } = stand(VIEW);
     byLabel(host, 'Word hover or focus').click();
+    flushSync();
     byLabel(host, 'Glow').click();
+    flushSync();
     const scope = host.querySelector('select.look-scope') as HTMLSelectElement;
     expect([...scope.options].map((o) => o.textContent)).toEqual([
         'Every name',
@@ -185,6 +190,7 @@ test('Applies to lists the thing’s chain and moves the effect to the level cho
     expect(scope.value).toBe('3');
     scope.value = '0';
     scope.dispatchEvent(new Event('change'));
+    flushSync();
     expect(sent.at(-1)).toEqual({
         type: 'looks.applyTo',
         payload: {
@@ -195,6 +201,7 @@ test('Applies to lists the thing’s chain and moves the effect to the level cho
         },
     });
     [...host.querySelectorAll('button')].find((b) => b.textContent === 'Reset')?.click();
+    flushSync();
     expect(sent.at(-1)).toEqual({
         type: 'looks.setDeclarations',
         payload: { level: { thing: '7' }, state: 'wordPointed', set: [], reset: ['filter'] },
@@ -204,11 +211,14 @@ test('Applies to lists the thing’s chain and moves the effect to the level cho
 test('the CSS panel shows the controls’ lines apart and sends what is typed for the thing’s level', () => {
     const { host, sent } = stand(VIEW);
     byLabel(host, 'Word hover or focus').click();
+    flushSync();
     byLabel(host, 'CSS').click();
+    flushSync();
     expect(host.querySelector('.look-cssfx')?.textContent).toBe('filter: drop-shadow(0 0 12px #ffd27a);');
     const typed = host.querySelector('.look-cssta') as HTMLTextAreaElement;
     typed.value = 'word-spacing: 2px;';
     typed.dispatchEvent(new Event('change'));
+    flushSync();
     expect(sent.at(-1)).toEqual({
         type: 'looks.writeCss',
         payload: {
@@ -224,16 +234,20 @@ test('the CSS panel shows the controls’ lines apart and sends what is typed fo
 test('+ shared look offers the looks not in use and uses the one picked', () => {
     const { host, sent } = stand(VIEW);
     (host.querySelector('.look-uadd') as HTMLElement).click();
+    flushSync();
     const items = [...host.querySelectorAll('.look-upop button')].map((b) => b.textContent);
     expect(items).toEqual(['Soft glowAll worlds', 'New for this world…', 'New for all worlds…']);
     (host.querySelector('.look-upop button') as HTMLElement).click();
+    flushSync();
     expect(sent.at(-1)).toEqual({ type: 'looks.use', payload: { thing: '7', shared: 'b', before: null } });
 });
 
 test('clicking the marked word opens the mark’s settings, which are the theme’s', () => {
     const { host, sent } = stand(VIEW);
     (host.querySelector('.look-mkbtn') as HTMLElement).click();
+    flushSync();
     expect(host.querySelector('.look-fixed')?.textContent).toBe('All worlds');
     ([...host.querySelectorAll('.look-seg button')].find((b) => b.textContent === 'Dashed') as HTMLElement).click();
+    flushSync();
     expect(sent.at(-1)).toEqual({ type: 'looks.setMark', payload: { change: { rest: { style: 'dashed' } } } });
 });

@@ -150,8 +150,7 @@ export function hoverCards() {
                         box = element;
                         fromWord(element);
                     }}
-                    class="wb-hover-at"
-                    classList={{ 'wb-hover-above': both().at.above }}
+                    class={['wb-hover-at', { 'wb-hover-above': both().at.above }]}
                     style={{
                         left: `${both().at.left}px`,
                         top: `${both().at.top}px`,

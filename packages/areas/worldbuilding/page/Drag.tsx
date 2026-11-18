@@ -1,4 +1,4 @@
-import { Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { Show, createSignal, onCleanup, onSettled } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { inTopLayer } from '@st/page/popover';
@@ -212,23 +212,21 @@ export function dragControl(act: (type: string, payload: unknown) => Promise<Act
             show({ ...holding, alt: event.type === 'keydown' });
         }
     };
-    // From the press on, wherever focus is: before a field's own Escape and the old page's drawers.
-    onMount(() =>
-        onCleanup(
-            commands.register(
-                [
-                    {
-                        id: 'worldbuilding.cancelDrag',
-                        label: t('Cancel the drag'),
-                        category: t('Worldbuilding'),
-                        keys: ['Escape'],
-                        typing: true,
-                        when: () => pressed !== null,
-                        run: end,
-                    },
-                ],
-                { capture: true, everywhere: true },
-            ),
+    // From the press wherever focus is: before a field's own Escape and the old page's drawers.
+    onSettled(() =>
+        commands.register(
+            [
+                {
+                    id: 'worldbuilding.cancelDrag',
+                    label: t('Cancel the drag'),
+                    category: t('Worldbuilding'),
+                    keys: ['Escape'],
+                    typing: true,
+                    when: () => pressed !== null,
+                    run: end,
+                },
+            ],
+            { capture: true, everywhere: true },
         ),
     );
 

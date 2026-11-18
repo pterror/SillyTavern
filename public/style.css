@@ -1181,6 +1181,81 @@ body .panelControlBar {
     overflow: visible;
 }
 
+.st-select {
+    display: contents;
+}
+
+.st-select-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75em;
+    width: 100%;
+    text-align: start;
+    cursor: pointer;
+}
+
+.st-select-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.st-select-arrow {
+    flex: none;
+    font-size: 0.75em;
+    opacity: 0.7;
+}
+
+.st-select-trigger:focus-visible {
+    outline: 2px solid var(--SmartThemeQuoteColor);
+    outline-offset: 2px;
+}
+
+.st-select-trigger:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.st-select-popover {
+    margin: 4px 0;
+    padding: 4px;
+    min-width: 12em;
+    min-width: anchor-size(width, 12em);
+    max-width: calc(100vw - 16px);
+    max-height: min(24em, 60vh);
+    overflow: auto;
+}
+
+.st-select-popover[hidden] {
+    display: none;
+}
+
+.st-select-list {
+    display: block;
+    min-width: 12em;
+    overflow: auto;
+    max-height: min(22em, 55vh);
+}
+
+.st-select-option {
+    display: block;
+    padding: 0.5em 0.75em;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: normal;
+}
+
+.st-select-option[aria-selected="true"] {
+    font-weight: 600;
+    color: var(--SmartThemeQuoteColor);
+}
+
+.st-select-option[data-active],
+.st-select-option:hover {
+    background: var(--SmartThemeBorderColor);
+}
+
 .st-float:not(.st-floating) {
     padding: 0;
     border: 0;
@@ -7400,7 +7475,8 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     text-align: left;
 }
 
-.oneline-dropdown select {
+.oneline-dropdown select,
+.oneline-dropdown .st-select-trigger {
     min-width: fit-content;
     width: 40%;
 }

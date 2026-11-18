@@ -12,10 +12,8 @@ export type Ui = {
 
 const UiContext = createContext<Ui>();
 
-export const UiProvider = UiContext.Provider;
+export const UiProvider = UiContext;
 
 export function useUi(): Ui {
-    const ui = useContext(UiContext);
-    if (!ui) throw new Error('A surface of the new page was mounted outside mount()');
-    return ui;
+    return useContext(UiContext);
 }

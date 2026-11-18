@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, onMount } from 'solid-js';
+import { createSignal, onSettled } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { PICKED_AT_MOST } from '../protocol.ts';
 import type { SelectionView } from '../protocol.ts';
@@ -76,33 +76,40 @@ export function picking(
     };
     // A checkbox or a button input isn't a field here, though keybinds counts every input as one.
     const outsideFields = () => active() && !editable(document.activeElement);
-    onMount(() => {
+    onSettled(() => {
         window.addEventListener('pointerup', release);
-        onCleanup(() => window.removeEventListener('pointerup', release));
-        onCleanup(
-            commands.register([
-                {
-                    id: 'worldbuilding.selectAll',
-                    label: t('Select all matching entries'),
-                    category: t('Worldbuilding'),
-                    keys: ['$mod+a'],
-                    typing: true,
-                    when: outsideFields,
-                    run: () => void wb.act('worldbuilding.selectAllMatching', { book: book() }),
-                },
-            ]),
-        );
+        const stopListening = () => {
+            window.removeEventListener('pointerup', release);
+        };
+        const unregister = commands.register([
+            {
+                id: 'worldbuilding.selectAll',
+                label: t('Select all matching entries'),
+                category: t('Worldbuilding'),
+                keys: ['$mod+a'],
+                typing: true,
+                when: outsideFields,
+                run: () => void wb.act('worldbuilding.selectAllMatching', { book: book() }),
+            },
+        ]);
         const shown = page();
-        if (!shown) return;
-        onCleanup(
-            focusActions.attach(shown, {
-                when: () => outsideFields() && (any() || selecting()),
-                cancel: () => {
-                    setSelecting(false);
-                    if (any()) void wb.act('worldbuilding.selectNone', { book: book() });
-                },
-            }),
-        );
+        if (!shown)
+            return () => {
+                unregister();
+                stopListening();
+            };
+        const detach = focusActions.attach(shown, {
+            when: () => outsideFields() && (any() || selecting()),
+            cancel: () => {
+                setSelecting(false);
+                if (any()) void wb.act('worldbuilding.selectNone', { book: book() });
+            },
+        });
+        return () => {
+            detach();
+            unregister();
+            stopListening();
+        };
     });
     return {
         isSelected,

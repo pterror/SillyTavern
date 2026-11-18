@@ -472,6 +472,9 @@ importers:
 
   packages/areas/activations:
     dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/page':
         specifier: workspace:*
         version: link:../../page
@@ -482,8 +485,8 @@ importers:
         specifier: workspace:*
         version: link:../../server-ui
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -494,6 +497,9 @@ importers:
 
   packages/areas/alternatives:
     dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/page':
         specifier: workspace:*
         version: link:../../page
@@ -504,8 +510,8 @@ importers:
         specifier: workspace:*
         version: link:../../server-ui
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -516,6 +522,9 @@ importers:
 
   packages/areas/backgrounds:
     dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/page':
         specifier: workspace:*
         version: link:../../page
@@ -526,8 +535,8 @@ importers:
         specifier: workspace:*
         version: link:../../server-ui
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -538,6 +547,9 @@ importers:
 
   packages/areas/help:
     dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/page':
         specifier: workspace:*
         version: link:../../page
@@ -548,8 +560,8 @@ importers:
         specifier: workspace:*
         version: link:../../server-ui
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -563,6 +575,9 @@ importers:
       '@adobe/css-tools':
         specifier: ^4.4.4
         version: 4.4.4
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/page':
         specifier: workspace:*
         version: link:../../page
@@ -573,8 +588,8 @@ importers:
         specifier: workspace:*
         version: link:../../server-ui
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -585,6 +600,9 @@ importers:
 
   packages/areas/recent-history:
     dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/page':
         specifier: workspace:*
         version: link:../../page
@@ -595,8 +613,8 @@ importers:
         specifier: workspace:*
         version: link:../../server-ui
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -607,6 +625,9 @@ importers:
 
   packages/areas/settings:
     dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/page':
         specifier: workspace:*
         version: link:../../page
@@ -617,8 +638,8 @@ importers:
         specifier: workspace:*
         version: link:../../server-ui
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -629,6 +650,9 @@ importers:
 
   packages/areas/usage-stats:
     dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/page':
         specifier: workspace:*
         version: link:../../page
@@ -642,8 +666,8 @@ importers:
         specifier: 2.31.0
         version: 2.31.0
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -663,6 +687,9 @@ importers:
       '@codemirror/view':
         specifier: 6.43.13
         version: 6.43.13
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/looks':
         specifier: workspace:*
         version: link:../looks
@@ -676,8 +703,8 @@ importers:
         specifier: workspace:*
         version: link:../../server-ui
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
       valibot:
         specifier: 1.5.0
         version: 1.5.0(typescript@5.9.3)
@@ -697,9 +724,12 @@ importers:
 
   packages/lint/fixtures/page:
     dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
 
   packages/occlusion:
     devDependencies:
@@ -709,18 +739,27 @@ importers:
 
   packages/page:
     dependencies:
+      '@pterror/interact-core':
+        specifier: github:pterror/interact#54747345d58f1713a36ea9e041967d99e8d76ea1&path:/packages/core
+        version: https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1#path:/packages/core
       '@pterror/interact-keybinds':
         specifier: github:pterror/interact#0a80cd6be37ad69eb06150b90ee237bcb40231fe&path:/packages/keybinds
         version: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/keybinds(patch_hash=921ec5677597526a4f80d71b7b208963b60757f4f775cb605b11ed45e1a97df2)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list)
       '@pterror/interact-list':
         specifier: github:pterror/interact#0a80cd6be37ad69eb06150b90ee237bcb40231fe&path:/packages/list
         version: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list
+      '@pterror/interact-solid':
+        specifier: github:pterror/interact#54747345d58f1713a36ea9e041967d99e8d76ea1&path:/packages/solid
+        version: https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1#path:/packages/solid(@pterror/interact-core@https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1#path:/packages/core)(@solidjs/web@2.0.0(solid-js@2.0.0))(solid-js@2.0.0)
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/protocol':
         specifier: workspace:*
         version: link:../protocol
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
     devDependencies:
       vite-plus:
         specifier: 1.1.0
@@ -779,6 +818,9 @@ importers:
 
   packages/ui:
     dependencies:
+      '@solidjs/web':
+        specifier: 2.0.0
+        version: 2.0.0(solid-js@2.0.0)
       '@st/activations':
         specifier: workspace:*
         version: link:../areas/activations
@@ -816,18 +858,18 @@ importers:
         specifier: workspace:*
         version: link:../areas/worldbuilding
       solid-js:
-        specifier: 1.9.17
-        version: 1.9.17
+        specifier: 2.0.0
+        version: 2.0.0
     devDependencies:
+      '@solidjs/vite-plugin':
+        specifier: 3.0.1
+        version: 3.0.1(@babel/core@7.29.7(supports-color@8.1.1))(@solidjs/web@2.0.0(solid-js@2.0.0))(solid-js@2.0.0)(vite@8.3.4(@types/node@22.20.1)(yaml@2.8.3))
       happy-dom:
         specifier: 21.0.1
         version: 21.0.1
       vite:
         specifier: 8.3.4
         version: 8.3.4(@types/node@22.20.1)(yaml@2.8.3)
-      vite-plugin-solid:
-        specifier: 2.11.14
-        version: 2.11.14(solid-js@1.9.17)(supports-color@8.1.1)(vite@8.3.4(@types/node@22.20.1)(yaml@2.8.3))
       vite-plus:
         specifier: 1.1.0
         version: 1.1.0(@types/node@22.20.1)(@vitest/ui@5.0.3)(happy-dom@21.0.1)(playwright@1.61.1)(typescript@5.9.3)(yaml@2.8.3)
@@ -918,6 +960,10 @@ packages:
   '@agnai/sentencepiece-js@1.1.1':
     resolution: {integrity: sha512-h2+XPrJVLuVLl+2+3iZPWcTw6Fs2NNulnxyh7LoI1hzHHib1wDC6KTmTrDJlLq7/lr5QFYpeMz2rlTFQrS0C0g==}
 
+  '@ampproject/remapping@2.3.0':
+    resolution: {integrity: sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw==}
+    engines: {node: '>=6.0.0'}
+
   '@babel/code-frame@7.29.7':
     resolution: {integrity: sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw==}
     engines: {node: '>=6.9.0'}
@@ -940,10 +986,6 @@ packages:
 
   '@babel/helper-globals@7.29.7':
     resolution: {integrity: sha512-3nQVUAtvkKH9zahfWgw96Jc/uFOmjACE1kQz82E2lqWmHBgjzbNlsC22nuQTfahmWeQtTq5nQ/4Nnd2A1wj4zA==}
-    engines: {node: '>=6.9.0'}
-
-  '@babel/helper-module-imports@7.18.6':
-    resolution: {integrity: sha512-0NFvs3VkuSYbFi1x2Vd6tKrywq+z/cLeYC/RJNFrIX/30Bf5aiGYbtvGXolEktzJH8o5E5KJ3tT+nkxuuZFVlA==}
     engines: {node: '>=6.9.0'}
 
   '@babel/helper-module-imports@7.29.7':
@@ -1133,17 +1175,26 @@ packages:
   '@emnapi/core@1.10.0':
     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
 
+  '@emnapi/core@1.11.3':
+    resolution: {integrity: sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg==}
+
   '@emnapi/core@2.0.0-alpha.5':
     resolution: {integrity: sha512-DbeLFquQJyYGwM3LzPdjvb4IRmAAQuTzEmqUGtIAYxlAO4ArfUZ7WMytLWDSsCAYm6MZJNeojaawQQiFrFVehg==}
 
   '@emnapi/runtime@1.10.0':
     resolution: {integrity: sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA==}
 
+  '@emnapi/runtime@1.11.3':
+    resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
+
   '@emnapi/runtime@2.0.0-alpha.5':
     resolution: {integrity: sha512-SS4jUXRklsrPKTEtW92WHdneh9QBrZGmRyeYEac2ktLN3ie1wd/BrkBbk4DqPWKhjSFfrR8NClXwMlfZ73m60A==}
 
   '@emnapi/wasi-threads@1.2.1':
     resolution: {integrity: sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==}
+
+  '@emnapi/wasi-threads@1.2.3':
+    resolution: {integrity: sha512-ELEBe8PsLvvJ6QMr0zLt8ffvOHW/dc1m3CEzNMg7aJUv3bMaoDtw2TXyDAwkYBuroxxuHEwhRTLJSe5sya547g==}
 
   '@emnapi/wasi-threads@2.1.0':
     resolution: {integrity: sha512-DM18NXgQ5coifswrwhFgrqeW/UiFRaLj0aLKU0cp0FoYjEfP/hj/yUeF+Hz754ViG+jQmG2HIeDCUeQsPnRwOA==}
@@ -1778,6 +1829,10 @@ packages:
   '@popperjs/core@2.11.8':
     resolution: {integrity: sha512-P1st0aksCrn9sGZhp8GMYwBnQsbvAWsZAX44oXNNvLHGqAOcoVxmjZiohstwQ7SqKnbR47akdNi+uleWD8+g6A==}
 
+  '@pterror/interact-core@https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1#path:/packages/core':
+    resolution: {gitHosted: true, integrity: sha512-/23lz4EsXHNasa1a6oNILbXwz8fh89wE9LAtpFEtL56/x2d/qf4wB4I7SnjvX9IGuc0zhLRM+E2KMyaVxTOmOQ==, path: /packages/core, tarball: https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1}
+    version: 0.0.0
+
   '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/editor':
     resolution: {gitHosted: true, integrity: sha512-A0Cb0yKr8Fara8u5lxreuuhpleRgQUPZQbe35kp8ogSBANLWqRi/41pZZ3jB8EKfA3g/Qx3l3AYTIPDYQW/p/Q==, path: /packages/editor, tarball: https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe}
     version: 0.1.0
@@ -1827,6 +1882,17 @@ packages:
       '@codemirror/state':
         optional: true
       '@codemirror/view':
+        optional: true
+
+  '@pterror/interact-solid@https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1#path:/packages/solid':
+    resolution: {gitHosted: true, integrity: sha512-/23lz4EsXHNasa1a6oNILbXwz8fh89wE9LAtpFEtL56/x2d/qf4wB4I7SnjvX9IGuc0zhLRM+E2KMyaVxTOmOQ==, path: /packages/solid, tarball: https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1}
+    version: 0.1.0
+    peerDependencies:
+      '@pterror/interact-core': workspace:^
+      '@solidjs/web': ^2.0.0-rc.22
+      solid-js: ^1.8.0 || ^2.0.0-rc.22
+    peerDependenciesMeta:
+      '@solidjs/web':
         optional: true
 
   '@reflink/reflink-darwin-arm64@0.1.19':
@@ -1998,6 +2064,71 @@ packages:
 
   '@sinonjs/fake-timers@15.4.0':
     resolution: {integrity: sha512-DsG+8/LscQIQg68J6Ef3dv10u6nVyetYn923s3/sus5eaGfTo1of5WMZSLf0UJc9KDuKPilPH0UDJCjvNbDNCA==}
+
+  '@solidjs/compiler-darwin-arm64@2.0.0':
+    resolution: {integrity: sha512-pPHERRXgCcsfCsaC8sgK94uVlp4WGUcHTfMeBiAfme2amQ7vFn7dpjSD3TIVKY4jeYQTKjIKOYP0c5mqIR1LeA==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@solidjs/compiler-darwin-x64@2.0.0':
+    resolution: {integrity: sha512-Ndwy+pQs8v6BIfaAbQ+weu9HGBTM40HFCyu0XV2qX7U5XC+o+3fc4O6+8ZZyUzl+qvT6XU+wh2bQ6MI2lV+KBQ==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@solidjs/compiler-linux-arm64-gnu@2.0.0':
+    resolution: {integrity: sha512-H/R9SUmuqd4P/IuuXTlRM1LhgUWe2EjLP3iMUo+L4IO1rmOSqfMUZp9h52eQnDsOdoIZCaKsw+b0qC5WooxDlg==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@solidjs/compiler-linux-x64-gnu@2.0.0':
+    resolution: {integrity: sha512-gafr9+2bP2sv2hRAvDgzab0mpQi4MiyWrie9bfYjadsK7qZKJBeMzEQCLNd4dTYlgirCj6Frzu2pfET7+ZUyNQ==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@solidjs/compiler-wasm32-wasi@2.0.0':
+    resolution: {integrity: sha512-JnF21DJ/jx5fghYKIB6ANihHMM4aWg4JFe5pFLGDvqSeURZJdJGjwyyxOv3siEMUdkBzVGHXotTsviTcRyB5hQ==}
+    engines: {node: '>=14.0.0'}
+
+  '@solidjs/compiler-win32-x64-msvc@2.0.0':
+    resolution: {integrity: sha512-RkiUXt/LmJ1lk1fECa/iDVGCOv3UiwW5ocZgkhpayUviTSrceFjFHhiM9sFXq0at3kHI7Z8awN6zTaF5IStDAQ==}
+    cpu: [x64]
+    os: [win32]
+
+  '@solidjs/compiler@2.0.0':
+    resolution: {integrity: sha512-Spgqz1+eojQ2pDl4yajnajIjX/kSusjTK/6mC6Fm7sAZ3YBI0yP4/epRR1hV08TU3YAH4xLBmZ6wjb1zC134Sw==}
+
+  '@solidjs/signals@2.0.0':
+    resolution: {integrity: sha512-jrcT6XTVvsYRpesRp0At/mSUnsWr6jiprK8C93Oat56B8n7X9BMSe58Rxl6qSZUhBN0L+sxm8GzeO7HdhBXvDw==}
+    engines: {node: '>=22.12.0'}
+
+  '@solidjs/vite-plugin@3.0.1':
+    resolution: {integrity: sha512-dyRU4LJXhzEEgtF32AtUdjqaUuMVYTVLQvhYlT6HcYBvf10yIVmKgW9cg42b5YDxkl6BgAJ9o0OjUnAy3qKb9A==}
+    engines: {node: '>=22.12.0'}
+    peerDependencies:
+      '@babel/core': ^7.23.3 || ^8.0.0
+      '@solidjs/babel-plugin': ^2.0.0
+      '@solidjs/start-devtools': ^1.0.0-next.2
+      '@solidjs/web': ^2.0.0
+      '@testing-library/jest-dom': ^5.16.6 || ^5.17.0 || ^6.0.0 || ^7.0.0
+      solid-js: ^2.0.0
+      vite: ^8.0.0 || ^9.0.0
+    peerDependenciesMeta:
+      '@babel/core':
+        optional: true
+      '@solidjs/babel-plugin':
+        optional: true
+      '@solidjs/start-devtools':
+        optional: true
+      '@testing-library/jest-dom':
+        optional: true
+
+  '@solidjs/web@2.0.0':
+    resolution: {integrity: sha512-R0+JMCD6ukEXaID/sH5PVQe9bCIN9pRzJry+F6Sb6YvtlkAp9DEyVI7AeZYiV0cd6TSL98kpbCyLDiZnaAKGrA==}
+    engines: {node: '>=22.12.0'}
+    peerDependencies:
+      solid-js: ^2.0.0
 
   '@testing-library/dom@10.4.2':
     resolution: {integrity: sha512-yzr2S9HyAIdhz2/6qHgbs665Q7PKVcDF05vsOlHPxG1mo36gKVesdYVeDLnXgfjJ03CrKRk08knc6+E/9m8v2Q==}
@@ -2797,11 +2928,6 @@ packages:
     resolution: {integrity: sha512-9EdtWM/sSfXLOGLwSn+GS6pIXyBnL07/8gyJlwFXjWy4DxMOyItqyUT29d4lQiS380EZwYlX7/At4PgBS+m2aA==}
     engines: {node: ^18.14.0 || ^20.0.0 || ^22.0.0 || >=24.0.0}
 
-  babel-plugin-jsx-dom-expressions@0.40.11:
-    resolution: {integrity: sha512-k7TkOv7uVYnrq/bYyVvG5cWOC9IObAGfmyW3aMkG8l2sq2qt/5THkUBja69PMLEGGi8G+fXB2Fh7eS4OwZRBoQ==}
-    peerDependencies:
-      '@babel/core': ^7.20.12
-
   babel-preset-current-node-syntax@1.2.0:
     resolution: {integrity: sha512-E/VlAEzRrsLEb2+dv8yp3bo4scof3l9nR4lrld+Iy5NyVqgVYUJnDAmunkhPMisRI32Qc4iRiz425d8vM++2fg==}
     peerDependencies:
@@ -2812,15 +2938,6 @@ packages:
     engines: {node: ^18.14.0 || ^20.0.0 || ^22.0.0 || >=24.0.0}
     peerDependencies:
       '@babel/core': ^7.11.0 || ^8.0.0-beta.1
-
-  babel-preset-solid@1.9.16:
-    resolution: {integrity: sha512-+0h40Qk2oBfkQ4OGDBHIDtvq/XQiOnCfzjNHmMxriAr8MmdsaIbyJgqYglDs4d70sF8O08sSpx61TKdpUt3oRw==}
-    peerDependencies:
-      '@babel/core': ^7.0.0
-      solid-js: ^1.9.16
-    peerDependenciesMeta:
-      solid-js:
-        optional: true
 
   balanced-match@1.0.2:
     resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
@@ -3181,10 +3298,6 @@ packages:
     resolution: {integrity: sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==}
     engines: {node: '>= 0.8'}
 
-  entities@4.5.0:
-    resolution: {integrity: sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw==}
-    engines: {node: '>=0.12'}
-
   entities@7.0.1:
     resolution: {integrity: sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==}
     engines: {node: '>=0.12'}
@@ -3520,9 +3633,6 @@ packages:
   host-validation-middleware@0.1.1:
     resolution: {integrity: sha512-fakcpp+x4nbP0fACY5gaHWpaOfstq3w8uB6wvhbPBLqH9GV/tdiM9Ht5mclZVbUuPLGBw1bkH5yyTD6HZq057g==}
     engines: {node: ^18.0.0 || >=20.0.0}
-
-  html-entities@2.3.3:
-    resolution: {integrity: sha512-DV5Ln36z34NNTDgnz0EWGBLZENelNAtkiFA4kyNOG2tDI6Mz1uSWiq1wAKdyjnJwyDiDO7Fa2SO1CTxPXL8VxA==}
 
   html-escaper@2.0.2:
     resolution: {integrity: sha512-H2iMtd0I4Mt5eYiapRdIDjp+XzelXQ0tFE4JS7YFwFevXXMmOp9myNrUvCg0D6ws8iqkRPBfKHgbwig1SmlLfg==}
@@ -3983,6 +4093,9 @@ packages:
     resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
     hasBin: true
 
+  magic-string@0.30.21:
+    resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
+
   magic-string@1.4.3:
     resolution: {integrity: sha512-z12OxmaPGE0F4xlpGdjuAUckipLpQlTAuAmyGhNoD7ODpYUzvDfvtxUbjM/jwznyP178oju/KDdyi220wNJ0RQ==}
 
@@ -4239,9 +4352,6 @@ packages:
     resolution: {integrity: sha512-ayCKvm/phCGxOkYRSCM82iDwct8/EonSEgCSxWxD7ve6jHggsFl4fZVQBPRNgQoKiuV/odhFrGzQXZwbifC8Rg==}
     engines: {node: '>=8'}
 
-  parse5@7.1.2:
-    resolution: {integrity: sha512-Czj1WaSVpaoj0wbhMzLmWD69anp2WH7FXMB9n1Sy8/ZFF9jolSQVMu1Ij5WIyGmcBmhk7EOndpO4mIpihVqAXw==}
-
   parseurl@1.3.3:
     resolution: {integrity: sha512-CiyeOxFT/JZyN5m0z9PfXw4SCBJ6Sygz1Dpl0wqjlhDEGGBP1GnsUVEL0p63hoG1fcj3fHynXi9NYO4nWOL+qQ==}
     engines: {node: '>= 0.8'}
@@ -4457,15 +4567,15 @@ packages:
     resolution: {integrity: sha512-dW41u5VfLXu8SJh5bwRmyYUbAoSB3c9uQh6L8h/KtsFREPWpbX1lrljJo186Jc4nmci/sGUZ9a0a0J2zgfq2hw==}
     engines: {node: '>= 0.8.0'}
 
-  seroval-plugins@1.6.11:
-    resolution: {integrity: sha512-LmB3nd8pL39jKHKvnpTUjcjBtNwR8MLty/ydAR8qbfXt5j6/6KqR1atuw8cVmD2/lDxAkvAwq5tI/HsisD9Fqg==}
-    engines: {node: '>=10'}
+  seroval-plugins@1.8.0:
+    resolution: {integrity: sha512-96vBb12rDvPPwdKUgWw1op3fGq8AVBFOr0IllbnM72yR5J9WWXF18cQ4g1XfDO7HCyh2dt70P3XdtyRayP8FWg==}
+    engines: {node: '>=20'}
     peerDependencies:
-      seroval: ^1.0
+      seroval: ^1.8.0
 
-  seroval@1.6.11:
-    resolution: {integrity: sha512-hpb6XnMCGN/A+79Uf8V7/iTGkyyyazNn5X0CoCAp7Uy9vT3RT8jZ9GLcnxGoVjg3P8AArbe4ZVHq6C8oT2a0kA==}
-    engines: {node: '>=10'}
+  seroval@1.8.0:
+    resolution: {integrity: sha512-W5N4cMPc58lypAsScCmhGTyZxNZ6gPHvLHtMqtyvDFpfyNDsH1QjU0nI9Lr34+Q5ZLPsWeqOhkgTY5XtaPVQ4A==}
+    engines: {node: '>=20'}
 
   serve-static@1.16.2:
     resolution: {integrity: sha512-VqpjJZKadQB/PEbEwvFdO43Ax5dFBZ2UECszz8bQ7pi7wt//PWe1P6MN7eCnjsatYtBT6EuiClbjSWP2WrIoTw==}
@@ -4527,13 +4637,9 @@ packages:
   slashes@3.0.12:
     resolution: {integrity: sha512-Q9VME8WyGkc7pJf6QEkj3wE+2CnvZMI+XJhwdTPR8Z/kWQRXi7boAWLDibRPyHRTUTPx5FaU7MsyrjI3yLB4HA==}
 
-  solid-js@1.9.17:
-    resolution: {integrity: sha512-4GAmLOWPfNV8H9Jfn2LSFTpNEG6jiOKPiwd5lnLGQtehHaX6l3TOLzJqQ7mqwB/3k1Yy3zyumFVopmc/tm34ow==}
-
-  solid-refresh@0.6.3:
-    resolution: {integrity: sha512-F3aPsX6hVw9ttm5LYlth8Q15x6MlI/J3Dn+o3EQyRTtTxidepSTwAYdozt01/YA+7ObcciagGEyXIopGZzQtbA==}
-    peerDependencies:
-      solid-js: ^1.3
+  solid-js@2.0.0:
+    resolution: {integrity: sha512-9zN4uH2OQeQAYbF4BmIzoaa+L5Hb8Dp6kkP6ZXobHQ1FZVICdmzREPDVDBJY7umzdAE8D6zbFfWhxGtagkyslA==}
+    engines: {node: '>=22.12.0'}
 
   source-map-js@1.2.2:
     resolution: {integrity: sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==}
@@ -4805,16 +4911,6 @@ packages:
     resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
     engines: {node: '>= 0.8'}
 
-  vite-plugin-solid@2.11.14:
-    resolution: {integrity: sha512-7ZVBt8rpoyqmlwin2kRIUveaHoF6/kulY7gsnD+qFh4nS29V4OPAnw+ojoAspXIjObiL9o1xh9a/nTuYHm02Rw==}
-    peerDependencies:
-      '@testing-library/jest-dom': ^5.16.6 || ^5.17.0 || ^6.0.0 || ^7.0.0
-      solid-js: ^1.7.2
-      vite: ^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0 || ^9.0.0
-    peerDependenciesMeta:
-      '@testing-library/jest-dom':
-        optional: true
-
   vite-plus@1.1.0:
     resolution: {integrity: sha512-khkRlY70qqbBV0QmF9QKXSrhxIRYftb1H05AJMowMoq7iouchmAoXYeReZ8pKKMOadqrWVxFa3S9BA2m7w59iA==}
     engines: {node: ^22.18.0 || ^24.11.0 || >=26.0.0}
@@ -5036,6 +5132,11 @@ snapshots:
     dependencies:
       app-root-path: 3.1.0
 
+  '@ampproject/remapping@2.3.0':
+    dependencies:
+      '@jridgewell/gen-mapping': 0.3.13
+      '@jridgewell/trace-mapping': 0.3.31
+
   '@babel/code-frame@7.29.7':
     dependencies:
       '@babel/helper-validator-identifier': 7.29.7
@@ -5081,10 +5182,6 @@ snapshots:
       semver: 6.3.1
 
   '@babel/helper-globals@7.29.7': {}
-
-  '@babel/helper-module-imports@7.18.6':
-    dependencies:
-      '@babel/types': 7.29.8
 
   '@babel/helper-module-imports@7.29.7(supports-color@8.1.1)':
     dependencies:
@@ -5298,6 +5395,12 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
+  '@emnapi/core@1.11.3':
+    dependencies:
+      '@emnapi/wasi-threads': 1.2.3
+      tslib: 2.8.1
+    optional: true
+
   '@emnapi/core@2.0.0-alpha.5':
     dependencies:
       '@emnapi/wasi-threads': 2.1.0
@@ -5308,11 +5411,21 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
+  '@emnapi/runtime@1.11.3':
+    dependencies:
+      tslib: 2.8.1
+    optional: true
+
   '@emnapi/runtime@2.0.0-alpha.5':
     dependencies:
       tslib: 2.8.1
 
   '@emnapi/wasi-threads@1.2.1':
+    dependencies:
+      tslib: 2.8.1
+    optional: true
+
+  '@emnapi/wasi-threads@1.2.3':
     dependencies:
       tslib: 2.8.1
     optional: true
@@ -5843,6 +5956,13 @@ snapshots:
       '@tybys/wasm-util': 0.10.4
     optional: true
 
+  '@napi-rs/wasm-runtime@1.2.4(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)':
+    dependencies:
+      '@emnapi/core': 1.11.3
+      '@emnapi/runtime': 1.11.3
+      '@tybys/wasm-util': 0.10.4
+    optional: true
+
   '@napi-rs/wasm-runtime@1.2.4(@emnapi/core@2.0.0-alpha.5)(@emnapi/runtime@2.0.0-alpha.5)':
     dependencies:
       '@emnapi/core': 2.0.0-alpha.5
@@ -6016,6 +6136,8 @@ snapshots:
 
   '@popperjs/core@2.11.8': {}
 
+  '@pterror/interact-core@https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1#path:/packages/core': {}
+
   '@pterror/interact-editor@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/editor(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/state@6.7.6)(@codemirror/view@6.43.13)(@lezer/common@1.5.3)(@pterror/interact-list@https://codeload.github.com/pterror/interact/tar.gz/0a80cd6be37ad69eb06150b90ee237bcb40231fe#path:/packages/list)':
     dependencies:
       '@lezer/common': 1.5.3
@@ -6042,6 +6164,13 @@ snapshots:
       '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.6
       '@codemirror/view': 6.43.13
+
+  '@pterror/interact-solid@https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1#path:/packages/solid(@pterror/interact-core@https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1#path:/packages/core)(@solidjs/web@2.0.0(solid-js@2.0.0))(solid-js@2.0.0)':
+    dependencies:
+      '@pterror/interact-core': https://codeload.github.com/pterror/interact/tar.gz/54747345d58f1713a36ea9e041967d99e8d76ea1#path:/packages/core
+      solid-js: 2.0.0
+    optionalDependencies:
+      '@solidjs/web': 2.0.0(solid-js@2.0.0)
 
   '@reflink/reflink-darwin-arm64@0.1.19':
     optional: true
@@ -6140,6 +6269,59 @@ snapshots:
   '@sinonjs/fake-timers@15.4.0':
     dependencies:
       '@sinonjs/commons': 3.0.1
+
+  '@solidjs/compiler-darwin-arm64@2.0.0':
+    optional: true
+
+  '@solidjs/compiler-darwin-x64@2.0.0':
+    optional: true
+
+  '@solidjs/compiler-linux-arm64-gnu@2.0.0':
+    optional: true
+
+  '@solidjs/compiler-linux-x64-gnu@2.0.0':
+    optional: true
+
+  '@solidjs/compiler-wasm32-wasi@2.0.0':
+    dependencies:
+      '@emnapi/core': 1.11.3
+      '@emnapi/runtime': 1.11.3
+      '@napi-rs/wasm-runtime': 1.2.4(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
+    optional: true
+
+  '@solidjs/compiler-win32-x64-msvc@2.0.0':
+    optional: true
+
+  '@solidjs/compiler@2.0.0':
+    optionalDependencies:
+      '@solidjs/compiler-darwin-arm64': 2.0.0
+      '@solidjs/compiler-darwin-x64': 2.0.0
+      '@solidjs/compiler-linux-arm64-gnu': 2.0.0
+      '@solidjs/compiler-linux-x64-gnu': 2.0.0
+      '@solidjs/compiler-wasm32-wasi': 2.0.0
+      '@solidjs/compiler-win32-x64-msvc': 2.0.0
+
+  '@solidjs/signals@2.0.0': {}
+
+  '@solidjs/vite-plugin@3.0.1(@babel/core@7.29.7(supports-color@8.1.1))(@solidjs/web@2.0.0(solid-js@2.0.0))(solid-js@2.0.0)(vite@8.3.4(@types/node@22.20.1)(yaml@2.8.3))':
+    dependencies:
+      '@ampproject/remapping': 2.3.0
+      '@solidjs/compiler': 2.0.0
+      '@solidjs/web': 2.0.0(solid-js@2.0.0)
+      magic-string: 0.30.21
+      merge-anything: 5.1.7
+      solid-js: 2.0.0
+      vite: 8.3.4(@types/node@22.20.1)(yaml@2.8.3)
+      vitefu: 1.1.3(vite@8.3.4(@types/node@22.20.1)(yaml@2.8.3))
+    optionalDependencies:
+      '@babel/core': 7.29.7(supports-color@8.1.1)
+
+  '@solidjs/web@2.0.0(solid-js@2.0.0)':
+    dependencies:
+      csstype: 3.2.3
+      seroval: 1.8.0
+      seroval-plugins: 1.8.0(seroval@1.8.0)
+      solid-js: 2.0.0
 
   '@testing-library/dom@10.4.2':
     dependencies:
@@ -6878,15 +7060,6 @@ snapshots:
     dependencies:
       '@types/babel__core': 7.20.5
 
-  babel-plugin-jsx-dom-expressions@0.40.11(@babel/core@7.29.7(supports-color@8.1.1)):
-    dependencies:
-      '@babel/core': 7.29.7(supports-color@8.1.1)
-      '@babel/helper-module-imports': 7.18.6
-      '@babel/plugin-syntax-jsx': 7.29.7(@babel/core@7.29.7(supports-color@8.1.1))
-      '@babel/types': 7.29.8
-      html-entities: 2.3.3
-      parse5: 7.1.2
-
   babel-preset-current-node-syntax@1.2.0(@babel/core@7.29.7(supports-color@8.1.1)):
     dependencies:
       '@babel/core': 7.29.7(supports-color@8.1.1)
@@ -6911,13 +7084,6 @@ snapshots:
       '@babel/core': 7.29.7(supports-color@8.1.1)
       babel-plugin-jest-hoist: 30.4.0
       babel-preset-current-node-syntax: 1.2.0(@babel/core@7.29.7(supports-color@8.1.1))
-
-  babel-preset-solid@1.9.16(@babel/core@7.29.7(supports-color@8.1.1))(solid-js@1.9.17):
-    dependencies:
-      '@babel/core': 7.29.7(supports-color@8.1.1)
-      babel-plugin-jsx-dom-expressions: 0.40.11(@babel/core@7.29.7(supports-color@8.1.1))
-    optionalDependencies:
-      solid-js: 1.9.17
 
   balanced-match@1.0.2: {}
 
@@ -7236,8 +7402,6 @@ snapshots:
   encodeurl@1.0.2: {}
 
   encodeurl@2.0.0: {}
-
-  entities@4.5.0: {}
 
   entities@7.0.1: {}
 
@@ -7633,8 +7797,6 @@ snapshots:
   highlight.js@11.11.1: {}
 
   host-validation-middleware@0.1.1: {}
-
-  html-entities@2.3.3: {}
 
   html-escaper@2.0.2: {}
 
@@ -8220,6 +8382,10 @@ snapshots:
 
   lz-string@1.5.0: {}
 
+  magic-string@0.30.21:
+    dependencies:
+      '@jridgewell/sourcemap-codec': 1.6.0
+
   magic-string@1.4.3:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
@@ -8512,10 +8678,6 @@ snapshots:
       json-parse-even-better-errors: 2.3.1
       lines-and-columns: 1.2.4
 
-  parse5@7.1.2:
-    dependencies:
-      entities: 4.5.0
-
   parseurl@1.3.3: {}
 
   path-exists@4.0.0: {}
@@ -8731,11 +8893,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  seroval-plugins@1.6.11(seroval@1.6.11):
+  seroval-plugins@1.8.0(seroval@1.8.0):
     dependencies:
-      seroval: 1.6.11
+      seroval: 1.8.0
 
-  seroval@1.6.11: {}
+  seroval@1.8.0: {}
 
   serve-static@1.16.2(supports-color@8.1.1):
     dependencies:
@@ -8819,20 +8981,11 @@ snapshots:
 
   slashes@3.0.12: {}
 
-  solid-js@1.9.17:
+  solid-js@2.0.0:
     dependencies:
-      csstype: 3.2.3
-      seroval: 1.6.11
-      seroval-plugins: 1.6.11(seroval@1.6.11)
-
-  solid-refresh@0.6.3(solid-js@1.9.17)(supports-color@8.1.1):
-    dependencies:
-      '@babel/generator': 7.29.8
-      '@babel/helper-module-imports': 7.29.7(supports-color@8.1.1)
-      '@babel/types': 7.29.8
-      solid-js: 1.9.17
-    transitivePeerDependencies:
-      - supports-color
+      '@solidjs/signals': 2.0.0
+      seroval: 1.8.0
+      seroval-plugins: 1.8.0(seroval@1.8.0)
 
   source-map-js@1.2.2: {}
 
@@ -9084,19 +9237,6 @@ snapshots:
       typescript: 5.9.3
 
   vary@1.1.2: {}
-
-  vite-plugin-solid@2.11.14(solid-js@1.9.17)(supports-color@8.1.1)(vite@8.3.4(@types/node@22.20.1)(yaml@2.8.3)):
-    dependencies:
-      '@babel/core': 7.29.7(supports-color@8.1.1)
-      '@types/babel__core': 7.20.5
-      babel-preset-solid: 1.9.16(@babel/core@7.29.7(supports-color@8.1.1))(solid-js@1.9.17)
-      merge-anything: 5.1.7
-      solid-js: 1.9.17
-      solid-refresh: 0.6.3(solid-js@1.9.17)(supports-color@8.1.1)
-      vite: 8.3.4(@types/node@22.20.1)(yaml@2.8.3)
-      vitefu: 1.1.3(vite@8.3.4(@types/node@22.20.1)(yaml@2.8.3))
-    transitivePeerDependencies:
-      - supports-color
 
   vite-plus@1.1.0(@types/node@22.20.1)(@vitest/ui@5.0.3(vitest@5.0.3))(happy-dom@21.0.1)(playwright@1.61.1)(typescript@5.9.3)(yaml@2.8.3):
     dependencies:

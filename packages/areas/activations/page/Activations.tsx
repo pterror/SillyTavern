@@ -1,4 +1,4 @@
-import { For, Show, onCleanup, onMount } from 'solid-js';
+import { For, Show, onCleanup, onSettled } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
@@ -51,7 +51,7 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
     onCleanup(() => void client.send('activations.close', {}));
 
     let panel: HTMLDivElement | undefined;
-    onMount(() => {
+    onSettled(() => {
         if (!panel) return;
         const position = () => {
             if (!panel) return;
@@ -68,11 +68,11 @@ function Panel(props: { look: Look; view: Accessor<PanelView | undefined>; old: 
         observer.observe(panel);
         window.addEventListener('resize', position);
         document.addEventListener('scroll', position, true);
-        onCleanup(() => {
+        return () => {
             observer.disconnect();
             window.removeEventListener('resize', position);
             document.removeEventListener('scroll', position, true);
-        });
+        };
     });
 
     const shown = () => {

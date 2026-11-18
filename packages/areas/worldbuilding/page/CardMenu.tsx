@@ -33,11 +33,10 @@ export function CardMenuButton(props: {
             <button
                 ref={(element) => (button = element)}
                 type="button"
-                class="right_menu_button interactable wb-card-more"
-                classList={{ 'wb-on': props.open }}
+                class={['right_menu_button interactable wb-card-more', { 'wb-on': props.open }]}
                 aria-label={fill(t('More for ${0}'), props.label.text)}
                 title={t('More')}
-                aria-expanded={props.open}
+                aria-expanded={props.open ? 'true' : 'false'}
                 onClick={() => props.onOpen(!props.open)}
             >
                 <Icon name="more" size={16} />
@@ -109,10 +108,9 @@ function CardMenu(props: {
                     {(grouping) => (
                         <>
                             <button
-                                class="list-group-item"
+                                class={['list-group-item', { 'wb-on': picking() === 'move' }]}
                                 type="button"
                                 role="menuitem"
-                                classList={{ 'wb-on': picking() === 'move' }}
                                 onClick={() => setPicking('move')}
                             >
                                 {t('Move to…')}
@@ -121,10 +119,9 @@ function CardMenu(props: {
                                 {(region) => (
                                     <>
                                         <button
-                                            class="list-group-item"
+                                            class={['list-group-item', { 'wb-on': picking() === 'also' }]}
                                             type="button"
                                             role="menuitem"
-                                            classList={{ 'wb-on': picking() === 'also' }}
                                             onClick={() => setPicking('also')}
                                         >
                                             {t('Add to…')}
@@ -168,19 +165,17 @@ function CardMenu(props: {
                     {t('Duplicate')}
                 </button>
                 <button
-                    class="list-group-item"
+                    class={['list-group-item', { 'wb-on': picking() === 'copyToWorld' }]}
                     type="button"
                     role="menuitem"
-                    classList={{ 'wb-on': picking() === 'copyToWorld' }}
                     onClick={() => setPicking('copyToWorld')}
                 >
                     {t('Copy to world…')}
                 </button>
                 <button
-                    class="list-group-item"
+                    class={['list-group-item', { 'wb-on': picking() === 'moveToWorld' }]}
                     type="button"
                     role="menuitem"
-                    classList={{ 'wb-on': picking() === 'moveToWorld' }}
                     onClick={() => setPicking('moveToWorld')}
                 >
                     {t('Move to world…')}

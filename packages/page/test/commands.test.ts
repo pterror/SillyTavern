@@ -1,3 +1,4 @@
+import { flush as flushSync } from 'solid-js';
 import { afterEach, expect, test } from 'vite-plus/test';
 import { createCommands } from '../src/commands.ts';
 import type { Overrides } from '../src/commands.ts';
@@ -17,6 +18,7 @@ function press(key: string, init: KeyboardEventInit = {}, at: EventTarget = docu
         ...init,
     });
     at.dispatchEvent(event);
+    flushSync();
     return event;
 }
 

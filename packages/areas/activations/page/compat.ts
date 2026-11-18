@@ -1,4 +1,4 @@
-import { unwrap } from 'solid-js/store';
+import { snapshot } from 'solid-js';
 import type { Accessor, Setter } from 'solid-js';
 import type { Client } from '@st/page/client';
 import { PEEK_VIEW } from '../protocol.ts';
@@ -9,7 +9,7 @@ export function activationsCompat(client: Client, setLook: Setter<Look | null>) 
     let peekView: Accessor<PanelView | undefined> | null = null;
     const held = (message: string) => {
         const now = peekView?.();
-        return now && now.message === message ? (structuredClone(unwrap(now)) as PanelView) : null;
+        return now && now.message === message ? (structuredClone(snapshot(now)) as PanelView) : null;
     };
     const peek = async (message: string): Promise<PanelView | null> => {
         peekView ??= client.view<PanelView>(PEEK_VIEW);

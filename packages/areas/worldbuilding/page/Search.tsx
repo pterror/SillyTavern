@@ -1,4 +1,4 @@
-import { For, Show, onCleanup, onMount } from 'solid-js';
+import { For, Show, onSettled } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { MAX_CARDS_PER_READ } from '../protocol.ts';
 import type { Chip, ResultsView } from '../protocol.ts';
@@ -23,7 +23,7 @@ export function SearchBox(props: { typed: Typed; onType: (typed: Typed) => void 
     const { t } = useUi();
     const scope = () => props.typed.scope;
     return (
-        <label class="wb-search text_pole" classList={{ 'wb-searching': props.typed.query !== '' || scope() !== null }}>
+        <label class={['wb-search text_pole', { 'wb-searching': props.typed.query !== '' || scope() !== null }]}>
             <Icon name="search" />
             <Show when={scope()}>
                 {(shown) => (
@@ -63,14 +63,14 @@ export function Results(props: {
     let end: HTMLDivElement | undefined;
     const entries = () => props.view.pages.flatMap((page) => page.entries);
     const more = () => props.view.pages.at(-1)?.next !== null && props.view.pages.length > 0;
-    onMount(() => {
+    onSettled(() => {
         const watch = new IntersectionObserver((seen) => {
             if (!seen.some((one) => one.isIntersecting) || !more()) return;
             const pages = props.view.pages.length + 1;
             if (pages * props.pageSize <= MAX_CARDS_PER_READ) props.onMore(pages);
         });
         if (end) watch.observe(end);
-        onCleanup(() => watch.disconnect());
+        return () => watch.disconnect();
     });
     return (
         <>
@@ -80,7 +80,7 @@ export function Results(props: {
                     <div class="wb-grid">
                         <For each={entries()}>
                             {(cell) => (
-                                <div class="wb-top-cell" classList={{ 'wb-wide': cell.region.length > 0 }}>
+                                <div class={['wb-top-cell', { 'wb-wide': cell.region.length > 0 }]}>
                                     <Cell cell={cell} region={null} actions={props.actions} />
                                 </div>
                             )}

@@ -9,10 +9,11 @@
         "./page": "./page/index.ts"
     },
     "dependencies": {
+        "@solidjs/web": "2.0.0",
         "@st/page": "workspace:*",
         "@st/protocol": "workspace:*",
         "@st/server-ui": "workspace:*",
-        "solid-js": "1.9.17",
+        "solid-js": "2.0.0",
         "valibot": "1.5.0"
     },
     "devDependencies": {

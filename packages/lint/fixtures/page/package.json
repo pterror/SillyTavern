@@ -3,6 +3,7 @@
     "private": true,
     "type": "module",
     "dependencies": {
-        "solid-js": "1.9.17"
+        "solid-js": "2.0.0",
+        "@solidjs/web": "2.0.0"
     }
 }

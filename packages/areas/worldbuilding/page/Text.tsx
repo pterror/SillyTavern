@@ -1,4 +1,5 @@
-import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
+import { elementSetup } from '@st/page/element';
+import { For, Show, createEffect, createSignal, onCleanup, onSettled } from 'solid-js';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { Annotation, ChangeSet, EditorState, RangeSetBuilder, StateEffect, StateField } from '@codemirror/state';
 import type { Extension, Range } from '@codemirror/state';
@@ -119,7 +120,7 @@ export function EntryText(props: {
                 <div
                     class="wb-text"
                     role="textbox"
-                    tabIndex={0}
+                    tabindex={0}
                     aria-label={t('Content')}
                     onMouseUp={(event) => readSelection(event.currentTarget)}
                     onClick={(event) => {
@@ -127,14 +128,12 @@ export function EntryText(props: {
                         if (selection && !selection.isCollapsed) return;
                         if (!(event.target as Element).closest('.wb-link')) setEditing(true);
                     }}
-                    ref={(element) =>
-                        onCleanup(
-                            focusActions.attach(element, {
-                                when: () => document.activeElement === element,
-                                activate: () => void setEditing(true),
-                            }),
-                        )
-                    }
+                    ref={elementSetup<HTMLDivElement>((element) =>
+                        focusActions.attach(element, {
+                            when: () => document.activeElement === element,
+                            activate: () => void setEditing(true),
+                        }),
+                    )}
                 >
                     <Show when={props.text.trim() !== ''} fallback={<p class="wb-ghost">{t('Content')}</p>}>
                         <For each={paragraphsOf(props.text, props.links)}>
@@ -276,7 +275,7 @@ function Editor(props: {
             bottom: Math.max(start.bottom, end.bottom),
         });
     };
-    onMount(() => {
+    onSettled(() => {
         if (!host) return;
         view = new EditorView({
             parent: host,
@@ -315,23 +314,22 @@ function Editor(props: {
         });
         view.dispatch({ effects: linksSet.of(props.links) });
         const editor = view;
-        onCleanup(focusActions.attach(editor.dom, { cancel: () => editor.contentDOM.blur() }));
+        const detach = focusActions.attach(editor.dom, { cancel: () => editor.contentDOM.blur() });
         view.focus();
+        return detach;
     });
     createEffect(
-        on(
-            () => [props.text, props.version, props.links] as const,
-            ([text, version, links]) => {
-                if (sent === null && version !== base.version) {
-                    if (doc() === base.text) {
-                        take(base.text, text, null);
-                        base = { text, version };
-                    } else send();
-                }
-                if (view && doc() === text) view.dispatch({ effects: linksSet.of(links) });
-            },
-            { defer: true },
-        ),
+        () => [props.text, props.version, props.links] as const,
+        ([text, version, links]) => {
+            if (sent === null && version !== base.version) {
+                if (doc() === base.text) {
+                    take(base.text, text, null);
+                    base = { text, version };
+                } else send();
+            }
+            if (view && doc() === text) view.dispatch({ effects: linksSet.of(links) });
+        },
+        { defer: true },
     );
     onCleanup(() => view?.destroy());
     return <div class="wb-text wb-text-editing" ref={(element) => (host = element)} />;

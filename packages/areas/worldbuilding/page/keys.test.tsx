@@ -1,4 +1,5 @@
-import { render } from 'solid-js/web';
+import { flush as flushSync } from 'solid-js';
+import { render } from '@solidjs/web';
 import { expect, test } from 'vite-plus/test';
 import type { Client } from '@st/page/client';
 import { UiProvider } from '@st/page/context';
@@ -86,10 +87,13 @@ const button = (host: HTMLElement, label: string) =>
 const labelled = (host: HTMLElement, label: string) => host.querySelector(`[aria-label="${label}"]`) as HTMLElement;
 const type = (field: HTMLInputElement, text: string) => {
     field.value = text;
-    field.dispatchEvent(new Event('input'));
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
 };
-const press = (field: HTMLElement, key: string) =>
+const press = (field: HTMLElement, key: string) => {
     field.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true }));
+    flushSync();
+};
 
 test('names are drawn in the entry’s look under “Also called”, triggers plain under “Triggers”, and a key shared with others says how many', () => {
     const { host } = stand(ENTRY);
@@ -112,8 +116,10 @@ test('names are drawn in the entry’s look under “Also called”, triggers pl
 test('a key shared with other entries asks who they are when clicked; moving it between names and triggers sends one action', () => {
     const { host, sent } = stand(ENTRY);
     labelled(host, '“ledger”, trigger').click();
+    flushSync();
     expect(sent).toEqual([{ type: 'worldbuilding.showKeySharers', payload: { book: '1', entry: '7', key: 'ledger' } }]);
     button(host, 'Make it a name').click();
+    flushSync();
     expect(sent.at(-1)).toEqual({
         type: 'worldbuilding.setKeyAs',
         payload: { book: '1', entry: '7', version: '3', key: 'ledger', as: 'name' },
@@ -123,6 +129,7 @@ test('a key shared with other entries asks who they are when clicked; moving it 
 test('a pattern can’t be made a name from its menu', () => {
     const { host } = stand(ENTRY);
     labelled(host, '“/lamp(s|ed)?/i”, trigger').click();
+    flushSync();
     expect(button(host, 'Make it a name')).toBe(undefined);
     expect(button(host, 'Remove')).not.toBe(undefined);
 });
@@ -130,6 +137,7 @@ test('a pattern can’t be made a name from its menu', () => {
 test('“+” on the names takes the words typed and adds them as a name on Enter', () => {
     const { host, sent } = stand(ENTRY);
     labelled(host, 'Add name').click();
+    flushSync();
     const field = host.querySelector('input') as HTMLInputElement;
     type(field, 'the innkeeper');
     press(field, 'Enter');
@@ -142,6 +150,7 @@ test('“+” on the names takes the words typed and adds them as a name on Ente
 test('several keys typed or pasted are added in one action, a comma inside a pattern kept', () => {
     const { host, sent } = stand(ENTRY);
     labelled(host, 'Add trigger').click();
+    flushSync();
     const field = host.querySelector('input') as HTMLInputElement;
     type(field, 'a, b,\nc, /x{1,2}/i, ledger');
     press(field, 'Enter');
@@ -156,6 +165,7 @@ test('several keys typed or pasted are added in one action, a comma inside a pat
 test('a key is edited in place: Enter renames it, Escape leaves it', () => {
     const { host, sent } = stand(ENTRY);
     labelled(host, '“ledger”, trigger').click();
+    flushSync();
     sent.length = 0;
     const field = host.querySelector('input') as HTMLInputElement;
     expect(field.value).toBe('ledger');
@@ -171,11 +181,13 @@ test('a key is edited in place: Enter renames it, Escape leaves it', () => {
     ]);
     expect(host.querySelector('input')).toBe(null);
     labelled(host, '“ledger”, trigger').click();
+    flushSync();
     sent.length = 0;
     const again = host.querySelector('input') as HTMLInputElement;
     type(again, 'other');
     sent.length = 0;
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    flushSync();
     expect(sent).toEqual([]);
     expect(labelled(host, '“ledger”, trigger')).not.toBe(null);
 });
@@ -188,6 +200,7 @@ test('secondary keys are chips after their logic, edited and added with the plac
     const triggers = host.querySelectorAll('.wb-keys')[1] as HTMLElement;
     expect(triggers.querySelector('.wb-tok')?.textContent).toBe('None of');
     labelled(host, '“harbour”, secondary trigger').click();
+    flushSync();
     const field = host.querySelector('input') as HTMLInputElement;
     type(field, 'port');
     press(field, 'Enter');
@@ -196,6 +209,7 @@ test('secondary keys are chips after their logic, edited and added with the plac
         payload: { book: '1', entry: '7', version: '3', fields: { keysecondary: ['port', 'quay'], selective: true } },
     });
     labelled(host, 'Add secondary trigger').click();
+    flushSync();
     const added = host.querySelector('input') as HTMLInputElement;
     type(added, 'dock, pier');
     press(added, 'Enter');
@@ -219,6 +233,7 @@ test('without secondary keys the row offers “+ Secondary”; a constant entry 
     expect(constant.host.querySelector('.wb-always')?.textContent).toBe('Constant · 96 tokens');
     expect(constant.host.querySelectorAll('.wb-triggers .wb-key').length).toBe(0);
     button(constant.host, 'Make normal').click();
+    flushSync();
     expect(constant.sent).toEqual([
         {
             type: 'worldbuilding.setPlacement',

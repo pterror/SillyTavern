@@ -47,8 +47,8 @@ import { LookScreen, looksCompat } from '@st/looks/page';
 import { Worldbuilding, worldbuildingCompat } from '@st/worldbuilding/page';
 import type { OldPage as HelpOldPage } from '@st/help/page';
 import type { OldPage as WorldbuildingOldPage } from '@st/worldbuilding/page';
-import { render } from 'solid-js/web';
-import type { JSX } from 'solid-js';
+import { render } from '@solidjs/web';
+import type { JSX } from '@solidjs/web';
 
 export type StartOptions = {
     headers: () => Record<string, string>;

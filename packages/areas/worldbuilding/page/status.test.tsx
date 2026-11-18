@@ -1,4 +1,5 @@
-import { render } from 'solid-js/web';
+import { flush as flushSync } from 'solid-js';
+import { render } from '@solidjs/web';
 import { expect, test } from 'vite-plus/test';
 import { UiProvider } from '@st/page/context';
 import { testCommands } from '@st/page/focus-actions';
@@ -61,10 +62,12 @@ test('the overview dot changes status without opening the card and preserves the
     try {
         const opener = host.querySelector<HTMLButtonElement>('.wb-status-control')!;
         opener.click();
+        flushSync();
         expect(opener.getAttribute('aria-expanded')).toBe('true');
         expect(host.querySelectorAll('.wb-status-option')).toHaveLength(4);
         expect(host.querySelector('.wb-status-option[aria-pressed="true"]')?.textContent).toContain('Vectorized');
         host.querySelectorAll<HTMLButtonElement>('.wb-status-option')[1]!.click();
+        flushSync();
         expect(sent[0]).toEqual({
             type: 'worldbuilding.setPlacement',
             payload: {
@@ -77,7 +80,9 @@ test('the overview dot changes status without opening the card and preserves the
         expect(host.querySelector('.wb-status-picker')).toBeNull();
         expect(document.activeElement).toBe(opener);
         opener.click();
+        flushSync();
         host.querySelectorAll<HTMLButtonElement>('.wb-status-option')[3]!.click();
+        flushSync();
         expect(sent[1]).toEqual({
             type: 'worldbuilding.setPlacement',
             payload: { book: '1', entry: '2', version: '9', fields: { disable: true } },

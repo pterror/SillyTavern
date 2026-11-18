@@ -1,14 +1,12 @@
-import 'solid-js';
+import '@solidjs/web';
 
-declare module 'solid-js' {
+declare module '@solidjs/web' {
     // oxlint-disable-next-line typescript/no-namespace -- the JSX namespace is how TypeScript reads JSX types.
     namespace JSX {
-        interface ExplicitAttributes {
-            bgfile: string;
-            custom: string;
-            animated: string;
-            'data-action': string;
-            'data-folder-id': string;
+        interface HTMLAttributes<T> {
+            bgfile?: string;
+            custom?: string;
+            animated?: string;
         }
     }
 }

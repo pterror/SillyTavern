@@ -1,5 +1,5 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
-import type { JSX } from 'solid-js';
+import { For, Show, createSignal, onSettled } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { useUi } from '@st/page/context';
 import { Name } from '@st/page/name';
 import { KEY_SHARERS_VIEW, KEY_SUGGESTIONS_VIEW } from '../protocol.ts';
@@ -87,8 +87,10 @@ export function KeyChips(props: {
                         fallback={
                             <button
                                 type="button"
-                                class="tag wb-key"
-                                classList={{ 'wb-pattern': isPattern(chip.text), 'wb-compact': props.compact }}
+                                class={[
+                                    'tag wb-key',
+                                    { 'wb-pattern': isPattern(chip.text), 'wb-compact': props.compact },
+                                ]}
                                 aria-label={fill(t(words().chip), chip.text)}
                                 title={chip.text}
                                 onClick={() => edit(chip)}
@@ -142,8 +144,7 @@ export function KeyChips(props: {
                     fallback={
                         <button
                             type="button"
-                            class="menu_button margin0 whitespacenowrap wb-key-add"
-                            classList={{ 'wb-compact': props.compact }}
+                            class={['menu_button margin0 whitespacenowrap wb-key-add', { 'wb-compact': props.compact }]}
                             aria-label={t(words().add)}
                             title={t(words().add)}
                             onClick={() => {
@@ -206,23 +207,21 @@ function KeyField(props: {
     const picked = (text: string) => {
         finish(`${typed().before}${text}`);
     };
-    onMount(() => {
+    onSettled(() => {
         if (!field) return;
         const shown = field;
         shown.focus();
         shown.select();
-        onCleanup(
-            focusActions.attach(shown, {
-                next: () => (rows().length > 0 ? void setAt(Math.min(rows().length - 1, at() + 1)) : false),
-                previous: () => (rows().length > 0 ? void setAt(Math.max(-1, at() - 1)) : false),
-                confirm: () => {
-                    const chosen = rows()[at()];
-                    if (chosen) picked(chosen.text);
-                    else finish(shown.value);
-                },
-                cancel: () => finish(null),
-            }),
-        );
+        return focusActions.attach(shown, {
+            next: () => (rows().length > 0 ? void setAt(Math.min(rows().length - 1, at() + 1)) : false),
+            previous: () => (rows().length > 0 ? void setAt(Math.max(-1, at() - 1)) : false),
+            confirm: () => {
+                const chosen = rows()[at()];
+                if (chosen) picked(chosen.text);
+                else finish(shown.value);
+            },
+            cancel: () => finish(null),
+        });
     });
     return (
         <>
@@ -232,15 +231,15 @@ function KeyField(props: {
                 aria-label={props.label}
                 placeholder={props.label}
                 value={props.initial}
-                on:input={(event) => {
+                onInput={(event) => {
                     const text = (event.currentTarget as HTMLInputElement).value;
                     setValue(text);
                     setAt(-1);
                     setHidden(false);
-                    const { word } = typed();
+                    const { word } = props.several === true ? lastWord(text) : { word: text.trimStart() };
                     if (word !== '') void wb.act('worldbuilding.suggestKeys', { book: props.book, typed: word });
                 }}
-                on:paste={(event) => {
+                onPaste={(event) => {
                     const pasted = event.clipboardData?.getData('text') ?? '';
                     if (props.several !== true || !/[\r\n]/.test(pasted)) return;
                     event.preventDefault();
@@ -269,16 +268,12 @@ function KeyField(props: {
                                     <button
                                         type="button"
                                         role="option"
-                                        class="list-group-item wb-opt wb-suggestion"
-                                        classList={{ 'wb-on': index() === at() }}
-                                        aria-selected={index() === at()}
+                                        class={['list-group-item wb-opt wb-suggestion', { 'wb-on': index() === at() }]}
+                                        aria-selected={index() === at() ? 'true' : 'false'}
                                         onPointerEnter={() => setAt(index())}
                                         onClick={() => picked(one.text)}
                                     >
-                                        <span
-                                            class="wb-suggestion-text"
-                                            classList={{ 'wb-pattern': isPattern(one.text) }}
-                                        >
+                                        <span class={['wb-suggestion-text', { 'wb-pattern': isPattern(one.text) }]}>
                                             {one.text}
                                         </span>
                                         <span class="wb-key-more">

@@ -20,6 +20,31 @@ function server(answer: (sent: Sent) => unknown) {
 
 const frame = (version: number, value: unknown) => ({ key: 'k', version, value });
 
+test('a replacement view with a different identity replaces the previous store value', () => {
+    server(() => ({ ok: true, views: [] }));
+    const client = createClient({ headers: () => ({}) });
+    const view = createRoot(() => client.view<{ id: string; name: string }>('k'));
+    client.receive({ type: 'views', views: [frame(1, { id: 'a', name: 'First' })] });
+    client.receive({ type: 'views', views: [frame(2, { id: 'b', name: 'Second' })] });
+    expect(view()).toEqual({ id: 'b', name: 'Second' });
+});
+
+test('a batch rejects older frames and applies patches to the value staged before them', () => {
+    server(() => ({ ok: true, views: [] }));
+    const client = createClient({ headers: () => ({}) });
+    const view = createRoot(() => client.view<{ count: number; kept: boolean }>('k'));
+    client.receive({
+        type: 'views',
+        views: [
+            frame(5, { count: 1, kept: true }),
+            { key: 'k', version: 6, patch: { count: 2 } },
+            frame(3, { count: 0, kept: false }),
+        ],
+    });
+    expect(view()).toEqual({ count: 2, kept: true });
+    expect(client.version('k')).toBe(6);
+});
+
 test('a view keeps the newest version, whichever arrives last', async () => {
     server(() => ({ ok: true, views: [frame(5, 'five')] }));
     const client = createClient({ headers: () => ({}) });

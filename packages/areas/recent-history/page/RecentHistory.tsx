@@ -1,4 +1,4 @@
-import { For, Show, createEffect, on, onCleanup, onMount } from 'solid-js';
+import { For, Show, createEffect, onCleanup, onSettled } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { VIEW } from '../protocol.ts';
 import type { Chat, Entry, ListView, Message, Of } from '../protocol.ts';
@@ -37,7 +37,7 @@ function Panel(props: { of: Of; old: OldPage; onShow: (of: Of) => void; onClose:
     let scroller: HTMLOListElement | undefined;
     let asking = false;
 
-    onMount(() => {
+    onSettled(() => {
         dialog?.showModal();
         props.old.dialogsChanged();
     });
@@ -67,7 +67,7 @@ function Panel(props: { of: Of; old: OldPage; onShow: (of: Of) => void; onClose:
     const fill = () => {
         if (nearEnd()) more();
     };
-    createEffect(on(list, () => queueMicrotask(fill)));
+    createEffect(list, () => queueMicrotask(fill));
 
     const go = async (chat: Chat, message: Message) => {
         const refused = await props.old.go(chat, message.nodeId);
@@ -105,9 +105,8 @@ function Panel(props: { of: Of; old: OldPage; onShow: (of: Of) => void; onClose:
                         <button
                             type="button"
                             role="tab"
-                            class="menu_button"
-                            classList={{ active: props.of === 'chat' }}
-                            aria-selected={props.of === 'chat'}
+                            class={['menu_button', { active: props.of === 'chat' }]}
+                            aria-selected={props.of === 'chat' ? 'true' : 'false'}
                             onClick={() => show('chat')}
                         >
                             {t('This chat')}
@@ -115,9 +114,8 @@ function Panel(props: { of: Of; old: OldPage; onShow: (of: Of) => void; onClose:
                         <button
                             type="button"
                             role="tab"
-                            class="menu_button"
-                            classList={{ active: props.of === 'all' }}
-                            aria-selected={props.of === 'all'}
+                            class={['menu_button', { active: props.of === 'all' }]}
+                            aria-selected={props.of === 'all' ? 'true' : 'false'}
                             onClick={() => show('all')}
                         >
                             {t('All chats')}
@@ -156,15 +154,17 @@ function Panel(props: { of: Of; old: OldPage; onShow: (of: Of) => void; onClose:
                                                 <button
                                                     type="button"
                                                     class="recent-history-others menu_button"
-                                                    aria-expanded={entry.tips !== null}
+                                                    aria-expanded={entry.tips !== null ? 'true' : 'false'}
                                                     onClick={() => expand(entry, entry.tips === null)}
                                                 >
                                                     <i
-                                                        class="fa-solid"
-                                                        classList={{
-                                                            'fa-chevron-right': entry.tips === null,
-                                                            'fa-chevron-down': entry.tips !== null,
-                                                        }}
+                                                        class={[
+                                                            'fa-solid',
+                                                            {
+                                                                'fa-chevron-right': entry.tips === null,
+                                                                'fa-chevron-down': entry.tips !== null,
+                                                            },
+                                                        ]}
                                                     />
                                                     {splitText(entry)}
                                                 </button>
@@ -243,7 +243,7 @@ function Row(props: {
                 }
             }}
         >
-            <div class="select_chat_block wide100p" classList={{ now: props.current }}>
+            <div class={['select_chat_block wide100p', { now: props.current }]}>
                 <div class="flex-container alignItemsCenter justifySpaceBetween wide100p">
                     <small class="select_chat_block_filename">
                         <Show when={props.showChat}>{props.chat.name}</Show>

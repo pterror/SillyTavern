@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createSignal, onSettled } from 'solid-js';
 import { useUi } from '@st/page/context';
 import { FOUND_VIEW } from '../protocol.ts';
 import type { FoundEntry, FoundView } from '../protocol.ts';
@@ -28,19 +28,17 @@ export function TargetPicker(props: {
     const [query, setQuery] = createSignal('');
     const [at, setAt] = createSignal(0);
     let field: HTMLInputElement | undefined;
-    onMount(() => {
+    onSettled(() => {
         if (!field) return;
         field.focus();
-        onCleanup(
-            focusActions.attach(field, {
-                next: () => void setAt(Math.min(rows().length - 1, at() + 1)),
-                previous: () => void setAt(Math.max(0, at() - 1)),
-                confirm: () => {
-                    const chosen = rows()[at()];
-                    if (chosen) props.onPick(chosen.label.thing);
-                },
-            }),
-        );
+        return focusActions.attach(field, {
+            next: () => void setAt(Math.min(rows().length - 1, at() + 1)),
+            previous: () => void setAt(Math.max(0, at() - 1)),
+            confirm: () => {
+                const chosen = rows()[at()];
+                if (chosen) props.onPick(chosen.label.thing);
+            },
+        });
     });
     const rows = (): FoundEntry[] => {
         const shown = found();
@@ -71,9 +69,8 @@ export function TargetPicker(props: {
                             <button
                                 type="button"
                                 role="option"
-                                class="list-group-item wb-pick-row"
-                                classList={{ 'wb-on': index() === at() }}
-                                aria-selected={index() === at()}
+                                class={['list-group-item wb-pick-row', { 'wb-on': index() === at() }]}
+                                aria-selected={index() === at() ? 'true' : 'false'}
                                 onPointerEnter={() => setAt(index())}
                                 onClick={() => props.onPick(row.label.thing)}
                             >

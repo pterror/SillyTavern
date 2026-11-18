@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, on, onCleanup } from 'solid-js';
+import { Show, createEffect, createSignal } from 'solid-js';
 import moment from 'moment';
 import { useUi } from '@st/page/context';
 import { VIEW } from '../protocol.ts';
@@ -34,16 +34,18 @@ export function UsageStats(props: { buttons: Buttons; old: OldPage }) {
     };
     const listen = (button: HTMLElement, click: () => void) => {
         button.addEventListener('click', click);
-        onCleanup(() => {
+        return () => {
             button.removeEventListener('click', click);
-        });
+        };
     };
-    createEffect(() => {
-        listen(props.buttons.all, showAll);
-    });
-    createEffect(() => {
-        listen(props.buttons.character, showCharacter);
-    });
+    createEffect(
+        () => props.buttons.all,
+        (button) => listen(button, showAll),
+    );
+    createEffect(
+        () => props.buttons.character,
+        (button) => listen(button, showCharacter),
+    );
 
     return (
         <Show when={opened()}>
@@ -86,21 +88,19 @@ function Panel(props: { old: Pick<OldPage, 'dialogsChanged'>; onClosed: () => vo
         return true;
     };
 
-    createEffect(
-        on(view, (current) => {
-            if (current === undefined || closing) return;
-            if (current.of === null) {
-                hide();
-                return;
-            }
-            setDrawn(current);
-            if (dialog && !dialog.open) {
-                dialog.showModal();
-                props.old.dialogsChanged();
-                animated('opening', () => {});
-            }
-        }),
-    );
+    createEffect(view, (current) => {
+        if (current === undefined || closing) return;
+        if (current.of === null) {
+            hide();
+            return;
+        }
+        setDrawn(current);
+        if (dialog && !dialog.open) {
+            dialog.showModal();
+            props.old.dialogsChanged();
+            animated('opening', () => {});
+        }
+    });
 
     const close = () => {
         if (hide()) void client.send('usageStats.close', {});

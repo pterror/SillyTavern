@@ -1,5 +1,5 @@
-import { For, Match, Show, Switch, createSignal, onCleanup, onMount } from 'solid-js';
-import type { JSX } from 'solid-js';
+import { For, Match, Show, Switch, createSignal, onSettled } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { useUi } from '@st/page/context';
 import { TRIGGERS } from '../protocol.ts';
 import type { CharacterFilterShown, Placement } from '../protocol.ts';
@@ -327,17 +327,16 @@ function TokenField(props: { value: string; label: string; wide: boolean; onDone
         finished = true;
         props.onDone(typed);
     };
-    onMount(() => {
+    onSettled(() => {
         if (!field) return;
         const shown = field;
         shown.select();
-        onCleanup(focusActions.attach(shown, { confirm: () => finish(shown.value), cancel: () => finish(null) }));
+        return focusActions.attach(shown, { confirm: () => finish(shown.value), cancel: () => finish(null) });
     });
     return (
         <input
             ref={(element) => (field = element)}
-            class="text_pole margin0 wb-tok-field"
-            classList={{ 'wb-tok-wide': props.wide }}
+            class={['text_pole margin0 wb-tok-field', { 'wb-tok-wide': props.wide }]}
             aria-label={props.label}
             value={props.value}
             onBlur={(event) => finish(event.currentTarget.value)}
@@ -360,9 +359,8 @@ function Choices<T>(props: {
                     <button
                         type="button"
                         role="option"
-                        class="list-group-item wb-choice"
-                        classList={{ 'wb-on': item.value === props.chosen }}
-                        aria-selected={item.value === props.chosen}
+                        class={['list-group-item wb-choice', { 'wb-on': item.value === props.chosen }]}
+                        aria-selected={item.value === props.chosen ? 'true' : 'false'}
                         onClick={() => props.onPick(item.value)}
                     >
                         {t(item.words)}
@@ -405,9 +403,8 @@ function Several<T>(props: {
                     <button
                         type="button"
                         role="option"
-                        class="list-group-item wb-choice"
-                        classList={{ 'wb-on': props.chosen.includes(item.value) }}
-                        aria-selected={props.chosen.includes(item.value)}
+                        class={['list-group-item wb-choice', { 'wb-on': props.chosen.includes(item.value) }]}
+                        aria-selected={props.chosen.includes(item.value) ? 'true' : 'false'}
                         onClick={() => props.onToggle(item.value, !props.chosen.includes(item.value))}
                     >
                         {t(item.words)}
@@ -475,7 +472,12 @@ function ExtraSentence(props: {
                 {(extra) => (
                     <p>
                         {t(extra().before)}
-                        <button type="button" class="wb-tok" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                        <button
+                            type="button"
+                            class="wb-tok"
+                            aria-expanded={open() ? 'true' : 'false'}
+                            onClick={() => setOpen(!open())}
+                        >
                             {t(extraValue(p(), extra()) ?? extra().options[0]?.words ?? '')}
                         </button>
                         {t(extra().after)}
@@ -516,7 +518,12 @@ function ExtraSentence(props: {
                 {(extra) => (
                     <p>
                         {t('Generation triggers: ')}
-                        <button type="button" class="wb-tok" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                        <button
+                            type="button"
+                            class="wb-tok"
+                            aria-expanded={open() ? 'true' : 'false'}
+                            onClick={() => setOpen(!open())}
+                        >
                             {p().triggers.length === 0
                                 ? t('…')
                                 : p()
@@ -546,7 +553,12 @@ function ExtraSentence(props: {
                 {(extra) => (
                     <p>
                         {t('Additional matching sources: ')}
-                        <button type="button" class="wb-tok" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                        <button
+                            type="button"
+                            class="wb-tok"
+                            aria-expanded={open() ? 'true' : 'false'}
+                            onClick={() => setOpen(!open())}
+                        >
                             {sourcesOf(p()).length === 0
                                 ? t('…')
                                 : SOURCES.filter((source) => p()[source.field])
@@ -577,7 +589,12 @@ export function LogicToken(props: { placement: Placement; onSet: (change: Change
     const [open, setOpen] = createSignal(false);
     return (
         <>
-            <button type="button" class="wb-tok" aria-expanded={open()} onClick={() => setOpen(!open())}>
+            <button
+                type="button"
+                class="wb-tok"
+                aria-expanded={open() ? 'true' : 'false'}
+                onClick={() => setOpen(!open())}
+            >
                 {t(LOGICS.find((logic) => logic.value === props.placement.selectiveLogic)?.words ?? '')}
             </button>
             <Show when={open()}>
@@ -769,7 +786,7 @@ export function PlacementPopover(props: {
                         <button
                             type="button"
                             class="menu_button margin0 whitespacenowrap wb-place-more"
-                            aria-expanded={list() === 'more'}
+                            aria-expanded={list() === 'more' ? 'true' : 'false'}
                             onClick={() => toggle('more')}
                         >
                             {t('Add setting')}

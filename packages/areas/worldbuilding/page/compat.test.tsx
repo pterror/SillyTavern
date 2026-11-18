@@ -1,5 +1,6 @@
+import { flush as flushSync } from 'solid-js';
 import { createRoot } from 'solid-js';
-import { render } from 'solid-js/web';
+import { render } from '@solidjs/web';
 import { expect, test, vi } from 'vite-plus/test';
 import { UiProvider } from '@st/page/context';
 import type { ActionResult, Client } from '@st/page/client';
@@ -47,6 +48,7 @@ test.each([true, false])('embedded lore loads before the drawer is revealed (suc
         return cleanup;
     });
     compat.openCharacterBook('42');
+    flushSync();
     try {
         expect(sent).toEqual(['worldbuilding.navigate']);
         expect(request).toMatchObject({ to: { kind: 'character', character: '42' } });
@@ -134,15 +136,18 @@ test('resizing a reopened drawer cannot reopen the old world over an embedded lo
     });
     try {
         compat.paneShown(true);
+        flushSync();
         const pane = host.querySelector('.wb-pane')!;
         let paneWidth = 1000;
         Object.defineProperty(pane, 'clientWidth', { get: () => paneWidth });
         for (const resize of resizes) resize();
         compat.paneShown(false);
+        flushSync();
         paneWidth = 0;
         for (const resize of resizes) resize();
         sent.length = 0;
         compat.openCharacterBook('42');
+        flushSync();
         paneWidth = 600;
         for (const resize of resizes) resize();
         expect(resizes.length).toBeGreaterThan(0);
@@ -153,6 +158,7 @@ test('resizing a reopened drawer cannot reopen the old world over an embedded lo
         await vi.waitFor(() => expect(compat.shown()).toBe(true));
         paneWidth = 1000;
         for (const resize of resizes) resize();
+        flushSync();
         expect(sent).toEqual(['worldbuilding.navigate', 'worldbuilding.setViewport']);
     } finally {
         dispose();

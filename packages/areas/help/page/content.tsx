@@ -1,4 +1,4 @@
-import type { JSX } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import type { Topic } from '../protocol.ts';
 
 export type T = (text: string, key?: string) => string;
@@ -34,16 +34,16 @@ export function Overview(props: { t: T; onTopic: (topic: Topic) => void }) {
             <span>{props.t('Choose a topic:', 'help_1')}</span>
             <ul>
                 <li>
-                    {link('slash', ['Slash Commands', 'help_2'])} ({or()} <tt>/help slash</tt>)
+                    {link('slash', ['Slash Commands', 'help_2'])} ({or()} <code>/help slash</code>)
                 </li>
                 <li>
-                    {link('format', ['Formatting', 'help_3'])} ({or()} <tt>/help format</tt>)
+                    {link('format', ['Formatting', 'help_3'])} ({or()} <code>/help format</code>)
                 </li>
                 <li>
-                    {link('hotkeys', ['Hotkeys', 'help_4'])} ({or()} <tt>/help hotkeys</tt>)
+                    {link('hotkeys', ['Hotkeys', 'help_4'])} ({or()} <code>/help hotkeys</code>)
                 </li>
                 <li>
-                    {link('macros', ['{{Macros}}', 'help_5'])} ({or()} <tt>/help macros</tt>)
+                    {link('macros', ['{{Macros}}', 'help_5'])} ({or()} <code>/help macros</code>)
                 </li>
             </ul>
             <br />
@@ -62,7 +62,7 @@ export function Formatting(props: { t: T }) {
     const t = (text: string, key: string) => props.t(text, key);
     const line = (code: Text, says: Text, shown?: JSX.Element) => (
         <li>
-            <tt>{said(props.t, code)}</tt> - <span>{said(props.t, says)}</span>
+            <code>{said(props.t, code)}</code> - <span>{said(props.t, says)}</span>
             {shown}
         </li>
     );

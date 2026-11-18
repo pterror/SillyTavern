@@ -44,15 +44,17 @@ export function LevelSlider() {
                 <For each={LEVELS}>
                     {(level, position) => (
                         <span
-                            class="settings_level_label"
-                            attr:data-level={level}
-                            classList={{
-                                settings_level_in_range: position() >= from() && position() <= to(),
-                                settings_level_absent:
-                                    (level === 'character' &&
-                                        !(view()?.context && 'avatar' in (view()?.context ?? {}))) ||
-                                    (level === 'group' && !(view()?.context && 'group' in (view()?.context ?? {}))),
-                            }}
+                            class={[
+                                'settings_level_label',
+                                {
+                                    settings_level_in_range: position() >= from() && position() <= to(),
+                                    settings_level_absent:
+                                        (level === 'character' &&
+                                            !(view()?.context && 'avatar' in (view()?.context ?? {}))) ||
+                                        (level === 'group' && !(view()?.context && 'group' in (view()?.context ?? {}))),
+                                },
+                            ]}
+                            data-level={level}
                         >
                             {t(level[0]!.toUpperCase() + level.slice(1))}
                             <Show when={level !== 'default' && (view()?.counts[level] ?? 0) > 0}>
