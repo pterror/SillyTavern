@@ -13,6 +13,7 @@ import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, norm
 import { cleanRanges, parseSearchText, sameView, serializeSearchText, viewToQueryState } from './character-view.js';
 import { initViewPills, makeSearchGuide } from './character-view-pills.js';
 import { applyKeptView, initSavedViews, refreshSavedViewState, restoreCurrentView } from './saved-views.js';
+import { searchReadDivider } from './search-read-progress.js';
 import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
@@ -54,6 +55,7 @@ export const DEFAULT_PRINT_TIMEOUT = debounce_timeout.quick;
 export const printCharactersDebounced = debounce(() => { printCharacters(false); }, DEFAULT_PRINT_TIMEOUT);
 
 let showViewInSearchBox = () => {};
+let drawSearchReadDivider = null;
 
 export const entitiesFilter = new FilterHelper(printCharactersDebounced);
 
@@ -369,18 +371,25 @@ export async function printCharacters(fullRefresh = false) {
                         } else {
                             row = getCharacterBlock(i.item, i.id).get(0);
                         }
+                        row.dataset.searchResultId = `character:${i.id}`;
                         row.setAttribute('data-list-position', String(position++));
                         fragment.appendChild(row);
                         break;
                     }
-                    case 'group':
+                    case 'group': {
                         position++;
-                        fragment.appendChild(getGroupBlock(i.item).get(0));
+                        const row = getGroupBlock(i.item).get(0);
+                        row.dataset.searchResultId = `group:${i.id}`;
+                        fragment.appendChild(row);
                         break;
-                    case 'folder':
+                    }
+                    case 'folder': {
                         position++;
-                        fragment.appendChild(getFolderCaseBlock(i.item));
+                        const row = getFolderCaseBlock(i.item);
+                        row.dataset.searchResultId = `folder:${i.id}`;
+                        fragment.appendChild(row);
                         break;
+                    }
                 }
             }
 
@@ -391,6 +400,7 @@ export async function printCharacters(fullRefresh = false) {
                 $(list).append(emptyBlock);
             }
             list.appendChild(fragment);
+            drawSearchReadDivider?.(list, listPageContext.queryKey, listPageContext.pageOffset);
             localizePagination($('#rm_print_characters_pagination'));
 
             eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
@@ -1171,6 +1181,7 @@ function isApproxTotal(total) {
 }
 
 export function initCharacterSearch() {
+    drawSearchReadDivider = searchReadDivider(accountStorage, isCharacterListShowing, () => t`↑ Unread ↑`);
     /** @type {Partial<import('./character-view.js').CharacterView> | null} */
     let pendingTypedView = null;
     const debouncedCharacterSearch = debounce(() => {

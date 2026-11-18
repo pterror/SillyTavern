@@ -886,3 +886,35 @@ label[for="bind_preset_to_connection"]:has(input:checked) {
     color: var(--warning);
     margin-left: 5px;
 }
+
+#rm_print_characters_block > :has(> .search_unread_divider) {
+    position: relative;
+    overflow: visible;
+}
+
+#rm_print_characters_block .search_unread_divider {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 0;
+    height: 0;
+    color: var(--SmartThemeQuoteColor);
+    pointer-events: none;
+    z-index: 2;
+}
+
+#rm_print_characters_block .search_unread_segment {
+    position: absolute;
+    background: currentColor;
+}
+
+#rm_print_characters_block .search_unread_label {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    padding: 1px 3px;
+    border-radius: 3px;
+    background: var(--SmartThemeBlurTintColor);
+    font-size: 10px;
+    font-weight: bold;
+    line-height: 1;
+    white-space: nowrap;
+}
