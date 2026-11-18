@@ -92,8 +92,9 @@ function getTextarea(id) {
     return /** @type {JQuery<HTMLTextAreaElement>} */ ($(`#${id}`));
 }
 
-// Form values retain the portable card text; only the editor hides the prefix.
+// Form values retain the portable card text; the preview and editor hide the prefix.
 const originalPrefixes = new Map();
+const originalSaves = new Set();
 const ORIGINAL_MACRO = /\{\{original\}\}/i;
 
 /** @param {string} id @returns {string} */
@@ -112,7 +113,7 @@ function updateOriginalControl(id, body) {
     const custom = ORIGINAL_MACRO.test(body);
     $(`.field_include_original[data-for="${id}"]`)
         .prop('checked', Boolean(originalPrefixes.get(id)))
-        .prop('disabled', custom || Boolean(activeEdit?.saving))
+        .prop('disabled', custom || isFieldInEdit(id) || originalSaves.has(id))
         .closest('label')
         .attr('title', custom
             ? deps.t`Edit the {{original}} macro in the text to change its placement.`
@@ -201,14 +202,13 @@ let previewRenderCount = 0;
  * @param {MacroValues} [values]
  */
 function refreshFieldPreview(id, values = new MacroValues(() => macroScopeOf(id))) {
-    projectOriginal(id);
+    const text = projectOriginal(id);
     refreshCharInfoTabDimming();
     const field = FIELDS[id];
     const preview = getPreview(id);
     if (!field || !preview.length || !deps) {
         return;
     }
-    const text = String(getTextarea(id).val() ?? '');
     const render = ++previewRenderCount;
     previewRenders.set(id, render);
     if (text === '') {
@@ -244,6 +244,7 @@ export function blockFieldEditStart() {
  * @param {number} [at]
  */
 export function beginEdit(id, at = 0) {
+    if (originalSaves.has(id)) return;
     if (activeEdit?.id === id) {
         return;
     }
@@ -256,7 +257,7 @@ export function beginEdit(id, at = 0) {
     drawerStackChanged();
     deps.onEditStart?.(id);
     const body = projectOriginal(id);
-    void mountFieldEditor(id, body, Math.max(0, at - (text.length - body.length)));
+    void mountFieldEditor(id, body, at);
 }
 
 /** @type {{ id: string, editor: import('./chat-text/editor.js').ChatEditor | null, ended: boolean, values: MacroValues } | null} */
@@ -787,18 +788,32 @@ export function initCharacterFieldEditor(dependencies) {
     deps = dependencies;
     initTabSwitchGuard();
 
-    $(document).on('change', '.field_include_original', function () {
+    $(document).on('change', '.field_include_original', async function () {
         const id = String($(this).attr('data-for'));
         const checked = this.checked;
-        if (!isFieldInEdit(id)) beginEdit(id);
-        if (!isFieldInEdit(id) || activeEdit.saving) {
+        if (originalSaves.has(id) || blockFieldEditStart()) {
             projectOriginal(id);
             return;
         }
-        const value = String(getTextarea(id).val() ?? '');
-        const body = value.slice((originalPrefixes.get(id) ?? '').length);
+        const previous = String(getTextarea(id).val() ?? '');
+        const body = projectOriginal(id);
         originalPrefixes.set(id, checked ? '{{original}}\n' : '');
-        fieldEdited(id, body);
+        const value = originalValue(id, body);
+        originalSaves.add(id);
+        getTextarea(id).val(value);
+        refreshFieldPreview(id);
+        deps.onEdited?.(id);
+        try {
+            if (!await FIELDS[id].save()(value)) getTextarea(id).val(previous);
+        } catch (error) {
+            getTextarea(id).val(previous);
+            console.error('Saving the default prompt option failed', { id, error });
+            toastr.error(deps.t`The default prompt option could not be saved.`);
+        } finally {
+            originalSaves.delete(id);
+            refreshFieldPreview(id);
+            deps.onEdited?.(id);
+        }
     });
 
     $(document).on('click', '.field_edit_toggle', function () {
