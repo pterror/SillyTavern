@@ -7891,3 +7891,9 @@ div.cm-tooltip.paste-picker {
 .st-preset-order ol { padding-inline-start: 1.5em; }
 .st-preset-order li { display: flex; align-items: center; gap: 5px; }
 .st-preset-order li > span { flex: 1; overflow-wrap: anywhere; }
+.st-character-pagination { display: flex; align-items: center; gap: 5px; }
+.st-character-pagination .st-select-trigger { width: 5em; flex: none; margin: 0; }
+.st-character-pagination .paginationjs-nav { white-space: nowrap; }
+.st-character-pagination .paginationjs-pages button { margin: 0; min-width: 28px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.st-character-pagination button:disabled { cursor: default; opacity: .5; }
+#rm_print_characters_block > [tabindex]:focus-visible { outline: 2px solid var(--SmartThemeQuoteColor); outline-offset: -2px; }

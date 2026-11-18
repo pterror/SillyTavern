@@ -1,4 +1,6 @@
 import { createSignal } from 'solid-js';
+import { BrowserRows, BrowserPagination, createBrowser } from '@st/character-browser/page';
+import type { OldPage as CharacterBrowserOldPage } from '@st/character-browser/page';
 import { Presets, presetsCompat } from '@st/presets/page';
 import type { OldPage as PresetsOldPage, Family as PresetFamily } from '@st/presets/page';
 import type { ChatOwner, ViewPush } from '@st/protocol';
@@ -53,6 +55,7 @@ import { render } from '@solidjs/web';
 import type { JSX } from '@solidjs/web';
 
 export type StartOptions = {
+    characterBrowser: { rows: HTMLElement; pagination: HTMLElement; old: CharacterBrowserOldPage };
     presets: { hosts: { family: string; id: string; element: HTMLElement }[]; old: PresetsOldPage };
     headers: () => Record<string, string>;
     t: (text: string, key?: string) => string;
@@ -98,6 +101,13 @@ export function start(options: StartOptions) {
         render(() => <UiProvider value={ui}>{surface()}</UiProvider>, container);
 
     const presets = presetsCompat(client, options.presets.old);
+    const characterBrowser = createBrowser();
+    mount(options.characterBrowser.rows, () => (
+        <BrowserRows browser={characterBrowser} old={options.characterBrowser.old} />
+    ));
+    mount(options.characterBrowser.pagination, () => (
+        <BrowserPagination browser={characterBrowser} old={options.characterBrowser.old} />
+    ));
     for (const host of options.presets.hosts)
         mount(host.element, () => <Presets family={host.family as PresetFamily} id={host.id} old={presets} />);
 
@@ -236,6 +246,7 @@ export function start(options: StartOptions) {
         },
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         presets,
+        characterBrowser,
         alternatives: alternativesCompat(setLook),
         activations,
         worldbuilding,

@@ -51,7 +51,7 @@ test.describe('the character list while searching', () => {
             await page.locator('#rm_button_search').click();
         }
         await page.locator('#character_search_bar').fill(name);
-        const row = page.locator(`#rm_print_characters_block .character_select .ch_name:text-is("${name}")`);
+        const row = page.locator('#rm_print_characters_block').getByRole('listitem', { name, exact: true });
         await expect(row).toHaveCount(0);
 
         const avatar = await createCharacter(page, name);

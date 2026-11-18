@@ -2,6 +2,7 @@ import { elementSetup } from '@st/page/element';
 import { For, Match, Show, Switch, createMemo, createSignal, onSettled } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import type { JSX } from '@solidjs/web';
+import { Portal } from '@solidjs/web';
 import { useUi } from '@st/page/context';
 import { ask } from '@st/page/dialog';
 import { Name } from '@st/page/name';
@@ -131,7 +132,20 @@ export function LookScreen() {
         const shown = view();
         return shown !== undefined && shown.thing !== null ? shown : null;
     };
-    return <Show when={open()}>{(shown) => <Screen view={shown()} />}</Show>;
+    return (
+        <Show when={open()}>
+            {(shown) => {
+                const modal = Array.from(document.querySelectorAll('dialog[open]')).at(-1);
+                return modal ? (
+                    <Portal mount={modal}>
+                        <Screen view={shown()} />
+                    </Portal>
+                ) : (
+                    <Screen view={shown()} />
+                );
+            }}
+        </Show>
+    );
 }
 
 function Screen(props: { view: Open }) {

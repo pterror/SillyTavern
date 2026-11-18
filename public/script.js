@@ -7,7 +7,7 @@ import {
 
 import { getMessageTimeStamp, dragElement, isMobile, initRossMods, countCharTokensWhenShown, onCharacterEditorMaybeShown, takeCardCounts, keepCardCountsBeforeGreetingEdit, takeGreetingTokenCount } from './scripts/RossAscends-mods.js';
 import { characters, charactersStore, this_avatar, setCharacterId, holdCharacter, keepHeldCharacters } from './scripts/character-store.js';
-import { printCharacters, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, characterSaved, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
+import { printCharacters, characterBrowserUi, goToCharacterListPage, findCharacterListPage, getOneCharacter, getCharacterSource, startLibraryChangesAt, getCharacters, showCharacterSyncFailedToast, initCharacterSearch, characterSaved, removeCharacterListRow, renameCharacterListRow, refreshCharacterListCurrentPage, isCharacterListShowing, onCharacterListShown, entitiesFilter } from './scripts/character-list.js';
 import { onSavedViewsChanged } from './scripts/saved-views.js';
 export { entitiesFilter };
 import {
@@ -1375,6 +1375,7 @@ async function firstLoadInit() {
     setStage('Loading user data');
     startNewUi({
         presets: presetUi(),
+        characterBrowser: characterBrowserUi(),
         quietPrompt: prompt => generateQuietPrompt({ quietPrompt: prompt }),
         currentChat: () => {
             if (selected_group != null) return { group: String(selected_group) };
@@ -7233,7 +7234,7 @@ export function select_rm_info(type, charId, previousCharId = null) {
 
             try {
                 const selector = `#rm_print_characters_block [title*="${avatarFileName}"]`;
-                $('#rm_print_characters_pagination').pagination('go', page);
+                await goToCharacterListPage(page);
 
                 waitUntilCondition(() => document.querySelector(selector) !== null).then(() => {
                     const element = $(selector).parent();
@@ -7261,7 +7262,7 @@ export function select_rm_info(type, charId, previousCharId = null) {
                 return;
             }
 
-            $('#rm_print_characters_pagination').pagination('go', page);
+            await goToCharacterListPage(page);
             const selector = `#rm_print_characters_block [grid="${charId}"]`;
             try {
                 waitUntilCondition(() => document.querySelector(selector) !== null).then(() => {

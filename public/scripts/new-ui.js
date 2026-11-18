@@ -50,9 +50,9 @@ const helpOldPage = {
 };
 
 /**
- * @param {{ presets: import('/ui/entry.js').StartOptions['presets'], quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], worldbuilding: import('/ui/entry.js').StartOptions['worldbuilding'], shownCharacter: () => string | null, holdShowsKeys: () => boolean }} options
+ * @param {{ characterBrowser: import('/ui/entry.js').StartOptions['characterBrowser'], presets: import('/ui/entry.js').StartOptions['presets'], quietPrompt: (prompt: string) => Promise<string>, currentChat: () => ({ avatar: string } | { group: string } | null), alternatives: import('/ui/entry.js').StartOptions['alternatives'], activations: import('/ui/entry.js').StartOptions['activations'], worldbuilding: import('/ui/entry.js').StartOptions['worldbuilding'], shownCharacter: () => string | null, holdShowsKeys: () => boolean }} options
  */
-export function startNewUi({ quietPrompt, currentChat, alternatives, activations, worldbuilding, shownCharacter, holdShowsKeys, presets }) {
+export function startNewUi({ quietPrompt, currentChat, alternatives, activations, worldbuilding, shownCharacter, holdShowsKeys, presets, characterBrowser }) {
     if (newUiStarted()) return newUi();
     const element = (/** @type {string} */ id) => {
         const found = document.getElementById(id);
@@ -66,6 +66,7 @@ export function startNewUi({ quietPrompt, currentChat, alternatives, activations
     };
     const started = start({
         presets,
+        characterBrowser,
         headers: () => getRequestHeaders(),
         t: (text, key) => translate(text, key ?? null),
         quietPrompt,

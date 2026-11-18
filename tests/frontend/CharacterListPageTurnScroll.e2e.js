@@ -36,6 +36,19 @@ const scroll = (/** @type {import('@playwright/test').Page} */ page) => list(pag
 const scrollTo = (/** @type {import('@playwright/test').Page} */ page, /** @type {number | 'bottom'} */ to) => list(page).evaluate((el, to) => { el.scrollTop = to === 'bottom' ? el.scrollHeight : to; }, to);
 const firstName = (/** @type {import('@playwright/test').Page} */ page) => page.locator('#rm_print_characters_block .character_select .ch_name').first().textContent();
 
+test('the Solid page-size control requests the new size and keeps the existing preference', async ({ page }) => {
+    await testSetup.awaitST({ page });
+    await showOwnCharacters(page, 12, 10);
+    await page.locator('#character-page-size').click();
+    await page.getByRole('option', { name: '25', exact: true }).click();
+    await expect(page.locator('#rm_print_characters_block .character_select')).toHaveCount(12);
+    await expect(page.locator('#character-page-size')).toContainText('25');
+    expect(await page.evaluate(async () => {
+        const { accountStorage } = await import('/scripts/util/AccountStorage.js');
+        return accountStorage.getItem('Characters_PerPage');
+    })).toBe('25');
+});
+
 test('a page turned from the list\'s end starts at the other end; from the middle it keeps its place', async ({ page }) => {
     await testSetup.awaitST({ page });
     await showOwnCharacters(page, 60, 25);

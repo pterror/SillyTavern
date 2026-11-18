@@ -1,10 +1,10 @@
 import { showHotswapFavs } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar } from './character-store.js';
-import { getGroupBlock, takeInHeldGroupChanges } from './group-chats.js';
+import { getGroupAvatar, takeInHeldGroupChanges } from './group-chats.js';
 import { groupsStore } from './group-store.js';
 import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav } from './hash-utils.js';
-import { debounce, delay, PAGINATION_TEMPLATE, localizePagination, renderPaginationDropdown, paginationDropdownChangeHandler } from './utils.js';
+import { debounce, delay } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, tagQuerySortField } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
@@ -18,14 +18,14 @@ import { getRandomSortSeed } from './random-sort.js';
 import { t } from './i18n.js';
 import { updatePersonaConnectionsAvatarList } from './personas.js';
 import { Popup } from './popup.js';
-import { renderTemplateAsync } from './templates.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { getPermanentAssistantAvatar } from './welcome-screen.js';
 import { event_types, eventSource } from './events.js';
 import { getRequestHeaders } from './request-headers.js';
 import { characterThumbnail, per_page_default, selectCharacterByAvatar } from '../script.js';
-import { drawName, holdLooks } from './names.js';
+import { holdLooks } from './names.js';
 import { LIST_LOOKS } from './name-holders.js';
+import { newUi, newUiStarted } from './new-ui-page.js';
 
 let saveCharactersPage = 0;
 
@@ -63,18 +63,6 @@ const TAG_MODE_STORAGE_KEY = 'characterListTagMode';
 const RANGES_STORAGE_KEY = 'characterListRanges';
 const FOLDER_CASE_STORAGE_KEY = 'characterListFolderCase';
 
-async function getEmptyBlock() {
-    const icons = ['fa-dragon', 'fa-otter', 'fa-kiwi-bird', 'fa-crow', 'fa-frog'];
-    const texts = [t`Here be dragons`, t`Otterly empty`, t`Kiwibunga`, t`Pump-a-Rum`, t`Croak it`];
-    const roll = new Date().getMinutes() % icons.length;
-    const params = {
-        text: texts[roll],
-        icon: icons[roll],
-    };
-    const emptyBlock = await renderTemplateAsync('emptyBlock', params);
-    return $(emptyBlock);
-}
-
 function arraysHaveSameMembers(a, b) {
     const setA = new Set(Array.isArray(a) ? a : []);
     const setB = new Set(Array.isArray(b) ? b : []);
@@ -85,63 +73,11 @@ function arraysHaveSameMembers(a, b) {
     return true;
 }
 
-function renderCharacterBlock(template, item, id) {
-    const this_avatar = characterThumbnail(item);
-    template.attr({ 'data-avatar': item.avatar });
-    template.find('img').attr('src', this_avatar).attr('loading', 'lazy').attr('alt', item.name);
-    template.find('.avatar').attr('title', `${item.name}\nFile: ${item.avatar}`);
-    drawName(template.find('.ch_name'), item.thing, item.name);
-    template.find('.ch_name').attr('title', item.name);
-    template.find('.ch_avatar_url').text(power_user.show_card_avatar_urls ? item.avatar : '');
-    template.find('.ch_fav_icon').css('display', 'none');
-    const isFav = normalizeFav(item.fav);
-    template.toggleClass('is_fav', isFav);
-    template.find('.ch_fav').val(String(isFav));
-
-    const isAssistant = item.avatar === getPermanentAssistantAvatar();
-    template.find('.ch_assistant').toggle(isAssistant);
-
-    const description = item.data?.creator_notes || '';
-    template.find('.ch_description').text(description).toggleClass('displayNone', !description);
-
-    const auxFieldName = power_user.aux_field || 'character_version';
-    const auxFieldValue = (item.data && item.data[auxFieldName]) || '';
-    template.find('.character_version').text(auxFieldValue).toggleClass('displayNone', !auxFieldValue);
-
-    const resident = charactersStore.get(id);
-    const rowTagIdsCurrent = isFetchedTagIdsCurrent(id, item.tagFetchStamp);
-    if (Array.isArray(item.tag_ids) && rowTagIdsCurrent) {
-        if (resident && !arraysHaveSameMembers(resident.tag_ids, item.tag_ids)) {
-            charactersStore.update(id, { tag_ids: item.tag_ids });
-        }
-    }
-
-    const tagsElement = template.find('.tags');
-    const rowTagIds = rowTagIdsCurrent ? item.tag_ids : resident?.tag_ids;
-    const rowTags = Array.isArray(rowTagIds)
-        ? heldTagsForIds(rowTagIds).sort(compareTagsForSort)
-        : [];
-    printTagList(tagsElement, { forEntityOrKey: id, tags: () => rowTags, tagOptions: { isCharacterList: true } });
-}
-
-function getCharacterBlock(item, id) {
-    const template = $('#character_template .character_select').clone();
-    renderCharacterBlock(template, item, id);
-    return template;
-}
-
-function updateCharacterBlock(node, item, id) {
-    renderCharacterBlock($(node), item, id);
-    return node;
-}
-
 export function updateCharacterListRow(id) {
     const character = charactersStore.get(id);
-    if (!character) return false;
-    const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(id)}"]`);
-    if (!row) return false;
-    updateCharacterBlock(row, character, id);
+    if (!character || !renderedPageEntities.some(entity => entity.type === 'character' && entity.id === id)) return false;
     replaceRenderedCharacterEntity(id, character);
+    void drawCharacterRows();
     return true;
 }
 
@@ -162,11 +98,9 @@ export function characterSaved(character) {
 
 export function renameCharacterListRow(previousId, id) {
     const character = charactersStore.get(id);
-    if (!character) return false;
-    const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(previousId)}"]`);
-    if (!row) return false;
-    updateCharacterBlock(row, character, id);
+    if (!character || !renderedPageEntities.some(entity => entity.type === 'character' && entity.id === previousId)) return false;
     replaceRenderedCharacterEntity(previousId, character);
+    void drawCharacterRows();
     return true;
 }
 
@@ -193,11 +127,6 @@ function listRowOf(entity) {
  * @param {Element} row
  * @param {Entity} entity
  */
-function redrawListRow(row, entity) {
-    if (entity.type === 'group') row.replaceWith(getGroupBlock(entity.item).get(0));
-    else updateCharacterBlock(row, entity.item, entity.id);
-}
-
 /**
  * @returns {Map<string, string[]>}
  */
@@ -226,58 +155,32 @@ export function setUnheldRowTagIds(key, tagIds, fetchStamp) {
         return changed;
     });
     const row = changed && listRowOf(changed);
-    if (row) redrawListRow(row, changed);
+    if (row) void drawCharacterRows();
 }
 
 export function redrawUnheldRows() {
-    for (const entity of renderedPageEntities) {
-        if (!isUnheldRow(entity)) continue;
-        const row = listRowOf(entity);
-        if (row) redrawListRow(row, entity);
-    }
+    void drawCharacterRows();
 }
 
 export function removeCharacterListRow(id) {
-    const row = document.querySelector(`#rm_print_characters_block [data-avatar="${CSS.escape(id)}"]`);
-    if (!row) return false;
-    row.remove();
+    if (!renderedPageEntities.some(entity => entity.type === 'character' && entity.id === id)) return false;
     renderedPageEntities = renderedPageEntities.filter(entity => !(entity.type === 'character' && entity.id === id));
+    void drawCharacterRows();
     return true;
 }
 
 export function refreshCharacterListCurrentPage() {
-    if (!serverPagedList) return false;
-    const pager = document.getElementById('rm_print_characters_pagination');
-    const pagination = pager ? $(pager).data('pagination') : undefined;
-    if (!pagination?.initialized) return false;
-    keepScrollOnNextRender = !pagination.model?.disabled;
-    $(pager).pagination('refresh');
+    if (!serverPagedList || !newUiStarted()) return false;
+    void loadCharacterPage(saveCharactersPage || 1, listPageSize, { keepScroll: true });
     return true;
 }
 
-let keepScrollOnNextRender = false;
-/** @type {'top' | 'bottom' | number | null} */
-let pageTurnScroll = null;
-
+let listPageSize = 25;
+let activeListQuery = null;
+let listRequest = 0;
 let pageFetchesInFlight = 0;
 let shownRefreshPending = false;
-/** @type {{ filter: object, page: number, pageSize: number, result: import('./character-repository.js').CharacterQueryResult } | null} */
-let freshPage = null;
 let serverPagedList = false;
-
-function pageFetchSettled() {
-    pageFetchesInFlight--;
-    if (pageFetchesInFlight !== 0) return;
-    if (freshPage !== null && listPageContext.query?.filter !== freshPage.filter) freshPage = null;
-    if (freshPage !== null && !shownRefreshPending) {
-        refreshCharacterListCurrentPage();
-        return;
-    }
-    if (shownRefreshPending) {
-        shownRefreshPending = false;
-        onCharacterListShown();
-    }
-}
 
 export function isCharacterListShowing() {
     const panel = document.getElementById('right-nav-panel');
@@ -298,10 +201,6 @@ export function onCharacterListShown() {
     refreshCharacterListCurrentPage();
 }
 
-/**
- * @param {boolean} fullRefresh
- */
-const SERVER_PAGINATED_DATA_SOURCE = '/api/characters/query';
 /** @type {('rows'|'total')[]} */
 const PAGE_WANT = ['rows', 'total'];
 
@@ -333,223 +232,150 @@ function replaceRenderedCharacterEntity(previousId, character) {
 }
 
 export async function printCharacters(fullRefresh = false) {
-    const storageKey = 'Characters_PerPage';
-    const listId = '#rm_print_characters_block';
-
-    let currentScrollTop = $(listId).scrollTop();
-
-    if (fullRefresh || resetListPositionOnNextPrint) {
-        resetListPositionOnNextPrint = false;
-        saveCharactersPage = 0;
-        saveCharactersTotal = 0;
-        currentScrollTop = 0;
-        keepScrollOnNextRender = false;
-        await delay(1);
-    }
-
+    if (!newUiStarted()) return;
+    const reset = fullRefresh || resetListPositionOnNextPrint;
+    resetListPositionOnNextPrint = false;
+    if (reset) saveCharactersPage = 1;
     verifyCharactersSearchSortRule();
-
     showViewInSearchBox();
     refreshSavedViewState();
-
     printTagFilters(tag_filter_type.character);
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
-
     applyTagsOnCharacterSelect();
     applyTagsOnGroupSelect();
+    listPageSize = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
+    activeListQuery = buildCharacterQueryFromCurrentFilterState();
+    serverPagedList = true;
+    await loadCharacterPage(saveCharactersPage || 1, listPageSize, { reset });
+    updatePersonaConnectionsAvatarList();
+}
 
-    const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
-    const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
-
-    function makePageCallback() {
-        return async function (/** @type {Entity[]} */ data) {
-            const list = $(listId).get(0);
-
-            const existingCharacterRows = new Map();
-            for (const child of list.children) {
-                if (child instanceof HTMLElement && child.hasAttribute('data-avatar')) {
-                    existingCharacterRows.set(child.getAttribute('data-avatar'), child);
-                }
-            }
-
-            const fragment = document.createDocumentFragment();
-            let position = listPageContext.pageOffset;
-            for (const i of data) {
-                switch (i.type) {
-                    case 'character': {
-                        const existingRow = existingCharacterRows.get(i.item.avatar);
-                        let row;
-                        if (existingRow) {
-                            existingCharacterRows.delete(i.item.avatar);
-                            row = updateCharacterBlock(existingRow, i.item, i.id);
-                        } else {
-                            row = getCharacterBlock(i.item, i.id).get(0);
-                        }
-                        row.dataset.searchResultId = `character:${i.id}`;
-                        row.setAttribute('data-list-position', String(position++));
-                        fragment.appendChild(row);
-                        break;
-                    }
-                    case 'group': {
-                        position++;
-                        const row = getGroupBlock(i.item).get(0);
-                        row.dataset.searchResultId = `group:${i.id}`;
-                        fragment.appendChild(row);
-                        break;
-                    }
-                    case 'folder': {
-                        position++;
-                        const row = getFolderCaseBlock(i.item);
-                        row.dataset.searchResultId = `folder:${i.id}`;
-                        fragment.appendChild(row);
-                        break;
-                    }
-                }
-            }
-
-            list.replaceChildren();
-            renderedPageEntities = data;
-            if (!data.length) {
-                const emptyBlock = await getEmptyBlock();
-                $(list).append(emptyBlock);
-            }
-            list.appendChild(fragment);
-            drawSearchReadDivider?.(list, listPageContext.queryKey, listPageContext.pageOffset);
-            localizePagination($('#rm_print_characters_pagination'));
-
-            eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
+/** The repository retains its cache, query pins and fresh-answer callbacks. Solid owns the DOM. */
+async function loadCharacterPage(page, size, { reset = false, keepScroll = false } = {}) {
+    if (!activeListQuery || !newUiStarted()) return;
+    const request = ++listRequest;
+    const query = activeListQuery;
+    const list = document.getElementById('rm_print_characters_block');
+    const oldPage = saveCharactersPage || 1;
+    const top = list.scrollTop;
+    const bottom = top + list.clientHeight >= list.scrollHeight - 1;
+    const scrollTo = reset ? 0 : keepScroll ? top : page > oldPage && bottom ? 'top' : page < oldPage && top <= 1 ? 'bottom' : top;
+    let fresh = null;
+    let committed = false;
+    let resolvedSort = query.sort;
+    const commit = async (result, preserveScroll = false) => {
+        if (request !== listRequest || query !== activeListQuery) return;
+        const scroll = preserveScroll ? list.scrollTop : scrollTo;
+        const rows = Array.isArray(result.rows) ? result.rows : [];
+        const total = Number(String(result.total ?? 0).replace(/^~/, ''));
+        saveCharactersTotal = Number.isFinite(total) ? total : 0;
+        const last = Math.max(1, Math.ceil(saveCharactersTotal / size));
+        if (page > last && rows.length === 0) {
+            await loadCharacterPage(last, size, { keepScroll: true });
+            return;
+        }
+        saveCharactersPage = page;
+        listPageSize = size;
+        renderedPageEntities = rows.map(queryRowToEntity);
+        listPageContext = {
+            query: { filter: query.filter, sort: resolvedSort },
+            queryKey: JSON.stringify({ filter: query.filter, sort: resolvedSort }),
+            pageOffset: (page - 1) * size,
+            total: saveCharactersTotal,
+            totalApprox: isApproxTotal(result.total),
         };
+        if (result.favs) showHotswapFavs(result.favs);
+        if (result.looks) holdLooks(LIST_LOOKS, result.looks);
+        await drawCharacterRows();
+        if (request !== listRequest) return;
+        drawSearchReadDivider?.(list, listPageContext.queryKey, listPageContext.pageOffset);
+        list.scrollTop = scroll === 'bottom' ? list.scrollHeight : scroll === 'top' ? 0 : scroll;
+        await eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
+    };
+    pageFetchesInFlight++;
+    newUi().characterBrowser.loading(true);
+    try {
+        const answer = await queryWithSortFallback(query.filter, query.sort, trySort => characterRepository.query(query.filter, trySort, page, size, PAGE_WANT, {
+            favs: hotswapQuery(trySort !== query.sort), draws: LIST_LOOKS,
+            onFresh: result => {
+                if (request !== listRequest || query !== activeListQuery) return;
+                fresh = result;
+                if (committed) void commit(result, true).catch(error => console.error('[characters] fresh page:', error));
+            },
+        }));
+        resolvedSort = answer.sort;
+        await commit(fresh ?? answer.result);
+        committed = true;
+    } catch (error) {
+        if (request === listRequest) newUi().characterBrowser.loading(false, error.message ?? String(error));
+        console.error('[characters] page query:', error);
+    } finally {
+        pageFetchesInFlight--;
+        if (pageFetchesInFlight === 0 && shownRefreshPending) {
+            shownRefreshPending = false;
+            onCharacterListShown();
+        }
     }
+}
 
-    const sharedPaginationOptions = {
-        pageSize,
-        pageRange: 1,
-        pageNumber: saveCharactersPage || 1,
-        position: 'top',
-        showPageNumbers: false,
-        showSizeChanger: true,
-        prevText: '<',
-        nextText: '>',
-        formatNavigator: PAGINATION_TEMPLATE,
-        formatSizeChanger: renderPaginationDropdown(pageSize, sizeChangerOptions),
-        showNavigator: true,
-        afterSizeSelectorChange: function (e, size) {
-            accountStorage.setItem(storageKey, e.target.value);
-            paginationDropdownChangeHandler(e, size);
-        },
-        beforePaging: function (/** @type {number} */ pageNumber) {
-            const list = $(listId).get(0);
-            if (!list) return;
-            const atTop = list.scrollTop <= 1;
-            const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 1;
-            const current = saveCharactersPage || 1;
-            pageTurnScroll = pageNumber > current && atBottom ? 'top'
-                : pageNumber < current && atTop ? 'bottom'
-                    : list.scrollTop;
-        },
-        afterPaging: function (e) {
-            saveCharactersPage = e;
-        },
-        afterRender: function () {
-            if (pageTurnScroll !== null) {
-                const list = $(listId).get(0);
-                const to = pageTurnScroll === 'top' ? 0 : pageTurnScroll === 'bottom' ? (list?.scrollHeight ?? 0) : pageTurnScroll;
-                pageTurnScroll = null;
-                keepScrollOnNextRender = false;
-                $(listId).scrollTop(to);
-                return;
-            }
-            if (keepScrollOnNextRender) {
-                keepScrollOnNextRender = false;
-                return;
-            }
-            $(listId).scrollTop(currentScrollTop);
+export function goToCharacterListPage(page) {
+    return loadCharacterPage(page, listPageSize);
+}
+
+function browserRow(entity, index) {
+    const item = entity.item;
+    const group = entity.type === 'group';
+    const folder = entity.type === 'folder';
+    const members = group ? (item.members ?? []).map(id => charactersStore.get(id)).filter(Boolean) : [];
+    const name = folder && item.id === 'none' ? t`Go back` : String(item.name ?? '');
+    return {
+        id: `${entity.type}:${entity.id}`, entity: String(entity.id), type: entity.type,
+        name, thing: String(item.thing ?? ''), image: folder || group ? '' : characterThumbnail(item),
+        favorite: normalizeFav(item.fav), assistant: !folder && !group && item.avatar === getPermanentAssistantAvatar(),
+        description: String(item.data?.creator_notes ?? ''), auxiliary: String(item.data?.[power_user.aux_field || 'character_version'] ?? ''),
+        filename: !folder && !group && power_user.show_card_avatar_urls ? item.avatar : '',
+        position: listPageContext.pageOffset + index,
+        count: folder ? `${item.countApprox ? '~' : ''}${item.count ?? 0}` : group ? `${members.length} ${members.length === 1 ? t`character` : t`characters`}` : '',
+        members: members.map(member => ({ thing: String(member.thing ?? ''), text: member.name, shownAs: 'name' })),
+    };
+}
+
+async function drawCharacterRows() {
+    if (!newUiStarted()) return;
+    await newUi().characterBrowser.show({ rows: renderedPageEntities.map(browserRow), page: saveCharactersPage || 1,
+        size: listPageSize, total: saveCharactersTotal, approximate: listPageContext.totalApprox });
+}
+
+export function characterBrowserUi() {
+    const pagination = document.createElement('div');
+    document.getElementById('rm_print_characters_pagination').append(pagination);
+    return {
+        rows: document.getElementById('rm_print_characters_block'), pagination,
+        old: {
+            page: goToCharacterListPage,
+            async size(size) {
+                accountStorage.setItem('Characters_PerPage', String(size));
+                await loadCharacterPage(1, size, { reset: true });
+            },
+            tags(element, id) {
+                const entity = renderedPageEntities.find(entity => String(entity.id) === id);
+                if (!entity) return;
+                const row = entity.item;
+                const resident = entity.type === 'group' ? groupsStore.get(id) : charactersStore.get(id);
+                const current = entity.type === 'group' || isFetchedTagIdsCurrent(id, row.tagFetchStamp);
+                const ids = current && Array.isArray(row.tag_ids) ? row.tag_ids : resident?.tag_ids ?? [];
+                if (entity.type === 'character' && current && resident && !arraysHaveSameMembers(resident.tag_ids, ids)) charactersStore.update(id, { tag_ids: ids });
+                const tags = heldTagsForIds(ids).sort(compareTagsForSort);
+                printTagList($(element), { forEntityOrKey: id, tags: () => tags, tagOptions: { isCharacterList: true } });
+            },
+            avatar(element, id) {
+                const entity = renderedPageEntities.find(entity => entity.type === 'group' && String(entity.id) === id);
+                const avatar = entity && getGroupAvatar(entity.item)?.get(0);
+                if (avatar) { element.className = avatar.className; element.replaceChildren(...avatar.childNodes); }
+            },
         },
     };
-
-    pageFetchesInFlight++;
-    try {
-        await printServerPaginated();
-    } finally {
-        pageFetchSettled();
-    }
-
-    updatePersonaConnectionsAvatarList();
-
-    async function printServerPaginated() {
-        const { filter, sort: wantedSort } = buildCharacterQueryFromCurrentFilterState();
-
-        const freshFor = (/** @type {number} */ page, /** @type {number} */ size) => (/** @type {import('./character-repository.js').CharacterQueryResult} */ result) => {
-            freshPage = { filter, page, pageSize: size, result };
-            if (pageFetchesInFlight > 0 || listPageContext.query?.filter !== filter) return;
-            refreshCharacterListCurrentPage();
-        };
-        const { sort, result: firstPage } = await queryWithSortFallback(filter, wantedSort,
-            trySort => characterRepository.query(filter, trySort, 1, pageSize, PAGE_WANT, { onFresh: freshFor(1, pageSize), favs: hotswapQuery(trySort !== wantedSort), draws: LIST_LOOKS }));
-        const favs = hotswapQuery(sort !== wantedSort);
-
-        let pendingFirstPage = firstPage;
-        let pageTotalApprox = isApproxTotal(firstPage.total);
-
-        serverPagedList = true;
-        $('#rm_print_characters_pagination').pagination({
-            ...sharedPaginationOptions,
-            dataSource: SERVER_PAGINATED_DATA_SOURCE,
-            locator: 'rows',
-            formatNavigator: function (currentPage, _totalPage, totalNumber) {
-                const rangeStart = (currentPage - 1) * pageSize + 1;
-                const rangeEnd = Math.min(currentPage * pageSize, totalNumber);
-                return `${rangeStart}-${rangeEnd} .. ${pageTotalApprox ? '~' : ''}${totalNumber}`;
-            },
-            totalNumber: saveCharactersTotal || undefined,
-            resetPageNumberOnInit: false,
-            totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
-                const parsed = Number(String(response.total).replace(/^~/, ''));
-                return Number.isFinite(parsed) ? parsed : 0;
-            },
-            ajaxFunction: function (ajaxParams) {
-                pageFetchesInFlight++;
-                const page = ajaxParams.data.pageNumber;
-                const requestedPageSize = ajaxParams.data.pageSize;
-                const fresh = freshPage !== null && freshPage.filter === filter && freshPage.page === page && freshPage.pageSize === requestedPageSize
-                    ? freshPage.result
-                    : undefined;
-                if (fresh) freshPage = null;
-                const resultPromise = (page === 1 && requestedPageSize === pageSize && pendingFirstPage)
-                    ? Promise.resolve(pendingFirstPage)
-                    : fresh
-                        ? Promise.resolve(fresh)
-                        : characterRepository.query(filter, sort, page, requestedPageSize, PAGE_WANT, { onFresh: freshFor(page, requestedPageSize), favs, draws: LIST_LOOKS });
-                pendingFirstPage = undefined;
-                resultPromise
-                    .then(async result => {
-                        const rows = Array.isArray(result.rows) ? result.rows : [];
-                        const pageEntities = rows.map(row => queryRowToEntity(row));
-                        const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
-                        saveCharactersTotal = Number.isFinite(parsedTotal) ? parsedTotal : 0;
-                        pageTotalApprox = isApproxTotal(result.total);
-                        listPageContext = {
-                            query: { filter, sort },
-                            queryKey: JSON.stringify({ filter, sort }),
-                            pageOffset: (page - 1) * requestedPageSize,
-                            total: saveCharactersTotal,
-                            totalApprox: pageTotalApprox,
-                        };
-                        if (result.favs) showHotswapFavs(result.favs);
-                        if (result.looks) holdLooks(LIST_LOOKS, result.looks);
-                        ajaxParams.success({ rows: pageEntities, total: result.total });
-                    })
-                    .catch(error => {
-                        console.error('[printCharacters] server-paginated /query failed:', error);
-                        keepScrollOnNextRender = false;
-                        ajaxParams.error(error);
-                    })
-                    .finally(pageFetchSettled);
-            },
-            callback: makePageCallback(),
-        });
-    }
 }
 
 function verifyCharactersSearchSortRule() {
@@ -835,33 +661,6 @@ function queryRowToEntity(row) {
     const { type, item } = normalizeQueryRow(row);
     if (type === 'folder') return { item, id: /** @type {any} */ (item).id, type: 'folder' };
     return type === 'group' ? groupToEntity(item) : characterToEntity(item);
-}
-
-/**
- * The list's entry for a folder case: a closed folder's, or the rest case's (the way back out of a folder).
- * @param {import('./query-hashes-binary.js').LeadRow} row
- * @returns {HTMLElement}
- */
-function getFolderCaseBlock(row) {
-    const rest = row.id === 'none';
-    const block = /** @type {HTMLElement} */ ($(rest ? '#bogus_folder_back_template .bogus_folder_select' : '#bogus_folder_template .bogus_folder_select').clone().get(0));
-    block.dataset.folderCase = row.id;
-    if (rest) {
-        block.title = t`Back to the characters and groups in no closed folder`;
-        block.setAttribute('aria-label', t`Go back`);
-        return block;
-    }
-    const name = String(row.name ?? '');
-    const count = `${row.countApprox ? '~' : ''}${row.count ?? 0}`;
-    block.querySelector('.bogus_folder_icon')?.classList.add('fa-folder-closed');
-    drawName(block.querySelector('.ch_name'), row.thing, name);
-    const counter = block.querySelector('.bogus_folder_counter');
-    if (counter) counter.textContent = count;
-    block.querySelector('.bogus_folder_hidden_counter')?.remove();
-    block.querySelector('.bogus_folder_avatars_block')?.remove();
-    block.title = t`Folder "${name}": ${count} characters and groups`;
-    block.setAttribute('aria-label', t`Folder ${name}, ${count} characters and groups`);
-    return block;
 }
 
 function applyFinalFilterRun(entities) {

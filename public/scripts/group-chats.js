@@ -81,14 +81,14 @@ import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore, holdCharacter, setCharacterId, setOpenGroupId } from './character-store.js';
 import { eventSource, event_types } from './events.js';
-import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags, heldTagsForIds, compareTagsForSort } from './tags.js';
+import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags } from './tags.js';
 import { _setCurrentTarget, takeOpenings } from './chat-store.js';
 import { FILTER_TYPES, FILTER_STATES, FilterHelper, isFilterState } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup } from './popup.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { drawName, holdLooks, nameNode } from './names.js';
+import { drawName, holdLooks } from './names.js';
 import { CANDIDATE_LOOKS } from './name-holders.js';
 import { chatBoxLeft, openingChatBox } from './chat-box.js';
 
@@ -690,59 +690,13 @@ function resetSelectedGroup() {
 }
 
 /**
- * Gets a group UI block for the list.
- * @param {Group} group Group object
- * @returns {JQuery<HTMLElement>} jQuery element representing the group block
- */
-export function getGroupBlock(group) {
-    let count = 0;
-    let namesList = [];
-
-    // Build inline name list
-    if (Array.isArray(group.members) && group.members.length) {
-        for (const member of group.members) {
-            const character = findGroupMemberCharacter(member);
-            if (character) {
-                namesList.push(character);
-                count++;
-            }
-        }
-    }
-
-    const template = $('#group_list_template .group_select').clone();
-    template.data('id', group.id);
-    template.attr('data-grid', group.id);
-    drawName(template.find('.ch_name'), group.thing, group.name);
-    template.find('.ch_name').attr('title', group.name);
-    template.find('.group_fav_icon').css('display', 'none');
-    const isFav = normalizeFav(group.fav);
-    template.addClass(isFav ? 'is_fav' : '');
-    template.find('.ch_fav').val(String(isFav));
-    template.find('.group_select_counter').text(count + ' ' + (count != 1 ? t`characters` : t`character`));
-    template.find('.group_select_block_list').get(0)?.replaceChildren(...namesList.flatMap((character, i) => [...(i > 0 ? [', '] : []), nameNode(character.thing, character.name)]));
-
-    const tagsElement = template.find('.tags');
-    const rowTags = Array.isArray(group.tag_ids)
-        ? heldTagsForIds(group.tag_ids).sort(compareTagsForSort)
-        : [];
-    printTagList(tagsElement, { forEntityOrKey: group.id, tags: () => rowTags, tagOptions: { isCharacterList: true } });
-
-    const avatar = getGroupAvatar(group);
-    if (avatar) {
-        $(template).find('.avatar').replaceWith(avatar);
-    }
-
-    return template;
-}
-
-/**
  * Updates the avatar display for a given group.
  * @param {Group} group Group object
  */
 function updateGroupAvatar(group) {
     $('#group_avatar_preview').empty().append(getGroupAvatar(group));
 
-    $('.group_select').each(function () {
+    $('.group_select').filter((_, row) => !row.closest('#rm_print_characters_block')).each(function () {
         if ($(this).data('id') == group.id) {
             $(this).find('.avatar').replaceWith(getGroupAvatar(group));
         }

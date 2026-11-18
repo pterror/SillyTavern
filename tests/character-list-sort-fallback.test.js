@@ -35,7 +35,7 @@ jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     resolveCharacterRef: () => undefined,
     this_avatar: undefined,
 }));
-jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ getGroupBlock: noop, takeInHeldGroupChanges: async () => {} }));
+jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ getGroupAvatar: noop, takeInHeldGroupChanges: async () => {} }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
     power_user: powerUser,
     sortEntitiesList: () => { throw new Error('the list is never sorted in the browser'); },

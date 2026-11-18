@@ -511,7 +511,7 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
 
     const listPageQueries = (from) => pageQueries(log, from).filter(q => q.pageSize === PAGE_SIZE);
     const listScrollTop = page => page.locator('#rm_print_characters_block').evaluate(el => el.scrollTop);
-    const currentPage = page => page.evaluate(() => window['$']('#rm_print_characters_pagination').pagination('getCurrentPageNum'));
+    const currentPage = page => page.evaluate(async () => (await import('/scripts/new-ui-page.js')).newUi().characterBrowser.view().page);
 
     test.beforeEach(async ({ page }) => {
         log = await instrument(page);
@@ -547,7 +547,7 @@ test.describe('a refresh the user didn\'t ask for keeps the list\'s page and scr
     }
 
     async function toPage2Scrolled(page) {
-        await page.evaluate(() => window['$']('#rm_print_characters_pagination').pagination('go', 2));
+        await page.evaluate(async () => (await import('/scripts/character-list.js')).goToCharacterListPage(2));
         await waitForQuiet(log);
         expect(await currentPage(page)).toBe(2);
         await page.locator('#rm_print_characters_block').evaluate((el, top) => { el.scrollTop = top; }, SCROLLED_TO);
