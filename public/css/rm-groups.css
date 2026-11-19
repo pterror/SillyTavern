@@ -78,7 +78,7 @@
 }
 
 #rm_group_delete {
-    color: rgb(190, 0, 0);
+    color: var(--danger-color);
 }
 
 .rm_group_members:empty {

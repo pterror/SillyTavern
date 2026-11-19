@@ -95,7 +95,8 @@
 
     --danger-bg: rgba(100, 0, 0, 0.7);
     --danger-bg-hover: rgba(255, 0, 0, 1);
-    --danger-color: var(--fullred);
+    --danger-color: color-mix(in srgb, rgb(196, 88, 88) 80%, var(--SmartThemeBodyColor));
+    --danger-hover-background: color-mix(in srgb, var(--danger-color) 12%, transparent);
     --hover-background: color-mix(in srgb, var(--SmartThemeBodyColor) 15%, transparent);
 
     --interactable-outline-color: var(--white100);
@@ -2273,13 +2274,13 @@ input[type="range"].macro-colors-hue {
 }
 
 .keyBindings button:is([data-keybinds="reset-all"], [data-keybinds="remove"]) {
-    color: var(--SmartThemeBodyColor);
-    background-color: var(--crimson70a);
+    color: var(--danger-color);
+    background-color: transparent;
     filter: none;
 }
 
 .keyBindings button:is([data-keybinds="reset-all"], [data-keybinds="remove"]):not([aria-disabled="true"]):hover {
-    background-color: var(--crimson-hover);
+    background-color: var(--danger-hover-background);
 }
 
 .keyBindings [role="group"] > div:not([role]) {
@@ -4643,11 +4644,23 @@ grammarly-extension {
 }
 
 .danger-button,
+.menu_button.danger-button,
+#bulk_tag_popup_reset,
+#bulk_tag_popup_remove_mutual {
+    color: var(--danger-color);
+    background-color: transparent !important;
+}
+
+.danger-button:not(.disabled):not([disabled]):is(:hover, :focus-visible),
+#bulk_tag_popup_reset:is(:hover, :focus-visible),
+#bulk_tag_popup_remove_mutual:is(:hover, :focus-visible) {
+    background-color: var(--danger-hover-background) !important;
+}
+
 .redWarningBG {
     background-color: var(--danger-bg) !important;
 }
 
-.danger-button:hover,
 .redWarningBG:hover {
     background-color: var(--danger-bg-hover) !important;
 }
@@ -4775,15 +4788,11 @@ grammarly-extension {
     gap: 20px;
 }
 
-#bulk_tag_popup_reset,
-#bulk_tag_popup_remove_mutual,
 #dialogue_popup_ok {
     background-color: var(--crimson70a);
     cursor: pointer;
 }
 
-#bulk_tag_popup_reset:hover,
-#bulk_tag_popup_remove_mutual:hover,
 #dialogue_popup_ok:hover {
     background-color: var(--crimson-hover);
 }

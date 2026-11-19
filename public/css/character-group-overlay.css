@@ -62,7 +62,7 @@
 }
 
 #character_context_menu ul li #character_context_menu_delete {
-    color: var(--fullred);
+    color: var(--danger-color);
 }
 
 #character_context_menu ul {
