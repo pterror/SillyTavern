@@ -3,6 +3,7 @@
     "private": true,
     "type": "module",
     "exports": {
+        "./autocomplete": "./src/autocomplete.tsx",
         "./classes": "./src/classes.ts",
         "./client": "./src/client.ts",
         "./command-surfaces": "./src/command-surfaces.ts",

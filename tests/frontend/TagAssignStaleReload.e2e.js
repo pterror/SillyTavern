@@ -25,7 +25,7 @@ async function addTag(page, tag) {
         await page.locator('#tagInput').fill(tag);
         await expect(page.locator('#tagInput')).toHaveValue(tag, { timeout: 500 });
     }).toPass({ timeout: 30000 });
-    await page.locator('.ui-autocomplete .ui-menu-item').getByText(tag, { exact: true }).click();
+    await page.locator('.st-autocomplete-menu [role="option"]').getByText(tag, { exact: true }).click();
 }
 
 /**

@@ -80,7 +80,7 @@ async function suggestionsFor(page, text) {
     }).toPass({ timeout: 30000 });
     await Promise.all([searched, lookedUp]);
     await page.waitForTimeout(300);
-    return page.locator('.ui-autocomplete:visible .ui-menu-item').allInnerTexts();
+    return page.locator('.st-autocomplete-menu:visible [role="option"]').allInnerTexts();
 }
 
 /**
@@ -120,7 +120,7 @@ test.describe('tag names are looked up on the server', () => {
         expect(await suggestionsFor(page, `bra Stripes ${stamp}`)).toEqual([`bra Stripes ${stamp}`, `Zebra Stripes ${stamp}`]);
 
         const assigned = page.waitForRequest(request => request.url().endsWith('/api/tags/assign'));
-        await page.locator('.ui-autocomplete .ui-menu-item').getByText(`Zebra Stripes ${stamp}`, { exact: true }).click();
+        await page.locator('.st-autocomplete-menu [role="option"]').getByText(`Zebra Stripes ${stamp}`, { exact: true }).click();
         expect((await assigned).postDataJSON()).toEqual(expect.objectContaining({ id: avatar, tagId: `zebra-${stamp}` }));
         await expect.poll(() => serverTagsOf(page, avatar)).toEqual([`zebra-${stamp}`]);
         expect(creates).toEqual([]);
@@ -135,7 +135,7 @@ test.describe('tag names are looked up on the server', () => {
 
         expect(await suggestionsFor(page, name.toLowerCase())).toEqual([name]);
         const assigned = page.waitForResponse(response => response.url().endsWith('/api/tags/assign'));
-        await page.locator('.ui-autocomplete .ui-menu-item').getByText(name, { exact: true }).click();
+        await page.locator('.st-autocomplete-menu [role="option"]').getByText(name, { exact: true }).click();
         await assigned;
         await expect(page.locator(`#tagList .tag[id="exact-${stamp}"]`)).toBeVisible();
 
@@ -232,6 +232,27 @@ test.describe('tag names are looked up on the server', () => {
         const deleted = page.waitForRequest(request => request.url().endsWith('/api/tags/delete'));
         await page.locator('dialog[open] .popup-button-ok').last().click();
         expect((await deleted).postDataJSON()).toEqual(expect.objectContaining({ id: `victim-${stamp}`, mergeInto: `target-${stamp}-57` }));
+    });
+
+    test('the group tag input assigns an existing server tag by keyboard', async ({ page }) => {
+        const stamp = `${Date.now()}`;
+        const group = await api(page, '/api/groups/create', { name: `TagInputGroup-${stamp}`, members: [] });
+        await createUnheldTags(page, [{ id: `group-tag-${stamp}`, name: `Group Tag ${stamp}` }]);
+        await openCharacterManagementDrawer(page);
+        await page.evaluate(async id => { await (await import('/scripts/group-chats.js')).openGroupById(id); }, group.id);
+        const input = page.locator('#groupTagInput');
+        if (!(await input.isVisible())) {
+            await page.locator('.inline-drawer', { has: page.locator('#group-metadata-controls') }).locator('.inline-drawer-header').click();
+        }
+        await input.fill(`Group Tag ${stamp}`);
+        await expect(page.getByRole('option', { name: `Group Tag ${stamp}`, exact: true })).toBeVisible();
+        await input.press('ArrowDown');
+        await expect(input).toHaveAttribute('aria-activedescendant', /suggestions-/);
+        const assigned = page.waitForRequest(request => new URL(request.url()).pathname === '/api/tags/assign');
+        await input.press('Enter');
+        expect((await assigned).postDataJSON()).toMatchObject({ id: String(group.id), tagId: `group-tag-${stamp}` });
+        await expect(page.locator(`#groupTagList .tag[id="group-tag-${stamp}"]`)).toBeVisible();
+        await expect(input).toHaveValue('');
     });
 
 });

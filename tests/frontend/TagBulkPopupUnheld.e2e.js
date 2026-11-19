@@ -104,7 +104,7 @@ test.describe('the bulk tag popup on characters the page does not hold', () => {
         await expect(page.locator('#bulkTagList .tag')).toHaveText([`Shared ${stamp}`]);
 
         await page.locator('#bulkTagInput').fill(`Added ${stamp}`);
-        await page.locator('.ui-autocomplete .ui-menu-item').getByText(`Added ${stamp}`, { exact: true }).click();
+        await page.locator('.st-autocomplete-menu [role="option"]').getByText(`Added ${stamp}`, { exact: true }).click();
         await expect.poll(() => serverTagsOf(page, second)).toEqual([`added-${stamp}`, `shared-${stamp}`].sort());
         expect(await serverTagsOf(page, first)).toEqual([`added-${stamp}`, `own-${stamp}`, `shared-${stamp}`].sort());
         await expect(page.locator('#bulkTagList .tag')).toHaveCount(2);
@@ -124,7 +124,7 @@ test.describe('the bulk tag popup on characters the page does not hold', () => {
 
         await openBulkTagPopup(page, [held, unheld]);
         await page.locator('#bulkTagInput').fill(`Mixed ${stamp}`);
-        await page.locator('.ui-autocomplete .ui-menu-item').getByText(`Mixed ${stamp}`, { exact: true }).click();
+        await page.locator('.st-autocomplete-menu [role="option"]').getByText(`Mixed ${stamp}`, { exact: true }).click();
         await expect.poll(() => serverTagsOf(page, unheld)).toEqual([`mixed-${stamp}`]);
         await expect.poll(() => serverTagsOf(page, held)).toContain(`mixed-${stamp}`);
         const heldIds = await page.evaluate(async (held) => {

@@ -14,3 +14,8 @@ Deletion, refusal feedback and cross-tab updates stay in the existing tag contro
 Prune and restore confirmation content and the restore warning report are Solid surfaces inside the same popup
 shell. The controller retains counting, batched pruning, backup parsing, overwrite choices and partial-failure
 handling. Warning lines render as text, including names and errors from the restored backup.
+
+Character, group and bulk assignment inputs use the shared `@st/page/autocomplete` surface, which combines Solid
+rendering with interact's movement and popover modules. The tag surface owns transient text and search results;
+`tags.js` injects name lookup, creation and assignment. It captures the destination before an asynchronous create.
+Transient bulk popups dispose their input before removing the popup, so pending reads cannot reopen suggestions.

@@ -23,7 +23,7 @@ async function openCharacterWithTags(page) {
     for (const tag of tags) {
         await page.locator('#tagInput').fill('');
         await page.locator('#tagInput').pressSequentially(tag);
-        await page.locator('.ui-autocomplete .ui-menu-item', { hasText: new RegExp(`^\\s*${tag}\\s*$`) }).first().click();
+        await page.locator('.st-autocomplete-menu [role="option"]', { hasText: new RegExp(`^\\s*${tag}\\s*$`) }).first().click();
     }
     await page.locator('#tagInput').fill('');
     await page.locator('#tagInput').blur();
@@ -34,6 +34,7 @@ async function openCharacterWithTags(page) {
  * @param {import('@playwright/test').Page} page
  */
 async function deleteOpenCharacter(page) {
+    await page.locator('#tagInput').blur();
     await page.locator('#delete_button').click();
     const confirmButton = page.locator('.popup-button-ok');
     await confirmButton.first().waitFor({ state: 'visible', timeout: 5000 });
@@ -89,7 +90,7 @@ test.describe('tags drawer overlay', () => {
         await openCharacterWithTags(page);
         try {
             const collapsed = await measure(page);
-            expect(await underlayHitUnderPanel(page)).toBe(true);
+            await expect.poll(() => underlayHitUnderPanel(page)).toBe(true);
 
             await page.locator('#tags_div .inline-drawer-icon').click();
             await expect(page.locator('#tags_div .inline-drawer-icon')).toHaveClass(/\bup\b/);
@@ -106,7 +107,7 @@ test.describe('tags drawer overlay', () => {
             await panelSettled(page);
 
             expect((await measure(page)).below).toEqual(collapsed.below);
-            expect(await underlayHitUnderPanel(page)).toBe(true);
+            await expect.poll(() => underlayHitUnderPanel(page)).toBe(true);
         } finally {
             await deleteOpenCharacter(page);
         }
@@ -174,14 +175,14 @@ test.describe('tags drawer overlay, stacked drawers off', () => {
             await page.locator('#tags_div .inline-drawer-icon').click();
             await expect(page.locator('#tags_div .inline-drawer-icon')).toHaveClass(/\bup\b/);
             await panelSettled(page);
-            expect(await underlayHitUnderPanel(page)).toBe(true);
+            await expect.poll(() => underlayHitUnderPanel(page)).toBe(true);
             await expect(page.locator('#creatorInfoWrapper')).not.toHaveAttribute('style', /clip-path/);
 
             await setStackedDrawers(page, true);
             expect(await underlayHitUnderPanel(page)).toBe(false);
 
             await setStackedDrawers(page, false);
-            expect(await underlayHitUnderPanel(page)).toBe(true);
+            await expect.poll(() => underlayHitUnderPanel(page)).toBe(true);
             await expect(page.locator('#creatorInfoWrapper')).not.toHaveAttribute('style', /clip-path/);
         } finally {
             await deleteOpenCharacter(page);
@@ -196,7 +197,7 @@ test.describe('tags drawer overlay, stacked drawers off', () => {
 async function rowCutUnderSuggestions(page) {
     return page.evaluate(async () => {
         await new Promise(resolve => requestAnimationFrame(resolve));
-        const menu = [...document.querySelectorAll('.ui-autocomplete')].find(el => getComputedStyle(el).display !== 'none');
+        const menu = [...document.querySelectorAll('.st-autocomplete-menu')].find(el => getComputedStyle(el).display !== 'none');
         const under = document.getElementById('char-info-panel');
         const m = menu.getBoundingClientRect();
         const u = under.getBoundingClientRect();
@@ -219,7 +220,7 @@ async function rowCutUnderSuggestions(page) {
         let group = [];
         for (const [x, y] of points) {
             if (x === 0 && y === 0) {
-                if (group.length >= 4) holes.push([group[0][0], group[0][1], group[2][0], group[2][1]]);
+                if (group.length >= 4) holes.push([Math.min(...group.map(p => p[0])), Math.min(...group.map(p => p[1])), Math.max(...group.map(p => p[0])), Math.max(...group.map(p => p[1]))]);
                 group = [];
             } else {
                 group.push([x, y]);
@@ -236,15 +237,14 @@ async function openSuggestions(page) {
     await page.locator('#tagInput').fill('');
     await page.locator('#tagInput').blur();
     await page.locator('#tagInput').focus();
-    await expect(page.locator('.ui-autocomplete .ui-menu-item').first()).toBeVisible();
+    await expect(page.locator('.st-autocomplete-menu [role="option"]').first()).toBeVisible();
 }
 
 /**
  * @param {import('@playwright/test').Page} page
  */
 async function closeSuggestions(page) {
-    // @ts-ignore jQuery UI
-    await page.evaluate(() => window['$']('#tagInput').autocomplete('close'));
+    if (await page.locator('.st-autocomplete-menu').isVisible()) await page.locator('#tagInput').press('Escape');
 }
 
 test.describe('tag suggestion list overlay', () => {
@@ -259,7 +259,8 @@ test.describe('tag suggestion list overlay', () => {
             expect(await rowCutUnderSuggestions(page)).toBe(true);
 
             await closeSuggestions(page);
-            await expect(page.locator('.ui-autocomplete .ui-menu-item').first()).toBeHidden();
+            await expect(page.locator('.st-autocomplete-menu [role="option"]').first()).toBeHidden();
+            await expect(page.locator('#char-info-panel')).toHaveClass(/openDrawer/);
             await expect.poll(() => page.locator('#char-info-panel').evaluate(el => el.style.clipPath)).toBe('');
         } finally {
             await deleteOpenCharacter(page);

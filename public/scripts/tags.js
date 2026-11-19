@@ -32,8 +32,8 @@ import { dropOldTagsCache } from './tags-cache.js';
 import { mergedTagTarget, shownTagIds, tagReadDrops, takeInMergedTags } from './tag-merges.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository } from './character-repository.js';
-import { newUi, newUiStarted } from './new-ui-page.js';
-import { addLooks, nameNode, nameOn } from './names.js';
+import { newUi, newUiStarted, onceStarted } from './new-ui-page.js';
+import { addLooks, nameOn } from './names.js';
 import { TAG_LOOKS } from './name-holders.js';
 
 export {
@@ -2304,74 +2304,23 @@ function removeTagFromEntity(tag, entityId, { tagListSelector = null, tagElement
 const FIND_TAG_RESULT_LIMIT = 50;
 
 /**
- * @param {{ term: string }} request
- * @param {(items: { value: string, thing?: string }[]) => void} resolve each a tag's name, with its thing when it is one;
- *   a name typed that no tag has yet has none
+ * @param {string} needle
  * @param {string} listSelector
+ * @returns {Promise<{ value: string, thing?: string }[]>}
  */
-function findTag(request, resolve, listSelector) {
+async function findTagSuggestions(needle, listSelector) {
     const skipIds = new Set($(listSelector).find('.tag').map((_, el) => $(el).attr('id')).get());
-    const needle = String(request.term ?? '');
     const pageSize = Math.min(FIND_TAG_RESULT_LIMIT + skipIds.size, TAG_READ_MAX_IDS);
-
-    Promise.all([
+    const [page, exact] = await Promise.all([
         searchTagsByName(needle, { pageSize }),
         needle.trim() ? findTagByName(needle) : null,
-    ]).then(([page, exact]) => {
-        const rows = page?.rows
-            ?? tags.filter(t => includesIgnoreCaseAndAccents(t.name, needle)).sort(compareTagsForSort);
-        /** @type {(tag: Tag) => { value: string, thing?: string }} */
-        const item = tag => ({ value: tag.name, thing: tag.thing });
-        const result = rows.filter(t => !skipIds.has(t.id)).map(t => item(tagsStore.get(t.id) ?? t)).slice(0, FIND_TAG_RESULT_LIMIT);
-        if (exact && !skipIds.has(exact.id) && !result.some(found => equalsIgnoreCaseAndAccents(found.value, exact.name))) {
-            result.unshift(item(exact));
-        }
-        if (needle && !exact) result.unshift({ value: needle });
-        resolve(result);
-    });
-}
-
-/**
- * Select a tag and add it to the list. This function is (mostly) used as an event handler for the tag selector control.
- *
- * @param {*} event - The event that fired on autocomplete select
- * @param {*} ui - An Object with label and value properties for the selected option
- * @param {*} listSelector - The selector of the list to print/add to
- * @param {object} param1 - Optional parameters for this method call
- * @param {PrintTagListOptions} [param1.tagListOptions] - Optional parameters for printing the tag list. Can be set to be consistent with the expected behavior of tags in the list that was defined before.
- * @param {((tag: Tag) => void) | null} [param1.onTagChosen] - Given, the chosen tag (created first if it is new) goes
- *   to it instead of being put on an entity.
- * @returns {boolean} <c>false</c>, to keep the input clear
- */
-function selectTag(event, ui, listSelector, { tagListOptions = {}, onTagChosen = null } = {}) {
-    const tagName = ui.item.value;
-
-    if (onTagChosen) {
-        $(event.target).val('').trigger('input');
-        createNewTags([tagName]).then(([tag]) => {
-            if (tag) onTagChosen(tag);
-        });
-        return false;
-    }
-
-    // Optional, check for multiple character ids being present.
-    const characterData = event.target.closest('#bulk_tags_div')?.dataset.characters;
-    const entityIds = characterData ? JSON.parse(characterData).characterIds : getTagKey();
-
-    $(event.target).val('').trigger('input');
-
-    /** @param {Tag} tag */
-    const add = (tag) => {
-        addTagsToEntity(tag, entityIds, { tagListSelector: listSelector, tagListOptions: tagListOptions });
-        applyCharacterTagsToMessageDivs();
-    };
-
-    createNewTags([tagName]).then(([tag]) => {
-        if (tag) add(tag);
-    });
-
-    // need to return false to keep the input clear
-    return false;
+    ]);
+    const rows = page?.rows ?? tags.filter(tag => includesIgnoreCaseAndAccents(tag.name, needle)).sort(compareTagsForSort);
+    const item = tag => ({ value: tag.name, thing: tag.thing });
+    const result = rows.filter(tag => !skipIds.has(tag.id)).map(tag => item(tagsStore.get(tag.id) ?? tag)).slice(0, FIND_TAG_RESULT_LIMIT);
+    if (exact && !skipIds.has(exact.id) && !result.some(found => equalsIgnoreCaseAndAccents(found.value, exact.name))) result.unshift(item(exact));
+    if (needle && !exact) result.unshift({ value: needle });
+    return result;
 }
 
 /**
@@ -3682,18 +3631,6 @@ function onTagRemoveClick(event) {
     applyCharacterTagsToMessageDivs();
 }
 
-// @ts-ignore
-function onTagInput(event) {
-    let val = $(this).val();
-    // @ts-ignore
-    $(this).autocomplete('search', val);
-}
-
-function onTagInputFocus() {
-    // @ts-ignore
-    $(this).autocomplete('search', $(this).val());
-}
-
 function onCharacterCreateClick() {
     $('#tagList').empty();
 }
@@ -3731,38 +3668,38 @@ export function applyTagsOnGroupSelect(groupId = null) {
 }
 
 /**
- * Create a tag input by enabling the autocomplete feature of a given input element. Tags will be added to the given list.
- *
- * @param {string} inputSelector - the selector for the tag input control
- * @param {string} listSelector - the selector for the list of the tags modified by the input control
- * @param {PrintTagListOptions} [tagListOptions] - Optional parameters for printing the tag list. Can be set to be consistent with the expected behavior of tags in the list that was defined before.
+ * Mount a Solid tag input. Returns a cleanup for transient callers such as the bulk popup.
+ * @param {string} inputSelector
+ * @param {string} listSelector
+ * @param {PrintTagListOptions} [tagListOptions]
  * @param {object} [options]
- * @param {((tag: Tag) => void) | null} [options.onTagChosen] - Given, a chosen tag goes to it instead of being put on
- *   the open character or group; the caller adds it where it belongs.
+ * @param {((tag: Tag) => void | Promise<void>) | null} [options.onTagChosen]
  */
 export function createTagInput(inputSelector, listSelector, tagListOptions = {}, { onTagChosen = null } = {}) {
-    $(inputSelector)
-        // @ts-ignore
-        .autocomplete({
-            source: (i, o) => findTag(i, o, listSelector),
-            select: (e, u) => selectTag(e, u, listSelector, { tagListOptions: tagListOptions, onTagChosen }),
-            minLength: 0,
-        })
-        .on('focus', onTagInputFocus) // <== show tag list on click
-        .each((_, input) => {
-            // @ts-ignore
-            const instance = $(input).autocomplete('instance');
-            if (instance) instance._renderItem = renderTagSearchItem;
+    return onceStarted(page => {
+        const input = document.querySelector(inputSelector);
+        if (!(input instanceof HTMLInputElement)) return () => {};
+        const host = document.createElement('span');
+        host.style.display = 'contents';
+        input.replaceWith(host);
+        const dispose = page.tagManager.input(host, {
+            id: input.id, className: input.className,
+            placeholder: input.placeholder, maxLength: input.maxLength < 0 ? undefined : input.maxLength,
+        }, {
+            search: term => findTagSuggestions(term, listSelector),
+            async choose(name) {
+                // Capture the destination before the asynchronous lookup/create, as the old input did.
+                const characterData = host.closest('#bulk_tags_div')?.getAttribute('data-characters');
+                const entityIds = characterData ? JSON.parse(characterData).characterIds : getTagKey();
+                const [tag] = await createNewTags([name]);
+                if (!tag) return;
+                if (onTagChosen) { await onTagChosen(tag); return; }
+                addTagsToEntity(tag, entityIds, { tagListSelector: listSelector, tagListOptions });
+                applyCharacterTagsToMessageDivs();
+            },
         });
-}
-
-/**
- * A jQuery UI autocomplete item: a tag's name as the name renderer draws it.
- * @param {JQuery<HTMLElement>} list
- * @param {{ label: string, thing?: string }} item
- */
-function renderTagSearchItem(list, item) {
-    return $('<li>').append($('<div>').append(nameNode(item.thing, item.label))).appendTo(list);
+        return () => { dispose(); host.replaceWith(input); };
+    });
 }
 
 async function onViewTagsListClick() {
@@ -5654,7 +5591,6 @@ export function initTags() {
             delete this.dataset.titleFromName;
         }
     });
-    $(document).on('input', '.tag_input', onTagInput);
     $(document).on('click', '.tags_view', function (event) {
         // 1. Prevent the label from toggling the checkbox
         event.preventDefault();

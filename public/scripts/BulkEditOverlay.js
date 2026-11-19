@@ -401,6 +401,7 @@ class CharacterContextMenu {
  * Represents a tag control not bound to a single character
  */
 class BulkTagPopupHandler {
+    #disposeInput = () => {};
     /**
      * The characters named for this popup: the ones passed to show(), or the first ones of the selection.
      * @type {string[]}
@@ -511,7 +512,7 @@ class BulkTagPopupHandler {
         }
 
         const listOptions = { tags: () => this.getMutualTags(), tagOptions: { removable: true, removeAction: tag => this.removeTag(tag) } };
-        createTagInput('#bulkTagInput', '#bulkTagList', listOptions, { onTagChosen: tag => this.addTag(tag) });
+        this.#disposeInput = createTagInput('#bulkTagInput', '#bulkTagList', listOptions, { onTagChosen: tag => this.addTag(tag) });
 
         document.querySelector('#bulk_tag_popup_reset').addEventListener('click', this.resetTags.bind(this));
         document.querySelector('#bulk_tag_popup_remove_mutual').addEventListener('click', this.removeMutual.bind(this));
@@ -598,6 +599,8 @@ class BulkTagPopupHandler {
      * Hide and remove the tag control
      */
     hide() {
+        this.#disposeInput();
+        this.#disposeInput = () => {};
         let popupElement = document.querySelector('#bulk_tag_shadow_popup');
         if (popupElement) {
             document.body.removeChild(popupElement);

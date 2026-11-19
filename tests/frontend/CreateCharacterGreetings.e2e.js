@@ -78,7 +78,7 @@ test.describe('creating a character with greetings', () => {
         await page.locator('#character_name_pole').fill(`Tagged-${s}`);
         await page.locator('#tagInput').click();
         await page.locator('#tagInput').fill(`tag-${s}`);
-        await page.locator('.ui-autocomplete:visible li').first().click();
+        await page.locator('.st-autocomplete-menu:visible [role="option"]').first().click();
         const tag = page.locator('#tagList .tag', { hasText: `tag-${s}` });
         await expect(tag).toHaveCount(1);
         const tagId = await tag.getAttribute('id');

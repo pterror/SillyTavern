@@ -74,7 +74,11 @@ export function float(element: () => HTMLElement | undefined, options: FloatOpti
                 if (!open) options.close();
             },
         });
-        const detach = focusActions.attach(shown, { cancel: () => options.close() });
+        const detach = focusActions.attach(shown, {
+            cancel: () => {
+                options.close();
+            },
+        });
         const unregister = commands.register(
             [
                 {
@@ -85,7 +89,9 @@ export function float(element: () => HTMLElement | undefined, options: FloatOpti
                     keys: ['Escape'],
                     typing: true,
                     when: () => !shown.contains(document.activeElement),
-                    run: () => options.close(),
+                    run: () => {
+                        options.close();
+                    },
                 },
             ],
             { capture: true, everywhere: true },

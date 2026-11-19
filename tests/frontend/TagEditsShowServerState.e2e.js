@@ -122,7 +122,7 @@ async function pickInTagInput(page, tagName) {
         await page.locator('#tagInput').fill(tagName);
         await expect(page.locator('#tagInput')).toHaveValue(tagName, { timeout: 500 });
     }).toPass({ timeout: 30000 });
-    await page.locator('.ui-autocomplete .ui-menu-item').getByText(tagName, { exact: true }).click();
+    await page.locator('.st-autocomplete-menu [role="option"]').getByText(tagName, { exact: true }).click();
 }
 
 /**
@@ -283,7 +283,7 @@ test.describe('Tag edits show what the server stored', () => {
 
         await page.route('**/api/tags/unassign', route => route.fulfill(FAIL));
         await page.locator('#tagInput').blur();
-        await expect(page.locator('.ui-autocomplete:visible')).toHaveCount(0);
+        await expect(page.locator('.st-autocomplete-menu:visible')).toHaveCount(0);
         await page.locator('#tags_div > .inline-drawer-header .inline-drawer-icon').click();
         await pill.locator('.tag_remove').click();
         await expect(page.locator('.toast-error', { hasText: `'${id}' was not removed from TagEditsShowServerState-${stamp}` })).toBeVisible();

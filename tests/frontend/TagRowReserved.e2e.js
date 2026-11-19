@@ -38,7 +38,7 @@ async function createCharacter(page) {
 async function addTag(page, tag) {
     await page.locator('#tagInput').fill('');
     await page.locator('#tagInput').pressSequentially(tag);
-    await page.locator('.ui-autocomplete .ui-menu-item', { hasText: new RegExp(`^\\s*${tag}\\s*$`) }).first().click();
+    await page.locator('.st-autocomplete-menu [role="option"]', { hasText: new RegExp(`^\\s*${tag}\\s*$`) }).first().click();
     await page.locator('#tagInput').fill('');
     await page.locator('#tagInput').blur();
 }

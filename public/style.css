@@ -7903,3 +7903,13 @@ div.cm-tooltip.paste-picker {
 .search_pill button:not(.fa-solid), button.view_pill_field_option, button.view_picker_row_name { font: inherit; }
 button.view_picker_row_name, button.view_pill_field_option { text-align: start; }
 button.search_pill_remove { padding: 0; }
+
+.st-autocomplete-menu {
+    min-width: 12em;
+    max-width: min(36em, calc(100vw - 16px));
+}
+
+.st-autocomplete-menu [role="listbox"] {
+    max-height: 18em;
+    overflow-y: auto;
+}

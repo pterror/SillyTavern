@@ -33,7 +33,7 @@ export function addLooks(holder, looks) {
  * @param {{ picture?: string | null, selected?: boolean }} [options]
  * @returns {HTMLElement | Text}
  */
-export function nameNode(thing, text, options = {}) {
+function nameNode(thing, text, options = {}) {
     if (typeof thing !== 'string' || thing === '') return document.createTextNode(text);
     return newUi().names.element({ thing, text, shownAs: 'name' }, options);
 }

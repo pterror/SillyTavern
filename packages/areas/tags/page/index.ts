@@ -4,3 +4,5 @@ export { DeleteTag } from './Delete.tsx';
 export type { MergeTag, DeletePorts } from './Delete.tsx';
 export { Maintenance } from './Maintenance.tsx';
 export type { MaintenanceView } from './Maintenance.tsx';
+export { TagInput } from './Input.tsx';
+export type { InputConfig, InputPorts } from './Input.tsx';
