@@ -201,9 +201,9 @@ test.describe('tag changes from another tab', () => {
             const from = 'tag-other-tabs-unread-from';
             const into = 'tag-other-tabs-unread-into';
             await loadApp(page);
-            await page.evaluate(() => {
-                // @ts-ignore
-                $('#character_search_bar').val('no character is named this').trigger('input');
+            await page.evaluate(async () => {
+                const { setCharacterView } = await import('/scripts/character-list.js');
+                setCharacterView({ text: 'no character is named this' });
             });
             const avatar = await createCharacter(other, 'TagOtherTabsUnread');
             await api(other, '/api/tags/create', tagBody(from, 1002));

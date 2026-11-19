@@ -169,6 +169,7 @@ import {
     removeEntityTags,
     onTagsChanged,
     onEntityTagsChanged,
+    getAssignedTagIds,
 } from './scripts/tags.js';
 import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { initAuthorsNote } from './scripts/authors-note.js';
@@ -8933,7 +8934,7 @@ async function createSaveToFormData(jsonData) {
     formData.set('creator', create_save.creator);
     formData.set('character_version', create_save.character_version);
     formData.set('tags', create_save.tags);
-    for (const tagId of $('#tagList').find('.tag').map((_, el) => $(el).attr('id')).get()) {
+    for (const tagId of getAssignedTagIds('#tagList')) {
         if (tagId) formData.append('tag_ids', tagId);
     }
     formData.set('talkativeness', String(create_save.talkativeness));

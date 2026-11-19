@@ -6,3 +6,5 @@ export { Maintenance } from './Maintenance.tsx';
 export type { MaintenanceView } from './Maintenance.tsx';
 export { TagInput } from './Input.tsx';
 export type { InputConfig, InputPorts } from './Input.tsx';
+export { AssignedTags, createAssigned } from './Assigned.tsx';
+export type { AssignedView, AssignedPorts } from './Assigned.tsx';

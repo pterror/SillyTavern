@@ -431,3 +431,10 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+
+.tag button.tag_remove {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    padding: 0;
+}

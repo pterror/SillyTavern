@@ -818,6 +818,7 @@ function tagIdsInUse() {
         const data = helper.getFilterData(FILTER_TYPES.TAG);
         for (const id of [...(data?.selected ?? []), ...(data?.excluded ?? [])]) ids.add(id);
     }
+    for (const state of liveAssignedLists) for (const id of state.ids) ids.add(id);
     for (const id of tagIdsBeingCreated) ids.add(id);
     return ids;
 }
@@ -1111,7 +1112,8 @@ async function postTagsRead(path, body) {
 const TAG_FIELD_REDRAWS = {
     /** @param {Tag} tag */
     name: (tag) => {
-        $(`.tag[id="${tag.id}"] .tag_name`).text(tag.name);
+        $(`.tag[id="${tag.id}"] .tag_name`).filter((_, el) => !el.closest('[data-assigned-tags]')).text(tag.name);
+        for (const state of liveAssignedLists) publishAssignedTags(state);
         publishViewTagList(viewTagList);
     },
     /** @param {Tag} tag */
@@ -1298,8 +1300,15 @@ async function dropTagsLocally(drops) {
 
     for (const { id } of drops) {
         writeTagNameDraft(id, null);
-        $(`.tag[id="${id}"]`).remove();
+        $(`.tag[id="${id}"]`).filter((_, el) => !el.closest('[data-assigned-tags]')).remove();
         if (viewTagList) viewTagList.rows = viewTagList.rows.filter(row => row.id !== id);
+    }
+    for (const state of liveAssignedLists) {
+        state.ids = [...new Set(state.ids.flatMap(id => {
+            const drop = drops.find(drop => drop.id === id);
+            return drop ? drop.replaceWithId ? [drop.replaceWithId] : [] : [id];
+        }))];
+        publishAssignedTags(state);
     }
     publishViewTagList(viewTagList);
     refreshUsedTagBars();
@@ -1979,7 +1988,7 @@ async function reindexTagAssignments() {
 }
 
 function createTagMapFromList(listElement, key) {
-    const tagIds = [...($(listElement).find('.tag').map((_, el) => $(el).attr('id')))];
+    const tagIds = getAssignedTagIds(listElement);
     setKeyTagIds(key, tagIds);
 }
 
@@ -2293,9 +2302,15 @@ function removeTagFromEntity(tag, entityId, { tagListSelector = null, tagElement
     // We don't reprint the lists, we can just remove the html elements from them.
     if (tagListSelector) {
         const $selector = (typeof tagListSelector === 'string') ? $(tagListSelector) : tagListSelector;
-        $selector.find(`.tag[id="${tag.id}"]`).remove();
+        const state = assignedLists.get($selector[0]);
+        if (state) {
+            state.ids = state.ids.filter(id => id !== tag.id);
+            publishAssignedTags(state);
+        } else {
+            $selector.find(`.tag[id="${tag.id}"]`).remove();
+        }
     }
-    if (tagElement) tagElement.remove();
+    if (tagElement && !tagElement[0]?.closest('[data-assigned-tags]')) tagElement.remove();
     $(`${getInlineListSelector()} .tag[id="${tag.id}"]`).remove();
 
     return result;
@@ -2309,7 +2324,7 @@ const FIND_TAG_RESULT_LIMIT = 50;
  * @returns {Promise<{ value: string, thing?: string }[]>}
  */
 async function findTagSuggestions(needle, listSelector) {
-    const skipIds = new Set($(listSelector).find('.tag').map((_, el) => $(el).attr('id')).get());
+    const skipIds = new Set(getAssignedTagIds(listSelector));
     const pageSize = Math.min(FIND_TAG_RESULT_LIMIT + skipIds.size, TAG_READ_MAX_IDS);
     const [page, exact] = await Promise.all([
         searchTagsByName(needle, { pageSize }),
@@ -2820,6 +2835,95 @@ function newTagWithoutOrder(tagName) {
  * search view straight from non-resident `/query` rows). Ignored when `tags` is also passed.
  */
 
+// Assigned lists retain the full set, including chips hidden by the display limit.
+const assignedLists = new WeakMap();
+const liveAssignedLists = new Set();
+const ASSIGNED_LIST_IDS = new Set(['tagList', 'groupTagList', 'bulkTagList', 'tags_div_preview']);
+
+export function getAssignedTagIds(element) {
+    const node = $(element)[0];
+    return assignedLists.get(node)?.ids.slice() ?? $(node).find('.tag[id]').map((_, tag) => tag.id).get().filter(id => tagsStore.has(id));
+}
+
+function disposeAssignedTags(element) {
+    const state = assignedLists.get(element);
+    if (!state) return;
+    state.surface.dispose();
+    liveAssignedLists.delete(state);
+    assignedLists.delete(element);
+    element.removeAttribute('data-assigned-tags');
+}
+
+function assignedAction(state, tag) {
+    return state.options.tagActionSelector?.(tag) ?? state.options.tagOptions?.action ?? tag.action;
+}
+
+function publishAssignedTags(state) {
+    const options = state.options.tagOptions ?? {};
+    const all = heldTagsForIds(state.ids);
+    const expanded = state.element.classList.contains('tags-expanded') || expanded_tags_cache.includes(state.key);
+    const mandatory = tag => isBogusFolder(tag) || (tag.filter_state && !isFilterState(tag.filter_state, FILTER_STATES.UNDEFINED));
+    let slots = Math.max((expanded ? Number.MAX_SAFE_INTEGER : 50) - all.filter(mandatory).length, 0);
+    const visible = all.filter(tag => mandatory(tag) || slots-- > 0);
+    state.surface.show({
+        tags: visible.map(tag => ({ id: tag.id, name: tag.name, thing: tag.thing,
+            className: tag.class ?? '', title: tag.title ?? '', icon: tag.icon ?? '',
+            removable: Boolean(options.removable), inactive: state.options.inactiveTags?.includes(tag.id) ?? false,
+            actionable: typeof assignedAction(state, tag) === 'function',
+        })),
+        skipped: all.length - visible.length,
+        expandable: state.element.id !== 'tags_div_preview',
+    });
+    if (state.element.id === 'tagList') updateTagsDivPreview();
+}
+
+function showAssignedTags(element, printableTags, key, options) {
+    let state = assignedLists.get(element);
+    if (!state) {
+        const ids = getAssignedTagIds(element);
+        element.replaceChildren();
+        element.setAttribute('data-assigned-tags', '');
+        state = { element, ids, key, options, surface: null };
+        state.surface = newUi().tagManager.assigned(element, {
+            remove(id) {
+                const tag = tagsStore.get(id);
+                if (!tag) return;
+                const custom = state.options.tagOptions?.removeAction;
+                if (custom) {
+                    const result = custom(tag);
+                    if (result === false) return;
+                } else {
+                    removeTagFromEntity(tag, state.key);
+                    applyCharacterTagsToMessageDivs();
+                }
+                state.ids = state.ids.filter(each => each !== id);
+                publishAssignedTags(state);
+            },
+            expand() {
+                element.classList.add('tags-expanded');
+                expanded_tags_cache.push(state.key);
+                publishAssignedTags(state);
+            },
+            activate(id, chip, event) {
+                const tag = tagsStore.get(id);
+                const action = tag && assignedAction(state, tag);
+                if (typeof action === 'function') action.call($(chip), getFilterHelper($(element)), event);
+            },
+        });
+        assignedLists.set(element, state);
+        liveAssignedLists.add(state);
+    }
+    state.key = key;
+    state.options = options;
+    const clear = options.empty === 'always' || (options.empty && (printableTags.length > 0 || key));
+    const incoming = printableTags.map(tag => tag.id);
+    const added = options.addTag ? (Array.isArray(options.addTag) ? options.addTag : [options.addTag]).map(tag => tag.id) : [];
+    state.ids = [...new Set([...(clear ? incoming : [...state.ids, ...incoming]), ...added])];
+    state.ids = state.ids.filter(id => tagsStore.has(id));
+    if (options.sort) state.ids.sort((a, b) => compareTagsForSort(tagsStore.get(a), tagsStore.get(b)));
+    publishAssignedTags(state);
+}
+
 /**
  * Prints the list of tags
  *
@@ -2833,6 +2937,11 @@ function printTagList(element, { tags = undefined, addTag = undefined, forEntity
 
     if (tagOptions.isCharacterList) {
         printableTags = printableTags.filter(tag => !tag.is_hidden_on_character_card);
+    }
+
+    if (newUiStarted() && ASSIGNED_LIST_IDS.has($element[0]?.id)) {
+        showAssignedTags($element[0], printableTags, key, { empty, sort, addTag, tagActionSelector, tagOptions, inactiveTags });
+        return;
     }
 
     if (empty === 'always' || (empty && (printableTags?.length > 0 || key))) {
@@ -3603,6 +3712,7 @@ function updateTagFilterIndicator(filterSelector) {
 }
 
 function onTagRemoveClick(event) {
+    if (event.target.closest('[data-assigned-tags]')) return;
     event.stopPropagation();
     const tagElement = $(this).closest('.tag');
     const tagId = tagElement.attr('id');
@@ -3632,17 +3742,17 @@ function onTagRemoveClick(event) {
 }
 
 function onCharacterCreateClick() {
-    $('#tagList').empty();
+    printTagList($('#tagList'), { tags: [], empty: 'always' });
 }
 
 function onGroupCreateClick() {
-    $('#groupTagList').empty();
+    printTagList($('#groupTagList'), { tags: [], empty: 'always' });
 }
 
 export function applyTagsOnCharacterSelect(chid = null) {
     // If we are in create window, we cannot simply redraw, as there are no real persisted tags. Grab them, and pass them in
     if (menu_type === 'create') {
-        const currentTagIds = $('#tagList').find('.tag').map((_, el) => $(el).attr('id')).get();
+        const currentTagIds = getAssignedTagIds('#tagList');
         const currentTags = heldTagsForIds(currentTagIds);
         printTagList($('#tagList'), { forEntityOrKey: undefined, tags: currentTags, tagOptions: { removable: true } });
         return;
@@ -3655,7 +3765,7 @@ export function applyTagsOnCharacterSelect(chid = null) {
 export function applyTagsOnGroupSelect(groupId = null) {
     // If we are in create window, we explicitly have to tell the system to print for the new group, not the one selected in the background
     if (menu_type === 'group_create') {
-        const currentTagIds = $('#groupTagList').find('.tag').map((_, el) => $(el).attr('id')).get();
+        const currentTagIds = getAssignedTagIds('#groupTagList');
         const currentTags = heldTagsForIds(currentTagIds);
         printTagList($('#groupTagList'), { forEntityOrKey: undefined, tags: currentTags, tagOptions: { removable: true } });
         return;
@@ -3698,7 +3808,7 @@ export function createTagInput(inputSelector, listSelector, tagListOptions = {},
                 applyCharacterTagsToMessageDivs();
             },
         });
-        return () => { dispose(); host.replaceWith(input); };
+        return () => { dispose(); disposeAssignedTags(document.querySelector(listSelector)); host.replaceWith(input); };
     });
 }
 
@@ -5486,12 +5596,12 @@ function restoreSavedTagFilters() {
 }
 
 function updateTagsDivPreview() {
-    const preview = $('#tags_div_preview').empty();
-    for (const tag of $('#tagList').children('.tag')) {
-        const clone = $(tag).clone();
-        clone.find('.tag_remove, .tag_delete').remove();
-        preview.append(clone);
-    }
+    if (!newUiStarted()) return;
+    const preview = document.getElementById('tags_div_preview');
+    const source = document.getElementById('tagList');
+    if (!preview || !source) return;
+    preview.classList.toggle('tags-expanded', source.classList.contains('tags-expanded'));
+    showAssignedTags(preview, heldTagsForIds(getAssignedTagIds(source)), undefined, { empty: 'always', sort: false, tagOptions: { removable: false } });
 }
 
 /**
@@ -5572,9 +5682,7 @@ export function initTags() {
     createTagInput('#tagInput', '#tagList', { tagOptions: { removable: true } });
     createTagInput('#groupTagInput', '#groupTagList', { tagOptions: { removable: true } });
 
-    // eslint-disable-next-line no-restricted-syntax -- watches the page from before the ban: whatever changes it is to say so
-    new MutationObserver(updateTagsDivPreview).observe(document.getElementById('tagList'), { childList: true });
-    updateTagsDivPreview();
+    onceStarted(() => { updateTagsDivPreview(); return () => {}; });
 
     $(document).on('click', '#rm_button_create', onCharacterCreateClick);
     $(document).on('click', '#rm_button_group_chats', onGroupCreateClick);

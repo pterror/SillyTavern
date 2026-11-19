@@ -19,3 +19,8 @@ Character, group and bulk assignment inputs use the shared `@st/page/autocomplet
 rendering with interact's movement and popover modules. The tag surface owns transient text and search results;
 `tags.js` injects name lookup, creation and assignment. It captures the destination before an asynchronous create.
 Transient bulk popups dispose their input before removing the popup, so pending reads cannot reopen suggestions.
+
+Assigned chips and the collapsed character-tag preview are Solid surfaces too. `tags.js` keeps complete tag IDs
+outside the displayed 50-chip window and publishes keyed snapshots; both character and group creation read those
+IDs. Removal actions stay injected, including bulk callbacks that can refuse a removal. The preview is passive,
+and transient bulk lists are disposed with their input.
