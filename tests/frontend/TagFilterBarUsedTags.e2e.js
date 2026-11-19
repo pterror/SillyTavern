@@ -268,6 +268,58 @@ test.describe('The tag filter bar reads the used tags from the server', () => {
         await expect(pill(page, deleted)).toHaveCount(0);
     });
 
+    test('folder breadcrumbs update in place and remove filters by keyboard while the tag bar is hidden', async ({ browser, page }) => {
+        const stamp = `bar-crumbs-${Date.now()}`;
+        const [a, b] = [`${stamp}-a`, `${stamp}-b`];
+        await elsewhere(browser, async other => {
+            await createTags(other, [a, b], leadingSortOrder());
+            const card = await createCharacter(other, stamp);
+            for (const id of [a, b]) {
+                await api(other, '/api/tags/edit', { id, patch: { folder_type: 'OPEN' } });
+                await api(other, '/api/tags/assign', { id: card, tagId: id });
+            }
+        });
+        await loadApp(page);
+        await openBar(page);
+        await expect(pill(page, a)).toBeVisible();
+        await page.evaluate(async ([a, b]) => {
+            const { chooseBogusFolder } = await import('/scripts/tags.js');
+            chooseBogusFolder(undefined, b);
+            chooseBogusFolder(undefined, a);
+        }, [a, b]);
+        const crumbs = page.getByRole('navigation', { name: 'Folder filters' });
+        await expect(crumbs.locator('.tag')).toHaveCount(2);
+        expect(await crumbs.locator('.tag').evaluateAll(tags => tags.map(tag => tag.id))).toEqual([a, b]);
+        const remove = crumbs.locator(`[id="${a}"] button`);
+        await remove.focus();
+        await remove.evaluate(element => { element.dataset.kept = 'yes'; });
+        await api(page, '/api/tags/edit', { id: a, patch: { name: 'Renamed folder' } });
+        await page.evaluate(async () => (await import('/scripts/tags.js')).onTagsChanged());
+        await expect(remove).toHaveAccessibleName('Remove Renamed folder');
+        await expect(remove).toHaveAttribute('data-kept', 'yes');
+        await expect(remove).toBeFocused();
+        await page.locator(`${BAR} .showTagList`).click();
+        await expect(pill(page, a)).toBeHidden();
+        await expect(crumbs).toBeVisible();
+        await remove.press('Enter');
+        await expect(crumbs.locator('.tag')).toHaveCount(1);
+        expect(await stored(page, `CharacterList_tag_${a}`)).toBe('UNDEFINED');
+        expect(await stored(page, `CharacterList_tag_${b}`)).toBe('SELECTED');
+        await page.evaluate(async a => (await import('/scripts/tags.js')).chooseBogusFolder(undefined, a), a);
+        await expect(crumbs.locator('.tag')).toHaveCount(2);
+        await page.clock.install();
+        await page.evaluate(async () => {
+            const { chooseBogusFolder } = await import('/scripts/tags.js');
+            const field = document.querySelector('#character_search_bar');
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+            chooseBogusFolder(undefined, 'back');
+        });
+        await page.clock.runFor(1000);
+        await expect(crumbs.locator('.tag')).toHaveAttribute('id', a);
+        await crumbs.locator('button').press('Enter');
+        await expect(crumbs).toHaveCount(0);
+    });
+
     test('an open folder whose tag is not among the tags the bar drew opens and closes', async ({ browser, page }) => {
         const stamp = `bar-folder-${Date.now()}`;
         const ids = Array.from({ length: 51 }, (_, i) => `${stamp}-${pad(i)}`);

@@ -1,4 +1,6 @@
 import { createSignal, createStore, flush, reconcile } from 'solid-js';
+import { preserveFocus } from '@st/page/element';
+import type { TagChip as FolderChip } from '@st/page/tags';
 
 export type Condition = { field: string; op: 'contains' | 'not_contains'; value: string };
 export type Bound = { min?: number; max?: number };
@@ -19,7 +21,13 @@ export type FilterView = {
 };
 export type Tag = { id: string; name: string; thing?: string; shownAs?: string };
 export type TagChip = Tag & { icon: string; className: string; title: string; state: string; action: boolean };
-export type TagBarView = { tags: TagChip[]; visible: boolean; tail: 'more' | 'failed' | null; expanded: boolean };
+export type TagBarView = {
+    tags: TagChip[];
+    folders: FolderChip[];
+    visible: boolean;
+    tail: 'more' | 'failed' | null;
+    expanded: boolean;
+};
 export type SavedState = {
     current: string | null;
     name: string;
@@ -58,13 +66,14 @@ export type ControlPorts = {
     ranges: { field: string; label: string; unit: 'date' | 'kb' | 'count' }[];
     tagAction(id: string, element: HTMLElement, event: MouseEvent): Promise<void>;
     moreTags(element: HTMLElement, retry: boolean): void;
+    removeFolder(this: void, id: string): void;
     saved: SavedPorts;
 };
 
 export function createControls() {
     const [search, setSearch] = createSignal<SearchView | null>(null);
     const [tagState, setTags] = createStore<{ value: TagBarView }>({
-        value: { tags: [], visible: false, tail: null, expanded: false },
+        value: { tags: [], folders: [], visible: false, tail: null, expanded: false },
     });
     const [savedState, setSaved] = createStore<{ value: SavedState }>({
         value: {
@@ -90,9 +99,11 @@ export function createControls() {
             });
         },
         showTags: (view: TagBarView) => {
-            flush(() => {
-                setTags(reconcile({ value: view }, 'id'));
-            });
+            preserveFocus(() =>
+                flush(() => {
+                    setTags(reconcile({ value: view }, 'id'));
+                }),
+            );
         },
         showSaved: (view: SavedState) => {
             flush(() => {

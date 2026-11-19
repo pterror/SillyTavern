@@ -176,6 +176,31 @@ test.describe('folders', () => {
         await expect(folderEntry(page, folderId)).toBeVisible();
     });
 
+    test('Back preserves typed search text and cannot be undone by a queued search edit', async ({ page }) => {
+        const stamp = Date.now();
+        const folderId = `closed-pending-${stamp}`;
+        made.push(folderId);
+        await createFolder(page, folderId, `Pending${stamp}`, 'CLOSED');
+        const inside = await createCharacter(page, `Pending${stamp} Inside`);
+        const outside = await createCharacter(page, `Pending${stamp} Outside`);
+        await api(page, '/api/tags/assign', { id: inside, tagId: folderId });
+        await setSearchTerm(page, `Pending${stamp}`);
+        await folderEntry(page, folderId).click();
+        await expect(row(page, inside)).toBeVisible();
+        await page.clock.install();
+        await page.evaluate(term => {
+            const field = document.querySelector('#character_search_bar');
+            field.value = term;
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+            document.querySelector('#rm_print_characters_block [data-folder-case="none"]').click();
+        }, `Pending${stamp} Outside`);
+        await page.clock.runFor(1000);
+        await expect(row(page, outside)).toBeVisible();
+        await expect(row(page, inside)).toHaveCount(0);
+        await expect(page.locator('#character_search_bar')).toHaveValue(`Pending${stamp} Outside`);
+        expect(await page.evaluate(async () => (await import('/scripts/character-list.js')).getCharacterView().folderCase)).toBe('none');
+    });
+
     test('the keyboard opens a folder and goes back, as it opens any entry', async ({ page }) => {
         const stamp = Date.now();
         const folderId = `closed-keys-${stamp}`;

@@ -26,6 +26,7 @@ import {
     SortPicker,
     SavedViews,
     TagFilters,
+    FolderBreadcrumbs,
     createControls,
 } from '@st/character-browser/page';
 import type { OldPage as CharacterBrowserOldPage, ControlPorts, GroupPorts } from '@st/character-browser/page';
@@ -94,6 +95,7 @@ export type StartOptions = {
         sort: HTMLElement;
         saved: HTMLElement;
         tagFilters: HTMLElement;
+        folderBreadcrumbs: HTMLElement;
         old: CharacterBrowserOldPage;
         controls: ControlPorts;
     };
@@ -149,6 +151,9 @@ export function start(options: StartOptions) {
     mount(options.characterBrowser.sort, () => <SortPicker controls={characterControls} old={controls} />);
     mount(options.characterBrowser.saved, () => <SavedViews controls={characterControls} old={controls} />);
     mount(options.characterBrowser.tagFilters, () => <TagFilters controls={characterControls} old={controls} />);
+    mount(options.characterBrowser.folderBreadcrumbs, () => (
+        <FolderBreadcrumbs controls={characterControls} old={controls} />
+    ));
     mount(options.characterBrowser.rows, () => <BrowserRows browser={characterBrowser} />);
     mount(options.characterBrowser.pagination, () => (
         <BrowserPagination browser={characterBrowser} old={options.characterBrowser.old} />

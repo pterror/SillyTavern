@@ -348,6 +348,10 @@
     opacity: 1;
 }
 
+.st-folder-breadcrumbs {
+    display: contents;
+}
+
 .rm_tag_bogus_drilldown {
     height: calc(var(--mainFontSize)* 2 - 2);
 }

@@ -14,4 +14,8 @@ overflow tags. The surrounding group editor and missing-member report remain leg
 The search pills, sort picker, tag filter bar and saved-view picker are also Solid surfaces. `character-list.js`,
 `tags.js` and `saved-views.js` keep the query, persistence and tag-management intents, and publish snapshots through
 `characterBrowser.controls`. Components receive those snapshots and injected actions; they do not fetch or read
-storage. The legacy folder drilldown remains a decorated leaf beside the Solid tag filter bar.
+storage. Folder breadcrumbs are a Solid navigation surface over selected folder filters, using shared tag chips
+and ID-based removal intents. Back navigation uses the same ordered folder data, never rendered DOM. Snapshot
+updates preserve the focus of surviving controls, and an empty selection removes the navigation surface.
+Explicit navigation and filter changes consume any queued search edit first, preserving typed text without letting
+the later debounce restore an old folder or tag selection.

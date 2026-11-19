@@ -1807,11 +1807,11 @@ function folderEntriesChangedFrom(before) {
 /**
  * Function to be called when a specific tag/folder is chosen to "drill down".
  *
- * @param {*} source The jQuery element clicked when choosing the folder
+ * @param {*} _source Retained for callers of the public API; folder navigation uses filter data.
  * @param {string} tagId The tag id that is behind the chosen folder
  * @param {boolean} remove Whether the given tag should be removed (otherwise it is added/chosen)
  */
-function chooseBogusFolder(source, tagId, remove = false) {
+function chooseBogusFolder(_source, tagId, remove = false) {
     const shownCase = readShownFolderCase();
     if (showFolderCase && tagId === 'back' && shownCase !== 'none') {
         showFolderCase('none');
@@ -1820,7 +1820,7 @@ function chooseBogusFolder(source, tagId, remove = false) {
     if (showFolderCase && tagId !== 'back' && !tagsStore.get(tagId)) {
         void readTagsForIds([tagId]).then(answer => {
             if (answer?.tags.get(tagId)?.folder_type === 'CLOSED') showFolderCase?.(remove ? 'none' : tagId);
-            else chooseTagFilterFolder(source, tagId, remove);
+            else chooseTagFilterFolder(tagId, remove);
         });
         return;
     }
@@ -1828,51 +1828,32 @@ function chooseBogusFolder(source, tagId, remove = false) {
         showFolderCase(remove ? 'none' : tagId);
         return;
     }
-    chooseTagFilterFolder(source, tagId, remove);
+    chooseTagFilterFolder(tagId, remove);
 }
 
 /**
- * @param {*} source
  * @param {string} tagId
  * @param {boolean} remove
  */
-function chooseTagFilterFolder(source, tagId, remove) {
-    // If we are here via the 'back' action, we implicitly take the last filtered folder as one to remove
-    const isBack = tagId === 'back';
-    if (isBack) {
-        const drilldown = $(source).closest('#rm_characters_block').find('.rm_tag_bogus_drilldown');
-        const lastTag = drilldown.find('.tag:last').last();
-        tagId = lastTag.attr('id');
+function chooseTagFilterFolder(tagId, remove) {
+    // Match the displayed breadcrumb order without reading rendered chips.
+    if (tagId === 'back') {
+        tagId = getOpenBogusFolders().sort(compareTagsForSort).at(-1)?.id;
         remove = true;
     }
-
-    // Instead of manually updating the filter conditions, we just "click" on the filter tag
-    // We search inside which filter block we are located in and use that one
-    const FILTER_SELECTOR = ($(source).closest('#rm_characters_block') ?? $(source).closest('#rm_group_chats_block')).find('.rm_tag_filter');
-    const filterHelper = getFilterHelper(FILTER_SELECTOR);
-    if (isMainCharacterList(filterHelper) && newUiStarted()) {
-        const state = remove ? 'UNDEFINED' : 'SELECTED';
-        const current = filterHelper.getFilterData(FILTER_TYPES.TAG);
-        const tag = tagsStore.get(tagId);
-        const prefix = getFilterStorageKey(filterHelper);
-        accountStorage.setItem(`${prefix}_tag_${tagId}`, state);
-        saveTagFilterName(prefix, tagId, state, tag?.name);
-        if (tag) setTagFilterState(tag, state);
-        setFilterDataFromUser(filterHelper, FILTER_TYPES.TAG, {
-            selected: [...current.selected.filter(id => id !== tagId), ...(!remove ? [tagId] : [])],
-            excluded: current.excluded.filter(id => id !== tagId),
-        });
-        printTagFilters(tag_filter_type.character);
-        return;
-    }
-    let tagElement = $(FILTER_SELECTOR).find(`.tag[id=${tagId}]`);
+    if (!tagId) return;
+    const state = remove ? 'UNDEFINED' : 'SELECTED';
+    const current = entitiesFilter.getFilterData(FILTER_TYPES.TAG) ?? { selected: [], excluded: [] };
     const tag = tagsStore.get(tagId);
-    if (!tagElement.length && tag) {
-        appendTagToList($(FILTER_SELECTOR), tag, { isFilter: true, isGeneralList: true });
-        tagElement = $(FILTER_SELECTOR).find(`.tag[id=${tagId}]`);
-    }
-
-    toggleTagThreeState(tagElement, { stateOverride: !remove ? FILTER_STATES.SELECTED : DEFAULT_FILTER_STATE, simulateClick: true });
+    const prefix = getFilterStorageKey(entitiesFilter);
+    accountStorage.setItem(`${prefix}_tag_${tagId}`, state);
+    saveTagFilterName(prefix, tagId, state, tag?.name);
+    if (tag) setTagFilterState(tag, state);
+    setFilterDataFromUser(entitiesFilter, FILTER_TYPES.TAG, {
+        selected: [...current.selected.filter(id => id !== tagId), ...(!remove ? [tagId] : [])],
+        excluded: current.excluded.filter(id => id !== tagId),
+    });
+    printTagFilters(tag_filter_type.character);
 }
 
 /**
@@ -3587,11 +3568,12 @@ function printTagFilters(type = tag_filter_type.character) {
                 state: tag.class === 'showTagList' ? getTagFilterVisibility(type) ? 'SELECTED' : 'UNDEFINED'
                     : actions.includes(tag) && !('filter_state' in tag) ? 'UNDEFINED' : determineTagFilterState(filterHelper, tag, actions.includes(tag)),
             })),
+            folders: getOpenBogusFolders().sort(compareTagsForSort).map(tag => ({
+                id: tag.id, name: tag.name, thing: tag.thing, className: tag.class ?? '', title: tag.title ?? '', icon: tag.icon ?? '',
+                removable: true, inactive: false, actionable: false,
+            })),
             visible: getTagFilterVisibility(type), tail, expanded,
         });
-        const drilldown = $filterContainer.siblings('.rm_tag_bogus_drilldown');
-        drilldown.empty();
-        printTagList(drilldown, { tags: getOpenBogusFolders(), tagOptions: { removable: true } });
         return;
     }
 
@@ -3609,19 +3591,13 @@ function printTagFilters(type = tag_filter_type.character) {
 
     printBigTagFilterList(type, FILTER_SELECTOR, tagsToDisplay, inactiveTags, tail);
 
-    const bogusDrilldown = $filterContainer.siblings('.rm_tag_bogus_drilldown');
-    bogusDrilldown.empty();
-    if (bogusDrilldown.length > 0) {
-        const navigatedTags = getOpenBogusFolders();
-        printTagList(bogusDrilldown, { tags: navigatedTags, tagOptions: { removable: true } });
-    }
-
     updateTagFilterVisibility(type, FILTER_SELECTOR);
 }
 
 /** The Solid bar keeps the existing filter intents and tag-management actions. */
 export function characterTagFilterUi() {
     return {
+        removeFolder(id) { chooseTagFilterFolder(id, true); },
         async activate(id, element, event) {
             const action = Object.values(ACTIONABLE_TAGS).find(tag => String(tag.id) === id);
             if (action) await action.action.call($(element), entitiesFilter, event);
@@ -3699,7 +3675,7 @@ function updateTagFilterIndicator(filterSelector) {
 }
 
 function onTagRemoveClick(event) {
-    if (event.target.closest('[data-assigned-tags]')) return;
+    if (event.target.closest('[data-assigned-tags], [data-solid-tags]')) return;
     event.stopPropagation();
     const tagElement = $(this).closest('.tag');
     const tagId = tagElement.attr('id');
@@ -3707,13 +3683,6 @@ function onTagRemoveClick(event) {
     // If we have a custom remove action, we are not executing anything here in the default handler
     if (tagElement.attr('custom-remove-action')) {
         console.debug('Custom remove action', tagId);
-        return;
-    }
-
-    // Check if we are inside the drilldown. If so, we call remove on the bogus folder
-    if ($(this).closest('.rm_tag_bogus_drilldown').length > 0) {
-        console.debug('Bogus drilldown remove', tagId);
-        chooseBogusFolder($(this), tagId, true);
         return;
     }
 

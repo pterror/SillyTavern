@@ -10,6 +10,7 @@ import type { ControlPorts, FilterView, SavedState, Tag } from './controls.ts';
 import { Search } from './Search.tsx';
 import { SavedViews } from './SavedViews.tsx';
 import { TagFilters } from './TagFilters.tsx';
+import { FolderBreadcrumbs } from './FolderBreadcrumbs.tsx';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -53,6 +54,7 @@ function mount() {
             ranges: [],
             tagAction: async () => {},
             moreTags() {},
+            removeFolder: vi.fn(),
             saved: {
                 open: async () => {
                     controls.showSaved({ ...saved, open: true });
@@ -87,6 +89,7 @@ function mount() {
                     <Search controls={controls} old={old} />
                     <SavedViews controls={controls} old={old} />
                     <TagFilters controls={controls} old={old} />
+                    <FolderBreadcrumbs controls={controls} old={old} />
                 </UiProvider>
             ),
             host,
@@ -165,9 +168,9 @@ test('a saved-view refresh preserves the rename draft and Escape cancels only th
 test('showing tag filters explicitly overrides the legacy bar’s hidden-chip style', () => {
     const s = mount();
     const tags = [{ id: 'used', name: 'Used', icon: '', className: '', title: '', state: 'UNDEFINED', action: false }];
-    s.controls.showTags({ tags, visible: false, tail: null, expanded: false });
+    s.controls.showTags({ tags, folders: [], visible: false, tail: null, expanded: false });
     expect(s.host.querySelector<HTMLElement>('#used')?.style.display).toBe('none');
-    s.controls.showTags({ tags, visible: true, tail: null, expanded: false });
+    s.controls.showTags({ tags, folders: [], visible: true, tail: null, expanded: false });
     expect(s.host.querySelector<HTMLElement>('#used')?.style.display).toBe('inline-flex');
 });
 
@@ -188,11 +191,52 @@ test('merged tag aliases share one pill while the query keeps its original IDs',
 test('tag-filter snapshots preserve the focused chip when its state changes', () => {
     const s = mount();
     const tag = { id: 'used', name: 'Used', icon: '', className: '', title: '', state: 'UNDEFINED', action: false };
-    s.controls.showTags({ tags: [tag], visible: true, tail: null, expanded: false });
+    s.controls.showTags({ tags: [tag], folders: [], visible: true, tail: null, expanded: false });
     const chip = s.host.querySelector<HTMLElement>('#used')!;
     chip.focus();
-    s.controls.showTags({ tags: [{ ...tag, state: 'SELECTED' }], visible: true, tail: null, expanded: false });
+    s.controls.showTags({
+        tags: [{ ...tag, state: 'SELECTED' }],
+        folders: [],
+        visible: true,
+        tail: null,
+        expanded: false,
+    });
     expect(s.host.querySelector('#used')).toBe(chip);
     expect(document.activeElement).toBe(chip);
     expect(chip.classList.contains('selected')).toBe(true);
+});
+
+test('folder breadcrumbs preserve focused removal buttons across name, look, and order changes', () => {
+    const s = mount();
+    const folder = (id: string) => ({
+        id,
+        name: id,
+        thing: '123',
+        className: '',
+        title: '',
+        icon: '',
+        removable: true,
+        inactive: false,
+        actionable: false,
+    });
+    const show = (folders: ReturnType<typeof folder>[]) => {
+        s.controls.showTags({ tags: [], folders, visible: false, tail: null, expanded: false });
+    };
+    show([folder('first'), folder('second')]);
+    const navigation = s.host.querySelector('nav[aria-label="Folder filters"]')!;
+    const chip = navigation.querySelector('#second')!;
+    const remove = chip.querySelector<HTMLButtonElement>('button')!;
+    remove.focus();
+    show([{ ...folder('second'), name: 'Renamed', thing: '456' }, folder('first')]);
+    expect(navigation.querySelector('#second')).toBe(chip);
+    expect(document.activeElement).toBe(remove);
+    expect(chip.classList.contains('look-456')).toBe(true);
+    expect(remove.getAttribute('aria-label')).toBe('Remove Renamed');
+    remove.click();
+    expect(s.old.removeFolder).toHaveBeenCalledExactlyOnceWith('second');
+    expect(navigation.querySelectorAll('.tag')).toHaveLength(2);
+    show([folder('first')]);
+    expect(navigation.querySelector('#second')).toBeNull();
+    show([]);
+    expect(s.host.querySelector('nav[aria-label="Folder filters"]')).toBeNull();
 });

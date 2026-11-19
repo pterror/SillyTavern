@@ -42,6 +42,11 @@ export function resetCharacterListPositionOnNextPrint() {
  * @param {any} data
  */
 export function setFilterDataFromUser(filterHelper, filterType, data) {
+    if (filterHelper === entitiesFilter && pendingSearchView !== null) {
+        const pending = pendingSearchView;
+        pendingSearchView = null;
+        setCharacterView(pending, { fromSearchBox: true });
+    }
     if (filterHelper === entitiesFilter && JSON.stringify(filterHelper.getFilterData(filterType)) !== JSON.stringify(data)) {
         resetListPositionOnNextPrint = true;
     }
@@ -390,12 +395,13 @@ export function characterBrowserUi() {
     const saved = document.createElement('div'); search.before(saved);
     const tagFilters = document.querySelector('#rm_characters_block .rm_tag_filter');
     tagFilters.replaceChildren();
+    const folderBreadcrumbs = document.querySelector('#rm_characters_block .st-folder-breadcrumbs');
     const tagUi = characterTagFilterUi();
     onceStarted(() => { showViewInSearchBox(); refreshSavedViewState(); printTagFilters(tag_filter_type.character); return () => {}; });
     const pagination = document.createElement('div');
     document.getElementById('rm_print_characters_pagination').append(pagination);
     return {
-        rows: document.getElementById('rm_print_characters_block'), pagination, search, sort, saved, tagFilters,
+        rows: document.getElementById('rm_print_characters_block'), pagination, search, sort, saved, tagFilters, folderBreadcrumbs,
         controls: {
             change: (view, typing) => changeSearchView(view, typing),
             token(raw) {
@@ -417,7 +423,7 @@ export function characterBrowserUi() {
             sorts: characterSorts,
             fields: Object.entries(SEARCH_FIELDS).map(([value, aliases]) => ({ value, aliases: [...aliases], label: fieldLabels[value] ?? value })),
             ranges: Object.entries(RANGE_FIELDS).map(([field, { unit }]) => ({ field, unit, label: rangeLabels[field] ?? field })),
-            tagAction: tagUi.activate, moreTags: tagUi.more, saved: savedViewsUi(),
+            tagAction: tagUi.activate, moreTags: tagUi.more, removeFolder: tagUi.removeFolder, saved: savedViewsUi(),
         },
         old: {
             page: goToCharacterListPage,
@@ -638,7 +644,9 @@ export function getCharacterView() {
  */
 export function setCharacterView(view, { fromSearchBox = false } = {}) {
     const current = getCharacterView();
-    const next = { ...current, ...view };
+    const pending = fromSearchBox ? null : pendingSearchView;
+    if (!fromSearchBox) pendingSearchView = null;
+    const next = { ...current, ...pending, ...view };
     if (sameView(current, next)) return;
 
     entitiesFilter.setFilterData(FILTER_TYPES.SEARCH, serializeSearchText(next), true);
