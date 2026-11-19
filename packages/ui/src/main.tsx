@@ -1,3 +1,5 @@
+import { TagManager, createManager } from '@st/tags/page';
+import type { ManagerPorts } from '@st/tags/page';
 import { createSignal } from 'solid-js';
 import {
     BrowserRows,
@@ -271,6 +273,13 @@ export function start(options: StartOptions) {
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         presets,
         characterBrowser: { ...characterBrowser, controls: characterControls },
+        tagManager: {
+            mount(host: HTMLElement, old: ManagerPorts) {
+                const manager = createManager();
+                const dispose = mount(host, () => <TagManager manager={manager} old={old} />);
+                return { show: manager.show, dispose };
+            },
+        },
         alternatives: alternativesCompat(setLook),
         activations,
         worldbuilding,

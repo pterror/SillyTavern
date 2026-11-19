@@ -1,3 +1,4 @@
+import { chooseTagSort } from './tag-manager-utils.js';
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
@@ -103,7 +104,7 @@ async function openTagManagement(page, mode, term) {
     await openCharacterManagementDrawer(page);
     await page.locator('.rm_tag_filter .manageTags:visible').first().click();
     await page.locator('#tag_view_list .tag_view_prune').waitFor({ state: 'visible', timeout: 10000 });
-    await page.locator('#tag_sort_mode_select').selectOption(mode);
+    await chooseTagSort(page, mode);
     await search(page, term);
 }
 
@@ -192,7 +193,7 @@ test.describe('Manage Tags reads pages of tags from the server', () => {
         for (const mode of /** @type {const} */ (['manual', 'alphabetical', 'by_entries'])) {
             const answered = page.waitForResponse(response => new URL(response.url()).pathname === '/api/tags/query'
                 && response.request().postDataJSON()?.filter?.contains === stamp && response.request().postDataJSON()?.sort?.field === mode);
-            await page.locator('#tag_sort_mode_select').selectOption(mode);
+            await chooseTagSort(page, mode);
             await page.locator('#tag_view_search').fill(stamp);
             await answered;
             const { rows } = await api(page, '/api/tags/query', { filter: { contains: stamp }, sort: { field: mode }, pageSize: 100 });

@@ -1,0 +1,16 @@
+{
+    "name": "@st/tags",
+    "private": true,
+    "type": "module",
+    "exports": {
+        "./page": "./page/index.ts"
+    },
+    "dependencies": {
+        "@solidjs/web": "2.0.0",
+        "@st/page": "workspace:*",
+        "solid-js": "2.0.0"
+    },
+    "devDependencies": {
+        "vite-plus": "1.1.0"
+    }
+}

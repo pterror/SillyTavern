@@ -16,6 +16,7 @@
         "@st/protocol": "workspace:*",
         "@st/recent-history": "workspace:*",
         "@st/settings": "workspace:*",
+        "@st/tags": "workspace:*",
         "@st/usage-stats": "workspace:*",
         "@st/worldbuilding": "workspace:*",
         "solid-js": "2.0.0"

@@ -404,3 +404,13 @@
     border-left: 3px solid var(--SmartThemeQuoteColor);
     padding-left: 5px;
 }
+
+.tag_view_item button {
+    background: transparent;
+    border: 0;
+    color: inherit;
+}
+
+#tag_view_list button:not(.fa-solid) {
+    font: inherit;
+}

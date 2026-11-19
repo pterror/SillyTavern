@@ -1,3 +1,4 @@
+import { chooseTagSort } from './tag-manager-utils.js';
 import { test, expect } from './fixtures.js';
 import { testSetup, openCharacterManagementDrawer } from './frontent-test-utils.js';
 
@@ -93,7 +94,7 @@ async function openTagManagement(page, mode, term) {
     await openCharacterManagementDrawer(page);
     await page.locator('.rm_tag_filter .manageTags:visible').first().click();
     await page.locator('#tag_view_list .tag_view_prune').waitFor({ state: 'visible', timeout: 10000 });
-    await page.locator('#tag_sort_mode_select').selectOption(mode);
+    await chooseTagSort(page, mode);
     await page.locator('#tag_view_search').fill(term);
 }
 
@@ -166,7 +167,7 @@ test.describe('dragging a tag in Manage Tags', () => {
         expect((await api(page, '/api/tags/by-ids', { ids: [z] })).tags.map(tag => tag.id)).toEqual([z]);
         await expect.poll(() => pageHoldsServerOrders(page, [a, b, c]), { timeout: 30000 }).toBe(true);
         expect(await shownOrder(page)).toEqual([c, a, b, z]);
-        await expect(page.locator('#tag_sort_mode_select')).toHaveValue('manual');
+        await expect(page.locator('#tag_sort_mode_select')).toHaveAttribute('value', 'manual');
     });
 
     test('a row dropped back where it was sends nothing and keeps the sort mode', async ({ browser, page }) => {
@@ -181,14 +182,14 @@ test.describe('dragging a tag in Manage Tags', () => {
         await openTagManagement(page, 'manual', stamp);
         const writes = recordTagWrites(page);
         for (const mode of /** @type {const} */ (['manual', 'alphabetical'])) {
-            await page.locator('#tag_sort_mode_select').selectOption(mode);
+            await chooseTagSort(page, mode);
             await expect.poll(() => shownOrder(page)).toEqual([a, b]);
 
             await drag(page, b);
             await page.waitForTimeout(2500);
 
             expect(writes, mode).toEqual([]);
-            await expect(page.locator('#tag_sort_mode_select')).toHaveValue(mode);
+            await expect(page.locator('#tag_sort_mode_select')).toHaveAttribute('value', mode);
             expect(await shownOrder(page)).toEqual([a, b]);
         }
     });
@@ -213,7 +214,7 @@ test.describe('dragging a tag in Manage Tags', () => {
         await expect(page.locator('#toast-container .toast-warning').filter({ hasText: `"${b}" was deleted` })).toBeVisible({ timeout: 30000 });
         await expect.poll(() => shownOrder(page), { timeout: 30000 }).toEqual([a, c]);
         expect(await serverManualOrder(page, [a, c])).toEqual([a, c]);
-        await expect(page.locator('#tag_sort_mode_select')).toHaveValue('manual');
+        await expect(page.locator('#tag_sort_mode_select')).toHaveAttribute('value', 'manual');
     });
 
     test('a move the server fails puts the row back and says so', async ({ browser, page }) => {
@@ -252,7 +253,7 @@ test.describe('dragging a tag in Manage Tags', () => {
 
         await drag(page, c, a);
 
-        await expect(page.locator('#tag_sort_mode_select')).toHaveValue('manual', { timeout: 30000 });
+        await expect(page.locator('#tag_sort_mode_select')).toHaveAttribute('value', 'manual', { timeout: 30000 });
         expect(writes).toEqual([{ path: '/api/tags/reorder', body: { id: c, before: a, mode: 'alphabetical' } }]);
         await expect.poll(() => serverManualOrder(page, [a, b, c]), { timeout: 60000 }).toEqual([c, a, b]);
         await expect.poll(() => pageHoldsServerOrders(page, [a, b, c]), { timeout: 60000 }).toBe(true);

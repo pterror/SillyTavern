@@ -34,7 +34,7 @@ import { dropOldTagsCache } from './tags-cache.js';
 import { mergedTagTarget, shownTagIds, tagReadDrops, takeInMergedTags } from './tag-merges.js';
 import { beginLocalTagChange, isFetchedTagIdsCurrent, tagFetchStamp } from './tag-fetch-stamps.js';
 import { characterRepository } from './character-repository.js';
-import { attachActions, newUi, newUiStarted } from './new-ui-page.js';
+import { newUi, newUiStarted } from './new-ui-page.js';
 import { addLooks, nameNode, nameOn } from './names.js';
 import { TAG_LOOKS } from './name-holders.js';
 
@@ -61,7 +61,6 @@ const CHARACTER_FILTER_SELECTOR = '#rm_characters_block .rm_tag_filter';
 const GROUP_FILTER_SELECTOR = '#rm_group_add_members_header ~ .rm_tag_controls .rm_tag_filter';
 const GROUP_MEMBERS_FILTER_SELECTOR = '#rm_group_members_header ~ .rm_tag_controls .rm_tag_filter';
 const TAG_TEMPLATE = $('#tag_template .tag');
-const VIEW_TAG_TEMPLATE = $('#tag_view_template .tag_view_item');
 
 /**
  * @param {FilterHelper} filterHelper - The filter helper instance
@@ -1115,16 +1114,16 @@ const TAG_FIELD_REDRAWS = {
     /** @param {Tag} tag */
     name: (tag) => {
         $(`.tag[id="${tag.id}"] .tag_name`).text(tag.name);
-        drawTagViewName($(`.tag_view_item[id="${tag.id}"] .tag_view_name`), tag);
+        publishViewTagList(viewTagList);
     },
     /** @param {Tag} tag */
     folder_type: (tag) => {
-        updateDrawTagFolder($(`.tag_view_item[id="${tag.id}"]`), tag);
+        publishViewTagList(viewTagList);
         printCharactersDebounced();
     },
     /** @param {Tag} tag */
     is_hidden_on_character_card: (tag) => {
-        drawTagHideToggle($(`.tag_view_item[id="${tag.id}"] .eye-toggle`), tag);
+        publishViewTagList(viewTagList);
         redrawRowsAfterTagHiddenChange(tag.id);
     },
     sort_order: () => redrawAfterTagSortOrderChange(),
@@ -1302,8 +1301,9 @@ async function dropTagsLocally(drops) {
     for (const { id } of drops) {
         writeTagNameDraft(id, null);
         $(`.tag[id="${id}"]`).remove();
-        $(`.tag_view_item[id="${id}"]`).remove();
+        if (viewTagList) viewTagList.rows = viewTagList.rows.filter(row => row.id !== id);
     }
+    publishViewTagList(viewTagList);
     refreshUsedTagBars();
     if (reachesFolderEntries) onFolderListChanged();
     printTagFilters(tag_filter_type.character);
@@ -3817,68 +3817,70 @@ function renderTagSearchItem(list, item) {
 }
 
 async function onViewTagsListClick() {
-    const html = $(document.createElement('div'));
-    html.attr('id', 'tag_view_list');
-    html.append(await renderTemplateAsync('tagManagement'));
-
-    const topEdge = $('<div class="tag_view_list_edge"></div>');
-    const tagContainer = $('<div class="tag_view_list_tags ui-sortable"></div>');
-    const status = $('<div class="tag_view_list_status"></div>');
-    html.append(topEdge, tagContainer, status);
-
-    /** @type {ViewTagList} */
-    const state = {
-        container: tagContainer,
-        topEdge,
-        status,
-        sort: power_user.tag_sort_mode,
-        contains: '',
-        beforeFirstId: null,
-        trail: [],
-        trailCut: false,
-        endCursor: undefined,
-        emptyReads: 0,
-        ownIds: new Set(),
-        dragging: false,
-        stale: false,
-        queued: new Set(),
-        chain: Promise.resolve(),
-        observer: null,
-    };
-    viewTagList = state;
-
-    const $sortModeSelect = html.find('#tag_sort_mode_select');
-    $sortModeSelect.val(power_user.tag_sort_mode);
-    $sortModeSelect.on('change', function () {
-        const newMode = $(this).val().toString();
-        power_user.tag_sort_mode = newMode;
-        saveSettingsDebounced('power_user.tag_sort_mode');
+    const host = document.createElement('div');
+    host.id = 'tag_view_list';
+    const reloadSoon = debounce(() => reloadViewTagList(), debounce_timeout.standard);
+    let state;
+    let surface;
+    // Interact attaches behavior by ID after rendering, so mount once the dialog is in the document.
+    const open = () => {
+        surface = newUi().tagManager.mount(host, {
+            search(value) { state.search = value; reloadSoon(); },
+            sort(value) {
+                power_user.tag_sort_mode = value;
+                saveSettingsDebounced('power_user.tag_sort_mode');
+                publishViewTagList(state);
+                reloadViewTagList();
+                refreshUsedTagBars();
+                onFolderListChanged();
+            },
+            read: kind => void askForViewTags(kind),
+            draft(id, value) {
+                const tag = tagsStore.get(id);
+                if (!tag) return;
+                writeTagNameDraft(id, value === tag.name ? null : value);
+                publishViewTagList(state);
+            },
+            rename: commitTagRename,
+            folder: onTagAsFolderClick,
+            hide: onTagHideToggleClick,
+            look: onTagLookClick,
+            remove: onTagDeleteClick,
+            create: onTagCreateClick,
+            backup: onTagsBackupClick,
+            restore: onBackupRestoreClick,
+            prune: onTagsPruneClick,
+            leftRows() { if (state.stale) setTimeout(refreshViewTagList, 0); },
+        });
+        /** @type {ViewTagList} */
+        state = {
+            container: $(host.querySelector('.tag_view_list_tags')),
+            topEdge: $(host.querySelector('.tag_view_list_edge')),
+            status: $(host.querySelector('.tag_view_list_status')),
+            surface, rows: [], search: '', statusKind: '',
+            sort: power_user.tag_sort_mode,
+            contains: '', beforeFirstId: null, trail: [], trailCut: false,
+            endCursor: undefined, emptyReads: 0, ownIds: new Set(),
+            dragging: false, stale: false, queued: new Set(), chain: Promise.resolve(), observer: null,
+        };
+        viewTagList = state;
+        publishViewTagList(state);
         reloadViewTagList();
-        refreshUsedTagBars();
-        onFolderListChanged();
-    });
-
-    const $search = html.find('#tag_view_search');
-    $search.on('input', debounce(() => reloadViewTagList(), debounce_timeout.standard));
-
-    tagContainer.on('focusout', (evt) => {
-        if (state.stale && !(evt.relatedTarget instanceof Node && tagContainer[0].contains(evt.relatedTarget))) {
-            setTimeout(refreshViewTagList, 0);
-        }
-    });
-
-    reloadViewTagList();
-    makeTagListDraggable(tagContainer);
-
-    await callGenericPopup(html, POPUP_TYPE.TEXT, null, {
-        allowVerticalScrolling: true,
-        wide: true,
-        large: true,
-        onOpen: () => watchViewTagEdges(state),
-    });
-    state.observer?.disconnect();
-    if (viewTagList === state) viewTagList = null;
-    scheduleTagSweep();
+        makeTagListDraggable(state.container);
+        watchViewTagEdges(state);
+    };
+    try {
+        await callGenericPopup($(host), POPUP_TYPE.TEXT, null, {
+            allowVerticalScrolling: true, wide: true, large: true,
+            onOpen: open,
+        });
+    } finally {
+        state?.observer?.disconnect();
+        state?.container.sortable('destroy');
+        if (viewTagList === state) viewTagList = null;
+        surface?.dispose();
+        scheduleTagSweep();
+    }
 }
 
 function redrawAfterTagSortOrderChange() {
@@ -3955,7 +3957,7 @@ async function moveTagOnServer(id, placement, mode) {
     const switchesToManual = !manual && power_user.tag_sort_mode !== tag_sort_mode.MANUAL;
     if (switchesToManual) {
         power_user.tag_sort_mode = tag_sort_mode.MANUAL;
-        $('#tag_sort_mode_select').val(tag_sort_mode.MANUAL);
+        publishViewTagList(viewTagList);
         saveSettingsDebounced('power_user.tag_sort_mode');
     }
 
@@ -4108,7 +4110,13 @@ function makeTagListDraggable(tagContainer) {
             const next = ui.item.next('.tag_view_item').attr('id');
             const previous = ui.item.prev('.tag_view_item').attr('id');
             const placement = next ? { before: next } : previous ? { after: previous } : null;
-            if (!id || !placement) return;
+            const state = viewTagList;
+            const order = $(tagContainer).children('.tag_view_item').map((_, el) => el.id).get();
+            $(tagContainer).sortable('cancel');
+            if (!id || !placement || !state) return;
+            const byId = new Map(state.rows.map(row => [row.id, row]));
+            state.rows = order.flatMap(id => byId.has(id) ? [byId.get(id)] : []);
+            publishViewTagList(state);
             const mode = power_user.tag_sort_mode;
             tagOrderChain = tagOrderChain.then(() => moveTagOnServer(id, placement, mode))
                 .catch(error => console.error(`Error moving tag ${id}:`, error));
@@ -4378,36 +4386,6 @@ async function onTagCreateClick() {
     printTagFilters(tag_filter_type.group_candidates_list);
 }
 
-/**
- * Appends a tag to the view tag list.
- * @param {JQuery<HTMLElement>} list List element
- * @param {Tag} tag Tag object
- * @param {string} count How many characters and groups carry the tag, as shown (viewTagCountText())
- */
-function appendViewTagToList(list, tag, count) {
-    const template = VIEW_TAG_TEMPLATE.clone();
-    template.attr('id', tag.id);
-    template.find('.tag_view_counter_value').text(count);
-    drawTagViewName(template.find('.tag_view_name'), tag);
-    template.find('.tag_view_name').addClass('tag').each((_, element) => nameOn(element, tag.thing));
-
-    const tagAsFolderId = tag.id + '-tag-folder';
-    template.find('.tag_as_folder').attr('id', tagAsFolderId);
-    template.find('.tag_view_look').toggle(Boolean(tag.thing)).on('click', () => onTagLookClick(tag.id));
-
-    const hideToggle = template.find('.eye-toggle');
-    drawTagHideToggle(hideToggle, tag);
-
-    hideToggle.on('click', () => onTagHideToggleClick(tag.id));
-
-    list.append(template);
-
-    const nameElement = template.find('.tag_view_name')[0];
-    attachActions(nameElement, { confirm: () => nameElement.blur() });
-
-    updateDrawTagFolder(template, tag);
-}
-
 /** @param {string} id */
 async function onTagLookClick(id) {
     const thing = tagsStore.get(id)?.thing;
@@ -4427,16 +4405,6 @@ async function onTagHideToggleClick(id) {
     }
 }
 
-/**
- * @param {JQuery<HTMLElement>} hideToggle
- * @param {Tag} tag
- */
-function drawTagHideToggle(hideToggle, tag) {
-    hideToggle.toggleClass('fa-eye-slash', tag.is_hidden_on_character_card);
-    hideToggle.toggleClass('fa-eye', !tag.is_hidden_on_character_card);
-    hideToggle.attr('title', tag.is_hidden_on_character_card ? t`Hide on character card` : t`Show on character card`);
-}
-
 /** @param {string} tagId */
 function redrawRowsAfterTagHiddenChange(tagId) {
     if (tagChangeAffectsCurrentView([tagId])) {
@@ -4446,8 +4414,7 @@ function redrawRowsAfterTagHiddenChange(tagId) {
     }
 }
 
-async function onTagAsFolderClick() {
-    const id = $(this).closest('.tag_view_item').attr('id');
+async function onTagAsFolderClick(id) {
     const tag = tagsStore.get(id);
     if (!tag) return;
 
@@ -4457,24 +4424,7 @@ async function onTagAsFolderClick() {
     if (outcome === 'failed') tellTagEditFailed(id, t`Its folder type was not changed.`);
 }
 
-function updateDrawTagFolder(element, tag) {
-    const tagFolder = TAG_FOLDER_TYPES[tag.folder_type] || TAG_FOLDER_TYPES[TAG_FOLDER_DEFAULT_TYPE];
-    const folderElement = element.find('.tag_as_folder');
-
-    Object.keys(TAG_FOLDER_TYPES).forEach(x => {
-        folderElement.toggleClass(TAG_FOLDER_TYPES[x].class, TAG_FOLDER_TYPES[x] === tagFolder);
-    });
-
-    folderElement.attr('title', tagFolder.tooltip);
-    folderElement.attr('data-i18n', '[title]' + tagFolder.tooltip);
-    const indicator = folderElement.find('.tag_folder_indicator');
-    indicator.text(tagFolder.icon);
-    indicator.css('color', tagFolder.color);
-    indicator.css('font-size', `calc(var(--mainFontSize) * ${tagFolder.size})`);
-}
-
-async function onTagDeleteClick() {
-    const id = $(this).closest('.tag_view_item').attr('id');
+async function onTagDeleteClick(id) {
     const tag = tagsStore.get(id);
 
     const popupContent = $(await renderTemplateAsync('deleteTag', {}));
@@ -4561,37 +4511,8 @@ function writeTagNameDraft(id, name) {
     }
 }
 
-/**
- * @param {JQuery<HTMLElement>} nameElement
- * @param {Tag} tag
- */
-function drawTagViewName(nameElement, tag) {
-    const draft = readTagNameDraft(tag.id);
-    const unsaved = draft !== null && draft !== tag.name;
-    const shown = unsaved ? draft : tag.name;
-    if (nameElement.text() !== shown) nameElement.text(shown);
-    nameElement.toggleClass('tag_view_name_unsaved', unsaved);
-    if (unsaved) {
-        nameElement.attr('title', t`This name is not saved yet. Click it and press Enter to save it.`);
-    } else {
-        nameElement.removeAttr('title');
-    }
-}
-
-function onTagRenameInput() {
-    const id = $(this).closest('.tag_view_item').attr('id');
-    const tag = tagsStore.get(id);
-    if (!tag) return;
-    const typed = $(this).text();
-    writeTagNameDraft(id, typed === tag.name ? null : typed);
-    drawTagViewName($(this), tag);
-}
-
-/**
- * @param {HTMLElement} nameElement
- */
-async function commitTagRename(nameElement) {
-    const id = $(nameElement).closest('.tag_view_item').attr('id');
+/** @param {string} id */
+async function commitTagRename(id) {
     const tag = tagsStore.get(id);
     if (!tag) return;
     const name = readTagNameDraft(id);
@@ -4602,6 +4523,7 @@ async function commitTagRename(nameElement) {
     });
     if (outcome === 'failed') {
         tellTagEditFailed(id, t`It was not renamed. The new name is kept in its field: press Enter there to try again.`);
+        publishViewTagList(viewTagList);
         return;
     }
     if (outcome !== 'stored') return;
@@ -4715,6 +4637,10 @@ const VIEW_TAG_KEPT_MAX = 50;
  * mode and under the search text, at most VIEW_TAG_MAX_ROWS of them. Above them sit the kept rows: tags created or
  * renamed here whose place is outside the run.
  * @typedef {object} ViewTagList
+ * @property {{ id: string, count: string, kept: boolean }[]} rows
+ * @property {string} search
+ * @property {'' | 'loading' | 'failed' | 'paused' | 'end'} statusKind
+ * @property {ReturnType<ReturnType<typeof newUi>['tagManager']['mount']>} surface
  * @property {JQuery<HTMLElement>} container Holds the rows.
  * @property {JQuery<HTMLElement>} topEdge Right above the container; coming into view asks for the rows before.
  * @property {JQuery<HTMLElement>} status Right below the container; coming into view asks for the rows after. Says
@@ -4739,6 +4665,27 @@ const VIEW_TAG_KEPT_MAX = 50;
 
 /** @type {ViewTagList | null} */
 let viewTagList = null;
+
+/** @param {ViewTagList | null} state */
+function publishViewTagList(state) {
+    if (!state) return;
+    state.surface.show({
+        rows: state.rows.flatMap(row => {
+            const tag = tagsStore.get(row.id);
+            if (!tag) return [];
+            const draft = readTagNameDraft(tag.id);
+            const folder = TAG_FOLDER_TYPES[tag.folder_type] ?? TAG_FOLDER_TYPES[TAG_FOLDER_DEFAULT_TYPE];
+            return [{ ...row, name: draft ?? tag.name, unsaved: draft !== null && draft !== tag.name,
+                thing: tag.thing, hidden: Boolean(tag.is_hidden_on_character_card),
+                folder: { class: folder.class, title: folder.tooltip, icon: folder.icon, color: folder.color, size: Number(folder.size) },
+            }];
+        }),
+        sort: power_user.tag_sort_mode, search: state.search, status: state.statusKind,
+    });
+}
+
+/** @param {ViewTagList} state */
+function listedViewTags(state) { return state.rows.filter(row => !row.kept); }
 
 /**
  * @param {ViewTagList} state
@@ -4779,26 +4726,8 @@ function changeViewTagRowsInPlace(state, anchorRow, change) {
  * @param {'' | 'loading' | 'failed' | 'paused' | 'end'} kind
  */
 function setViewTagStatus(state, kind) {
-    const status = state.status.empty().attr('data-status', kind);
-    /**
-     * @param {string} label
-     * @param {string} read
-     */
-    const button = (label, read) => $('<div class="menu_button menu_button_icon"></div>').text(label).on('click', () => askForViewTags(read));
-    switch (kind) {
-        case 'loading':
-            status.text(t`Loading tags...`);
-            break;
-        case 'failed':
-            status.append($('<span></span>').text(t`The tags could not be loaded.`), button(t`Try again`, viewTagListRows(state).length ? 'after' : 'reload'));
-            break;
-        case 'paused':
-            status.append($('<span></span>').text(t`No tag found yet among the ones looked at so far.`), button(t`Keep looking`, 'after'));
-            break;
-        case 'end':
-            if (!state.container.children('.tag_view_item').length) status.text(state.contains ? t`No tags match the search.` : t`There are no tags yet.`);
-            break;
-    }
+    state.statusKind = kind;
+    publishViewTagList(state);
 }
 
 /**
@@ -4829,16 +4758,12 @@ async function viewTagCursorAfter(state, id) {
 /**
  * @param {{ rows: Tag[], counts?: Record<string, number>, approximate?: string[] }} answer
  * @param {(id: string) => boolean} [wanted]
- * @returns {HTMLElement[]}
+ * @returns {{ id: string, count: string, kept: boolean }[]}
  */
 function makeViewTagRows(answer, wanted = () => true) {
     mergeServerTagDefinitions(answer.rows.filter(row => isTagObject(row) && !tagIdsBeingCreated.has(row.id)));
-    const holder = $('<div></div>');
-    for (const row of answer.rows) {
-        const tag = isTagObject(row) && wanted(row.id) ? tagsStore.get(row.id) : null;
-        if (tag) appendViewTagToList(holder, tag, viewTagCountText(answer, tag.id));
-    }
-    return holder.children().toArray();
+    return answer.rows.filter(row => isTagObject(row) && wanted(row.id) && tagsStore.has(row.id))
+        .map(row => ({ id: row.id, count: viewTagCountText(answer, row.id), kept: false }));
 }
 
 /**
@@ -4855,28 +4780,22 @@ function viewTagCountText(answer, id) {
  * @param {ViewTagList} state
  */
 async function syncKeptViewTags(state) {
-    const listed = new Set(viewTagListRows(state).map((_, el) => el.id).get());
+    const listed = new Set(listedViewTags(state).map(row => row.id));
     for (const id of [...state.ownIds]) {
         if (!tagsStore.has(id)) state.ownIds.delete(id);
     }
     const kept = [...state.ownIds].filter(id => !listed.has(id));
-    state.container.children('.tag_view_item_kept').each((_, el) => {
-        if (!kept.includes(el.id)) el.remove();
-    });
-    const missing = kept.filter(id => !state.container.children(`.tag_view_item_kept[id="${id}"]`).length);
+    state.rows = state.rows.filter(row => !row.kept || kept.includes(row.id));
+    const missing = kept.filter(id => !state.rows.some(row => row.kept && row.id === id));
     if (!missing.length) return;
-
     const answer = await queryViewTags(state, { ids: missing, pageSize: missing.length });
     if (!answer || answer === 'invalid-cursor') return;
-    const stillListed = new Set(viewTagListRows(state).map((_, el) => el.id).get());
-    const rows = makeViewTagRows(answer, id => !stillListed.has(id));
-    for (const row of rows) {
-        row.classList.add('tag_view_item_kept');
-        row.title = t`Kept at the top so you can go on working with it. Its own place in the list is further on.`;
-    }
+    const stillListed = new Set(listedViewTags(state).map(row => row.id));
+    const rows = makeViewTagRows(answer, id => !stillListed.has(id)).map(row => ({ ...row, kept: true }));
     const firstListRow = viewTagListRows(state)[0];
     changeViewTagRowsInPlace(state, firstListRow, () => {
-        if (firstListRow) $(firstListRow).before(rows); else state.container.append(rows);
+        state.rows = [...state.rows.filter(row => row.kept), ...rows, ...listedViewTags(state)];
+        publishViewTagList(state);
     });
 }
 
@@ -4894,7 +4813,7 @@ function isViewTagListInUse(state) {
  */
 async function reloadViewTags(state) {
     state.sort = power_user.tag_sort_mode;
-    state.contains = $('#tag_view_search').val()?.toString().trim() ?? '';
+    state.contains = state.search.trim();
     setViewTagStatus(state, 'loading');
     const answer = await queryViewTags(state, { pageSize: VIEW_TAG_PAGE_SIZE });
     if (!answer || answer === 'invalid-cursor') {
@@ -4903,8 +4822,7 @@ async function reloadViewTags(state) {
     }
 
     const rows = makeViewTagRows(answer);
-    viewTagListRows(state).remove();
-    state.container.append(rows);
+    state.rows = [...state.rows.filter(row => row.kept), ...rows];
     state.beforeFirstId = null;
     state.trail = [];
     state.trailCut = false;
@@ -4949,7 +4867,8 @@ async function loadViewTagsAfter(state) {
 
     const listed = new Set(viewTagListRows(state).map((_, el) => el.id).get());
     const rows = makeViewTagRows(answer, id => !listed.has(id));
-    state.container.append(rows);
+    state.rows = [...state.rows, ...rows];
+    publishViewTagList(state);
     state.endCursor = answer.cursor;
     state.emptyReads = answer.rows.length === 0 && answer.more ? state.emptyReads + 1 : 0;
 
@@ -4963,7 +4882,11 @@ async function loadViewTagsAfter(state) {
             state.trailCut = true;
         }
         state.beforeFirstId = removed.last().attr('id');
-        changeViewTagRowsInPlace(state, listRows[extra], () => removed.remove());
+        changeViewTagRowsInPlace(state, listRows[extra], () => {
+            const removedIds = new Set(removed.map((_, el) => el.id).get());
+            state.rows = state.rows.filter(row => !removedIds.has(row.id));
+            publishViewTagList(state);
+        });
     }
     await syncKeptViewTags(state);
 
@@ -5019,18 +4942,21 @@ async function loadViewTagsBefore(state) {
     state.beforeFirstId = afterId;
     if (!reachesFirst) {
         const rows = makeViewTagRows(answer);
-        listRows.remove();
-        state.container.append(rows);
+        state.rows = [...state.rows.filter(row => row.kept), ...rows];
+        publishViewTagList(state);
         state.endCursor = answer.cursor;
     } else {
         const before = reachesRows === -1 ? answer.rows : answer.rows.slice(0, reachesRows);
         const rows = makeViewTagRows({ ...answer, rows: before }, id => !listed.has(id));
         changeViewTagRowsInPlace(state, listRows[0], () => {
-            if (listRows.length) listRows.first().before(rows); else state.container.append(rows);
+            state.rows = [...state.rows.filter(row => row.kept), ...rows, ...listedViewTags(state)];
+            publishViewTagList(state);
         });
         const all = viewTagListRows(state);
         if (all.length > VIEW_TAG_MAX_ROWS) {
-            all.slice(VIEW_TAG_MAX_ROWS).remove();
+            const removed = new Set(all.slice(VIEW_TAG_MAX_ROWS).map((_, el) => el.id).get());
+            state.rows = state.rows.filter(row => !removed.has(row.id));
+            publishViewTagList(state);
             state.endCursor = undefined;
         }
     }
@@ -5071,14 +4997,15 @@ async function refreshViewTags(state) {
     const wanted = answer.rows.filter(row => isTagObject(row) && tagsStore.has(row.id)).map(row => row.id);
     if (wanted.length === shown.length && wanted.every((id, i) => id === shown[i])) {
         for (const id of wanted) {
-            state.container.children(`.tag_view_item[id="${id}"]`).find('.tag_view_counter_value').text(viewTagCountText(answer, id));
+            const row = state.rows.find(row => row.id === id);
+            if (row) row.count = viewTagCountText(answer, id);
         }
     } else {
         const scroller = viewTagScroller(state);
         const scrollTop = scroller?.scrollTop;
         const rows = makeViewTagRows(answer);
-        viewTagListRows(state).remove();
-        state.container.append(rows);
+        state.rows = [...state.rows.filter(row => row.kept), ...rows];
+        publishViewTagList(state);
         if (scroller) scroller.scrollTop = scrollTop;
     }
     state.endCursor = answer.cursor;
@@ -5763,16 +5690,6 @@ export function initTags() {
         // 2. Open the tag view list dialog
         onViewTagsListClick();
     });
-    $(document).on('click', '.tag_delete', onTagDeleteClick);
-    $(document).on('click', '.tag_as_folder', onTagAsFolderClick);
-    $(document).on('input', '.tag_view_name', onTagRenameInput);
-    $(document).on('focusout', '.tag_view_name', (evt) => {
-        commitTagRename(evt.target);
-    });
-    $(document).on('click', '.tag_view_create', onTagCreateClick);
-    $(document).on('click', '.tag_view_backup', onTagsBackupClick);
-    $(document).on('click', '.tag_view_restore', onBackupRestoreClick);
-    $(document).on('click', '.tag_view_prune', onTagsPruneClick);
     eventSource.makeFirst(event_types.CHAT_CHANGED, () => selected_group ? applyTagsOnGroupSelect() : applyTagsOnCharacterSelect());
 
     registerTagsSlashCommands();
