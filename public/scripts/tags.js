@@ -10,7 +10,7 @@ import { eventSource, event_types } from './events.js';
 import { characters, charactersStore } from './character-store.js';
 import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, FilterHelper } from './filters.js';
 
-import { groupCandidatesFilter, groupMembersFilter, selected_group } from './group-chats.js';
+import { groupCandidatesFilter, groupMembersFilter, selected_group, refreshGroupRowTags, getGroupRowTagIds, setGroupRowTagIds } from './group-chats.js';
 import { findGroupByName, groups, groupsStore } from './group-store.js';
 import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, debounce, findChar, findCharAsync, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
@@ -820,6 +820,7 @@ function tagIdsInUse() {
     }
     for (const state of liveAssignedLists) for (const id of state.ids) ids.add(id);
     for (const id of tagIdsBeingCreated) ids.add(id);
+    for (const tagIds of unheldRowsOnScreen().values()) for (const id of tagIds) ids.add(id);
     return ids;
 }
 
@@ -1112,9 +1113,11 @@ async function postTagsRead(path, body) {
 const TAG_FIELD_REDRAWS = {
     /** @param {Tag} tag */
     name: (tag) => {
-        $(`.tag[id="${tag.id}"] .tag_name`).filter((_, el) => !el.closest('[data-assigned-tags]')).text(tag.name);
+        $(`.tag[id="${tag.id}"] .tag_name`).filter((_, el) => !el.closest('[data-assigned-tags], [data-solid-tags]')).text(tag.name);
         for (const state of liveAssignedLists) publishAssignedTags(state);
         publishViewTagList(viewTagList);
+        redrawUnheldRows();
+        refreshGroupRowTags();
     },
     /** @param {Tag} tag */
     folder_type: (tag) => {
@@ -1300,7 +1303,7 @@ async function dropTagsLocally(drops) {
 
     for (const { id } of drops) {
         writeTagNameDraft(id, null);
-        $(`.tag[id="${id}"]`).filter((_, el) => !el.closest('[data-assigned-tags]')).remove();
+        $(`.tag[id="${id}"]`).filter((_, el) => !el.closest('[data-assigned-tags], [data-solid-tags]')).remove();
         if (viewTagList) viewTagList.rows = viewTagList.rows.filter(row => row.id !== id);
     }
     for (const state of liveAssignedLists) {
@@ -1317,6 +1320,7 @@ async function dropTagsLocally(drops) {
     printTagFilters(tag_filter_type.group_members_list);
     printTagFilters(tag_filter_type.group_candidates_list);
     if (needsFullRedraw) {
+        refreshGroupRowTags();
         printCharactersDebounced();
     } else {
         updateEntityRowTags(affectedRowKeys);
@@ -1355,8 +1359,12 @@ function rereadEntitiesLeftWaiting() {
  * @param {string[]} [onlyKeys]
  * @returns {Promise<boolean>}
  */
+function unheldRowsOnScreen() {
+    return new Map([...getGroupRowTagIds(), ...getUnheldRowTagIds()]);
+}
+
 async function rereadResidentEntityTagIds(onlyKeys) {
-    const unheldRows = getUnheldRowTagIds();
+    const unheldRows = unheldRowsOnScreen();
     const keys = onlyKeys
         ? onlyKeys.filter(key => resolveTagIdsArray(key) || unheldRows.has(key))
         : onScreenEntityKeys(unheldRows);
@@ -1420,7 +1428,10 @@ async function rereadResidentEntityTagIds(onlyKeys) {
         }
         return true;
     } finally {
-        for (const [key, { serverIds, fetchStamp }] of unheldRowsToRedraw) setUnheldRowTagIds(key, serverIds, fetchStamp);
+        for (const [key, { serverIds, fetchStamp }] of unheldRowsToRedraw) {
+            setUnheldRowTagIds(key, serverIds, fetchStamp);
+            setGroupRowTagIds(key, serverIds, fetchStamp);
+        }
         if (unheldRowsToRedraw.size && !changedKeys.size) {
             if (tagChangeAffectsCurrentView([...changedTagIds])) printCharactersDebounced();
             refreshUsedTagBars();
@@ -1462,7 +1473,7 @@ async function takeInEntityTagChanges() {
         if (!page || typeof page.seq !== 'number' || typeof page.groupsVersion !== 'number') return;
 
         const rowsLeft = (page.endSeq - page.seq) + (page.endGroupsVersion - page.groupsVersion);
-        if (page.reset || (page.hasMore && rowsLeft > onScreenEntityKeys(getUnheldRowTagIds()).length)) {
+        if (page.reset || (page.hasMore && rowsLeft > onScreenEntityKeys(unheldRowsOnScreen()).length)) {
             if (await rereadResidentEntityTagIds()) {
                 entityTagChangesCursor = { sinceSeq: page.endSeq, sinceGroupsVersion: page.endGroupsVersion };
             }
@@ -1471,7 +1482,7 @@ async function takeInEntityTagChanges() {
             return;
         }
 
-        const unheldRows = getUnheldRowTagIds();
+        const unheldRows = unheldRowsOnScreen();
         const held = (Array.isArray(page.ids) ? page.ids : []).filter(key => typeof key === 'string' && (resolveTagIdsArray(key) || unheldRows.has(key)));
         if (held.length && !await rereadResidentEntityTagIds(held)) return;
         entityTagChangesCursor = { sinceSeq: page.seq, sinceGroupsVersion: page.groupsVersion };
@@ -2036,17 +2047,6 @@ function getTagsList(key, sort = true, residencyFallbackTagIds = undefined) {
     return [];
 }
 
-function getInlineListSelector() {
-    if (selected_group && menu_type === 'group_edit') {
-        return `.group_select[grid="${selected_group}"] .tags`;
-    }
-
-    if (getSelectionState().type === 'character' && menu_type === 'character_edit') {
-        return `.character_select[data-avatar="${CSS.escape(getCurrentCharacter().avatar)}"] .tags`;
-    }
-
-    return null;
-}
 
 /**
  * Gets the current tag key based on the currently selected character or group
@@ -2176,10 +2176,6 @@ export function addTagsToEntity(tag, entityId, { tagListSelector = null, tagList
     tagListOptions.addTag = tags;
 
     if (tagListSelector) printTagList(tagListSelector, tagListOptions);
-    const inlineSelector = getInlineListSelector();
-    if (inlineSelector) {
-        printTagList($(inlineSelector), { ...tagListOptions, tagOptions: { isCharacterList: true } });
-    }
 
     return result;
 }
@@ -2213,6 +2209,7 @@ function tagChangeAffectsCurrentView(tagIds) {
  */
 function redrawAfterTagChange(tagIds, affectedKeys) {
     if (tagChangeAffectsCurrentView(tagIds)) {
+        refreshGroupRowTags();
         printCharactersDebounced();
         return;
     }
@@ -2224,26 +2221,17 @@ function redrawAfterTagChange(tagIds, affectedKeys) {
  * @param {Iterable<string>} keys
  */
 function updateEntityRowTags(keys) {
-    for (const key of keys) {
-        const escapedKey = CSS.escape(String(key));
-        const $row = $(`#rm_print_characters_block .character_select[data-avatar="${escapedKey}"], #rm_print_characters_block .group_select[data-grid="${escapedKey}"]`);
-
-        if ($row.length) {
-            printTagList($row.find('.tags'), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
-        }
-
-        $(`.group_member[data-avatar="${escapedKey}"] .tags`).each((_, element) => {
-            printTagList($(element), { forEntityOrKey: key, tagOptions: { isCharacterList: true } });
-        });
-    }
+    if ([...keys].length) redrawUnheldRows();
+    refreshGroupRowTags();
 }
 
-/**
- * @param {string} tagId
- * @returns {string[]}
- */
-function getRenderedKeysWithTag(tagId) {
-    return getRenderedKeysWithAnyTag(new Set([tagId]));
+/** Plain read-only chip data, shared by result and group list snapshots. */
+export function inlineTagView(ids) {
+    return heldTagsForIds(ids).filter(tag => !tag.is_hidden_on_character_card).sort(compareTagsForSort).map(tag => ({
+        id: tag.id, name: tag.name, thing: tag.thing, className: tag.class ?? '', title: tag.title ?? '', icon: tag.icon ?? '',
+        removable: false, inactive: false, actionable: false,
+        mandatory: Boolean(isBogusFolder(tag) || (tag.filter_state && !isFilterState(tag.filter_state, FILTER_STATES.UNDEFINED))),
+    }));
 }
 
 /**
@@ -2252,8 +2240,8 @@ function getRenderedKeysWithTag(tagId) {
  */
 function getRenderedKeysWithAnyTag(tagIds) {
     const keys = [];
-    const unheldRows = getUnheldRowTagIds();
-    document.querySelectorAll('#rm_print_characters_block [data-avatar], #rm_print_characters_block [data-grid]').forEach(el => {
+    const unheldRows = unheldRowsOnScreen();
+    document.querySelectorAll('#rm_print_characters_block [data-avatar], #rm_print_characters_block [data-grid], .group_member[data-avatar]').forEach(el => {
         const key = el.getAttribute('data-avatar') ?? el.getAttribute('data-grid');
         const ids = resolveTagIdsArray(key) ?? unheldRows.get(key) ?? [];
         if (ids.some(id => tagIds.has(id))) {
@@ -2310,8 +2298,7 @@ function removeTagFromEntity(tag, entityId, { tagListSelector = null, tagElement
             $selector.find(`.tag[id="${tag.id}"]`).remove();
         }
     }
-    if (tagElement && !tagElement[0]?.closest('[data-assigned-tags]')) tagElement.remove();
-    $(`${getInlineListSelector()} .tag[id="${tag.id}"]`).remove();
+    if (tagElement && !tagElement[0]?.closest('[data-assigned-tags], [data-solid-tags]')) tagElement.remove();
 
     return result;
 }
@@ -2653,7 +2640,7 @@ async function readMissingTagDefinitions() {
 function redrawTagsOnScreen() {
     const keys = new Set(getAllRenderedEntityKeys());
     document.querySelectorAll('.group_member[data-avatar]').forEach(el => keys.add(el.getAttribute('data-avatar')));
-    const unheldRows = getUnheldRowTagIds();
+    const unheldRows = unheldRowsOnScreen();
     updateEntityRowTags([...keys].filter(key => !unheldRows.has(key)));
     redrawUnheldRows();
     if (getTagKey() !== null) {
@@ -4421,10 +4408,11 @@ async function onTagHideToggleClick(id) {
 
 /** @param {string} tagId */
 function redrawRowsAfterTagHiddenChange(tagId) {
+    refreshGroupRowTags();
     if (tagChangeAffectsCurrentView([tagId])) {
         printCharactersDebounced();
     } else {
-        updateEntityRowTags(getRenderedKeysWithTag(tagId));
+        redrawUnheldRows();
     }
 }
 

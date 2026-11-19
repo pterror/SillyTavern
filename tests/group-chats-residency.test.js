@@ -27,6 +27,14 @@ const charactersStoreMock = {
     onChange: () => () => {},
 };
 
+let uiReady = false;
+const candidatesUi = { loading: jest.fn(), show: jest.fn(async () => {}) };
+jest.unstable_mockModule('../public/scripts/new-ui-page.js', () => ({
+    newUiStarted: () => uiReady,
+    newUi: () => ({ groupLists: { candidates: candidatesUi } }),
+    onceStarted: () => () => {},
+}));
+
 jest.unstable_mockModule('../public/lib.js', () => ({ Fuse: class {} }));
 
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
@@ -141,7 +149,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
 }));
 
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
-    printTagList: jest.fn(),
+    inlineTagView: () => [],
     createTagMapFromList: jest.fn(),
     applyTagsOnCharacterSelect: jest.fn(),
     applyTagsOnGroupSelect: jest.fn(),
@@ -511,8 +519,6 @@ describe('the add-member picker shows the candidates a page at a time from the s
     let searchOptionSelected = false;
     /** @type {import('../public/scripts/filters.js').FilterHelper} */
     let groupCandidatesFilter;
-    /** @type {any} */
-    let pager;
 
     beforeAll(async () => {
         ({ groupCandidatesFilter } = await import('../public/scripts/group-chats.js'));
@@ -524,15 +530,14 @@ describe('the add-member picker shows the candidates a page at a time from the s
         queryMock.mockReset();
         unsupportedSortWarnings.length = 0;
         searchOptionSelected = false;
-        pager = undefined;
+        uiReady = true;
+        candidatesUi.show.mockClear();
+        candidatesUi.loading.mockClear();
         groupCandidatesFilter.filterData = {};
         groupCandidatesFilter.applyFiltersCalls = [];
         global.$ = (selector) => {
             if (selector === '#character_sort_order option[data-field="search"]') {
                 return { is: () => searchOptionSelected };
-            }
-            if (selector === '#rm_group_add_members_pagination') {
-                return { pagination: (options) => { pager = options; } };
             }
             return originalDollar(selector);
         };
@@ -540,16 +545,18 @@ describe('the add-member picker shows the candidates a page at a time from the s
 
     afterEach(() => {
         global.$ = originalDollar;
+        uiReady = false;
     });
-
-    const toEntity = (item) => ({ item, id: item.avatar, type: 'character' });
 
     /**
      * @param {number} pageNumber
      * @param {number} pageSize
      */
-    function showPage(pageNumber, pageSize) {
-        return new Promise((resolve, reject) => pager.ajaxFunction({ data: { pageNumber, pageSize }, success: resolve, error: reject }));
+    async function showPage(pageNumber, pageSize) {
+        if (candidatesUi.show.mock.lastCall?.[0]?.page !== pageNumber) await printGroupCandidates(pageNumber);
+        const view = candidatesUi.show.mock.lastCall[0];
+        expect(view.size).toBe(pageSize);
+        return { rows: view.rows.map(row => ({ avatar: row.entity, name: row.name })), total: view.total };
     }
 
     test('the first page is asked for once, at the page size shown, and later pages one at a time', async () => {
@@ -558,14 +565,13 @@ describe('the add-member picker shows the candidates a page at a time from the s
         queryMock.mockResolvedValueOnce({ rows: [a], total: 7 }).mockResolvedValueOnce({ rows: [b], total: 7 });
 
         await printGroupCandidates();
-        expect(await showPage(1, 5)).toEqual({ rows: [toEntity(a)], total: 7 });
-        expect(await showPage(2, 5)).toEqual({ rows: [toEntity(b)], total: 7 });
+        expect(await showPage(1, 5)).toEqual({ rows: [a], total: 7 });
+        expect(await showPage(2, 5)).toEqual({ rows: [b], total: 7 });
 
         expect(queryMock.mock.calls).toEqual([
             [{ excludeIds: [] }, { field: 'name', order: 'asc' }, 1, 5, ['rows', 'total'], { draws: 'page.groupCandidates' }],
             [{ excludeIds: [] }, { field: 'name', order: 'asc' }, 2, 5, ['rows', 'total'], { draws: 'page.groupCandidates' }],
         ]);
-        expect(pager.totalNumberLocator({ total: '~7' })).toBe(7);
         expect(groupCandidatesFilter.applyFiltersCalls).toEqual([]);
     });
 
@@ -573,7 +579,7 @@ describe('the add-member picker shows the candidates a page at a time from the s
         power_user.sort_field = 'made_up_field';
         queryMock
             .mockRejectedValueOnce(new CharacterQueryError('bad field', { status: 400, reason: 'invalid-sort-field' }))
-            .mockResolvedValue({ rows: [], total: 0 });
+            .mockResolvedValue({ rows: [], total: 7 });
 
         await printGroupCandidates();
         await showPage(1, 5);
@@ -638,7 +644,7 @@ describe('the add-member picker shows the candidates a page at a time from the s
         await printGroupCandidates();
 
         expect(queryMock.mock.calls[0][1]).toEqual({ field: 'random', order: 'asc', seed: 42 });
-        expect(await showPage(1, 5)).toEqual({ rows: [toEntity(a), toEntity(b)], total: 2 });
+        expect(await showPage(1, 5)).toEqual({ rows: [a, b], total: 2 });
     });
 
     test('a selected group filter shows no candidate and asks the server for none', async () => {
@@ -651,16 +657,35 @@ describe('the add-member picker shows the candidates a page at a time from the s
         expect(queryMock).not.toHaveBeenCalled();
     });
 
-    test('a different server rejection (e.g. a 500) propagates instead of silently falling back', async () => {
+    test('a different server rejection is reported without silently falling back', async () => {
         queryMock.mockRejectedValue(new CharacterQueryError('server exploded', { status: 500, reason: 'internal-error' }));
 
-        await expect(printGroupCandidates()).rejects.toThrow('server exploded');
+        await printGroupCandidates();
+        expect(candidatesUi.loading).toHaveBeenLastCalledWith(false, 'server exploded');
+        expect(candidatesUi.show).not.toHaveBeenCalled();
     });
 
-    test('a network-level failure propagates instead of silently falling back', async () => {
+    test('a network-level failure is reported without silently falling back', async () => {
         queryMock.mockRejectedValue(new TypeError('Failed to fetch'));
 
-        await expect(printGroupCandidates()).rejects.toThrow('Failed to fetch');
+        await printGroupCandidates();
+        expect(candidatesUi.loading).toHaveBeenLastCalledWith(false, 'Failed to fetch');
+        expect(candidatesUi.show).not.toHaveBeenCalled();
+    });
+
+    test('a late query answer cannot replace the candidates for a newer filter', async () => {
+        let finishOld;
+        queryMock.mockReturnValueOnce(new Promise(resolve => { finishOld = resolve; }))
+            .mockResolvedValueOnce({ rows: [{ avatar: 'new.png', name: 'New' }], total: '~1' });
+        const oldRequest = printGroupCandidates();
+        groupCandidatesFilter.filterData.search = 'new';
+        await printGroupCandidates();
+        finishOld({ rows: [{ avatar: 'old.png', name: 'Old' }], total: 1 });
+        await oldRequest;
+        expect(candidatesUi.show).toHaveBeenCalledTimes(1);
+        expect(candidatesUi.show.mock.lastCall[0]).toMatchObject({
+            rows: [{ entity: 'new.png', name: 'New' }], total: 1, approximate: true,
+        });
     });
 });
 

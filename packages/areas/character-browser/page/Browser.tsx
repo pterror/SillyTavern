@@ -1,5 +1,6 @@
-import { For, Show, createEffect, createSignal, createStore, flush, reconcile } from 'solid-js';
+import { For, Show, createSignal, createStore, flush, reconcile } from 'solid-js';
 import { useUi } from '@st/page/context';
+import { InlineTags } from '@st/page/tags';
 import { Name } from '@st/page/name';
 import { Select } from '@st/page/select';
 import type { BrowserView, OldPage, Row } from './types.ts';
@@ -10,12 +11,10 @@ export function createBrowser() {
     });
     const [busy, setBusy] = createSignal(false);
     const [error, setError] = createSignal('');
-    const [revision, setRevision] = createSignal(0);
     return {
         view: () => state.view,
         busy,
         error,
-        revision,
         loading(loading: boolean, reason = '') {
             setBusy(loading);
             setError(reason);
@@ -23,7 +22,6 @@ export function createBrowser() {
         async show(view: BrowserView) {
             flush(() => {
                 setState(reconcile({ view }, 'id'));
-                setRevision((value) => value + 1);
                 setBusy(false);
                 setError('');
             });
@@ -34,14 +32,12 @@ export function createBrowser() {
 type Browser = ReturnType<typeof createBrowser>;
 type Props = { browser: Browser; old: OldPage };
 
-export function BrowserRows(props: Props) {
+export function BrowserRows(props: { browser: Browser }) {
     const { t } = useUi();
     return (
         <>
             <Show when={props.browser.error()}>{(message) => <p role="alert">{message()}</p>}</Show>
-            <For each={props.browser.view().rows}>
-                {(row) => <BrowserRow row={row} old={props.old} revision={props.browser.revision()} />}
-            </For>
+            <For each={props.browser.view().rows}>{(row) => <BrowserRow row={row} />}</For>
             <Show when={props.browser.view().rows.length === 0 && !props.browser.busy()}>
                 <div class="text_block empty_block">
                     <i class="fa-solid fa-dragon fa-4x" aria-hidden="true" />
@@ -53,18 +49,8 @@ export function BrowserRows(props: Props) {
     );
 }
 
-function BrowserRow(props: { row: Row; old: OldPage; revision: number }) {
+function BrowserRow(props: { row: Row }) {
     const { t } = useUi();
-    let tags: HTMLDivElement | undefined;
-    let avatar: HTMLDivElement | undefined;
-    createEffect(
-        () => props.revision,
-        () => {
-            const cleanup = tags ? props.old.tags(tags, props.row.entity) : undefined;
-            if (avatar && props.row.type === 'group') props.old.avatar(avatar, props.row.entity);
-            if (typeof cleanup === 'function') return cleanup;
-        },
-    );
     const folderBack = () => props.row.type === 'folder' && props.row.entity === 'none';
     const activate = (event: KeyboardEvent & { currentTarget: HTMLDivElement }) => {
         if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
@@ -102,14 +88,26 @@ function BrowserRow(props: { row: Row; old: OldPage; revision: number }) {
             }
         >
             <div
-                class="avatar"
-                ref={(element) => {
-                    avatar = element;
-                }}
+                class={
+                    props.row.type !== 'group'
+                        ? 'avatar'
+                        : props.row.groupAvatar?.images.length === 0
+                          ? 'missing-avatar fa-solid fa-user-slash'
+                          : props.row.groupAvatar?.custom === true
+                            ? 'avatar'
+                            : `avatar avatar_collage collage_${props.row.groupAvatar?.images.length ?? 0}`
+                }
                 title={props.row.type === 'character' ? `${props.row.name}\nFile: ${props.row.entity}` : props.row.name}
             >
                 <Show when={props.row.type === 'character'}>
                     <img src={props.row.image} alt={props.row.name} loading="lazy" />
+                </Show>
+                <Show when={props.row.type === 'group'}>
+                    <For each={props.row.groupAvatar?.images ?? []}>
+                        {(image, index) => (
+                            <img class={`img_${index() + 1}`} src={image} alt={props.row.name} loading="lazy" />
+                        )}
+                    </For>
                 </Show>
                 <Show when={props.row.type === 'folder'}>
                     <i
@@ -200,19 +198,14 @@ function BrowserRow(props: { row: Row; old: OldPage; revision: number }) {
                             </For>
                         </div>
                     </Show>
-                    <div
-                        class="tags tags_inline"
-                        ref={(element) => {
-                            tags = element;
-                        }}
-                    />
+                    <InlineTags tags={props.row.tags} />
                 </Show>
             </div>
         </div>
     );
 }
 
-export function BrowserPagination(props: Props) {
+export function BrowserPagination(props: Props & { id?: string; label?: string; sizes?: readonly number[] }) {
     const { t } = useUi();
     const view = () => props.browser.view();
     const [error, setError] = createSignal('');
@@ -261,11 +254,11 @@ export function BrowserPagination(props: Props) {
                 {view().total}
             </div>
             <Select
-                id="character-page-size"
+                id={props.id ?? 'character-page-size'}
                 class="text_pole"
-                label={t('Characters per page')}
+                label={t(props.label ?? 'Characters per page')}
                 value={String(view().size)}
-                options={[10, 25, 50, 100, 250, 500, 1000].map((size) => ({
+                options={(props.sizes ?? [10, 25, 50, 100, 250, 500, 1000]).map((size) => ({
                     value: String(size),
                     label: String(size),
                 }))}

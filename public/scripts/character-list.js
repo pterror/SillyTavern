@@ -1,12 +1,12 @@
 import { showHotswapFavs } from './RossAscends-mods.js';
 import { characters, charactersStore, this_avatar } from './character-store.js';
-import { getGroupAvatar, takeInHeldGroupChanges } from './group-chats.js';
+import { getGroupAvatarView, takeInHeldGroupChanges } from './group-chats.js';
 import { groupsStore } from './group-store.js';
 import { power_user, sortEntitiesList } from './power-user.js';
 import { normalizeFav } from './hash-utils.js';
 import { debounce, delay } from './utils.js';
 import { debounce_timeout } from './constants.js';
-import { filterByTagState, printTagFilters, printTagList, tag_filter_type, compareTagsForSort, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, heldTagsForIds, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, tagQuerySortField, characterTagFilterUi } from './tags.js';
+import { filterByTagState, printTagFilters, inlineTagView, tag_filter_type, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, searchTagsByName, readTagsForIds, registerFolderCaseHandlers, tagQuerySortField, characterTagFilterUi } from './tags.js';
 import { tagFetchStamp, isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { FILTER_STATES, FILTER_TYPES, FilterHelper, isFilterState } from './filters.js';
 import { characterRepository, buildCharacterQuery, isInvalidSortFieldError, normalizeQueryRow } from './character-repository.js';
@@ -356,6 +356,10 @@ function browserRow(entity, index) {
     const folder = entity.type === 'folder';
     const members = group ? (item.members ?? []).map(id => charactersStore.get(id)).filter(Boolean) : [];
     const name = folder && item.id === 'none' ? t`Go back` : String(item.name ?? '');
+    const resident = group ? groupsStore.get(String(entity.id)) : charactersStore.get(String(entity.id));
+    const current = group || isFetchedTagIdsCurrent(String(entity.id), item.tagFetchStamp);
+    const ids = current && Array.isArray(item.tag_ids) ? item.tag_ids : resident?.tag_ids ?? [];
+    if (!folder && !group && current && resident && !arraysHaveSameMembers(resident.tag_ids, ids)) charactersStore.update(String(entity.id), { tag_ids: ids });
     return {
         id: `${entity.type}:${entity.id}`, entity: String(entity.id), type: entity.type,
         name, thing: String(item.thing ?? ''), image: folder || group ? '' : characterThumbnail(item),
@@ -364,6 +368,7 @@ function browserRow(entity, index) {
         filename: !folder && !group && power_user.show_card_avatar_urls ? item.avatar : '',
         position: listPageContext.pageOffset + index,
         count: folder ? `${item.countApprox ? '~' : ''}${item.count ?? 0}` : group ? `${members.length} ${members.length === 1 ? t`character` : t`characters`}` : '',
+        tags: folder ? [] : inlineTagView(ids), groupAvatar: group ? getGroupAvatarView(item) : undefined,
         members: members.map(member => ({ thing: String(member.thing ?? ''), text: member.name, shownAs: 'name' })),
     };
 }
@@ -419,22 +424,6 @@ export function characterBrowserUi() {
             async size(size) {
                 accountStorage.setItem('Characters_PerPage', String(size));
                 await loadCharacterPage(1, size, { reset: true });
-            },
-            tags(element, id) {
-                const entity = renderedPageEntities.find(entity => String(entity.id) === id);
-                if (!entity) return;
-                const row = entity.item;
-                const resident = entity.type === 'group' ? groupsStore.get(id) : charactersStore.get(id);
-                const current = entity.type === 'group' || isFetchedTagIdsCurrent(id, row.tagFetchStamp);
-                const ids = current && Array.isArray(row.tag_ids) ? row.tag_ids : resident?.tag_ids ?? [];
-                if (entity.type === 'character' && current && resident && !arraysHaveSameMembers(resident.tag_ids, ids)) charactersStore.update(id, { tag_ids: ids });
-                const tags = heldTagsForIds(ids).sort(compareTagsForSort);
-                printTagList($(element), { forEntityOrKey: id, tags: () => tags, tagOptions: { isCharacterList: true } });
-            },
-            avatar(element, id) {
-                const entity = renderedPageEntities.find(entity => entity.type === 'group' && String(entity.id) === id);
-                const avatar = entity && getGroupAvatar(entity.item)?.get(0);
-                if (avatar) { element.className = avatar.className; element.replaceChildren(...avatar.childNodes); }
             },
         },
     };

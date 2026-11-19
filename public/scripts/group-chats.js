@@ -1,3 +1,4 @@
+import { newUi, newUiStarted } from './new-ui-page.js';
 import { shownThumbnail } from './shown-thumbnail.js';
 import { blockWhileFieldEditing } from './character-field-editor.js';
 import { Fuse } from '../lib.js';
@@ -13,14 +14,11 @@ import {
     isDataURL,
     extractAllWords,
     saveUserImage,
-    PAGINATION_TEMPLATE,
     getBase64Async,
     resetScrollHeight,
     initScrollHeight,
-    localizePagination,
-    renderPaginationDropdown,
-    paginationDropdownChangeHandler,
 } from './utils.js';
+import { isFetchedTagIdsCurrent } from './tag-fetch-stamps.js';
 import { normalizeFav } from './hash-utils.js';
 import { addLayer, bringChatForward } from './drawer-stack.js';
 import { RA_CountCharTokens, dragElement } from './RossAscends-mods.js';
@@ -62,7 +60,6 @@ import {
     activateSendButtons,
     getCurrentChatId,
     setCharacterSettingsOverrides,
-    system_avatar,
     setExternalAbortController,
     baseChatReplace,
     createLazyFields,
@@ -81,7 +78,7 @@ import { chat, chat_metadata } from './chat-state.js';
 import { getRequestHeaders } from './request-headers.js';
 import { charactersStore, holdCharacter, setCharacterId, setOpenGroupId } from './character-store.js';
 import { eventSource, event_types } from './events.js';
-import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags } from './tags.js';
+import { inlineTagView, createTagMapFromList, applyTagsOnCharacterSelect, applyTagsOnGroupSelect, printTagFilters, tag_filter_type, removeEntityTags } from './tags.js';
 import { _setCurrentTarget, takeOpenings } from './chat-store.js';
 import { FILTER_TYPES, FILTER_STATES, FilterHelper, isFilterState } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
@@ -165,9 +162,9 @@ groupsStore.onChange(change => {
     if (change.op === 'removed') {
         missingGroupMembers.delete(change.id);
     }
-    if (change.op === 'updated' && change.patch && 'members' in change.patch) {
-        printGroupCandidates();
-        printGroupMembers();
+    if (change.op === 'updated' && change.id === openGroupId && change.patch && 'members' in change.patch) {
+        printGroupCandidates(candidatePage);
+        printGroupMembers(memberPage);
     }
 });
 keepHeldGroups(() => [selected_group, openGroupId]);
@@ -719,57 +716,31 @@ function isValidImageUrl(url) {
 }
 
 /**
- * Gets a group avatar element.
+ * Gets a group avatar's image sources without rendering DOM.
  * @param {Group} group Group object
- * @returns {JQuery<HTMLElement>} Group avatar element
+ * @returns {{ images: string[], custom: boolean }}
  */
+export function getGroupAvatarView(group) {
+    if (!group) return { images: [default_avatar], custom: true };
+    if (isValidImageUrl(group.avatar_url)) return { images: [shownThumbnail(group.avatar_thumbnail, group.avatar_thumbnail_still) ?? group.avatar_url], custom: true };
+    const images = [];
+    for (const member of group.members ?? []) {
+        const avatar = charactersStore.get(member)?.avatar ?? (/\.(png|webp|jpe?g|gif)$/i.test(member) ? member : undefined);
+        if (avatar && avatar !== 'none') {
+            const own = group.member_thumbnails?.[member];
+            images.push(own ? shownThumbnail(own, group.member_thumbnails_still?.[member]) : characterThumbnail(charactersStore.get(member) ?? avatar));
+        }
+        if (images.length === 4) break;
+    }
+    return { images, custom: false };
+}
+
 function getGroupAvatar(group) {
-    if (!group) {
-        return $(`<div class="avatar"><img src="${default_avatar}" loading="lazy"></div>`);
-    }
-    if (isValidImageUrl(group.avatar_url)) {
-        const avatar = $('<div class="avatar"><img loading="lazy"></div>').attr('title', group.name);
-        avatar.find('img').attr('src', shownThumbnail(group.avatar_thumbnail, group.avatar_thumbnail_still) ?? group.avatar_url);
-        return avatar;
-    }
-
-    const memberAvatars = [];
-    if (group && Array.isArray(group.members) && group.members.length) {
-        for (const member of group.members) {
-            const memberAvatar = charactersStore.get(member)?.avatar ?? (/\.(png|webp|jpe?g|gif)$/i.test(member) ? member : undefined);
-            if (memberAvatar && memberAvatar !== 'none') {
-                const own = group.member_thumbnails?.[member];
-                memberAvatars.push(own ? shownThumbnail(own, group.member_thumbnails_still?.[member]) : characterThumbnail(charactersStore.get(member) ?? memberAvatar));
-            }
-            if (memberAvatars.length === 4) {
-                break;
-            }
-        }
-    }
-
-    const avatarCount = memberAvatars.length;
-
-    if (avatarCount >= 1 && avatarCount <= 4) {
-        const groupAvatar = $(`#group_avatars_template .collage_${avatarCount}`).clone();
-
-        for (let i = 0; i < avatarCount; i++) {
-            groupAvatar.find(`.img_${i + 1}`).attr('src', memberAvatars[i]).attr('loading', 'lazy');
-        }
-
-        groupAvatar.attr('title', group.name);
-        return groupAvatar;
-    }
-
-    // catch edge case where group had one member and that member is deleted
-    if (avatarCount === 0) {
-        return $('<div class="missing-avatar fa-solid fa-user-slash"></div>');
-    }
-
-    // default avatar
-    const groupAvatar = $('#group_avatars_template .collage_1').clone();
-    groupAvatar.find('.img_1').attr('src', group.avatar_url || system_avatar).attr('loading', 'lazy');
-    groupAvatar.attr('title', group.name);
-    return groupAvatar;
+    const view = getGroupAvatarView(group);
+    if (!view.images.length) return $('<div class="missing-avatar fa-solid fa-user-slash"></div>');
+    const element = $('<div></div>').addClass(view.custom ? 'avatar' : `avatar avatar_collage collage_${view.images.length}`).attr('title', group?.name ?? '');
+    view.images.forEach((image, index) => element.append($('<img loading="lazy">').attr('src', image).addClass(`img_${index + 1}`)));
+    return element;
 }
 
 /**
@@ -1237,11 +1208,10 @@ async function changeGroupMember(groupId, op, avatar) {
 /**
  * Modifies a group member by adding or removing them.
  * @param {string} groupId Group ID
- * @param {JQuery<HTMLElement>} groupMember Group member element
+ * @param {string} id Member avatar
  * @param {boolean} isDelete If true, removes the member; otherwise adds the member
  */
-async function modifyGroupMember(groupId, groupMember, isDelete) {
-    const id = groupMember.data('id');
+async function modifyGroupMember(groupId, id, isDelete) {
     const thisGroup = groupsStore.get(groupId);
     const membersArray = thisGroup?.members ?? newGroupMembers;
 
@@ -1277,12 +1247,11 @@ async function modifyGroupMember(groupId, groupMember, isDelete) {
 /**
  * Reorders a group member up or down.
  * @param {string} groupId Group ID
- * @param {JQuery<HTMLElement>} groupMember Group member element
+ * @param {string} id Member avatar
  * @param {string} direction Direction to move the member ('up' or 'down')
  * @returns {Promise<void>} Promise that resolves when the member has been reordered
  */
-async function reorderGroupMember(groupId, groupMember, direction) {
-    const id = groupMember.data('id');
+async function reorderGroupMember(groupId, id, direction) {
     const thisGroup = groupsStore.get(groupId);
     const memberArray = thisGroup?.members ?? newGroupMembers;
 
@@ -1432,149 +1401,117 @@ async function getGroupMemberEntities({ doFilter = false } = {}) {
 
 const GROUP_CANDIDATES_WANT = /** @type {('rows'|'total')[]} */ (['rows', 'total']);
 
-export async function printGroupCandidates() {
-    const storageKey = 'GroupCandidates_PerPage';
-    const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
-    const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
-    const thisGroup = openGroupId && groupsStore.get(openGroupId);
-    const { filter, sort: wantedSort } = buildGroupCandidateQuery(thisGroup?.members ?? newGroupMembers, { doFilter: true });
-    const noCharacterShown = isFilterState(groupCandidatesFilter.getFilterData(FILTER_TYPES.GROUP), FILTER_STATES.SELECTED);
-    const empty = { rows: [], total: 0 };
-    const { sort, result: firstPage } = noCharacterShown
-        ? { sort: wantedSort, result: empty }
-        : await queryWithSortFallback(filter, wantedSort, trySort => characterRepository.query(filter, trySort, 1, pageSize, GROUP_CANDIDATES_WANT, { draws: CANDIDATE_LOOKS }));
-    /** @type {object | undefined} */
-    let pendingFirstPage = firstPage;
-    $('#rm_group_add_members_pagination').pagination({
-        dataSource: '/api/characters/query',
-        locator: 'rows',
-        totalNumberLocator: function (/** @type {{total: number|string}} */ response) {
-            const parsed = Number(String(response.total ?? 0).replace(/^~/, ''));
-            return Number.isFinite(parsed) ? parsed : 0;
-        },
-        ajaxFunction: function (ajaxParams) {
-            const page = ajaxParams.data.pageNumber;
-            const requestedPageSize = ajaxParams.data.pageSize;
-            const resultPromise = page === 1 && requestedPageSize === pageSize && pendingFirstPage
-                ? Promise.resolve(pendingFirstPage)
-                : noCharacterShown
-                    ? Promise.resolve(empty)
-                    : characterRepository.query(filter, sort, page, requestedPageSize, GROUP_CANDIDATES_WANT, { draws: CANDIDATE_LOOKS });
-            pendingFirstPage = undefined;
-            resultPromise
-                .then(result => {
-                    const rows = Array.isArray(result.rows) ? result.rows : [];
-                    if ('looks' in result && result.looks) holdLooks(CANDIDATE_LOOKS, result.looks);
-                    ajaxParams.success({ rows: rows.map(item => ({ item, id: item.avatar, type: 'character' })), total: result.total });
-                })
-                .catch(error => {
-                    console.error('[printGroupCandidates] /query failed:', error);
-                    ajaxParams.error(error);
-                });
-        },
-        pageRange: 1,
-        position: 'top',
-        showPageNumbers: false,
-        prevText: '<',
-        nextText: '>',
-        formatNavigator: PAGINATION_TEMPLATE,
-        formatSizeChanger: renderPaginationDropdown(pageSize, sizeChangerOptions),
-        showNavigator: true,
-        showSizeChanger: true,
-        pageSize,
-        afterSizeSelectorChange: function (e, size) {
-            accountStorage.setItem(storageKey, e.target.value);
-            paginationDropdownChangeHandler(e, size);
-        },
-        callback: function (data) {
-            $('#rm_group_add_members').empty();
-            for (const i of data) {
-                $('#rm_group_add_members').append(getGroupCharacterBlock(i.item));
-            }
-            localizePagination($('#rm_group_add_members_pagination'));
-        },
-    });
+let candidatePage = 1;
+let memberPage = 1;
+let candidateRequest = 0;
+let candidateQuery;
+let memberRequest = 0;
+let shownCandidates = [];
+let shownMembers = [];
+let candidateView = { page: 1, size: 5, total: 0, approximate: false };
+let memberView = { page: 1, size: 5, total: 0, approximate: false };
+
+function groupRow(character) {
+    const resident = charactersStore.get(character.avatar);
+    const current = isFetchedTagIdsCurrent(character.avatar, character.tagFetchStamp);
+    const ids = current && Array.isArray(character.tag_ids) ? character.tag_ids : resident?.tag_ids ?? [];
+    if (current && resident && (resident.tag_ids?.length !== ids.length || ids.some(id => !resident.tag_ids?.includes(id)))) charactersStore.update(character.avatar, { tag_ids: ids });
+    return {
+        id: `character:${character.avatar}`, entity: character.avatar, type: 'character', name: character.name,
+        thing: String(character.thing ?? ''), image: characterThumbnail(character), favorite: normalizeFav(character.fav),
+        assistant: false, description: '', auxiliary: String(character.data?.[power_user.aux_field || 'character_version'] ?? ''),
+        filename: '', position: 0, count: '', members: [], tags: inlineTagView(ids),
+        member: { disabled: isGroupMemberDisabled(character.avatar), queue: groupChatQueueOrder.get(character.avatar) ?? 0, existingGroup: Boolean(openGroupId) },
+    };
 }
 
-async function printGroupMembers() {
-    const storageKey = 'GroupMembers_PerPage';
-    const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
-    const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
-    const dataSource = await getGroupMemberEntities({ doFilter: true });
-    $('.rm_group_members_pagination').each(function () {
-        let that = this;
-        $(this).pagination({
-            dataSource,
-            pageRange: 1,
-            position: 'top',
-            showPageNumbers: false,
-            prevText: '<',
-            nextText: '>',
-            formatNavigator: PAGINATION_TEMPLATE,
-            showNavigator: true,
-            showSizeChanger: true,
-            formatSizeChanger: renderPaginationDropdown(pageSize, sizeChangerOptions),
-            pageSize,
-            afterSizeSelectorChange: function (e, size) {
-                accountStorage.setItem(storageKey, e.target.value);
-                paginationDropdownChangeHandler(e, size);
-            },
-            callback: function (data) {
-                $('.rm_group_members').empty();
-                for (const i of data) {
-                    $('.rm_group_members').append(getGroupCharacterBlock(i.item));
-                }
-                localizePagination($(that));
-            },
-        });
-    });
-    renderMissingMembers();
+/** The IDs in the current query answers, including overflow and hidden-on-card chips. */
+export function getGroupRowTagIds() {
+    return new Map([...shownCandidates, ...shownMembers].filter(character => !charactersStore.has(character.avatar)).map(character => [character.avatar, character.tag_ids ?? []]));
 }
 
-/**
- * Creates a jQuery element representing a group character block.
- * @param {Character} character Character object
- * @returns {JQuery<HTMLElement>} jQuery element representing the group character block
- */
-function getGroupCharacterBlock(character) {
-    const avatar = characterThumbnail(character);
-    const template = $('#group_member_template .group_member').clone();
-    const isFav = normalizeFav(character.fav);
-    template.data('id', character.avatar);
-    template.find('.avatar img').attr({ 'src': avatar, 'title': character.avatar });
-    drawName(template.find('.ch_name'), character.thing, character.name);
-    template.attr({ 'data-avatar': character.avatar });
-    template.find('.ch_fav').val(String(isFav));
-    template.toggleClass('is_fav', isFav);
+export function setGroupRowTagIds(key, ids, fetchStamp) {
+    const update = character => character.avatar === key ? { ...character, tag_ids: [...ids], tagFetchStamp: fetchStamp } : character;
+    shownCandidates = shownCandidates.map(update);
+    shownMembers = shownMembers.map(update);
+    refreshGroupRowTags();
+}
 
-    const auxFieldName = power_user.aux_field || 'character_version';
-    const auxFieldValue = (character.data && character.data[auxFieldName]) || '';
-    if (auxFieldValue) {
-        template.find('.character_version').text(auxFieldValue);
-    } else {
-        template.find('.character_version').hide();
+/** Republish current answers after tag edits without replacing row DOM or fetching pages again. */
+export function refreshGroupRowTags() {
+    if (!newUiStarted()) return;
+    const fresh = character => {
+        const resident = charactersStore.get(character.avatar);
+        return groupRow(resident ?? character);
+    };
+    void newUi().groupLists.candidates.show({ ...candidateView, rows: shownCandidates.map(fresh) });
+    void newUi().groupLists.members.show({ ...memberView, rows: shownMembers.map(fresh) });
+}
+
+export async function printGroupCandidates(page = 1) {
+    if (!newUiStarted()) return;
+    const request = ++candidateRequest;
+    const list = newUi().groupLists.candidates;
+    list.loading(true);
+    const pageSize = Number(accountStorage.getItem('GroupCandidates_PerPage')) || 5;
+    if (page === 1 || !candidateQuery) {
+        const thisGroup = openGroupId && groupsStore.get(openGroupId);
+        candidateQuery = { ...buildGroupCandidateQuery(thisGroup?.members ?? newGroupMembers, { doFilter: true }),
+            noCharacters: isFilterState(groupCandidatesFilter.getFilterData(FILTER_TYPES.GROUP), FILTER_STATES.SELECTED) };
     }
-
-    let queuePosition = groupChatQueueOrder.get(character.avatar);
-    if (queuePosition) {
-        template.find('.queue_position').text(queuePosition);
-        template.toggleClass('is_queued', queuePosition > 1);
-        template.toggleClass('is_active', queuePosition === 1);
+    const query = candidateQuery;
+    try {
+        const { result, sort } = query.noCharacters ? { result: { rows: [], total: 0 }, sort: query.sort }
+            : await queryWithSortFallback(query.filter, query.sort, trySort => characterRepository.query(query.filter, trySort, page, pageSize, GROUP_CANDIDATES_WANT, { draws: CANDIDATE_LOOKS }));
+        if (request !== candidateRequest) return;
+        query.sort = sort;
+        const parsedTotal = Number(String(result.total ?? 0).replace(/^~/, ''));
+        const total = Number.isFinite(parsedTotal) ? parsedTotal : 0;
+        const last = Math.max(1, Math.ceil(total / pageSize));
+        if (page > last) return printGroupCandidates(last);
+        if ('looks' in result && result.looks) holdLooks(CANDIDATE_LOOKS, result.looks);
+        shownCandidates = result.rows ?? [];
+        candidatePage = page;
+        candidateView = { page, size: pageSize, total, approximate: String(result.total).startsWith('~') };
+        await list.show({ ...candidateView, rows: shownCandidates.map(groupRow) });
+    } catch (error) {
+        if (request === candidateRequest) list.loading(false, error.message ?? String(error));
+        console.error('[groups] candidates:', error);
     }
+}
 
-    template.toggleClass('disabled', isGroupMemberDisabled(character.avatar));
-
-    // Display inline tags
-    const tagsElement = template.find('.tags');
-    printTagList(tagsElement, { forEntityOrKey: character.avatar, tagOptions: { isCharacterList: true } });
-
-    if (!openGroupId) {
-        template.find('[data-action="speak"]').hide();
-        template.find('[data-action="enable"]').hide();
-        template.find('[data-action="disable"]').hide();
+async function printGroupMembers(page = 1) {
+    if (!newUiStarted()) return;
+    const request = ++memberRequest;
+    const list = newUi().groupLists.members;
+    list.loading(true);
+    try {
+        const size = Number(accountStorage.getItem('GroupMembers_PerPage')) || 5;
+        const entities = await getGroupMemberEntities({ doFilter: true });
+        if (request !== memberRequest) return;
+        memberPage = Math.min(page, Math.max(1, Math.ceil(entities.length / size)));
+        shownMembers = entities.slice((memberPage - 1) * size, memberPage * size).map(entity => entity.item);
+        memberView = { page: memberPage, size, total: entities.length, approximate: false };
+        await list.show({ ...memberView, rows: shownMembers.map(groupRow) });
+        renderMissingMembers();
+    } catch (error) {
+        if (request === memberRequest) list.loading(false, error.message ?? String(error));
+        console.error('[groups] members:', error);
     }
+}
 
-    return template;
+export function groupListsUi() {
+    const hosts = (rows, pagination, storageKey, show) => ({
+        rows: document.getElementById(rows), pagination: document.getElementById(pagination),
+        old: { page: page => show(page), async size(size) {
+            accountStorage.setItem(storageKey, String(size));
+            await show(1);
+        }, action: groupMemberAction },
+    });
+    return {
+        candidates: hosts('rm_group_add_members', 'rm_group_add_members_pagination', 'GroupCandidates_PerPage', printGroupCandidates),
+        members: hosts('rm_group_members', 'rm_group_members_pagination', 'GroupMembers_PerPage', printGroupMembers),
+    };
 }
 
 /**
@@ -1672,7 +1609,7 @@ function select_group_chats(groupId, skipAnimation) {
     printGroupCandidates();
     printGroupMembers();
 
-    const groupHasMembers = !!$('#rm_group_members').children().length;
+    const groupHasMembers = (group?.members ?? newGroupMembers).length > 0;
     $('#rm_group_submit').prop('disabled', !groupHasMembers);
     $('#rm_group_allow_self_responses').prop('checked', group && group.allow_self_responses);
     $('#rm_group_automode_delay').val(group?.auto_mode_delay ?? DEFAULT_AUTO_MODE_DELAY);
@@ -1786,43 +1723,14 @@ async function restoreGroupAvatar() {
     await saveGroupField(openGroupId, { avatar_url: '' }, true, true);
 }
 
-async function onGroupActionClick(event) {
-    event.stopPropagation();
-    const action = $(this).data('action');
-    const member = $(this).closest('.group_member');
-
-    if (action === 'remove') {
-        await modifyGroupMember(openGroupId, member, true);
-    }
-
-    if (action === 'add') {
-        await modifyGroupMember(openGroupId, member, false);
-    }
-
-    if (action === 'enable') {
-        member.removeClass('disabled');
-        await changeGroupMember(openGroupId, 'unmute', member.data('id'));
-    }
-
-    if (action === 'disable') {
-        member.addClass('disabled');
-        await changeGroupMember(openGroupId, 'mute', member.data('id'));
-    }
-
-    if (action === 'up' || action === 'down') {
-        await reorderGroupMember(openGroupId, member, action);
-    }
-
-    if (action === 'view') {
-        await openCharacterDefinition(member);
-    }
-
-    if (action === 'speak') {
-        const avatar = member.data('id');
-        if (charactersStore.has(avatar)) {
-            Generate('normal', { force_avatar: avatar });
-        }
-    }
+async function groupMemberAction(id, action) {
+    const candidates = candidatePage, members = memberPage;
+    if (action === 'remove' || action === 'add') await modifyGroupMember(openGroupId, id, action === 'remove');
+    if (action === 'enable' || action === 'disable') await changeGroupMember(openGroupId, action === 'enable' ? 'unmute' : 'mute', id);
+    if (action === 'up' || action === 'down') await reorderGroupMember(openGroupId, id, action);
+    if (action === 'view') await openCharacterDefinition(id);
+    if (action === 'speak' && charactersStore.has(id)) await Generate('normal', { force_avatar: id });
+    await Promise.all([printGroupCandidates(candidates), printGroupMembers(members)]);
 }
 
 function updateFavButtonState(state) {
@@ -1889,17 +1797,16 @@ export async function openGroupById(groupId) {
 
 /**
  * Peeks the character definition from a group member element.
- * @param {JQuery<HTMLElement>} characterSelect Character select element
+ * @param {string} avatar Member avatar
  * @returns {Promise<void>}
  */
-async function openCharacterDefinition(characterSelect) {
+async function openCharacterDefinition(avatar) {
     if (is_group_generating) {
         toastr.warning(t`Can't peek a character while group reply is being generated`);
         console.warn('Can\'t peek a character def while group reply is being generated');
         return;
     }
 
-    const avatar = characterSelect.data('id');
 
     if (!charactersStore.has(avatar)) {
         return;
@@ -2208,39 +2115,29 @@ function stopAutoModeGeneration() {
     $('#rm_group_automode').prop('checked', false);
 }
 
+let closeMemberPopout;
 function doCurMemberListPopout() {
-    //repurposes the zoomed avatar template to server as a floating group member list
-    if ($('#groupMemberListPopout').length === 0) {
-        const memberListClone = $(this).parent().parent().find('.inline-drawer-content').html();
-        const template = $('#zoomed_avatar_template').html();
-        const controlBarHtml = `<div class="panelControlBar flex-container">
-        <div id="groupMemberListPopoutheader" class="fa-solid fa-grip drag-grabber hoverglow"></div>
-        <div id="groupMemberListPopoutClose" class="fa-solid fa-circle-xmark hoverglow"></div>
-    </div>`;
-        const newElement = $(template);
-
-        newElement.attr('id', 'groupMemberListPopout')
-            .removeClass('zoomed_avatar')
-            .addClass('draggable')
-            .empty()
-            .append(controlBarHtml)
-            .append(memberListClone);
-
-        // Remove pagination from popout
-        newElement.find('.group_pagination').empty();
-
-        addLayer(newElement[0], document.getElementById('movingDivs') ?? document.body);
-        $('#groupMemberListPopout').fadeIn(animation_duration);
-        dragElement(newElement);
-        $('#groupMemberListPopoutClose').off('click').on('click', function () {
-            $('#groupMemberListPopout').fadeOut(animation_duration, () => { $('#groupMemberListPopout').remove(); });
-        });
-
-        // Re-add pagination not working in popout
-        printGroupMembers();
-    } else {
-        $('#groupMemberListPopout').fadeOut(animation_duration, () => { $('#groupMemberListPopout').remove(); });
-    }
+    if (closeMemberPopout) { closeMemberPopout(); return; }
+    const element = $('<div id="groupMemberListPopout" class="draggable"></div>');
+    const bar = $('<div class="panelControlBar flex-container"></div>');
+    bar.append('<div id="groupMemberListPopoutheader" class="fa-solid fa-grip drag-grabber hoverglow"></div>');
+    const close = $('<button type="button" id="groupMemberListPopoutClose" class="fa-solid fa-circle-xmark hoverglow"></button>').attr('aria-label', t`Close`);
+    bar.append(close);
+    const host = document.createElement('div');
+    host.className = 'st-group-member-popout flex-container flexFlowColumn flex1';
+    element.append(bar).append(host);
+    addLayer(element[0], document.getElementById('movingDivs') ?? document.body);
+    const dispose = newUi().groupLists.popout(host);
+    let closing = false;
+    closeMemberPopout = () => {
+        if (closing) return;
+        closing = true;
+        dispose();
+        element.fadeOut(animation_duration, () => { element.remove(); closeMemberPopout = undefined; });
+    };
+    close.on('click', closeMemberPopout);
+    dragElement(element);
+    element.fadeIn(animation_duration);
 }
 
 jQuery(() => {
@@ -2276,5 +2173,4 @@ jQuery(() => {
     $('#rm_group_generation_mode_join_suffix').on('input', onGroupGenerationModeTemplateInput);
     $('#group_avatar_button').on('input', uploadGroupAvatar);
     $('#rm_group_restore_avatar').on('click', restoreGroupAvatar);
-    $(document).on('click', '.group_member .right_menu_button', onGroupActionClick);
 });

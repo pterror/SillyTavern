@@ -62,6 +62,7 @@ import {
     importGroupChat,
     getGroupCharacterCardsLazy,
     showOpenedGroupChat,
+    groupListsUi,
 } from './scripts/group-chats.js';
 
 import {
@@ -1377,6 +1378,7 @@ async function firstLoadInit() {
     startNewUi({
         presets: presetUi(),
         characterBrowser: characterBrowserUi(),
+        groupLists: groupListsUi(),
         quietPrompt: prompt => generateQuietPrompt({ quietPrompt: prompt }),
         currentChat: () => {
             if (selected_group != null) return { group: String(selected_group) };

@@ -1253,7 +1253,7 @@ body .panelControlBar {
 
 .st-select-option[data-active],
 .st-select-option:hover {
-    background: var(--SmartThemeBorderColor);
+    background-color: var(--hover-background);
 }
 
 .st-float:not(.st-floating) {
@@ -7070,11 +7070,11 @@ body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDraw
     height: 50%;
 }
 
-#groupMemberListPopout #currentGroupMembers {
+#groupMemberListPopout .st-group-member-popout {
     height: 100%;
 }
 
-#groupMemberListPopout #rm_group_members {
+#groupMemberListPopout .rm_group_members {
     /*     background-color: var(--SmartThemeBlurTintColor); */
     margin: 0;
     padding: 0;

@@ -26,10 +26,11 @@ const row = (id: string, name: string): Row => ({
     position: 0,
     count: '',
     members: [],
+    tags: [],
 });
 function mount() {
     const browser = createBrowser();
-    const old: OldPage = { page: vi.fn(async () => {}), size: vi.fn(async () => {}), tags: vi.fn(), avatar: vi.fn() };
+    const old: OldPage = { page: vi.fn(async () => {}), size: vi.fn(async () => {}) };
     const host = document.createElement('div');
     document.body.append(host);
     const ui = { t: (text: string) => text } as unknown as Ui;
@@ -37,7 +38,7 @@ function mount() {
         () => (
             <UiProvider value={ui}>
                 <BrowserPagination browser={browser} old={old} />
-                <BrowserRows browser={browser} old={old} />
+                <BrowserRows browser={browser} />
             </UiProvider>
         ),
         host,
@@ -109,4 +110,33 @@ test('a background cache refresh keeps the page-size chooser open', async () => 
     });
     expect(trigger.disabled).toBe(false);
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
+});
+
+test('row chips update in place and retain expansion until their row leaves the list', async () => {
+    const s = mount();
+    const tags = Array.from({ length: 55 }, (_, index) => ({
+        id: `tag-${index}`,
+        name: `Tag ${index}`,
+        thing: undefined,
+        className: '',
+        title: '',
+        icon: '',
+        removable: false,
+        inactive: false,
+        actionable: false,
+    }));
+    await s.show([{ ...row('a.png', 'First'), tags }]);
+    const chip = s.host.querySelector('#tag-0');
+    expect(s.host.querySelectorAll('.tag_name')).toHaveLength(51);
+    s.host.querySelector<HTMLButtonElement>('.placeholder-expander')!.click();
+    flush();
+    expect(s.host.querySelectorAll('.tag_name')).toHaveLength(55);
+    await s.show([{ ...row('a.png', 'First'), tags: tags.map((tag) => ({ ...tag, name: `Updated ${tag.name}` })) }]);
+    expect(s.host.querySelector('#tag-0')).toBe(chip);
+    expect(chip?.textContent).toBe('Updated Tag 0');
+    expect(s.host.querySelector('.placeholder-expander')).toBeNull();
+    await s.show([]);
+    await s.show([{ ...row('a.png', 'First'), tags }]);
+    expect(s.host.querySelector('#tag-0')).not.toBe(chip);
+    expect(s.host.querySelector('.placeholder-expander')).not.toBeNull();
 });

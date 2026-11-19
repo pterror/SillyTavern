@@ -24,3 +24,7 @@ Assigned chips and the collapsed character-tag preview are Solid surfaces too. `
 outside the displayed 50-chip window and publishes keyed snapshots; both character and group creation read those
 IDs. Removal actions stay injected, including bulk callbacks that can refuse a removal. The preview is passive,
 and transient bulk lists are disposed with their input.
+
+Chip presentation lives in `@st/page/tags`, shared with character-browser rows. Inline chips are ordinary children
+of Solid rows: expansion lasts for that row, and removing it disposes its children automatically. The legacy tag
+controller publishes data updates instead of replacing inline chip DOM.

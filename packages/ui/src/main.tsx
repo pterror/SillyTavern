@@ -18,6 +18,7 @@ import type {
 } from '@st/tags/page';
 import { createSignal } from 'solid-js';
 import {
+    GroupRows,
     BrowserRows,
     BrowserPagination,
     createBrowser,
@@ -27,7 +28,7 @@ import {
     TagFilters,
     createControls,
 } from '@st/character-browser/page';
-import type { OldPage as CharacterBrowserOldPage, ControlPorts } from '@st/character-browser/page';
+import type { OldPage as CharacterBrowserOldPage, ControlPorts, GroupPorts } from '@st/character-browser/page';
 import { Presets, presetsCompat } from '@st/presets/page';
 import type { OldPage as PresetsOldPage, Family as PresetFamily } from '@st/presets/page';
 import type { ChatOwner, ViewPush } from '@st/protocol';
@@ -82,6 +83,10 @@ import { render } from '@solidjs/web';
 import type { JSX } from '@solidjs/web';
 
 export type StartOptions = {
+    groupLists: {
+        candidates: { rows: HTMLElement; pagination: HTMLElement; old: GroupPorts };
+        members: { rows: HTMLElement; pagination: HTMLElement; old: GroupPorts };
+    };
     characterBrowser: {
         rows: HTMLElement;
         pagination: HTMLElement;
@@ -144,12 +149,29 @@ export function start(options: StartOptions) {
     mount(options.characterBrowser.sort, () => <SortPicker controls={characterControls} old={controls} />);
     mount(options.characterBrowser.saved, () => <SavedViews controls={characterControls} old={controls} />);
     mount(options.characterBrowser.tagFilters, () => <TagFilters controls={characterControls} old={controls} />);
-    mount(options.characterBrowser.rows, () => (
-        <BrowserRows browser={characterBrowser} old={options.characterBrowser.old} />
-    ));
+    mount(options.characterBrowser.rows, () => <BrowserRows browser={characterBrowser} />);
     mount(options.characterBrowser.pagination, () => (
         <BrowserPagination browser={characterBrowser} old={options.characterBrowser.old} />
     ));
+    const groupCandidates = createBrowser();
+    const groupMembers = createBrowser();
+    const groupSizes = [5, 10, 25, 50, 100, 200, 500, 1000];
+    for (const [kind, browser] of [
+        ['candidates', groupCandidates],
+        ['members', groupMembers],
+    ] as const) {
+        const config = options.groupLists[kind];
+        mount(config.rows, () => <GroupRows browser={browser} old={config.old} />);
+        mount(config.pagination, () => (
+            <BrowserPagination
+                browser={browser}
+                old={config.old}
+                id={`group-${kind}-page-size`}
+                label={kind === 'members' ? 'Members per page' : 'Candidates per page'}
+                sizes={groupSizes}
+            />
+        ));
+    }
     for (const host of options.presets.hosts)
         mount(host.element, () => <Presets family={host.family as PresetFamily} id={host.id} old={presets} />);
 
@@ -289,6 +311,31 @@ export function start(options: StartOptions) {
         backgrounds: backgroundsCompat(client, tab, options.quietPrompt, options.t),
         presets,
         characterBrowser: { ...characterBrowser, controls: characterControls },
+        groupLists: {
+            candidates: groupCandidates,
+            members: groupMembers,
+            popout(host: HTMLElement) {
+                return mount(host, () => (
+                    <>
+                        <div class="group_pagination">
+                            <BrowserPagination
+                                browser={groupMembers}
+                                old={options.groupLists.members.old}
+                                id="group-popout-page-size"
+                                label="Members per page"
+                                sizes={groupSizes}
+                            />
+                        </div>
+                        <div
+                            class="rm_group_members overflowYAuto flex-container"
+                            data-empty-text={options.t('Group is empty.')}
+                        >
+                            <GroupRows browser={groupMembers} old={options.groupLists.members.old} />
+                        </div>
+                    </>
+                ));
+            },
+        },
         tagManager: {
             assigned(host: HTMLElement, old: AssignedPorts) {
                 const list = createAssigned();

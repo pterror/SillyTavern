@@ -26,6 +26,8 @@ const charactersStoreMock = {
     onChange: () => () => {},
 };
 
+jest.unstable_mockModule('../public/scripts/new-ui-page.js', () => ({ newUiStarted: () => false, newUi: jest.fn(), onceStarted: () => () => {} }));
+
 jest.unstable_mockModule('../public/lib.js', () => ({ Fuse: class {} }));
 
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
@@ -133,7 +135,7 @@ jest.unstable_mockModule('../public/script.js', () => ({
 }));
 
 jest.unstable_mockModule('../public/scripts/tags.js', () => ({
-    printTagList: jest.fn(),
+    inlineTagView: () => [],
     createTagMapFromList: jest.fn(),
     applyTagsOnCharacterSelect: jest.fn(),
     applyTagsOnGroupSelect: jest.fn(),

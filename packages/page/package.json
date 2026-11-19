@@ -15,7 +15,8 @@
         "./looks": "./src/looks.ts",
         "./name": "./src/name.tsx",
         "./popover": "./src/layers/popover.ts",
-        "./select": "./src/select.tsx"
+        "./select": "./src/select.tsx",
+        "./tags": "./src/tags.tsx"
     },
     "dependencies": {
         "@pterror/interact-core": "github:pterror/interact#54747345d58f1713a36ea9e041967d99e8d76ea1&path:/packages/core",

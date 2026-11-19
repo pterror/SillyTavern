@@ -35,7 +35,7 @@ jest.unstable_mockModule('../public/scripts/character-store.js', () => ({
     resolveCharacterRef: () => undefined,
     this_avatar: undefined,
 }));
-jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ getGroupAvatar: noop, takeInHeldGroupChanges: async () => {} }));
+jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ getGroupAvatarView: () => ({ images: [], custom: false }), takeInHeldGroupChanges: async () => {} }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({
     power_user: powerUser,
     sortEntitiesList: () => { throw new Error('the list is never sorted in the browser'); },
@@ -67,7 +67,7 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     isBogusFolderOpen: noop,
     getTagBlock: noop,
     printTagFilters: noop,
-    printTagList: noop,
+    inlineTagView: () => [],
     tag_filter_type: {},
     compareTagsForSort: () => 0,
     applyTagsOnCharacterSelect: noop,

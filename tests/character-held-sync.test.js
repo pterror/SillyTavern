@@ -58,7 +58,7 @@ jest.unstable_mockModule('../public/scripts/character-store.js', async () => {
     };
 });
 const takeInHeldGroupChanges = jest.fn(async () => {});
-jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ getGroupAvatar: noop, takeInHeldGroupChanges }));
+jest.unstable_mockModule('../public/scripts/group-chats.js', () => ({ getGroupAvatarView: () => ({ images: [], custom: false }), takeInHeldGroupChanges }));
 jest.unstable_mockModule('../public/scripts/power-user.js', () => ({ power_user: {}, sortEntitiesList: noop }));
 jest.unstable_mockModule('../public/scripts/utils.js', () => ({
     debounce: fn => fn,
@@ -81,7 +81,7 @@ jest.unstable_mockModule('../public/scripts/tags.js', () => ({
     isBogusFolderOpen: noop,
     getTagBlock: noop,
     printTagFilters: noop,
-    printTagList: noop,
+    inlineTagView: () => [],
     tag_filter_type: {},
     compareTagsForSort: noop,
     applyTagsOnCharacterSelect: noop,
