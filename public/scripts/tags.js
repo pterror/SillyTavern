@@ -1,5 +1,3 @@
-import { DOMPurify } from '../lib.js';
-
 import {
     getCurrentCharacter,
     getSelectionState,
@@ -4124,6 +4122,24 @@ function compareTagsForSort(a, b, counts = null) {
 }
 
 /**
+ * @param {import('../../packages/areas/tags/page/Maintenance.tsx').MaintenanceView} view
+ * @param {number} type
+ * @param {import('./popup.js').PopupOptions} [options]
+ */
+async function showTagMaintenance(view, type, options = {}) {
+    const host = document.createElement('div');
+    let dispose;
+    try {
+        return await callGenericPopup($(host), type, null, {
+            ...options,
+            onOpen: () => { dispose = newUi().tagManager.maintenance(host, view); },
+        });
+    } finally {
+        dispose?.();
+    }
+}
+
+/**
  * @param {object} result
  * @returns {string[]}
  */
@@ -4183,8 +4199,8 @@ async function onTagRestoreFileSelect(e) {
     const serverHasTags = firstPage === null || firstPage === 'invalid-cursor' || (firstPage.rows?.length ?? 0) > 0 || firstPage.more === true;
     let overwrite = false;
     if (serverHasTags) {
-        const result = await Popup.show.confirm('Tag Restore', 'You have existing tags. If the backup contains any of those tags, do you want the backup to overwrite their settings (Name, folder state, etc)?',
-            { okButton: 'Overwrite', cancelButton: 'Keep Existing' });
+        const result = await showTagMaintenance({ kind: 'restore' }, POPUP_TYPE.CONFIRM,
+            { okButton: t`Overwrite`, cancelButton: t`Keep Existing` });
         overwrite = result === POPUP_RESULT.AFFIRMATIVE;
     }
 
@@ -4214,7 +4230,7 @@ async function onTagRestoreFileSelect(e) {
     if (warnings.length) {
         toastr.warning('Tags restored with warnings. Check console or click on this message for details.', 'Tag Restore', {
             timeOut: toastr.options.timeOut * 2, // Display double the time
-            onclick: () => Popup.show.text('Tag Restore Warnings', `<samp class="justifyLeft">${DOMPurify.sanitize(warnings.join('\n'))}<samp>`, { allowVerticalScrolling: true }),
+            onclick: () => showTagMaintenance({ kind: 'restoreReport', lines: warnings }, POPUP_TYPE.TEXT, { allowVerticalScrolling: true }),
         });
         console.warn(`TAG RESTORE REPORT\n====================\n${warnings.join('\n')}`);
     }
@@ -4273,7 +4289,7 @@ async function onTagsPruneClick() {
         return;
     }
 
-    const confirm = await Popup.show.confirm(t`Prune ${unusedCount} tags`, t`Are you sure you want to remove all unused tags?`);
+    const confirm = await showTagMaintenance({ kind: 'prune', count: unusedCount }, POPUP_TYPE.CONFIRM);
 
     if (!confirm) {
         return;

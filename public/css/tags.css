@@ -425,3 +425,9 @@
 .tag_delete_dialog .st-select {
     width: 100%;
 }
+
+.tag_restore_report {
+    display: block;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

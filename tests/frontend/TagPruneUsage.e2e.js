@@ -240,4 +240,48 @@ test.describe('Tag prune keeps tags that are in use', () => {
         expect(usageReads).toEqual([]);
         expect(await serverTagIds(page)).toContain(fixture.tag);
     });
+    test('cancelling prune sends no prune request', async ({ page }) => {
+        await loadApp(page);
+        await openTagManagement(page);
+        await page.route('**/api/tags/unused-count', route => route.fulfill({ json: { count: 1 } }));
+        const writes = [];
+        page.on('request', request => {
+            if (new URL(request.url()).pathname === '/api/tags/prune') writes.push(request.postDataJSON());
+        });
+        await page.locator('#tag_view_list .tag_view_prune').click();
+        const dialog = page.locator('dialog.popup', { hasText: 'Prune 1 tags' });
+        await expect(dialog).toBeVisible();
+        await dialog.locator('.popup-button-cancel').click();
+        await expect(dialog).toBeHidden();
+        expect(writes).toEqual([]);
+        await expect(page.locator('#tag_view_list')).toBeVisible();
+    });
+
+    test('a later prune batch failing keeps the completed deletion and reports partial failure', async ({ browser, page }) => {
+        const id = await withSetupPage(browser, setup => createTag(setup, `partial-${Date.now()}`));
+        await loadApp(page);
+        await openTagManagement(page);
+        await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"]`)).toBeVisible();
+        await page.route('**/api/tags/unused-count', route => route.fulfill({ json: { count: 501 } }));
+        let batches = 0;
+        await page.route('**/api/tags/prune', async route => {
+            batches++;
+            if (batches > 1) {
+                await route.fulfill({ status: 500 });
+                return;
+            }
+            const response = await route.fetch({ url: new URL('/api/tags/delete', route.request().url()).href,
+                postData: JSON.stringify({ id, mergeInto: null }) });
+            expect(response.ok()).toBe(true);
+            await route.fulfill({ json: { deleted: [id], more: true } });
+        });
+        await page.locator('#tag_view_list .tag_view_prune').click();
+        const dialog = page.locator('dialog.popup', { hasText: 'Prune 501 tags' });
+        await dialog.locator('.popup-button-ok').click();
+        await expect(page.locator('.toast-error', { hasText: 'Pruning unused tags failed partway. Some unused tags may remain.' })).toBeVisible();
+        await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"]`)).toHaveCount(0);
+        expect(batches).toBe(2);
+        expect((await api(page, '/api/tags/by-ids', { ids: [id] })).tags).toEqual([]);
+    });
+
 });

@@ -9,5 +9,8 @@ a changed row order, so it does not leave Solid's row order out of sync.
 The delete/merge confirmation content is also Solid, mounted inside the existing shared popup shell. Its merge-target
 search receives paged results through an injected port, ignores stale answers and keeps a chosen target across
 searches. The interact select accepts a name renderer so tag looks apply to options and the selected target.
-Deletion, refusal feedback and cross-tab updates stay in the existing tag controller. Restore and prune dialogs
-continue to use their existing implementations.
+Deletion, refusal feedback and cross-tab updates stay in the existing tag controller.
+
+Prune and restore confirmation content and the restore warning report are Solid surfaces inside the same popup
+shell. The controller retains counting, batched pruning, backup parsing, overwrite choices and partial-failure
+handling. Warning lines render as text, including names and errors from the restored backup.

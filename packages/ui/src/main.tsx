@@ -1,5 +1,5 @@
-import { TagManager, createManager, DeleteTag } from '@st/tags/page';
-import type { ManagerPorts, MergeTag, DeletePorts } from '@st/tags/page';
+import { TagManager, createManager, DeleteTag, Maintenance } from '@st/tags/page';
+import type { ManagerPorts, MergeTag, DeletePorts, MaintenanceView } from '@st/tags/page';
 import { createSignal } from 'solid-js';
 import {
     BrowserRows,
@@ -274,6 +274,9 @@ export function start(options: StartOptions) {
         presets,
         characterBrowser: { ...characterBrowser, controls: characterControls },
         tagManager: {
+            maintenance(host: HTMLElement, view: MaintenanceView) {
+                return mount(host, () => <Maintenance view={view} />);
+            },
             delete(host: HTMLElement, tag: MergeTag, old: DeletePorts) {
                 return mount(host, () => <DeleteTag tag={tag} old={old} />);
             },
