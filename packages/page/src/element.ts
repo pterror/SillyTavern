@@ -8,3 +8,11 @@ export function elementSetup<T extends Element>(setup: (element: T) => void | ((
         element = shown;
     };
 }
+
+/** A keyed DOM move may blur a surviving control; keep its focus without taking it from another control. */
+export function preserveFocus(change: () => void): void {
+    const focused = document.activeElement;
+    change();
+    if (focused instanceof HTMLElement && focused.isConnected && document.activeElement === document.body)
+        focused.focus({ preventScroll: true });
+}

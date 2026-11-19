@@ -438,3 +438,24 @@
     color: inherit;
     padding: 0;
 }
+
+.tag_view_item .drag-handle {
+    touch-action: none;
+    padding: 2px 4px;
+}
+
+.tag_view_item[data-reorder-dragging] {
+    opacity: 0.6;
+}
+
+.tag_view_item[data-reorder-dragging] .drag-handle {
+    cursor: grabbing;
+}
+
+.tag_view_item[data-reorder-before] {
+    box-shadow: 0 -2px var(--SmartThemeQuoteColor);
+}
+
+.tag_view_item[data-reorder-after] {
+    box-shadow: 0 2px var(--SmartThemeQuoteColor);
+}

@@ -15,6 +15,7 @@
         "./looks": "./src/looks.ts",
         "./name": "./src/name.tsx",
         "./popover": "./src/layers/popover.ts",
+        "./reorder": "./src/reorder.ts",
         "./select": "./src/select.tsx",
         "./tags": "./src/tags.tsx"
     },

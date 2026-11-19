@@ -3,8 +3,11 @@ The controller retains server queries, bounded cursor paging, kept rows, persist
 cross-tab changes. It publishes row snapshots and injects actions; the surface does not fetch or access storage.
 
 Solid owns the header, search and sort controls, editable rows and load status. Keyed reconciliation preserves
-editors across refreshed snapshots and row moves. The existing sortable bridge restores the DOM before publishing
-a changed row order, so it does not leave Solid's row order out of sync.
+editors across refreshed snapshots and row moves. Handles use the shared `@st/page/reorder` helper over interact's
+drag primitive. Pointer dragging and Arrow Up/Down send move intents; Solid renders the insertion indicator and
+orders keyed rows from snapshots. No drag code reorders DOM nodes. The controller retains the existing server
+move/reorder requests and refusal feedback. Editing and active moves defer stale-list refreshes; focused buttons
+do not prevent a refused move from restoring the server's order.
 
 The delete/merge confirmation content is also Solid, mounted inside the existing shared popup shell. Its merge-target
 search receives paged results through an injected port, ignores stale answers and keeps a chosen target across

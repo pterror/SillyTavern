@@ -25,6 +25,8 @@ const row = (id = 'one'): Row => ({
 function mount() {
     const manager = createManager();
     const old: ManagerPorts = {
+        move: vi.fn(async () => {}),
+        reordering: vi.fn(),
         search: vi.fn(),
         sort: vi.fn(),
         read: vi.fn(),
@@ -107,4 +109,22 @@ test('Enter commits the name through the field action without activating the sur
     flush();
     expect(s.old.rename).toHaveBeenCalledWith('one');
     expect(key.defaultPrevented).toBe(true);
+});
+
+test('the focused handle uses row movement commands and keeps focus when the answer changes order', async () => {
+    const s = mount();
+    s.show([row('one'), row('two')]);
+    const handle = s.host.querySelector<HTMLButtonElement>('#two .drag-handle')!;
+    handle.focus();
+    const key = new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true });
+    handle.dispatchEvent(key);
+    flush();
+    expect(key.defaultPrevented).toBe(true);
+    expect(s.old.move).toHaveBeenCalledExactlyOnceWith('two', { before: 'one' });
+    await vi.waitFor(() => expect(s.old.reordering).toHaveBeenLastCalledWith(false));
+    s.show([row('two'), row('one')]);
+    expect(s.host.querySelector('#two .drag-handle')).toBe(handle);
+    expect(document.activeElement).toBe(handle);
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    expect(s.old.move).toHaveBeenCalledTimes(1);
 });

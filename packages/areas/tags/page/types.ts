@@ -1,3 +1,5 @@
+import type { Placement } from '@st/page/reorder';
+
 export type Row = {
     id: string;
     name: string;
@@ -15,6 +17,8 @@ export type ManagerView = {
     status: '' | 'loading' | 'failed' | 'paused' | 'end';
 };
 export type ManagerPorts = {
+    move(this: void, id: string, placement: Placement): Promise<void>;
+    reordering(this: void, active: boolean): void;
     search(this: void, value: string): void;
     sort(this: void, value: string): void;
     read(this: void, kind: string): void;

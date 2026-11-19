@@ -2,7 +2,9 @@ import { For, Show, createEffect, createSignal, createStore, flush, reconcile } 
 import { useUi } from '@st/page/context';
 import { Select } from '@st/page/select';
 import { nameClass } from '@st/page/name';
-import { elementSetup } from '@st/page/element';
+import { elementSetup, preserveFocus } from '@st/page/element';
+import { createReorder } from '@st/page/reorder';
+import type { Reorder } from '@st/page/reorder';
 import type { Row, ManagerView, ManagerPorts } from './types.ts';
 
 export function createManager() {
@@ -10,15 +12,26 @@ export function createManager() {
     return {
         view: () => state,
         show: (view: ManagerView) => {
-            flush(() => setState(reconcile(view, 'id')));
+            preserveFocus(() => flush(() => setState(reconcile(view, 'id'))));
         },
     };
 }
 type Manager = ReturnType<typeof createManager>;
 
-function TagRow(props: { row: Row; old: ManagerPorts }) {
+function TagRow(props: { row: Row; old: ManagerPorts; reorder: Reorder }) {
     const { t, focusActions } = useUi();
     let name: HTMLDivElement | undefined;
+    const handle = props.reorder.handle(props.row.id);
+    const handleActions = elementSetup<HTMLButtonElement>((element) =>
+        focusActions.attach(element, {
+            next() {
+                props.reorder.step(props.row.id, 1);
+            },
+            previous() {
+                props.reorder.step(props.row.id, -1);
+            },
+        }),
+    );
     const [focused, setFocused] = createSignal(false);
     createEffect(
         () => (focused() ? undefined : props.row.name),
@@ -29,6 +42,18 @@ function TagRow(props: { row: Row; old: ManagerPorts }) {
     return (
         <div
             id={props.row.id}
+            ref={props.reorder.row(props.row.id)}
+            data-reorder-dragging={props.reorder.held() === props.row.id ? '' : undefined}
+            data-reorder-before={
+                props.reorder.target()?.target === props.row.id && props.reorder.target()?.after === false
+                    ? ''
+                    : undefined
+            }
+            data-reorder-after={
+                props.reorder.target()?.target === props.row.id && props.reorder.target()?.after === true
+                    ? ''
+                    : undefined
+            }
             class={['tag_view_item', { tag_view_item_kept: props.row.kept }]}
             title={
                 props.row.kept
@@ -36,9 +61,18 @@ function TagRow(props: { row: Row; old: ManagerPorts }) {
                     : undefined
             }
         >
-            <div class="drag-handle" title={t('Drag to reorder tag')}>
+            <button
+                type="button"
+                class="drag-handle"
+                title={t('Drag to reorder tag. Use Arrow Up or Arrow Down to move.')}
+                aria-label={`${t('Reorder')} ${props.row.name}`}
+                ref={(element) => {
+                    handle(element);
+                    handleActions(element);
+                }}
+            >
                 ☰
-            </div>
+            </button>
             <button
                 type="button"
                 id={`${props.row.id}-tag-folder`}
@@ -111,8 +145,16 @@ function TagRow(props: { row: Row; old: ManagerPorts }) {
 }
 
 export function TagManager(props: { manager: Manager; old: ManagerPorts }) {
-    const { t } = useUi();
+    const { t, focusActions } = useUi();
     const view = () => props.manager.view();
+    const reorder = createReorder({
+        keys: () => view().rows.map((row) => row.id),
+        move: props.old.move,
+        active: props.old.reordering,
+    });
+    const listActions = elementSetup<HTMLDivElement>((element) =>
+        focusActions.attach(element, { cancel: reorder.cancel }),
+    );
     return (
         <>
             <div class="title_restorable alignItemsBaseline">
@@ -187,7 +229,9 @@ export function TagManager(props: { manager: Manager; old: ManagerPorts }) {
                     />
                 </div>
                 <small>
-                    {t('Drag handle to reorder. Click name to rename. Click the wand to change how its name looks.')}
+                    {t(
+                        'Drag handle to reorder, or focus it and use Arrow Up or Arrow Down. Click name to rename. Click the wand to change how its name looks.',
+                    )}
                     <br />
                     {t('Click on the folder icon to use this tag as a folder.')}
                     <br />
@@ -195,14 +239,20 @@ export function TagManager(props: { manager: Manager; old: ManagerPorts }) {
             </div>
             <div class="tag_view_list_edge" />
             <div
-                class="tag_view_list_tags ui-sortable"
+                class="tag_view_list_tags"
+                ref={(element) => {
+                    reorder.list(element);
+                    listActions(element);
+                }}
+                aria-busy={reorder.pending() ? 'true' : 'false'}
                 onFocusOut={(event) => {
                     if (!(event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)))
                         props.old.leftRows();
                 }}
             >
-                <For each={view().rows}>{(row) => <TagRow row={row} old={props.old} />}</For>
+                <For each={view().rows}>{(row) => <TagRow row={row} old={props.old} reorder={reorder} />}</For>
             </div>
+            <Show when={reorder.error()}>{(message) => <p role="alert">{message()}</p>}</Show>
             <div class="tag_view_list_status" data-status={view().status} role="status">
                 <Show when={view().status === 'loading'}>{t('Loading tags...')}</Show>
                 <Show when={view().status === 'failed'}>

@@ -12,7 +12,7 @@ import { FILTER_TYPES, FILTER_STATES, DEFAULT_FILTER_STATE, isFilterState, Filte
 
 import { groupCandidatesFilter, groupMembersFilter, selected_group, refreshGroupRowTags, getGroupRowTagIds, setGroupRowTagIds } from './group-chats.js';
 import { findGroupByName, groups, groupsStore } from './group-store.js';
-import { download, onlyUnique, parseJsonFile, uuidv4, getSortableDelay, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, debounce, findChar, findCharAsync, escapeHtml } from './utils.js';
+import { download, onlyUnique, parseJsonFile, uuidv4, flashHighlight, equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents, removeFromArray, debounce, findChar, findCharAsync, escapeHtml } from './utils.js';
 import { power_user, invalidateCharactersFuseIndex, invalidateGroupsFuseIndex, invalidateTagsFuseIndex } from './power-user.js';
 import { EntityStore, onAnyEntityStoreChange } from './entity-store.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
@@ -3808,6 +3808,27 @@ async function onViewTagsListClick() {
     // Interact attaches behavior by ID after rendering, so mount once the dialog is in the document.
     const open = () => {
         surface = newUi().tagManager.mount(host, {
+            async move(id, placement) {
+                if (viewTagList !== state) return;
+                const row = state.rows.find(row => row.id === id);
+                const anchor = 'before' in placement ? placement.before : placement.after;
+                if (!row || id === anchor || !state.rows.some(row => row.id === anchor)) return;
+                const rows = state.rows.filter(row => row.id !== id);
+                rows.splice(rows.findIndex(row => row.id === anchor) + ('after' in placement ? 1 : 0), 0, row);
+                state.rows = rows;
+                publishViewTagList(state);
+                const mode = power_user.tag_sort_mode;
+                tagOrderChain = tagOrderChain.then(() => moveTagOnServer(id, placement, mode))
+                    .catch(error => console.error(`Error moving tag ${id}:`, error));
+                await tagOrderChain;
+            },
+            reordering(active) {
+                state.dragging = active;
+                if (!active && viewTagList === state) {
+                    if (state.stale) refreshViewTagList();
+                    recheckViewTagEdges(state);
+                }
+            },
             search(value) { state.search = value; reloadSoon(); },
             sort(value) {
                 power_user.tag_sort_mode = value;
@@ -3849,7 +3870,6 @@ async function onViewTagsListClick() {
         viewTagList = state;
         publishViewTagList(state);
         reloadViewTagList();
-        makeTagListDraggable(state.container);
         watchViewTagEdges(state);
     };
     try {
@@ -3859,7 +3879,6 @@ async function onViewTagsListClick() {
         });
     } finally {
         state?.observer?.disconnect();
-        state?.container.sortable('destroy');
         if (viewTagList === state) viewTagList = null;
         surface?.dispose();
         scheduleTagSweep();
@@ -4084,40 +4103,6 @@ export function onTagsChanged() {
     }).catch(error => console.error('Error taking in tag changes:', error));
 }
 
-function makeTagListDraggable(tagContainer) {
-    // @ts-ignore
-    $(tagContainer).sortable({
-        delay: getSortableDelay(),
-        update: (_event, ui) => {
-            const id = ui.item.attr('id');
-            const next = ui.item.next('.tag_view_item').attr('id');
-            const previous = ui.item.prev('.tag_view_item').attr('id');
-            const placement = next ? { before: next } : previous ? { after: previous } : null;
-            const state = viewTagList;
-            const order = $(tagContainer).children('.tag_view_item').map((_, el) => el.id).get();
-            $(tagContainer).sortable('cancel');
-            if (!id || !placement || !state) return;
-            const byId = new Map(state.rows.map(row => [row.id, row]));
-            state.rows = order.flatMap(id => byId.has(id) ? [byId.get(id)] : []);
-            publishViewTagList(state);
-            const mode = power_user.tag_sort_mode;
-            tagOrderChain = tagOrderChain.then(() => moveTagOnServer(id, placement, mode))
-                .catch(error => console.error(`Error moving tag ${id}:`, error));
-        },
-        handle: '.drag-handle',
-        items: '> .tag_view_item',
-        start: () => {
-            if (viewTagList) viewTagList.dragging = true;
-        },
-        stop: () => {
-            const state = viewTagList;
-            if (!state) return;
-            state.dragging = false;
-            if (state.stale) refreshViewTagList();
-            recheckViewTagEdges(state);
-        },
-    });
-}
 
 /**
  * Compares two given tags and returns the compare result
@@ -4810,7 +4795,8 @@ async function syncKeptViewTags(state) {
  * @returns {boolean}
  */
 function isViewTagListInUse(state) {
-    return state.dragging || (!!document.activeElement && state.container[0].contains(document.activeElement));
+    const focused = document.activeElement;
+    return state.dragging || Boolean(focused?.matches('.tag_view_name') && state.container[0].contains(focused));
 }
 
 /**

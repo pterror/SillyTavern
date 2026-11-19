@@ -114,12 +114,11 @@ async function drag(page, id, aboveId) {
     const y = from.y + from.height / 2;
     await page.mouse.move(x, y);
     await page.mouse.down();
-    await page.waitForTimeout(150);
     if (aboveId) {
         const to = await page.locator(`.tag_view_item[id="${aboveId}"]`).boundingBox();
         await page.mouse.move(x, to.y + 2, { steps: 12 });
     } else {
-        await page.mouse.move(x, y + 3, { steps: 3 });
+        await page.mouse.move(x + 6, y, { steps: 3 });
         await page.mouse.move(x, y, { steps: 3 });
     }
     await page.mouse.up();
@@ -143,6 +142,62 @@ function recordTagWrites(page) {
 
 test.describe('dragging a tag in Manage Tags', () => {
     test.setTimeout(180000);
+
+    test('keyboard moves keep handle focus and send one intent per move', async ({ browser, page }) => {
+        const stamp = `dragk${Date.now()}`;
+        const [a, b, c] = ['a', 'b', 'c'].map(letter => `${stamp}-${letter}`);
+        await elsewhere(browser, async other => {
+            await createTag(other, a, 9501);
+            await createTag(other, b, 9502);
+            await createTag(other, c, 9503);
+        });
+        await loadApp(page);
+        await openTagManagement(page, 'manual', stamp);
+        await expect.poll(() => shownOrder(page)).toEqual([a, b, c]);
+        const writes = recordTagWrites(page);
+        const handle = page.locator(`.tag_view_item[id="${c}"] .drag-handle`);
+        await handle.focus();
+        await handle.press('ArrowUp');
+        await expect.poll(() => shownOrder(page)).toEqual([a, c, b]);
+        await expect(page.locator('.tag_view_list_tags')).toHaveAttribute('aria-busy', 'false');
+        await expect(handle).toBeFocused();
+        await handle.press('ArrowUp');
+        await expect.poll(() => shownOrder(page)).toEqual([c, a, b]);
+        await expect(page.locator('.tag_view_list_tags')).toHaveAttribute('aria-busy', 'false');
+        await expect(handle).toBeFocused();
+        await handle.press('ArrowUp');
+        expect(writes).toEqual([
+            { path: '/api/tags/move', body: { id: c, before: b } },
+            { path: '/api/tags/move', body: { id: c, before: a } },
+        ]);
+        expect(await serverManualOrder(page, [a, b, c])).toEqual([c, a, b]);
+    });
+
+    test('Escape cancels a drag without closing Manage Tags or saving an order', async ({ browser, page }) => {
+        const stamp = `dragx${Date.now()}`;
+        const [a, b] = ['a', 'b'].map(letter => `${stamp}-${letter}`);
+        await elsewhere(browser, async other => {
+            await createTag(other, a, 9601);
+            await createTag(other, b, 9602);
+        });
+        await loadApp(page);
+        await openTagManagement(page, 'manual', stamp);
+        await expect.poll(() => shownOrder(page)).toEqual([a, b]);
+        const writes = recordTagWrites(page);
+        const from = await page.locator(`.tag_view_item[id="${b}"] .drag-handle`).boundingBox();
+        const to = await page.locator(`.tag_view_item[id="${a}"]`).boundingBox();
+        await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(from.x + from.width / 2, to.y + 2, { steps: 8 });
+        await expect(page.locator('[data-reorder-dragging]')).toHaveCount(1);
+        await expect(page.locator('[data-reorder-before]')).toHaveAttribute('id', a);
+        await page.keyboard.press('Escape');
+        await page.mouse.up();
+        await expect(page.locator('[data-reorder-dragging], [data-reorder-before]')).toHaveCount(0);
+        await expect(page.locator('#tag_view_list')).toBeVisible();
+        expect(writes).toEqual([]);
+        expect(await shownOrder(page)).toEqual([a, b]);
+    });
 
     test('Manual: sends one move, and a tag made in another tab this one has not heard of is still there', async ({ browser, page }) => {
         const stamp = `dragm${Date.now()}`;
@@ -186,7 +241,7 @@ test.describe('dragging a tag in Manage Tags', () => {
             await expect.poll(() => shownOrder(page)).toEqual([a, b]);
 
             await drag(page, b);
-            await page.waitForTimeout(2500);
+            await expect(page.locator('[data-reorder-dragging]')).toHaveCount(0);
 
             expect(writes, mode).toEqual([]);
             await expect(page.locator('#tag_sort_mode_select')).toHaveAttribute('value', mode);
