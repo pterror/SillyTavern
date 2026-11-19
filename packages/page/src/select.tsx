@@ -1,5 +1,6 @@
 import { createSignal, omit, onSettled } from 'solid-js';
 import { Portal } from '@solidjs/web';
+import type { JSX } from '@solidjs/web';
 import { Select as InteractSelect } from '@pterror/interact-solid/2';
 import { prefixedIds } from '@pterror/interact-core';
 import type { PartProps } from '@pterror/interact-solid/interact';
@@ -14,6 +15,7 @@ export function Select(props: {
     options: readonly SelectOption[];
     class?: string | undefined;
     disabled?: boolean | undefined;
+    renderItem?: ((value: string) => JSX.Element) | undefined;
     onChange: (value: string, refuse: () => void) => void;
 }) {
     const automaticIds = prefixedIds(`${props.id}-select`);
@@ -56,6 +58,11 @@ export function Select(props: {
             disabled={props.disabled === true}
             items={props.options.map((option) => ({ key: option.value, text: option.label }))}
             value={props.value}
+            item={(key) =>
+                props.renderItem === undefined
+                    ? (props.options.find((option) => option.value === String(key))?.label ?? '')
+                    : props.renderItem(String(key))
+            }
             naming={{
                 idOf: (target) =>
                     target.owner.length === 0 && target.part === 'trigger' ? props.id : automaticIds.idOf(target),

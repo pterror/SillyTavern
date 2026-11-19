@@ -222,9 +222,10 @@ test.describe('tag names are looked up on the server', () => {
         const victimRow = page.locator(`#tag_view_list .tag_view_item[id="victim-${stamp}"]`);
         await victimRow.locator('.tag_delete').click();
 
-        await page.locator('dialog[open] .select2-selection').click();
-        await page.locator('dialog[open] .select2-search__field').fill(`${stamp} 57`);
-        const option = page.locator('.select2-results__option', { hasText: `Target ${stamp} 57` });
+        const dialog = page.locator('dialog[open]', { hasText: 'Delete Tag' });
+        await dialog.getByPlaceholder('Search for a tag to merge into').fill(`${stamp} 57`);
+        await dialog.locator('#merge_tag_select').click();
+        const option = page.getByRole('option', { name: `Target ${stamp} 57`, exact: true });
         await expect(option).toBeVisible();
         await option.click();
 

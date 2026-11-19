@@ -2756,55 +2756,6 @@ export async function findUsedTagIdByName(name) {
 }
 
 /**
- * @param {JQuery<HTMLElement>} select
- * @param {object} options
- * @param {string} options.placeholder
- * @param {JQuery<HTMLElement>} [options.dropdownParent]
- * @param {string} [options.leaveOut]
- */
-function initTagSearchSelect(select, { placeholder, dropdownParent, leaveOut }) {
-    const pageCursors = new Map();
-    select.select2({
-        width: '50%',
-        placeholder,
-        allowClear: true,
-        dropdownParent,
-        ajax: {
-            delay: 250,
-            data: (params) => ({ term: params.term ?? '', page: params.page ?? 1 }),
-            transport: (params, success, failure) => {
-                const { term, page } = params.data;
-                let aborted = false;
-                searchTagsByName(term, { cursor: pageCursors.get(`${page}\n${term}`) ?? null }).then((answer) => {
-                    if (aborted) return;
-                    if (!answer) {
-                        failure();
-                        return;
-                    }
-                    if (answer.cursor) pageCursors.set(`${page + 1}\n${term}`, answer.cursor);
-                    success({
-                        results: answer.rows.filter(x => x.id !== leaveOut).map(x => ({ id: x.id, text: x.name, thing: x.thing })),
-                        pagination: { more: answer.cursor !== null },
-                    });
-                });
-                return { abort: () => { aborted = true; } };
-            },
-        },
-        templateResult: tagSearchItem,
-        templateSelection: tagSearchItem,
-    });
-}
-
-/**
- * A select2 item: a tag's name as the name renderer draws it, a status line (no `id`) as select2 writes it.
- * @param {{ id?: string, text: string, thing?: string }} item
- * @returns {JQuery | string}
- */
-function tagSearchItem(item) {
-    return item.id ? $(/** @type {HTMLElement} */ (nameNode(item.thing, item.text))) : item.text;
-}
-
-/**
  * Creates of tags by name that the server hasn't answered yet, so a second request for a name waits for the first
  * instead of making another tag with it.
  * @type {{ name: string, created: Promise<Tag | null> }[]}
@@ -4427,26 +4378,30 @@ async function onTagAsFolderClick(id) {
 async function onTagDeleteClick(id) {
     const tag = tagsStore.get(id);
 
-    const popupContent = $(await renderTemplateAsync('deleteTag', {}));
-
-    appendTagToList(popupContent.find('#tag_to_delete'), tag);
-    const mergeSelect = popupContent.find('#merge_tag_select').addBack('#merge_tag_select');
-
-    const result = await callGenericPopup(popupContent, POPUP_TYPE.CONFIRM, '', {
-        onOpen: (popup) => initTagSearchSelect(mergeSelect, {
-            placeholder: t`Search for a tag to merge into`,
-            dropdownParent: $(popup.dlg),
-            leaveOut: id,
-        }),
-    });
-    if (result !== POPUP_RESULT.AFFIRMATIVE) {
-        return;
+    if (!tag) return;
+    const host = document.createElement('div');
+    let selected = null;
+    let dispose;
+    let result;
+    try {
+        result = await callGenericPopup($(host), POPUP_TYPE.CONFIRM, '', {
+            onOpen: () => {
+                dispose = newUi().tagManager.delete(host, { id, name: tag.name, thing: tag.thing }, {
+                    async search(term, cursor) {
+                        const page = await searchTagsByName(term, { cursor });
+                        return page ? { rows: page.rows.map(tag => ({ id: tag.id, name: tag.name, thing: tag.thing })), cursor: page.cursor } : null;
+                    },
+                    choose(target) { selected = target; },
+                });
+            },
+        });
+    } finally {
+        dispose?.();
     }
-
-    const mergeTagId = mergeSelect.val() ? String(mergeSelect.val()) : null;
-
+    if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+    const mergeTagId = selected?.id ?? null;
+    const mergeTagName = selected?.name ?? null;
     const title = t`Delete Tag`;
-    const mergeTagName = mergeTagId ? (mergeSelect.find('option:selected').text() || mergeTagId) : null;
 
     const answer = await deleteTagOnServer(id, mergeTagId);
     if (!answer) {

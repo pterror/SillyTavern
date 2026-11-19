@@ -414,3 +414,14 @@
 #tag_view_list button:not(.fa-solid) {
     font: inherit;
 }
+
+.tag_merge_search {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    text-align: start;
+}
+
+.tag_delete_dialog .st-select {
+    width: 100%;
+}

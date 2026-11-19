@@ -104,9 +104,9 @@ async function openDeleteDialog(page, tagId, mergeInto) {
     await expect(popup).toBeVisible({ timeout: 10000 });
     if (mergeInto) {
         const name = mergeInto.replace(/^tag-delete-merge-/, '');
-        await page.evaluate(({ id, name }) => {
-            window['jQuery']('#merge_tag_select').append(new Option(name, id, true, true)).trigger('change');
-        }, { id: mergeInto, name });
+        await popup.getByPlaceholder('Search for a tag to merge into').fill(name);
+        await popup.locator('#merge_tag_select').click();
+        await page.getByRole('option', { name, exact: true }).click();
     }
     return popup;
 }
@@ -354,4 +354,27 @@ test.describe('Deleting a tag from the tag manager', () => {
         }, fixture);
         expect(stored).toEqual({ deleted: null, target: 'SELECTED' });
     });
+    test('Enter in merge search does not delete, and cancelling leaves the tag in place', async ({ browser, page }) => {
+        const id = await withSetupPage(browser, setup => createTag(setup, `cancel-${Date.now()}`));
+        await loadApp(page);
+        await openCharacterManagementDrawer(page);
+        await page.locator('.rm_tag_filter .manageTags:visible').first().click();
+        await page.locator('#tag_view_list .tag_view_prune').waitFor({ state: 'visible' });
+        const requests = [];
+        page.on('request', request => {
+            if (new URL(request.url()).pathname === '/api/tags/delete') requests.push(request.postDataJSON());
+        });
+        const dialog = await openDeleteDialog(page, id, null);
+        const search = dialog.getByPlaceholder('Search for a tag to merge into');
+        await search.fill('a merge target');
+        await search.press('Enter');
+        await expect(dialog).toBeVisible();
+        await expect(dialog.locator('#merge_tag_select')).toBeFocused();
+        await dialog.locator('.popup-button-cancel').click();
+        await expect(dialog).toBeHidden();
+        await expect(page.locator(`#tag_view_list .tag_view_item[id="${id}"]`)).toBeVisible();
+        expect(requests).toEqual([]);
+        expect((await api(page, '/api/tags/by-ids', { ids: [id] })).tags.map(tag => tag.id)).toEqual([id]);
+    });
+
 });
