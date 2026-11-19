@@ -56,12 +56,14 @@ jest.unstable_mockModule('../public/scripts/secrets.js', () => ({
 
 let loadNovelPreset;
 let loadNovelSettings;
+let applyNovelPreset;
 let naiSettings;
 
 beforeAll(async () => {
     ({
         loadNovelPreset,
         loadNovelSettings,
+        applyNovelPreset,
         nai_settings: naiSettings,
     } = await import('../public/scripts/nai-settings.js'));
 });
@@ -77,5 +79,22 @@ describe('NovelAI settings', () => {
         naiSettings.math1_temp = 1;
         loadNovelPreset({ ...naiSettings, genamt: 150, math1_temp: 0 });
         expect(naiSettings.math1_temp).toBe(0);
+    });
+
+    test('applying a catalog name waits for persistence and updates the generation settings directly', async () => {
+        const { saveSettings } = await import('../public/script.js');
+        loadNovelSettings({ novelai_setting_names: ['Direct'], novelai_settings: [JSON.stringify({ ...naiSettings, temperature: 1.25, math1_temp: 0 })] }, { ...naiSettings });
+        let finish;
+        saveSettings.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+        let done = false;
+        const applying = applyNovelPreset('Direct').then(() => { done = true; });
+        expect(naiSettings.preset_settings_novel).toBe('Direct');
+        expect(naiSettings.temperature).toBe(1.25);
+        expect(naiSettings.math1_temp).toBe(0);
+        expect(saveSettings).toHaveBeenLastCalledWith('nai_settings');
+        expect(done).toBe(false);
+        finish();
+        await applying;
+        expect(done).toBe(true);
     });
 });

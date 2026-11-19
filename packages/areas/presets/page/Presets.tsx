@@ -34,6 +34,7 @@ export function Presets(props: { family: Family; old: PresetsCompat; id: string 
     const [busy, setBusy] = createSignal(false);
     const [error, setError] = createSignal('');
     const [ordering, setOrdering] = createSignal<string[] | null>(null);
+    const [bindingChange, setBindingChange] = createSignal<boolean | null>(null);
     const selected = () => catalog()?.selected ?? '';
     const editable = () => catalog()?.presets.some((preset) => preset.name === selected()) === true;
     let fileInput: HTMLInputElement | undefined;
@@ -181,6 +182,27 @@ export function Presets(props: { family: Family; old: PresetsCompat; id: string 
                     {button('Delete the preset', 'fa-trash-can', remove, true)}
                 </div>
             </div>
+            <Show when={props.family === 'openai'}>
+                <label class="checkbox_label" title={t('Bind presets to API connections')}>
+                    <input
+                        type="checkbox"
+                        id="bind_preset_to_connection"
+                        checked={bindingChange() ?? view()?.bindConnection === true}
+                        disabled={busy() || !view()}
+                        onChange={(event) => {
+                            const enabled = event.currentTarget.checked;
+                            setBindingChange(enabled);
+                            void run(async () => {
+                                const result = await client.send('presets.bindConnection', { enabled });
+                                if (!result.ok) throw new Error(result.error);
+                            }).finally(() => {
+                                setBindingChange(null);
+                            });
+                        }}
+                    />
+                    <span>{t('Bind presets to API connections')}</span>
+                </label>
+            </Show>
             <div class="st-preset-controls">
                 <Select
                     id={props.id}

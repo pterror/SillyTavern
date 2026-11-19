@@ -26,7 +26,6 @@ import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 import {
     arraysEqual,
     download,
-    getFileText,
     getSortableDelay,
     getStringHash,
     isUuid,
@@ -42,7 +41,7 @@ import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from './slash-commands/SlashCommandArgument.js';
 import { renderTemplateAsync } from './templates.js';
 import { SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
-import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
+import { callGenericPopup, Popup, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
@@ -82,20 +81,6 @@ export {
 
 
 export let model_list = [];
-
-const sensitiveFields = [
-    'reverse_proxy',
-    'proxy_password',
-    'custom_url',
-    'custom_include_body',
-    'custom_exclude_body',
-    'custom_include_headers',
-    'vertexai_region',
-    'vertexai_express_project_id',
-    'azure_base_url',
-    'azure_deployment_name',
-    'workers_ai_account_id',
-];
 
 
 const oai_settings = structuredClone(default_settings);
@@ -1018,15 +1003,8 @@ function loadOpenAISettings(data, settings) {
         openai_settings[i] = JSON.parse(item);
     });
 
-    $('#settings_preset_openai').empty();
     const settingNames = {};
-    openai_setting_names.forEach(function (item, i) {
-        settingNames[item] = i;
-        const option = document.createElement('option');
-        option.value = i;
-        option.text = item;
-        $('#settings_preset_openai').append(option);
-    });
+    openai_setting_names.forEach((name, index) => { settingNames[name] = index; });
     openai_setting_names = settingNames;
 
     migrateChatCompletionSettings(settings);
@@ -1064,8 +1042,6 @@ function loadOpenAISettings(data, settings) {
         }
     }
 
-    $(`#settings_preset_openai option[value="${openai_setting_names[oai_settings.preset_settings_openai]}"]`).prop('selected', true);
-    $('#bind_preset_to_connection').prop('checked', oai_settings.bind_preset_to_connection);
     $('#openai_external_category').toggle(oai_settings.show_external_models);
     $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');
 
@@ -1248,21 +1224,13 @@ async function saveOpenAIPreset(name, settings, triggerUi = true) {
     if (savePresetSettings.ok) {
         const data = await savePresetSettings.json();
 
-        if (Object.keys(openai_setting_names).includes(data.name)) {
-            oai_settings.preset_settings_openai = data.name;
-            const value = openai_setting_names[data.name];
-            Object.assign(openai_settings[value], presetBody);
-            $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
-            if (triggerUi) $('#settings_preset_openai').trigger('change');
+        if (Object.hasOwn(openai_setting_names, data.name)) {
+            Object.assign(openai_settings[openai_setting_names[data.name]], presetBody);
         } else {
             openai_settings.push(presetBody);
             openai_setting_names[data.name] = openai_settings.length - 1;
-            const option = document.createElement('option');
-            option.selected = true;
-            option.value = String(openai_settings.length - 1);
-            option.innerText = data.name;
-            if (triggerUi) $('#settings_preset_openai').append(option).trigger('change');
         }
+        if (triggerUi) await applyChatCompletionPreset(data.name);
     } else {
         toastr.error(t`Failed to save preset`);
         throw new Error('Failed to save preset');
@@ -1389,134 +1357,8 @@ function addLogitBiasPresetOption(name) {
     $('#openai_logit_bias_preset').trigger('change');
 }
 
-function onImportPresetClick() {
-    $('#openai_preset_import_file').trigger('click');
-}
-
 function onLogitBiasPresetImportClick() {
     $('#openai_logit_bias_import_file').trigger('click');
-}
-
-async function onPresetImportFileChange(e) {
-    const file = e.target.files[0];
-
-    if (!file) {
-        return;
-    }
-
-    const name = file.name.replace(/\.[^/.]+$/, '');
-    const importedFile = await getFileText(file);
-    let presetBody;
-    e.target.value = '';
-
-    try {
-        presetBody = JSON.parse(importedFile);
-    } catch (err) {
-        toastr.error(t`Invalid file`);
-        return;
-    }
-
-    const fields = sensitiveFields.filter(field => presetBody[field]).map(field => `<b>${field}</b>`);
-    const shouldConfirm = fields.length > 0;
-
-    if (shouldConfirm) {
-        const textHeader = 'The imported preset contains proxy and/or custom endpoint settings.';
-        const textMessage = fields.join('<br>');
-        const cancelButton = { text: 'Cancel import', result: POPUP_RESULT.CANCELLED, appendAtEnd: true };
-        const popupOptions = { customButtons: [cancelButton], okButton: 'Remove them', cancelButton: 'Import as-is' };
-        const popupResult = await Popup.show.confirm(textHeader, textMessage, popupOptions);
-
-        if (popupResult === POPUP_RESULT.CANCELLED) {
-            return;
-        }
-
-        if (popupResult === POPUP_RESULT.AFFIRMATIVE) {
-            sensitiveFields.forEach(field => delete presetBody[field]);
-        }
-    }
-
-    if (name in openai_setting_names) {
-        const confirm = await callGenericPopup('Preset name already exists. Overwrite?', POPUP_TYPE.CONFIRM);
-
-        if (!confirm) {
-            return;
-        }
-    }
-
-    const savePresetSettings = await fetch('/api/presets/save', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            apiId: 'openai',
-            name: name,
-            preset: presetBody,
-        }),
-    });
-
-    if (!savePresetSettings.ok) {
-        toastr.error(t`Failed to save preset`);
-        return;
-    }
-
-    const data = await savePresetSettings.json();
-
-    if (Object.keys(openai_setting_names).includes(data.name)) {
-        oai_settings.preset_settings_openai = data.name;
-        const value = openai_setting_names[data.name];
-        Object.assign(openai_settings[value], presetBody);
-        $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
-        $('#settings_preset_openai').trigger('change');
-    } else {
-        openai_settings.push(presetBody);
-        openai_setting_names[data.name] = openai_settings.length - 1;
-        const option = document.createElement('option');
-        option.selected = true;
-        option.value = String(openai_settings.length - 1);
-        option.innerText = data.name;
-        $('#settings_preset_openai').append(option).trigger('change');
-    }
-}
-
-async function onExportPresetClick() {
-    if (!oai_settings.preset_settings_openai) {
-        toastr.error(t`No preset selected`);
-        return;
-    }
-
-    const preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
-
-    const fieldValues = sensitiveFields.filter(field => preset[field]).map(field => `<b>${field}</b>: <code>${preset[field]}</code>`);
-    if (fieldValues.length > 0) {
-        const textHeader = t`Your preset contains proxy and/or custom endpoint settings.`;
-        const textMessage = '<div>' + t`Do you want to remove these fields before exporting?` + `</div><br>${DOMPurify.sanitize(fieldValues.join('<br>'))}`;
-        const cancelButton = { text: 'Cancel', result: POPUP_RESULT.CANCELLED, appendAtEnd: true };
-        const popupOptions = { customButtons: [cancelButton] };
-        const popupResult = await Popup.show.confirm(textHeader, textMessage, popupOptions);
-
-        if (popupResult === POPUP_RESULT.CANCELLED) {
-            return;
-        }
-
-        if (popupResult === POPUP_RESULT.AFFIRMATIVE) {
-            sensitiveFields.forEach(field => delete preset[field]);
-        }
-    }
-
-    const exportConnectionTemplate = $(await renderTemplateAsync('exportPreset'));
-    await new Popup(exportConnectionTemplate, POPUP_TYPE.TEXT).show();
-
-    const removeConnectionData = exportConnectionTemplate.find('input[name="export_connection_data"]:checked').val() === 'false';
-    if (removeConnectionData) {
-        for (const [, [, settingName, , isConnection]] of Object.entries(settingsToUpdate)) {
-            if (isConnection) {
-                delete preset[settingName];
-            }
-        }
-    }
-
-    const presetJsonString = JSON.stringify(preset, null, 4);
-    const presetFileName = `${oai_settings.preset_settings_openai}.json`;
-    download(presetJsonString, presetFileName, 'application/json');
 }
 
 async function onLogitBiasPresetImportFileChange(e) {
@@ -1571,39 +1413,6 @@ function onLogitBiasPresetExportClick() {
     download(presetJsonString, presetFileName, 'application/json');
 }
 
-async function onDeletePresetClick() {
-    const confirm = await callGenericPopup(t`Delete the preset? This action is irreversible and your current settings will be overwritten.`, POPUP_TYPE.CONFIRM);
-
-    if (!confirm) {
-        return;
-    }
-
-    const nameToDelete = oai_settings.preset_settings_openai;
-    const value = openai_setting_names[oai_settings.preset_settings_openai];
-    $(`#settings_preset_openai option[value="${value}"]`).remove();
-    delete openai_setting_names[oai_settings.preset_settings_openai];
-    oai_settings.preset_settings_openai = null;
-
-    if (Object.keys(openai_setting_names).length) {
-        oai_settings.preset_settings_openai = Object.keys(openai_setting_names)[0];
-        const newValue = openai_setting_names[oai_settings.preset_settings_openai];
-        $(`#settings_preset_openai option[value="${newValue}"]`).prop('selected', true);
-        $('#settings_preset_openai').trigger('change');
-    }
-
-    const response = await fetch('/api/presets/delete', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ apiId: 'openai', name: nameToDelete }),
-    });
-
-    if (!response.ok) {
-        toastr.warning(t`Preset was not deleted from server`);
-    }
-
-    saveSettingsDebounced('oai_settings');
-}
-
 async function onLogitBiasPresetDeleteClick() {
     const value = await callGenericPopup(t`Delete the preset?`, POPUP_TYPE.CONFIRM);
 
@@ -1624,20 +1433,11 @@ async function onLogitBiasPresetDeleteClick() {
     saveSettingsDebounced('oai_settings');
 }
 
-/** @type {Promise<void>} */
-let presetApplicationPromise = Promise.resolve();
-
-/**
- * @returns {Promise<void>}
- */
-export function getPresetApplicationPromise() {
-    return presetApplicationPromise;
-}
-
-function onSettingsPresetChange() {
+/** Apply a catalog preset and await both extension hooks and settings synchronization. */
+export function applyChatCompletionPreset(presetName) {
+    if (!Object.hasOwn(openai_setting_names, presetName)) throw new Error(`Unknown chat completion preset: ${presetName}`);
     const presetNameBefore = oai_settings.preset_settings_openai;
 
-    const presetName = $('#settings_preset_openai').find(':selected').text();
     oai_settings.preset_settings_openai = presetName;
 
     const preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
@@ -1647,7 +1447,7 @@ function onSettingsPresetChange() {
     const updateInput = (selector, value) => $(selector).val(value).trigger('input', { source: 'preset' });
     const updateCheckbox = (selector, value) => $(selector).prop('checked', value).trigger('input', { source: 'preset' });
 
-    presetApplicationPromise = eventSource.emit(event_types.OAI_PRESET_CHANGED_BEFORE, {
+    return eventSource.emit(event_types.OAI_PRESET_CHANGED_BEFORE, {
         preset: preset,
         presetName: presetName,
         settingsToUpdate: settingsToUpdate,
@@ -1933,16 +1733,6 @@ async function onModelChange() {
     }
     updateFeatureSupportFlags();
     eventSource.emit(event_types.CHATCOMPLETION_MODEL_CHANGED, value);
-}
-
-async function onNewPresetClick() {
-    const name = await Popup.show.input(t`Preset name:`, t`Hint: Use a character/group name to bind preset to a specific chat.`, oai_settings.preset_settings_openai);
-
-    if (!name) {
-        return;
-    }
-
-    await saveOpenAIPreset(name, oai_settings);
 }
 
 function onReverseProxyInput() {
@@ -2614,11 +2404,6 @@ export function initOpenAI() {
 
     $('#test_api_button').on('click', testApiConnection);
 
-    $('#update_oai_preset').on('click', async function () {
-        const name = oai_settings.preset_settings_openai;
-        await saveOpenAIPreset(name, oai_settings, false);
-        toastr.success(t`Preset updated`);
-    });
 
     $('#openai_bypass_status_check').on('input', function () {
         oai_settings.bypass_status_check = !!$(this).prop('checked');
@@ -2805,10 +2590,6 @@ export function initOpenAI() {
         saveSettingsDebounced('oai_settings');
     });
 
-    $('#bind_preset_to_connection').on('input', function () {
-        oai_settings.bind_preset_to_connection = !!$(this).prop('checked');
-        saveSettingsDebounced('oai_settings');
-    });
 
     $('#cc_group_models').on('input', async () => {
         oai_settings.group_models = $('#cc_group_models').prop('checked');
@@ -2884,19 +2665,13 @@ export function initOpenAI() {
     $('#azure_openai_model').on('change', onModelChange);
     $('#model_zai_select').on('change', onModelChange);
     $('#model_workers_ai_select').on('change', onModelChange);
-    $('#settings_preset_openai').on('change', onSettingsPresetChange);
-    $('#new_oai_preset').on('click', onNewPresetClick);
-    $('#delete_oai_preset').on('click', onDeletePresetClick);
     $('#openai_logit_bias_preset').on('change', onLogitBiasPresetChange);
     $('#openai_logit_bias_new_preset').on('click', createNewLogitBiasPreset);
     $('#openai_logit_bias_new_entry').on('click', createNewLogitBiasEntry);
     $('#openai_logit_bias_import_file').on('input', onLogitBiasPresetImportFileChange);
-    $('#openai_preset_import_file').on('input', onPresetImportFileChange);
-    $('#export_oai_preset').on('click', onExportPresetClick);
     $('#openai_logit_bias_import_preset').on('click', onLogitBiasPresetImportClick);
     $('#openai_logit_bias_export_preset').on('click', onLogitBiasPresetExportClick);
     $('#openai_logit_bias_delete_preset').on('click', onLogitBiasPresetDeleteClick);
-    $('#import_oai_preset').on('click', onImportPresetClick);
     $('#openai_proxy_access_key_show').on('click', onProxyAccessKeyShowClick);
     $('#customize_additional_parameters').on('click', onCustomizeParametersClick);
     $('#openai_proxy_preset').on('change', onProxyPresetChange);

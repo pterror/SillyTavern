@@ -20,9 +20,9 @@ import { eventSource, event_types } from './events.js';
 import { groupsStore, selected_group } from './group-chats.js';
 import { t } from './i18n.js';
 import { instruct_presets } from './instruct-mode.js';
-import { kai_settings } from './kai-settings.js';
-import { convertNovelPreset } from './nai-settings.js';
-import { getPresetApplicationPromise, oai_settings, openai_setting_names, openai_settings } from './chat-completion-settings.js';
+import { kai_settings, applyKoboldPreset } from './kai-settings.js';
+import { convertNovelPreset, applyNovelPreset } from './nai-settings.js';
+import { applyChatCompletionPreset, oai_settings, openai_setting_names, openai_settings } from './chat-completion-settings.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup } from './popup.js';
 import { context_presets, getContextSettings, power_user } from './power-user.js';
 import { reasoning_templates } from './reasoning.js';
@@ -37,6 +37,7 @@ import {
     textgenerationwebui_settings as textgen_settings,
     textgenerationwebui_preset_names,
     textgenerationwebui_presets,
+    applyTextGenPreset,
 } from './textgen-settings.js';
 import { PRESET_EXCLUDED_KEYS, TEXT_PRESET_LENGTH_KEYS } from './preset-file-keys.js';
 import { debounce, download, ensurePlainObject, equalsIgnoreCaseAndAccents, getSanitizedFilename, parseJsonFile, waitUntilCondition } from './utils.js';
@@ -46,7 +47,7 @@ const presetManagers = {};
 /**
  * Automatically select a preset for current API based on character or group name.
  */
-function autoSelectPreset() {
+async function autoSelectPreset() {
     const presetManager = getPresetManager();
 
     if (!presetManager) {
@@ -71,7 +72,7 @@ function autoSelectPreset() {
 
     if (preset !== undefined && preset !== null) {
         console.log(`Preset found for API: ${main_api}, name: ${name}`);
-        presetManager.selectPreset(preset);
+        await presetManager.selectPreset(preset);
     }
 }
 
@@ -99,6 +100,7 @@ export function getPresetManager(apiId = '') {
  * Registers preset managers for all select elements with data-preset-manager-for attribute.
  */
 function registerPresetManagers() {
+    for (const family of Object.keys(generationPresetContainers)) presetManagers[family] = new PresetManager(null, family);
     $('select[data-preset-manager-for]').each((_, e) => {
         const forData = $(e).data('preset-manager-for');
         for (const apiId of forData.split(',')) {
@@ -112,7 +114,11 @@ class PresetManager {
     constructor(select, apiId) {
         this.select = select;
         this.apiId = apiId;
-        this._observeSelectChanges();
+        if (!this.isGeneration()) this._observeSelectChanges();
+    }
+
+    isGeneration() {
+        return Object.hasOwn(generationPresetContainers, this.apiId);
     }
 
     _observeSelectChanges() {
@@ -384,6 +390,12 @@ class PresetManager {
      * @returns {string[]} List of preset names
      */
     getAllPresets() {
+        if (this.isGeneration()) {
+            const { preset_names } = this.getPresetList();
+            const names = Array.isArray(preset_names) ? [...preset_names]
+                : Object.keys(preset_names).sort((a, b) => preset_names[a] - preset_names[b]);
+            return this.apiId === 'kobold' ? ['GUI KoboldAI Settings', ...names] : names;
+        }
         return $(this.select).find('option').map((_, el) => el.text).toArray();
     }
 
@@ -393,6 +405,12 @@ class PresetManager {
      * @returns {any} Preset value
      */
     findPreset(name) {
+        if (this.isGeneration()) {
+            if (this.apiId === 'kobold' && (name === 'gui' || name === 'GUI KoboldAI Settings')) return 'gui';
+            const { preset_names } = this.getPresetList();
+            if (this.isKeyedApi()) return preset_names.includes(name) ? name : undefined;
+            return Object.hasOwn(preset_names, name) ? String(preset_names[name]) : undefined;
+        }
         return $(this.select).find('option').filter(function () {
             return $(this).text() === name;
         }).val();
@@ -403,6 +421,7 @@ class PresetManager {
      * @returns {any} Selected preset value
      */
     getSelectedPreset() {
+        if (this.isGeneration()) return this.findPreset(this.getSelectedPresetName());
         return $(this.select).find('option:selected').val();
     }
 
@@ -411,19 +430,29 @@ class PresetManager {
      * @returns {string} Selected preset name
      */
     getSelectedPresetName() {
+        if (this.isGeneration()) {
+            const { settings } = this.getPresetList();
+            const name = settings[generationPresetContainers[this.apiId].selection] ?? '';
+            return this.apiId === 'kobold' && name === 'gui' ? 'GUI KoboldAI Settings' : name;
+        }
         return $(this.select).find('option:selected').text();
     }
 
     /**
      * Selects a preset by option value.
-     * Chat Completion presets apply asynchronously after the change event; await the result to avoid a race with follow-up changes.
+     * Generation preset application is awaited before follow-up actions run.
      * @param {string} value Preset option value
      * @returns {Promise<void>}
      */
     async selectPreset(value) {
-        if (newUiStarted() && Object.hasOwn(generationPresetContainers, this.apiId)) {
-            const name = this.apiId === 'kobold' && value === 'gui' ? 'gui' : this.select.find('option').filter((_, option) => option.value === String(value)).text();
-            await newUi().presets.select(this.apiId, name);
+        if (this.isGeneration()) {
+            const { preset_names } = this.getPresetList();
+            const name = this.apiId === 'kobold' && value === 'gui' ? 'gui'
+                : this.isKeyedApi() ? String(value)
+                    : Object.keys(preset_names).find(name => String(preset_names[name]) === String(value));
+            if (name === undefined) throw new Error(`Unknown preset value: ${value}`);
+            if (newUiStarted()) await newUi().presets.select(this.apiId, name);
+            else await generationPresetContainers[this.apiId].apply(name);
             return;
         }
         const option = $(this.select).filter(function () {
@@ -431,9 +460,6 @@ class PresetManager {
         });
         option.prop('selected', true);
         $(this.select).val(value).trigger('change');
-        if (this.apiId === 'openai') {
-            await getPresetApplicationPromise();
-        }
     }
 
     /**
@@ -442,14 +468,12 @@ class PresetManager {
      * @param {boolean} [options.skipUpdate=false] If true, skips updating the preset list after saving.
      */
     async updatePreset(option = { skipUpdate: false }) {
-        const selected = $(this.select).find('option:selected');
-
-        if (selected.val() == 'gui') {
+        if (this.getSelectedPreset() === 'gui') {
             toastr.info(t`Cannot update GUI preset`);
             return;
         }
 
-        const name = selected.text();
+        const name = this.getSelectedPresetName();
         await this.savePreset(name, null, option);
 
         const successToast = !this.isAdvancedFormatting() ? t`Preset updated` : t`Template updated`;
@@ -483,7 +507,7 @@ class PresetManager {
      * @param {boolean} [options.skipUpdate=false] If true, skips updating the preset list after saving.
      */
     async savePreset(name, settings, { skipUpdate = false } = {}) {
-        if (newUiStarted() && Object.hasOwn(generationPresetContainers, this.apiId)) {
+        if (this.isGeneration()) {
             if (this.apiId === 'novel' && settings) settings = convertNovelPreset(settings);
             await newUi().presets.save(this.apiId, name, settings ?? undefined, !skipUpdate);
             return;
@@ -527,7 +551,7 @@ class PresetManager {
      */
     async renamePreset(newName) {
         const oldName = this.getSelectedPresetName();
-        if (newUiStarted() && Object.hasOwn(generationPresetContainers, this.apiId)) {
+        if (this.isGeneration()) {
             await newUi().presets.rename(this.apiId, oldName, newName);
             return;
         }
@@ -652,6 +676,7 @@ class PresetManager {
      * @param {object} preset Preset object
      */
     updateList(name, preset) {
+        if (this.isGeneration()) return newUi().presets.save(this.apiId, name, preset);
         const { presets, preset_names } = this.getPresetList();
         const presetExists = this.isKeyedApi() ? preset_names.includes(name) : Object.keys(preset_names).includes(name);
 
@@ -776,7 +801,7 @@ class PresetManager {
      * @param {string} [name] Name of the preset to delete.
      */
     async deletePreset(name) {
-        if (newUiStarted() && Object.hasOwn(generationPresetContainers, this.apiId)) {
+        if (this.isGeneration()) {
             await newUi().presets.remove(this.apiId, name || this.getSelectedPresetName());
             return true;
         }
@@ -874,6 +899,7 @@ class PresetManager {
         if (!Array.isArray(order) || order.length === 0) {
             return;
         }
+        if (this.isGeneration()) return newUi().presets.order(this.apiId, order);
 
         const selectEl = $(this.select).get(0);
         const options = Array.from(selectEl.options);
@@ -915,13 +941,12 @@ class PresetManager {
     }
 
     async reorderPresets() {
-        const options = $(this.select).find('option');
-        if (options.length === 0) {
+        const items = this.getAllPresets().filter(name => !(this.apiId === 'kobold' && name === 'GUI KoboldAI Settings'));
+        if (items.length === 0) {
             toastr.info(t`No presets to reorder`);
             return;
         }
 
-        const items = options.map((_, el) => el.text).toArray();
         const listItems = items.map(name => {
             const li = $('<li class="preset-reorder-item"><i class="fa-solid fa-grip-vertical preset-reorder-grip"></i><span></span></li>');
             li.attr('data-preset-name', name);
@@ -955,6 +980,10 @@ class PresetManager {
         }
 
         const newOrder = html.find('.preset-reorder-item').map((_, el) => $(el).data('preset-name')).toArray();
+        if (this.isGeneration()) {
+            await newUi().presets.order(this.apiId, newOrder);
+            return;
+        }
         if (!power_user.preset_order) {
             power_user.preset_order = {};
         }
@@ -1222,11 +1251,6 @@ export async function initPresetManager() {
         const extensions = presetManager.readPresetExtensionField({ name: oldName, path: '' });
         await presetManager.renamePreset(newName);
         await presetManager.writePresetExtensionField({ name: newName, path: '', value: extensions });
-
-        if (apiId === 'openai') {
-            // This is a horrible mess, but prevents the renamed preset from being corrupted.
-            $('#update_oai_preset').trigger('click');
-        }
     });
 
     $(document).on('click', '[data-preset-manager-export]', async function () {
@@ -1238,8 +1262,7 @@ export async function initPresetManager() {
             return;
         }
 
-        const selected = $(presetManager.select).find('option:selected');
-        const name = selected.text();
+        const name = presetManager.getSelectedPresetName();
         const preset = presetManager.getPresetSettings(name);
         const data = JSON.stringify(preset, null, 4);
         download(data, `${name}.json`, 'application/json');
@@ -1338,7 +1361,7 @@ export async function initPresetManager() {
             await presetManager.deletePreset();
             await presetManager.savePreset(name, data.preset);
             const option = presetManager.findPreset(name);
-            presetManager.selectPreset(option);
+            await presetManager.selectPreset(option);
         } else {
             const confirmText = !presetManager.isAdvancedFormatting()
                 ? t`Resetting a <b>custom preset</b> will restore to the last saved state.`
@@ -1349,7 +1372,7 @@ export async function initPresetManager() {
             }
 
             const option = presetManager.findPreset(name);
-            presetManager.selectPreset(option);
+            await presetManager.selectPreset(option);
         }
     });
 
@@ -1386,68 +1409,44 @@ export async function initPresetManager() {
 }
 
 const generationPresetContainers = {
-    kobold: ['kobold_api-presets', 'settings_preset'],
-    novel: ['novel_api-presets', 'settings_preset_novel'],
-    openai: ['openai_api-presets', 'settings_preset_openai'],
-    textgenerationwebui: ['textgenerationwebui_api-presets', 'settings_preset_textgenerationwebui'],
+    kobold: { container: 'kobold_api-presets', control: 'settings_preset_control', selection: 'preset_settings', object: 'kai_settings', apply: applyKoboldPreset },
+    novel: { container: 'novel_api-presets', control: 'settings_preset_novel_control', selection: 'preset_settings_novel', object: 'nai_settings', apply: applyNovelPreset },
+    openai: { container: 'openai_api-presets', control: 'settings_preset_openai_control', selection: 'preset_settings_openai', object: 'oai_settings', apply: applyChatCompletionPreset },
+    textgenerationwebui: { container: 'textgenerationwebui_api-presets', control: 'settings_preset_textgenerationwebui_control', selection: 'preset', object: 'textgenerationwebui_settings', apply: applyTextGenPreset },
 };
 
-/**
- * The old selects are projections for generation modules and extensions which still use change events.
- * The Solid controls read their choices and selection from the server, never from these projections.
- */
+/** Project server catalogs into the generation modules, and apply changes through awaited backend functions. */
 export function presetUi() {
-    const hosts = Object.entries(generationPresetContainers).map(([family, [containerId, id]]) => {
-        const container = document.getElementById(containerId);
-        const projection = document.createElement('div');
-        projection.className = 'st-preset-legacy';
-        projection.hidden = true;
-        while (container.firstChild) projection.append(container.firstChild);
-        container.append(projection);
-        const host = document.createElement('div');
-        container.append(host);
-        return { family, id: `${id}_control`, element: host };
-    });
+    const hosts = Object.entries(generationPresetContainers).map(([family, config]) => ({
+        family, id: config.control, element: document.getElementById(config.container),
+    }));
     let first = true;
     /** @type {import('/ui/entry.js').StartOptions['presets']['old']} */
     const old = {
         async sync(view, reload) {
-            for (const family of Object.keys(generationPresetContainers)) {
+            oai_settings.bind_preset_to_connection = view.bindConnection;
+            for (const [family, config] of Object.entries(generationPresetContainers)) {
                 const catalog = view[family];
                 const manager = getPresetManager(family);
-                const selected = manager.getSelectedPresetName();
-                const before = selected && !(family === 'kobold' && selected === 'GUI KoboldAI Settings') ? manager.getCompletionPresetByName(selected) : null;
-                const incoming = catalog.presets.find(preset => preset.name === catalog.selected);
-                const apply = family === reload || !first && (selected !== catalog.selected || JSON.stringify(before) !== JSON.stringify(incoming?.data ?? null));
                 const { presets, preset_names, settings } = manager.getPresetList();
+                const selected = settings[config.selection] ?? '';
+                const before = selected && !(family === 'kobold' && selected === 'gui') ? manager.getCompletionPresetByName(selected) : null;
+                const incoming = catalog.presets.find(preset => preset.name === catalog.selected);
+                const apply = family === reload || !first && (selected !== catalog.selected || JSON.stringify(before ?? null) !== JSON.stringify(incoming?.data ?? null));
                 presets.splice(0, presets.length, ...catalog.presets.map(preset => structuredClone(preset.data)));
                 if (Array.isArray(preset_names)) preset_names.splice(0, preset_names.length, ...catalog.presets.map(preset => preset.name));
                 else {
                     for (const name of Object.keys(preset_names)) delete preset_names[name];
                     catalog.presets.forEach((preset, index) => { preset_names[preset.name] = index; });
                 }
-                const select = /** @type {HTMLSelectElement} */ (manager.select.get(0));
-                select.replaceChildren();
-                if (family === 'kobold') select.add(new Option('GUI KoboldAI Settings', 'gui'));
-                catalog.presets.forEach((preset, index) => select.add(new Option(preset.name, manager.isKeyedApi() ? preset.name : String(index))));
-                const index = catalog.presets.findIndex(preset => preset.name === catalog.selected);
-                const value = catalog.selected === 'gui' && family === 'kobold' ? 'gui' : index < 0 ? '' : manager.isKeyedApi() ? catalog.selected : String(index);
-                select.value = value;
-                if (!incoming && value !== 'gui') {
-                    const selectionKey = { kobold: 'preset_settings', novel: 'preset_settings_novel', openai: 'preset_settings_openai', textgenerationwebui: 'preset' }[family];
-                    settings[selectionKey] = '';
-                }
-                // The view already arrives ordered. Don't let the legacy observer put stale ordering back.
                 power_user.preset_order ??= {};
                 power_user.preset_order[family] = catalog.presets.map(preset => preset.name);
-                if (apply && (incoming || family === 'kobold' && value === 'gui')) {
-                    const object = { kobold: 'kai_settings', novel: 'nai_settings', openai: 'oai_settings', textgenerationwebui: 'textgenerationwebui_settings' }[family];
-                    settingsHashesStored(view.settingsHashes, [object]);
-                    $(select).trigger('change');
-                    if (family === 'openai') await getPresetApplicationPromise();
-                }
+                if (apply && (incoming || family === 'kobold' && catalog.selected === 'gui')) {
+                    settingsHashesStored(view.settingsHashes, [config.object]);
+                    await config.apply(catalog.selected);
+                } else settings[config.selection] = catalog.selected;
             }
-            settingsHashesStored(view.settingsHashes, ['power_user.preset_order']);
+            settingsHashesStored(view.settingsHashes, ['power_user.preset_order', 'oai_settings.bind_preset_to_connection']);
             first = false;
         },
         prepareImport: (family, data) => family === 'novel' ? convertNovelPreset(data) : data,

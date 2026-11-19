@@ -173,6 +173,15 @@ export function loadNovelPreset(preset) {
     loadNovelSettingsUi(nai_settings);
 }
 
+export async function applyNovelPreset(name) {
+    const preset = novelai_settings[novelai_setting_names[name]];
+    if (!preset) throw new Error(`Unknown NovelAI preset: ${name}`);
+    nai_settings.preset_settings_novel = name;
+    loadNovelPreset(preset);
+    await saveSettings('nai_settings');
+    if (newUiStarted()) await newUi().settings.reread();
+}
+
 export function loadNovelSettings(data, settings) {
     novelai_setting_names = data.novelai_setting_names;
     novelai_settings = data.novelai_settings;
@@ -180,12 +189,8 @@ export function loadNovelSettings(data, settings) {
         novelai_settings[i] = JSON.parse(item);
     });
 
-    $('#settings_preset_novel').empty();
     const presetNames = {};
-    novelai_setting_names.forEach(function (item, i, arr) {
-        presetNames[item] = i;
-        $('#settings_preset_novel').append(`<option value=${i}>${item}</option>`);
-    });
+    novelai_setting_names.forEach((name, index) => { presetNames[name] = index; });
     novelai_setting_names = presetNames;
 
     //load the rest of the Novel settings without any checks
@@ -268,7 +273,6 @@ function loadNovelSettingsUi(ui_settings) {
     $('#math1_quad_counter_novel').val(Number(ui_settings.math1_quad).toFixed(2));
     $('#math1_quad_entropy_scale_novel').val(ui_settings.math1_quad_entropy_scale);
     $('#math1_quad_entropy_scale_counter_novel').val(Number(ui_settings.math1_quad_entropy_scale).toFixed(2));
-    $(`#settings_preset_novel option[value=${novelai_setting_names[nai_settings.preset_settings_novel]}]`).prop('selected', true);
 
     sortItemsByOrder(ui_settings.order);
     displayLogitBias(ui_settings.logit_bias, BIAS_KEY, 'nai_settings');
@@ -530,22 +534,13 @@ export function initNovelAISettings() {
         await getStatusNovel();
     });
 
-    $('#settings_preset_novel').on('change', async function () {
-        nai_settings.preset_settings_novel = $('#settings_preset_novel').find(':selected').text();
-        const preset = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
-        loadNovelPreset(preset);
-        await saveSettings('nai_settings');
-        if (newUiStarted()) await newUi().settings.reread();
-    });
-
-    $('#model_novel_select').on('change', function () {
+    $('#model_novel_select').on('change', async function () {
         nai_settings.model_novel = String($('#model_novel_select').find(':selected').val());
         saveSettingsDebounced('nai_settings');
 
         const default_preset = default_presets[nai_settings.model_novel];
-        $('#settings_preset_novel').val(novelai_setting_names[default_preset]);
-        $(`#settings_preset_novel option[value=${novelai_setting_names[default_preset]}]`).attr('selected', 'true');
-        $('#settings_preset_novel').trigger('change');
+        if (newUiStarted()) await newUi().presets.select('novel', default_preset);
+        else await applyNovelPreset(default_preset);
     });
 
     $('#nai_prefix').on('change', function () {

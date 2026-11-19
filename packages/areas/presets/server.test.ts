@@ -19,8 +19,13 @@ function world() {
         ]),
     ) as unknown as PresetsView;
     let fail = false;
+    let bound = false;
     const selections: string[] = [];
     const ports: Ports = {
+        binding: async () => bound,
+        bind: async (_user, enabled) => {
+            bound = enabled;
+        },
         settingsHashes: async () => ({}),
         list: async (_user, family) => structuredClone(catalogs[family]),
         select: async (_user, family, name) => {
@@ -64,6 +69,7 @@ function world() {
     return {
         catalogs,
         selections,
+        binding: () => bound,
         act,
         fail: () => {
             fail = true;
@@ -75,6 +81,15 @@ test('selecting an absent preset is refused without changing the current selecti
     const w = world();
     expect(await w.act('presets.select', { name: 'gone' })).toHaveProperty('refused');
     expect(w.selections).toEqual([]);
+});
+
+test('connection binding changes the user-wide preset option without selecting a preset', async () => {
+    const w = world();
+    await w.act('presets.bindConnection', { enabled: true });
+    expect(w.binding()).toBe(true);
+    expect(w.selections).toEqual([]);
+    await w.act('presets.bindConnection', { enabled: false });
+    expect(w.binding()).toBe(false);
 });
 
 test('save captures current server settings, and a failed write does not switch presets', async () => {

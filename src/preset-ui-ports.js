@@ -24,6 +24,12 @@ function documentOf(user) {
 
 /** @type {import('@st/presets/server').Ports} */
 export const presetPorts = {
+    async binding(user) {
+        return Boolean(documentOf(user).settingsFor({}).oai_settings?.bind_preset_to_connection);
+    },
+    async bind(user, enabled) {
+        await documentOf(user).writeAt({}, { from: 'default', to: 'user' }, 'oai_settings.bind_preset_to_connection', enabled);
+    },
     async settingsHashes(user) {
         const settings = pageSettings(documentOf(user).settingsFor({}));
         const hashes = {};

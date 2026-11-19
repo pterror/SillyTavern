@@ -7,6 +7,7 @@ export type Family = (typeof FAMILIES)[number];
 export type Preset = { name: string; data: Record<string, unknown> };
 export type Catalog = { selected: string; presets: Preset[] };
 export type PresetsView = Record<Family, Catalog> & {
+    bindConnection: boolean;
     /** Lets the remaining settings writers acknowledge precisely the settings this view changed. */
     settingsHashes: Record<string, number>;
 };
@@ -14,6 +15,7 @@ export type PresetsView = Record<Family, Catalog> & {
 const family = v.picklist(FAMILIES);
 const name = v.pipe(v.string(), v.trim(), v.minLength(1));
 export const actions = {
+    'presets.bindConnection': v.object({ enabled: v.boolean() }),
     'presets.select': v.object({ family, name: v.string() }),
     'presets.save': v.object({ family, name, activate: v.optional(v.boolean(), true) }),
     'presets.rename': v.object({ family, name, to: name }),

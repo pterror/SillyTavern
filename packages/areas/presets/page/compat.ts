@@ -31,8 +31,15 @@ export function presetsCompat(client: Client, old: OldPage) {
             },
         );
     });
+    const waitForSync = async () => {
+        let pending: Promise<void>;
+        do {
+            pending = syncing;
+            await pending;
+        } while (pending !== syncing);
+    };
     const settled = async () => {
-        await syncing;
+        await waitForSync();
         if (error() !== '') throw new Error(error());
     };
     const send = async (type: string, payload: Record<string, unknown>) => {
@@ -45,7 +52,7 @@ export function presetsCompat(client: Client, old: OldPage) {
         prepareImport: (family: Family, data: Record<string, unknown>) => old.prepareImport(family, data),
         error,
         async reload(family: Family) {
-            await syncing;
+            await waitForSync();
             const current = view();
             if (current) await old.sync(structuredClone(snapshot(current)), family);
         },
@@ -58,6 +65,7 @@ export function presetsCompat(client: Client, old: OldPage) {
             ),
         rename: (family: Family, name: string, to: string) => send('presets.rename', { family, name, to }),
         remove: (family: Family, name: string) => send('presets.delete', { family, name }),
+        order: (family: Family, names: string[]) => send('presets.order', { family, names }),
     };
 }
 

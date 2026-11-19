@@ -81,10 +81,22 @@ function formatKoboldUrl(value) {
     return null;
 }
 
-function selectKoboldGuiPreset() {
-    $('#settings_preset option[value=gui]')
-        .attr('selected', 'true')
-        .trigger('change');
+function showKoboldPresetMode(gui) {
+    $('#kobold_api-settings').find('input').prop('disabled', gui);
+    $('#kobold_api-settings').css('opacity', gui ? 0.5 : 1);
+    $('#kobold_order').css('opacity', gui ? 0.5 : 1).sortable(gui ? 'disable' : 'enable');
+}
+
+export function applyKoboldPreset(name) {
+    const previous = kai_settings.preset_settings;
+    if (name !== 'gui') {
+        const preset = koboldai_settings[koboldai_setting_names[name]];
+        if (!preset) throw new Error(`Unknown Kobold preset: ${name}`);
+        loadKoboldSettingsFromPreset(preset);
+    }
+    kai_settings.preset_settings = name;
+    showKoboldPresetMode(name === 'gui');
+    if (name !== previous) saveSettingsDebounced('kai_settings');
 }
 
 export function loadKoboldSettings(data, preset, settings) {
@@ -94,29 +106,15 @@ export function loadKoboldSettings(data, preset, settings) {
         koboldai_settings[i] = JSON.parse(item);
     });
 
-    $('#settings_preset').empty();
-    $('#settings_preset').append('<option value="gui">GUI KoboldAI Settings</option>');
     const names = {};
-    koboldai_setting_names.forEach(function (item, i, arr) {
-        names[item] = i;
-        $('#settings_preset').append(`<option value=${i}>${item}</option>`);
-    });
+    koboldai_setting_names.forEach((name, index) => { names[name] = index; });
     koboldai_setting_names = names;
 
     kai_settings.preset_settings = preset.preset_settings ?? settings.preset_settings;
     kai_settings.api_server = preset.api_server ?? settings.api_server;
 
-    if (kai_settings.preset_settings == 'gui') {
-        selectKoboldGuiPreset();
-    } else {
-        if (typeof koboldai_setting_names[kai_settings.preset_settings] !== 'undefined') {
-            $(`#settings_preset option[value=${koboldai_setting_names[kai_settings.preset_settings]}]`)
-                .attr('selected', 'true');
-        } else {
-            kai_settings.preset_settings = 'gui';
-            selectKoboldGuiPreset();
-        }
-    }
+    if (!Object.hasOwn(koboldai_setting_names, kai_settings.preset_settings)) kai_settings.preset_settings = 'gui';
+    showKoboldPresetMode(kai_settings.preset_settings === 'gui');
 
     loadKoboldSettingsFromPreset(preset);
 
@@ -383,33 +381,5 @@ export function initKoboldSettings() {
         kai_settings.sampler_order = KOBOLDCPP_ORDER;
         sortItemsByOrder(kai_settings.sampler_order);
         saveSettingsDebounced('kai_settings');
-    });
-
-    $('#settings_preset').on('change', async function () {
-        const previousPreset = kai_settings.preset_settings;
-
-        if ($('#settings_preset').find(':selected').val() != 'gui') {
-            kai_settings.preset_settings = $('#settings_preset').find(':selected').text();
-            const preset = koboldai_settings[koboldai_setting_names[kai_settings.preset_settings]];
-            loadKoboldSettingsFromPreset(preset);
-            $('#kobold_api-settings').find('input').prop('disabled', false);
-            $('#kobold_api-settings').css('opacity', 1.0);
-            $('#kobold_order')
-                .css('opacity', 1)
-                .sortable('enable');
-        } else {
-            kai_settings.preset_settings = 'gui';
-
-            $('#kobold_api-settings').find('input').prop('disabled', true);
-            $('#kobold_api-settings').css('opacity', 0.5);
-
-            $('#kobold_order')
-                .css('opacity', 0.5)
-                .sortable('disable');
-        }
-
-        if (kai_settings.preset_settings !== previousPreset) {
-            saveSettingsDebounced('kai_settings');
-        }
     });
 }

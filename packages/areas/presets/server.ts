@@ -4,6 +4,8 @@ import { actions, FAMILIES, VIEW } from './protocol.ts';
 import type { Catalog, Family, Preset, PresetsView } from './protocol.ts';
 
 export type Ports = {
+    binding(user: User): Promise<boolean>;
+    bind(user: User, enabled: boolean): Promise<void>;
     settingsHashes(user: User): Promise<Record<string, number>>;
     list(user: User, family: Family): Promise<Catalog>;
     select(user: User, family: Family, name: string): Promise<void>;
@@ -34,10 +36,14 @@ export function presetsArea(ports: Ports) {
                     Object.fromEntries(
                         await Promise.all(FAMILIES.map(async (family) => [family, await ports.list(user, family)])),
                     ),
-                    { settingsHashes: await ports.settingsHashes(user) },
+                    { settingsHashes: await ports.settingsHashes(user), bindConnection: await ports.binding(user) },
                 ) as PresetsView,
         },
         actions: {
+            'presets.bindConnection': async ({ user }, { enabled }) => {
+                await ports.bind(user, enabled);
+                return changed;
+            },
             'presets.select': async ({ user }, { family, name }) => {
                 if (!(family === 'kobold' && name === 'gui') && !(await exists(user, family, name)))
                     return { refused: 'The preset no longer exists.' };

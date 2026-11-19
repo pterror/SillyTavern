@@ -252,12 +252,10 @@ export function getTextGenServer(type = null) {
     }
 }
 
-async function selectPreset(name) {
+export async function applyTextGenPreset(name) {
     const preset = textgenerationwebui_presets[textgenerationwebui_preset_names.indexOf(name)];
 
-    if (!preset) {
-        return;
-    }
+    if (!preset) throw new Error(`Unknown text completion preset: ${name}`);
 
     textgenerationwebui_settings.preset = name;
     for (const name of setting_names) {
@@ -316,17 +314,6 @@ export async function loadTextGenSettings(data, loadedSettings) {
 
     if (loadedSettings.api_use_mancer_webui) {
         textgenerationwebui_settings.type = MANCER;
-    }
-
-    for (const name of textgenerationwebui_preset_names) {
-        const option = document.createElement('option');
-        option.value = name;
-        option.innerText = name;
-        $('#settings_preset_textgenerationwebui').append(option);
-    }
-
-    if (textgenerationwebui_settings.preset) {
-        $('#settings_preset_textgenerationwebui').val(textgenerationwebui_settings.preset);
     }
 
     for (const i of setting_names) {
@@ -657,10 +644,6 @@ export function initTextGenSettings() {
         saveSettingsDebounced('textgenerationwebui_settings');
     });
 
-    $('#settings_preset_textgenerationwebui').on('change', async function () {
-        const presetName = $(this).val();
-        await selectPreset(presetName);
-    });
 
     for (const i of setting_names) {
         if (isServerOwned(i)) continue;
